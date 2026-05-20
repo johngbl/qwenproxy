@@ -282,7 +282,7 @@ export async function chatCompletions(c: Context) {
                 isThinkingChunk = false;
                 if (delta.content !== undefined) {
                   const newContent = delta.content || '';
-                  if (newContent.length > lastFullContent.length) {
+                  if (newContent.length > lastFullContent.length && newContent.startsWith(lastFullContent)) {
                     vStr = newContent.substring(lastFullContent.length);
                     lastFullContent = newContent;
                     foundStr = true;
@@ -304,7 +304,6 @@ export async function chatCompletions(c: Context) {
                 reasoningBuffer += vStr;
               } else {
                 const { text, toolCalls } = toolParser.feed(vStr);
-                if (text) lastFullContent += '';
                 for (const tc of toolCalls) {
                   toolCallsOut.push({
                     id: tc.id,
