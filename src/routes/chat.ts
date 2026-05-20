@@ -17,6 +17,7 @@ import { registry } from '../tools/registry.ts';
 import type { FunctionToolDefinition } from '../tools/types.ts';
 import { robustParseJSON } from '../utils/json.ts';
 import { StreamingToolParser } from '../tools/parser.ts';
+import { RetryableQwenStreamError } from '../services/qwen.ts';
 import { Mutex } from '../services/playwright.ts';
 
 // Global mutex that serializes ALL Qwen chat completions requests.
@@ -123,9 +124,10 @@ export async function chatCompletions(c: Context) {
         }
         if (msg.tool_calls && Array.isArray(msg.tool_calls)) {
            for (const tc of msg.tool_calls) {
-             let args = tc.function?.arguments || '{}';
-             if (typeof args !== 'string') args = JSON.stringify(args);
-             assistantContent += `\n<tool_call>\n{"name": "${tc.function?.name}", "arguments": ${args}}\n</tool_call>`;
+             const args = tc.function?.arguments;
+             const parsedArgs = typeof args === 'string' ? JSON.parse(args) : (args || {});
+             const payload = { name: tc.function?.name, arguments: parsedArgs };
+             assistantContent += `\n<tool_call>\n${JSON.stringify(payload)}\n</tool_call>`;
            }
         }
         prompt += `Assistant: ${assistantContent.trim()}\n\n`;
@@ -186,16 +188,22 @@ export async function chatCompletions(c: Context) {
         break; // Success
       } catch (err: any) {
         retries--;
-        const isInProgress = err.message?.includes('in progress') || err.message?.includes('Bad_Request');
         if (retries === 0) {
           releaseChatLock();
           throw err;
         }
-        console.warn(`[Chat] Qwen request failed (${isInProgress ? 'in progress' : 'other'}), retrying in ${retryDelay}ms... (${retries} left)`);
-        await new Promise(r => setTimeout(r, retryDelay));
-        if (isInProgress) {
-          retryDelay = Math.min(retryDelay * 2, 10000); // Exponential backoff, max 10s
+        let useDelay = retryDelay;
+        if (err instanceof RetryableQwenStreamError && err.retryAfterMs > 0) {
+          useDelay = err.retryAfterMs;
         }
+        const isRetryable = err instanceof RetryableQwenStreamError || err.message?.includes('in progress') || err.message?.includes('Bad_Request');
+        if (!isRetryable) {
+          releaseChatLock();
+          throw err;
+        }
+        console.warn(`[Chat] Qwen request failed, retrying in ${useDelay}ms... (${retries} left)`);
+        await new Promise(r => setTimeout(r, useDelay));
+        retryDelay = Math.min(retryDelay * 2, 10000);
       }
     }
 

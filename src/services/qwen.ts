@@ -296,14 +296,6 @@ export async function createQwenStream(
             retryAfterMs,
           );
         }
-        if (errorJson?.data?.details?.includes('is not exist') ||
-            errorJson?.data?.details?.includes('not exist') ||
-            errorJson?.data?.details?.includes('does not exist')) {
-          throw new RetryableQwenStreamError(
-            `Qwen: ${errorJson.data.details}`,
-            0,
-          );
-        }
         if (errorJson?.success === false) {
           const code = errorJson.data?.code || errorJson.code || 'UpstreamError';
           const details = errorJson.data?.details || errorJson.message || 'Qwen returned an error';
@@ -313,11 +305,20 @@ export async function createQwenStream(
           let status: number;
           if (code === 'RateLimited') status = 429;
           else if (code === 'Not_Found') status = 404;
+          else if (code === 'UpstreamError') status = 502;
           else status = 502;
           throw new QwenUpstreamError(
             `Qwen upstream error: ${code}: ${details}.${wait}`,
             code,
             status,
+          );
+        }
+        if (errorJson?.data?.details?.includes('is not exist') ||
+            errorJson?.data?.details?.includes('not exist') ||
+            errorJson?.data?.details?.includes('does not exist')) {
+          throw new RetryableQwenStreamError(
+            `Qwen: ${errorJson.data.details}`,
+            0,
           );
         }
       } catch (parseOrRetryError) {
