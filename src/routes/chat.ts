@@ -264,7 +264,8 @@ export async function chatCompletions(c: Context) {
             let foundStr = false;
             let isThinkingChunk = false;
 
-            if (chunk.choices && chunk.choices[0] && chunk.choices[0].delta && chunk.response_id === targetResponseId) {
+            if (chunk.choices && chunk.choices[0] && chunk.choices[0].delta && 
+                (targetResponseId === null || chunk.response_id === targetResponseId)) {
               const delta = chunk.choices[0].delta;
 
               if (delta.phase === 'thinking_summary') {
@@ -281,10 +282,16 @@ export async function chatCompletions(c: Context) {
                 isThinkingChunk = false;
                 if (delta.content !== undefined) {
                   const newContent = delta.content || '';
-                  const result = getIncrementalDelta(lastFullContent, newContent);
-                  vStr = result.delta;
-                  if (vStr) {
-                    lastFullContent = result.matchedContent;
+                  if (newContent.length > lastFullContent.length) {
+                    vStr = newContent.substring(lastFullContent.length);
+                    lastFullContent = newContent;
+                    foundStr = true;
+                  } else if (newContent === lastFullContent || lastFullContent.startsWith(newContent)) {
+                    vStr = '';
+                    foundStr = false;
+                  } else {
+                    vStr = newContent;
+                    lastFullContent = newContent;
                     foundStr = true;
                   }
                 }
@@ -324,7 +331,7 @@ export async function chatCompletions(c: Context) {
 
       const { text: remainingText, toolCalls: remainingToolCalls } = toolParser.flush();
       if (remainingText) {
-        // remainingText has already been preserved in lastFullContent by getIncrementalDelta/feed path when present.
+        lastFullContent += remainingText;
       }
       for (const tc of remainingToolCalls) {
         toolCallsOut.push({
@@ -448,7 +455,8 @@ export async function chatCompletions(c: Context) {
             let foundStr = false;
             let isThinkingChunk = false;
 
-            if (chunk.choices && chunk.choices[0] && chunk.choices[0].delta && chunk.response_id === targetResponseId) {
+            if (chunk.choices && chunk.choices[0] && chunk.choices[0].delta && 
+                (targetResponseId === null || chunk.response_id === targetResponseId)) {
               const delta = chunk.choices[0].delta;
               
               if (delta.phase === 'thinking_summary') {
