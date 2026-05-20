@@ -75,7 +75,7 @@ function parseQwenErrorPayload(raw: string): { message: string; status: number }
       const code = payload.data?.code || payload.code || 'UpstreamError';
       const details = payload.data?.details || payload.message || 'Qwen returned an error';
       const wait = payload.data?.num !== undefined ? ` Wait about ${payload.data.num} hour(s) before trying again.` : '';
-      const status = code === 'RateLimited' ? 429 : 502;
+      const status = code === 'RateLimited' ? 429 : (code === 'Not_Found' ? 404 : 502);
       return { message: `Qwen upstream error: ${code}: ${details}.${wait}`, status };
     }
     if (payload && payload.error) {
@@ -208,6 +208,7 @@ export async function chatCompletions(c: Context) {
       let currentThoughtIndex = 0;
       let reasoningBuffer = '';
       let lastFullContent = '';
+      let targetResponseId: string | null = null;
       const toolParser = new StreamingToolParser();
       const toolCallsOut: any[] = [];
       let buffer = '';
@@ -232,8 +233,12 @@ export async function chatCompletions(c: Context) {
             const chunk = JSON.parse(dataStr);
 
             if (chunk['response.created'] && chunk['response.created'].response_id) {
+              if (!targetResponseId) {
+                targetResponseId = chunk['response.created'].response_id;
+              }
               updateSessionParent(uiSessionId, chunk['response.created'].response_id);
-            } else if (chunk.response_id) {
+            } else if (chunk.response_id && !targetResponseId) {
+              targetResponseId = chunk.response_id;
               updateSessionParent(uiSessionId, chunk.response_id);
             }
 
@@ -246,7 +251,7 @@ export async function chatCompletions(c: Context) {
             let foundStr = false;
             let isThinkingChunk = false;
 
-            if (chunk.choices && chunk.choices[0] && chunk.choices[0].delta) {
+            if (chunk.choices && chunk.choices[0] && chunk.choices[0].delta && chunk.response_id === targetResponseId) {
               const delta = chunk.choices[0].delta;
 
               if (delta.phase === 'thinking_summary') {
@@ -382,6 +387,7 @@ export async function chatCompletions(c: Context) {
       
       let reasoningBuffer = '';
       let lastFullContent = '';
+      let targetResponseId: string | null = null;
       const toolParser = new StreamingToolParser();
 
       let buffer = '';
@@ -409,10 +415,14 @@ export async function chatCompletions(c: Context) {
           try {
             const chunk = JSON.parse(dataStr);
 
-            // Extract response_id for session tracking
+            // Extract response_id for session tracking and target filtering
             if (chunk['response.created'] && chunk['response.created'].response_id) {
+              if (!targetResponseId) {
+                targetResponseId = chunk['response.created'].response_id;
+              }
               updateSessionParent(uiSessionId, chunk['response.created'].response_id);
-            } else if (chunk.response_id) {
+            } else if (chunk.response_id && !targetResponseId) {
+              targetResponseId = chunk.response_id;
               updateSessionParent(uiSessionId, chunk.response_id);
             }
 
@@ -425,7 +435,7 @@ export async function chatCompletions(c: Context) {
             let foundStr = false;
             let isThinkingChunk = false;
 
-            if (chunk.choices && chunk.choices[0] && chunk.choices[0].delta) {
+            if (chunk.choices && chunk.choices[0] && chunk.choices[0].delta && chunk.response_id === targetResponseId) {
               const delta = chunk.choices[0].delta;
               
               if (delta.phase === 'thinking_summary') {
