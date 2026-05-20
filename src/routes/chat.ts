@@ -125,7 +125,12 @@ export async function chatCompletions(c: Context) {
         if (msg.tool_calls && Array.isArray(msg.tool_calls)) {
            for (const tc of msg.tool_calls) {
              const args = tc.function?.arguments;
-             const parsedArgs = typeof args === 'string' ? JSON.parse(args) : (args || {});
+             let parsedArgs: any = {};
+             if (typeof args === 'string') {
+               try { parsedArgs = JSON.parse(args); } catch { parsedArgs = {}; }
+             } else if (args && typeof args === 'object') {
+               parsedArgs = args;
+             }
              const payload = { name: tc.function?.name, arguments: parsedArgs };
              assistantContent += `\n<tool_call>\n${JSON.stringify(payload)}\n</tool_call>`;
            }
@@ -193,7 +198,7 @@ export async function chatCompletions(c: Context) {
           throw err;
         }
         let useDelay = retryDelay;
-        if (err instanceof RetryableQwenStreamError && err.retryAfterMs > 0) {
+        if (err instanceof RetryableQwenStreamError && err.retryAfterMs !== undefined) {
           useDelay = err.retryAfterMs;
         }
         const isRetryable = err instanceof RetryableQwenStreamError || err.message?.includes('in progress') || err.message?.includes('Bad_Request');
@@ -612,6 +617,7 @@ export async function chatCompletions(c: Context) {
     });
   } catch (err: any) {
     console.error('Error in chatCompletions:', err);
-    return c.json({ error: { message: err.message } }, 500);
+    const status = err.upstreamStatus || 500;
+    return c.json({ error: { message: err.message } }, status);
   }
 }
