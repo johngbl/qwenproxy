@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  qwenproxy:
+    build: .
+    ports:
+      - "${PORT:-8080}:8080"
+    env_file:
+      - .env
+    volumes:
+      - ./qwen_profile:/app/qwen_profile
+    restart: always
