@@ -20,11 +20,7 @@ export class StreamingToolParser {
   private insideTool = false;
   private readonly TOOL_SYNTAXES = [
     { start: '<tool_call>', end: '</tool_call>' },
-    // Qwen tends to reproduce XML-looking tags as user-visible prose. The
-    // prompt therefore uses rare Bengali/sparkle delimiters; parse them into
-    // structured OpenAI tool_calls instead of streaming them as content.
     { start: 'তত', end: '✨' },
-    // Be tolerant when the model drops one repeated Bengali character.
     { start: 'ত', end: '✨' },
   ];
   private activeToolStart = '<tool_call>';

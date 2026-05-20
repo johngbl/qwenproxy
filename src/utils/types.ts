@@ -49,10 +49,11 @@ export interface OpenAIRequest {
   model: string;
   messages: Message[];
   stream?: boolean;
-  /** List of tools available to the LLM */
   tools?: FunctionToolDefinition[];
-  /** Control whether the LLM must/can call tools */
   tool_choice?: ToolChoice;
+  stream_options?: {
+    include_usage?: boolean;
+  };
 }
 
 // --- Response Types ---

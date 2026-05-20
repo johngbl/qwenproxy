@@ -2,9 +2,9 @@
 
 Proxy API local compatível com OpenAI que roteia requisições para os modelos do **Qwen (chat.qwen.ai)** via automação de navegador com Playwright. Oferece suporte a execução de ferramentas, modo de pensamento (reasoning) e persistência de sessão.
 
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.0-blue)](https://www.typescriptlang.org/)
-[![Hono](https://img.shields.io/badge/Hono-4.0-green)](https://hono.dev/)
-[![Playwright](https://img.shields.io/badge/Playwright-1.59-blueviolet)](https://playwright.dev/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-6.0-blue)](https://www.typescriptlang.org/)
+[![Hono](https://img.shields.io/badge/Hono-4.12-green)](https://hono.dev/)
+[![Playwright](https://img.shields.io/badge/Playwright-1.60-blueviolet)](https://playwright.dev/)
 [![License: ISC](https://img.shields.io/badge/License-ISC-yellow.svg)](LICENSE)
 
 ---
@@ -18,6 +18,8 @@ Proxy API local compatível com OpenAI que roteia requisições para os modelos 
 - **Network Visibility**: Exibe URLs local e de rede (IP) ao iniciar o servidor.
 - **Browser Selection**: Escolha entre Chrome, Firefox, Edge ou Chromium para execução.
 - **Docker Ready**: Deploy simplificado com suporte a Docker e Docker Compose.
+- **Auto-Login**: Login automático via credenciais `.env` com recuperação de sessão.
+- **Stream Options**: Suporte a `include_usage` em streaming responses.
 
 ---
 

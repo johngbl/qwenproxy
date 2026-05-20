@@ -8,6 +8,28 @@
 import { getQwenHeaders, getBasicHeaders } from './playwright.ts';
 import { v4 as uuidv4 } from 'uuid';
 
+export class RetryableQwenStreamError extends Error {
+  readonly retryAfterMs: number;
+
+  constructor(message: string, retryAfterMs: number) {
+    super(message);
+    this.name = 'RetryableQwenStreamError';
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
+export class QwenUpstreamError extends Error {
+  readonly upstreamCode: string;
+  readonly upstreamStatus: number;
+
+  constructor(message: string, upstreamCode: string, upstreamStatus: number) {
+    super(message);
+    this.name = 'QwenUpstreamError';
+    this.upstreamCode = upstreamCode;
+    this.upstreamStatus = upstreamStatus;
+  }
+}
+
 const sessionStates: Record<string, string | null> = (globalThis as any)._sessionStates || {};
 (globalThis as any)._sessionStates = sessionStates;
 
@@ -261,6 +283,50 @@ export async function createQwenStream(
 
   if (!response.ok || !response.body) {
     const errText = await response.text().catch(() => '');
+    const contentType = response.headers.get('content-type') || '';
+
+    if (contentType.includes('application/json')) {
+      try {
+        const errorJson = JSON.parse(errText);
+        if (errorJson?.data?.details?.includes('chat is in progress') ||
+            errorJson?.data?.details?.includes('The chat is in progress')) {
+          const retryAfterMs = 2000 + Math.floor(Math.random() * 2000);
+          throw new RetryableQwenStreamError(
+            `Qwen: ${errorJson.data.details}`,
+            retryAfterMs,
+          );
+        }
+        if (errorJson?.data?.details?.includes('is not exist') ||
+            errorJson?.data?.details?.includes('not exist') ||
+            errorJson?.data?.details?.includes('does not exist')) {
+          throw new RetryableQwenStreamError(
+            `Qwen: ${errorJson.data.details}`,
+            0,
+          );
+        }
+        if (errorJson?.success === false) {
+          const code = errorJson.data?.code || errorJson.code || 'UpstreamError';
+          const details = errorJson.data?.details || errorJson.message || 'Qwen returned an error';
+          const wait = errorJson.data?.num !== undefined
+            ? ` Wait about ${errorJson.data.num} hour(s) before trying again.`
+            : '';
+          let status: number;
+          if (code === 'RateLimited') status = 429;
+          else if (code === 'Not_Found') status = 404;
+          else status = 502;
+          throw new QwenUpstreamError(
+            `Qwen upstream error: ${code}: ${details}.${wait}`,
+            code,
+            status,
+          );
+        }
+      } catch (parseOrRetryError) {
+        if (parseOrRetryError instanceof RetryableQwenStreamError ||
+            parseOrRetryError instanceof QwenUpstreamError) {
+          throw parseOrRetryError;
+        }
+      }
+    }
     throw new Error(`Failed to fetch from Qwen: ${response.status} ${response.statusText} - ${errText}`);
   }
 
