@@ -91,36 +91,31 @@ export class StreamingToolParser {
         const endIdx = this.buffer.indexOf(this.activeToolEnd);
         if (endIdx !== -1) {
           const toolJsonStr = this.buffer.substring(0, endIdx).trim();
+          const originalStart = this.activeToolStart;
+          const originalEnd = this.activeToolEnd;
+          
           try {
             const toolCallObj = robustParseJSON(toolJsonStr);
-            if (toolCallObj) {
-              const toolId = 'call_' + uuidv4();
-              let toolName = toolCallObj.name || '';
-              let toolArgs: Record<string, unknown> = {};
-
-              if (toolCallObj.arguments) {
-                toolArgs = typeof toolCallObj.arguments === 'string'
-                  ? JSON.parse(toolCallObj.arguments)
-                  : toolCallObj.arguments;
-              } else {
-                const { name, ...rest } = toolCallObj;
-                toolArgs = rest;
-              }
-
+            if (toolCallObj && typeof toolCallObj === 'object' && (toolCallObj.name || toolCallObj.function)) {
               result.toolCalls.push({
-                id: toolId,
-                name: toolName,
-                arguments: toolArgs,
+                id: `call_${Math.random().toString(36).substring(2, 11)}`,
+                name: toolCallObj.name || toolCallObj.function?.name || 'unknown',
+                arguments: typeof toolCallObj.arguments === 'string' 
+                  ? JSON.parse(toolCallObj.arguments)
+                  : (toolCallObj.arguments || toolCallObj.function?.arguments || {})
               });
               this.emittedToolCallCount++;
+            } else {
+              // Not a real tool call, just text that looked like one
+              result.text += originalStart + toolJsonStr + originalEnd;
             }
           } catch (e) {
             console.warn(`[StreamingToolParser] Parsing failed for: ${toolJsonStr}`, e);
-            result.text += toolJsonStr;
+            result.text += originalStart + toolJsonStr + originalEnd;
           }
           
           this.insideTool = false;
-          const activeEndLength = this.activeToolEnd.length;
+          const activeEndLength = originalEnd.length;
           this.activeToolStart = '<tool_call>';
           this.activeToolEnd = '</tool_call>';
           this.buffer = this.buffer.substring(endIdx + activeEndLength);
@@ -148,28 +143,23 @@ export class StreamingToolParser {
         // Try to parse partial tool call
         try {
           const toolCallObj = robustParseJSON(this.buffer);
-          if (toolCallObj) {
-            const toolId = 'call_' + uuidv4();
-            let toolName = toolCallObj.name || '';
-            let toolArgs = toolCallObj.arguments || {};
-            if (typeof toolArgs === 'string') toolArgs = JSON.parse(toolArgs);
-            else if (!toolCallObj.arguments) {
-               const { name, ...rest } = toolCallObj;
-               toolArgs = rest;
-            }
-
+          if (toolCallObj && typeof toolCallObj === 'object' && (toolCallObj.name || toolCallObj.function)) {
             result.toolCalls.push({
-              id: toolId,
-              name: toolName,
-              arguments: toolArgs,
+              id: `call_${Math.random().toString(36).substring(2, 11)}`,
+              name: toolCallObj.name || toolCallObj.function?.name || 'unknown',
+              arguments: typeof toolCallObj.arguments === 'string' 
+                ? JSON.parse(toolCallObj.arguments)
+                : (toolCallObj.arguments || toolCallObj.function?.arguments || {})
             });
             this.emittedToolCallCount++;
+          } else {
+            result.text += this.activeToolStart + this.buffer;
           }
         } catch (e) {
-          result.text = this.buffer;
+          result.text += this.activeToolStart + this.buffer;
         }
       } else {
-        result.text = this.buffer;
+        result.text += this.buffer;
       }
     }
 
