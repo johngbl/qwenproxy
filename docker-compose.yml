@@ -1,12 +1,16 @@
-version: '3.8'
-
 services:
   qwenproxy:
     build: .
+    container_name: qwenproxy
     ports:
-      - "${PORT:-8080}:8080"
+      - "${PORT:-3000}:3000"
     env_file:
       - .env
     volumes:
       - ./qwen_profile:/app/qwen_profile
-    restart: always
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
