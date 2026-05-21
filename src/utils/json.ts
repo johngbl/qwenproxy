@@ -23,8 +23,24 @@ export function robustParseJSON(str: string): any {
     // If it fails, let's try to fix common issues
   }
 
+  // 0. Fix unquoted property names (e.g., arguments instead of "arguments")
+  // We apply this to jsonPart and use the result for subsequent fixes
+  let currentJson = jsonPart.replace(/([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)(\s*:)/g, '$1"$2"$3');
+
+  // 0. Fix common LLM hallucinations
+  // Fix double key names like {"name": "name": "tool"} -> {"name": "tool"}
+  currentJson = currentJson.replace(/([{,]\s*)"([a-zA-Z0-9_]+)"\s*:\s*"\2"\s*:/g, '$1"$2":');
+  // Fix unquoted double key names like {name: name: "tool"} -> {name: "tool"}
+  currentJson = currentJson.replace(/([{,]\s*)([a-zA-Z0-9_]+)\s*:\s*\2\s*:/g, '$1$2:');
+
+  try {
+    return JSON.parse(currentJson);
+  } catch (e) {
+    // Still fails, continue to more complex fixes
+  }
+
   // 1. Clean trailing noise from the end of the string
-  let cleaned = jsonPart.trim();
+  let cleaned = currentJson.trim();
   while (cleaned.length > 0 && !/[}\]"0-9a-z]/i.test(cleaned[cleaned.length - 1])) {
     cleaned = cleaned.slice(0, -1).trim();
   }

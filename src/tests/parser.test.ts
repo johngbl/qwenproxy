@@ -25,7 +25,7 @@ test('StreamingToolParser: fragmented tool call', () => {
   assert.strictEqual(res2.toolCalls.length, 0);
   
   const res3 = parser.feed('uments": {"ok": true}}</tool_call> Trailing text');
-  assert.strictEqual(res3.text, ''); // Text after tools is only emitted if no tools were emitted yet, or we need to handle it differently
+  assert.strictEqual(res3.text, ' Trailing text'); 
   assert.strictEqual(res3.toolCalls.length, 1);
   assert.strictEqual(res3.toolCalls[0].name, 'fragmented');
   assert.deepStrictEqual(res3.toolCalls[0].arguments, { ok: true });
@@ -85,3 +85,38 @@ test('StreamingToolParser: buffers partial Bengali delimiter without leaking raw
   assert.strictEqual(res2.toolCalls.length, 1);
   assert.strictEqual(res2.toolCalls[0].name, 'session_search');
 });
+
+test('StreamingToolParser: treats invalid JSON inside tool call as text', () => {
+  const parser = new StreamingToolParser();
+
+  const res = parser.feed('Some text <tool_call>{invalid json}</tool_call>');
+  assert.ok(res.text.includes('Some text'), 'Text before should be preserved');
+  assert.ok(res.text.includes('invalid json'), 'Failed JSON content should be treated as text');
+  assert.strictEqual(res.toolCalls.length, 0, 'No tool call extracted from invalid JSON');
+});
+
+test('StreamingToolParser: continues processing after failed tool call', () => {
+  const parser = new StreamingToolParser();
+
+  const res1 = parser.feed('<tool_call>{bad json}</tool_call>');
+  assert.ok(res1.text.includes('bad json'), 'Invalid JSON content should be text');
+  assert.strictEqual(res1.toolCalls.length, 0, 'First tool call failed');
+
+  const res2 = parser.feed('<tool_call>{"name":"good_tool","arguments":{}}</tool_call>');
+  assert.strictEqual(res2.toolCalls.length, 1, 'Second tool call should be extracted');
+  assert.strictEqual(res2.toolCalls[0].name, 'good_tool', 'Valid tool call extracted');
+});
+
+test('StreamingToolParser: handles mixed valid and invalid tool calls', () => {
+  const parser = new StreamingToolParser();
+
+  const res1 = parser.feed('<tool_call>{not json}</tool_call>');
+  assert.strictEqual(res1.toolCalls.length, 0, 'First is invalid');
+  assert.ok(res1.text.includes('not json'), 'Invalid content is text');
+
+  const res2 = parser.feed('<tool_call>{"name":"valid","arguments":{}}</tool_call>');
+  assert.strictEqual(res2.toolCalls.length, 1, 'Second is valid');
+  assert.strictEqual(res2.toolCalls[0].name, 'valid');
+});
+
+

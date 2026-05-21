@@ -68,3 +68,31 @@ try {
 } catch (e) {
     console.error('❌ Failed to parse invalid backslash escapes:', e);
 }
+
+const doubleKey = '{"name": "name": "create_file", "arguments": {"path": "b.txt"}}';
+console.log('\nTesting double key hallucination...');
+try {
+    const result = robustParseJSON(doubleKey);
+    console.log('Successfully parsed:', JSON.stringify(result, null, 2));
+    if (result.name === 'create_file') {
+        console.log('✅ Double key test passed!');
+    } else {
+        console.error('❌ Result name is incorrect:', result.name);
+    }
+} catch (e) {
+    console.error('❌ Failed to parse double key:', e);
+}
+
+const unquotedArgs = '{"name":"Read",arguments:{"file_path":"test.ts","limit":100}}';
+console.log('\nTesting unquoted arguments key...');
+try {
+    const result = robustParseJSON(unquotedArgs);
+    console.log('Successfully parsed:', JSON.stringify(result, null, 2));
+    if (result.arguments && result.arguments.limit === 100) {
+        console.log('✅ Unquoted arguments test passed!');
+    } else {
+        console.error('❌ Result structure is incorrect');
+    }
+} catch (e) {
+    console.error('❌ Failed to parse unquoted arguments:', e);
+}

@@ -65,9 +65,9 @@ export class StreamingToolParser {
       if (!this.insideTool) {
         const startMatch = this.findNextStart();
         if (startMatch) {
-          // Found tool start. Everything before it is text (if no tools emitted yet)
+          // Found tool start. Everything before it is text
           const textToEmit = this.buffer.substring(0, startMatch.index);
-          if (textToEmit && this.emittedToolCallCount === 0) {
+          if (textToEmit) {
             result.text += textToEmit;
           }
           this.insideTool = true;
@@ -80,7 +80,7 @@ export class StreamingToolParser {
           const flushIndex = this.buffer.length - partialLength;
           
           const textToEmit = this.buffer.substring(0, flushIndex);
-          if (textToEmit && this.emittedToolCallCount === 0) {
+          if (textToEmit) {
             result.text += textToEmit;
           }
           this.buffer = this.buffer.substring(flushIndex);
@@ -116,9 +116,7 @@ export class StreamingToolParser {
             }
           } catch (e) {
             console.warn(`[StreamingToolParser] Parsing failed for: ${toolJsonStr}`, e);
-            // If it fails, we treat it as text if no tools were emitted yet, 
-            // but this is tricky in a streaming context. 
-            // For now, we just log and move on.
+            result.text += toolJsonStr;
           }
           
           this.insideTool = false;
@@ -168,11 +166,9 @@ export class StreamingToolParser {
             this.emittedToolCallCount++;
           }
         } catch (e) {
-          if (this.emittedToolCallCount === 0) {
-            result.text = this.activeToolStart + this.buffer;
-          }
+          result.text = this.buffer;
         }
-      } else if (this.emittedToolCallCount === 0) {
+      } else {
         result.text = this.buffer;
       }
     }

@@ -114,13 +114,14 @@ export async function chatCompletions(c: Context) {
       }
 
       if (msg.role === 'system') {
-        systemPrompt += contentStr + '\n\n';
+        systemPrompt += (contentStr || '') + '\n\n';
       } else if (msg.role === 'user') {
-        prompt += `User: ${contentStr}\n\n`;
+        prompt += `User: ${contentStr || ''}\n\n`;
       } else if (msg.role === 'assistant') {
-        let assistantContent = contentStr;
-        if ((msg as any).reasoning_content) {
-          assistantContent = `<think>\n${(msg as any).reasoning_content}\n</think>\n${assistantContent}`;
+        let assistantContent = contentStr || '';
+        const reasoning = (msg as any).reasoning_content;
+        if (reasoning) {
+          assistantContent = `<think>\n${reasoning}\n</think>\n${assistantContent}`;
         }
         if (msg.tool_calls && Array.isArray(msg.tool_calls)) {
            for (const tc of msg.tool_calls) {
@@ -132,12 +133,27 @@ export async function chatCompletions(c: Context) {
                parsedArgs = args;
              }
              const payload = { name: tc.function?.name, arguments: parsedArgs };
-             assistantContent += `\n<tool_call>\n${JSON.stringify(payload)}\n</tool_call>`;
+             const toolCallStr = `\n<tool_call>\n${JSON.stringify(payload)}\n</tool_call>`;
+             assistantContent = assistantContent ? assistantContent + toolCallStr : toolCallStr.trim();
            }
         }
         prompt += `Assistant: ${assistantContent.trim()}\n\n`;
       } else if (msg.role === 'tool' || msg.role === 'function') {
-        prompt += `Tool Response (${msg.name || 'tool'}): ${contentStr}\n\n`;
+        let toolName = msg.name;
+        if (!toolName && msg.tool_call_id) {
+          // Look up tool name in history by tool_call_id
+          for (let j = i - 1; j >= 0; j--) {
+            const prevMsg = messages[j];
+            if (prevMsg.role === 'assistant' && prevMsg.tool_calls) {
+              const call = prevMsg.tool_calls.find(tc => tc.id === msg.tool_call_id);
+              if (call) {
+                toolName = call.function?.name;
+                break;
+              }
+            }
+          }
+        }
+        prompt += `Tool Response (${toolName || 'tool'}): ${contentStr || ''}\n\n`;
       }
     }
 
@@ -282,16 +298,10 @@ export async function chatCompletions(c: Context) {
                 isThinkingChunk = false;
                 if (delta.content !== undefined) {
                   const newContent = delta.content || '';
-                  if (newContent.length > lastFullContent.length && newContent.startsWith(lastFullContent)) {
-                    vStr = newContent.substring(lastFullContent.length);
-                    lastFullContent = newContent;
-                    foundStr = true;
-                  } else if (newContent === lastFullContent || lastFullContent.startsWith(newContent)) {
-                    vStr = '';
-                    foundStr = false;
-                  } else {
-                    vStr = newContent;
-                    lastFullContent = newContent;
+                  const result = getIncrementalDelta(lastFullContent, newContent);
+                  vStr = result.delta;
+                  if (vStr) {
+                    lastFullContent = result.matchedContent;
                     foundStr = true;
                   }
                 }
@@ -303,7 +313,7 @@ export async function chatCompletions(c: Context) {
               if (isThinkingChunk) {
                 reasoningBuffer += vStr;
               } else {
-                const { text, toolCalls } = toolParser.feed(vStr);
+                const { toolCalls } = toolParser.feed(vStr);
                 for (const tc of toolCalls) {
                   toolCallsOut.push({
                     id: tc.id,
