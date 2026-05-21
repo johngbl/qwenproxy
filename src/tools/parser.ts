@@ -98,7 +98,7 @@ export class StreamingToolParser {
             const toolCallObj = robustParseJSON(toolJsonStr);
             if (toolCallObj && typeof toolCallObj === 'object' && (toolCallObj.name || toolCallObj.function)) {
               result.toolCalls.push({
-                id: `call_${Math.random().toString(36).substring(2, 11)}`,
+                id: `call_${uuidv4()}`,
                 name: toolCallObj.name || toolCallObj.function?.name || 'unknown',
                 arguments: typeof toolCallObj.arguments === 'string' 
                   ? JSON.parse(toolCallObj.arguments)
@@ -145,7 +145,7 @@ export class StreamingToolParser {
           const toolCallObj = robustParseJSON(this.buffer);
           if (toolCallObj && typeof toolCallObj === 'object' && (toolCallObj.name || toolCallObj.function)) {
             result.toolCalls.push({
-              id: `call_${Math.random().toString(36).substring(2, 11)}`,
+              id: `call_${uuidv4()}`,
               name: toolCallObj.name || toolCallObj.function?.name || 'unknown',
               arguments: typeof toolCallObj.arguments === 'string' 
                 ? JSON.parse(toolCallObj.arguments)

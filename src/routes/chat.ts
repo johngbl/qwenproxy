@@ -385,7 +385,20 @@ export async function chatCompletions(c: Context) {
     c.header('Connection', 'keep-alive');
 
     return honoStream(c, async (streamWriter: any) => {
+      let heartbeatInterval: any;
       try {
+      // Send heartbeat to prevent Cloudflare 524 timeout
+      await streamWriter.write(': heartbeat\n\n');
+
+      // Set up a periodic heartbeat to keep the connection alive during long thinking phases
+      heartbeatInterval = setInterval(async () => {
+        try {
+          await streamWriter.write(': keep-alive\n\n');
+        } catch (e) {
+          clearInterval(heartbeatInterval);
+        }
+      }, 15000); // Every 15 seconds
+
       const writeEvent = async (data: any) => {
         await streamWriter.write(`data: ${JSON.stringify(data)}\n\n`);
       };
@@ -629,6 +642,7 @@ export async function chatCompletions(c: Context) {
       await streamWriter.write('data: [DONE]\n\n');
 
       } finally {
+        clearInterval(heartbeatInterval);
         releaseChatLock();
       }
     });
