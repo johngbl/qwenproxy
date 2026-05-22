@@ -43,13 +43,15 @@ export function getIncrementalDelta(oldStr: string, newStr: string): DeltaResult
 
   // Heuristic to detect if newStr is cumulative or incremental:
   // If newStr is cumulative, it should share a common prefix with oldStr.
+  // Limit scan window to avoid O(n) on very long cumulative content
+  const scanWindow = Math.min(2000, oldStr.length);
   let commonPrefixLen = 0;
-  const maxLen = Math.min(oldStr.length, newStr.length);
+  const maxLen = Math.min(scanWindow, newStr.length);
   while (commonPrefixLen < maxLen && oldStr[commonPrefixLen] === newStr[commonPrefixLen]) {
     commonPrefixLen++;
   }
 
-  const threshold = Math.min(oldStr.length, 4);
+  const threshold = Math.min(scanWindow, 4);
   if (commonPrefixLen >= threshold) {
     return {
       delta: newStr.substring(commonPrefixLen),
@@ -198,8 +200,8 @@ export async function chatCompletions(c: Context) {
     // Retry logic with exponential backoff for "chat is in progress" errors
     let stream: ReadableStream;
     let uiSessionId = '';
-    let retries = 5;
-    let retryDelay = 1000;
+    let retries = 3;
+    let retryDelay = 500;
     while (retries > 0) {
       try {
         // If it's a new session, force parent_message_id to null
@@ -224,7 +226,7 @@ export async function chatCompletions(c: Context) {
         }
         console.warn(`[Chat] Qwen request failed, retrying in ${useDelay}ms... (${retries} left)`);
         await new Promise(r => setTimeout(r, useDelay));
-        retryDelay = Math.min(retryDelay * 2, 10000);
+        retryDelay = Math.min(retryDelay * 2, 5000);
       }
     }
 
@@ -238,7 +240,7 @@ export async function chatCompletions(c: Context) {
       let reasoningBuffer = '';
       let lastFullContent = '';
       let targetResponseId: string | null = null;
-      const toolParser = new StreamingToolParser();
+      const toolParser = new StreamingToolParser(bodyAny.tools || []);
       const toolCallsOut: any[] = [];
       let buffer = '';
       let completionTokens = 0;
@@ -313,7 +315,12 @@ export async function chatCompletions(c: Context) {
               if (isThinkingChunk) {
                 reasoningBuffer += vStr;
               } else {
-                const { toolCalls } = toolParser.feed(vStr);
+                const { text, toolCalls } = toolParser.feed(vStr);
+                // text is the lead-in before any tool_call tag.
+                // We skip emitting it here because OpenAI-compatible clients
+                // expect a structured tool_calls message when the assistant
+                // invokes tools. The lead-in is preserved in the parser and
+                // will be recovered only if the tool call fails to parse.
                 for (const tc of toolCalls) {
                   toolCallsOut.push({
                     id: tc.id,
@@ -427,10 +434,10 @@ export async function chatCompletions(c: Context) {
       let currentThoughtIndex = 0;
       let currentAppendPath = '';
       
-      let reasoningBuffer = '';
-      let lastFullContent = '';
-      let targetResponseId: string | null = null;
-      const toolParser = new StreamingToolParser();
+       let reasoningBuffer = '';
+       let lastFullContent = '';
+       let targetResponseId: string | null = null;
+       const toolParser = new StreamingToolParser(bodyAny.tools || []);
 
       let buffer = '';
       let completionTokens = 0;
