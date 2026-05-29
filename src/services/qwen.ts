@@ -82,17 +82,19 @@ export interface QwenPayload {
 
 let cachedModels: any[] | null = null;
 let lastModelsFetch = 0;
-let nativeToolsDisabled = false;
-let disablingNativeToolsInProgress = false;
 
-export async function disableNativeTools(): Promise<void> {
-  if (nativeToolsDisabled || disablingNativeToolsInProgress) {
+const nativeToolsDisabled = new Set<string>();
+const disablingNativeToolsInProgress = new Set<string>();
+
+export async function disableNativeTools(accountId?: string): Promise<void> {
+  const cacheKey = accountId || 'global';
+  if (nativeToolsDisabled.has(cacheKey) || disablingNativeToolsInProgress.has(cacheKey)) {
     return;
   }
-  disablingNativeToolsInProgress = true;
+  disablingNativeToolsInProgress.add(cacheKey);
 
   try {
-    const { headers } = await getQwenHeaders();
+    const { headers } = await getQwenHeaders(false, accountId);
     
     const payload = {
       tools_enabled: {
@@ -108,7 +110,7 @@ export async function disableNativeTools(): Promise<void> {
       }
     };
 
-    console.log('[Qwen] Disabling native tools...');
+    console.log(`[Qwen] Disabling native tools for ${cacheKey}...`);
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 30000);
     const response = await fetch('https://chat.qwen.ai/api/v2/users/user/settings/update', {
@@ -133,25 +135,25 @@ export async function disableNativeTools(): Promise<void> {
 
     if (!response.ok) {
       const text = await response.text();
-      console.error(`[Qwen] Failed to disable native tools: ${response.status} - ${text}`);
+      console.error(`[Qwen] Failed to disable native tools for ${cacheKey}: ${response.status} - ${text}`);
     } else {
-      console.log('[Qwen] Native tools disabled successfully.');
-      nativeToolsDisabled = true;
+      console.log(`[Qwen] Native tools disabled successfully for ${cacheKey}.`);
+      nativeToolsDisabled.add(cacheKey);
     }
   } catch (err: any) {
-    console.error(`[Qwen] Error disabling native tools: ${err.message}`);
+    console.error(`[Qwen] Error disabling native tools for ${cacheKey}: ${err.message}`);
   } finally {
-    disablingNativeToolsInProgress = false;
+    disablingNativeToolsInProgress.delete(cacheKey);
   }
 }
 
-export async function fetchQwenModels(): Promise<any[]> {
+export async function fetchQwenModels(accountId?: string): Promise<any[]> {
   const now = Date.now();
   if (cachedModels && (now - lastModelsFetch < 3600000)) { // 1 hour cache
     return cachedModels;
   }
 
-  const { cookie, userAgent, bxV } = await getBasicHeaders();
+  const { cookie, userAgent, bxV } = await getBasicHeaders(accountId);
   
   const response = await fetch('https://chat.qwen.ai/api/models', {
     headers: {
@@ -180,7 +182,6 @@ export async function fetchQwenModels(): Promise<any[]> {
       owned_by: m.owned_by || 'qwen'
     }));
 
-    // Add -no-thinking versions for models that support thinking
     const extendedModels = [...models];
     for (const m of models) {
       extendedModels.push({
@@ -201,9 +202,10 @@ export async function createQwenStream(
   prompt: string, 
   enableThinking: boolean, 
   modelId: string,
-  forcedParentId?: string | null
-): Promise<{ stream: ReadableStream, headers: Record<string, string>, uiSessionId: string }> {
-  const { headers, chatSessionId, parentMessageId } = await getQwenHeaders(forcedParentId === null);
+  forcedParentId?: string | null,
+  accountId?: string
+): Promise<{ stream: ReadableStream, headers: Record<string, string>, uiSessionId: string, controller: AbortController, accountId: string }> {
+  const { headers, chatSessionId, parentMessageId } = await getQwenHeaders(forcedParentId === null, accountId);
 
   let actualParentId: string | null = parentMessageId;
   
@@ -276,7 +278,7 @@ export async function createQwenStream(
       'sec-fetch-dest': 'empty',
       'sec-fetch-mode': 'cors',
       'sec-fetch-site': 'same-origin',
-      'timezone': new Date().toString().split(' (')[0], // Match closer to browser format
+      'timezone': new Date().toString().split(' (')[0],
       'user-agent': headers['user-agent'],
       'x-accel-buffering': 'no',
       'x-request-id': uuidv4(),
@@ -339,5 +341,5 @@ export async function createQwenStream(
     throw new Error(`Failed to fetch from Qwen: ${response.status} ${response.statusText} - ${errText}`);
   }
 
-  return { stream: response.body, headers, uiSessionId: chatSessionId };
+  return { stream: response.body, headers, uiSessionId: chatSessionId, controller, accountId: accountId ?? 'global' };
 }

@@ -7,8 +7,9 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { robustParseJSON } from '../utils/json.ts';
-import type { ParsedToolCall } from './types.ts';
-import type { FunctionToolDefinition } from './types.ts';
+import { logger } from '../core/logger.js';
+import type { ParsedToolCall } from './types';
+import type { FunctionToolDefinition } from './types';
 
 export interface ParserResult {
   text: string;
@@ -242,7 +243,7 @@ export class StreamingToolParser {
           this.pendingLeadIn = '';
         } else {
           // Recovery failed. Restore lead-in text if no tools were emitted.
-          console.warn('[parser] Dropping unrecoverable unclosed tool call at end of stream');
+          logger.warn('[parser] Dropping unrecoverable unclosed tool call at end of stream');
           if (this.emittedToolCallCount === 0 && this.pendingLeadIn.trim().length > 0) {
             result.text += this.pendingLeadIn;
           }
@@ -289,7 +290,7 @@ export class StreamingToolParser {
     const t = content.trim();
     if (!t) {
       // Empty tool call - malformed. Restore lead-in if possible.
-      console.warn('[parser] Dropping empty tool call block');
+      logger.warn('[parser] Dropping empty tool call block');
       if (this.emittedToolCallCount === 0 && this.pendingLeadIn.trim().length > 0) {
         result.text += this.pendingLeadIn;
       }
@@ -328,28 +329,35 @@ export class StreamingToolParser {
       }
     }
 
-    // 3) Try JSON object format
+    // 3) Try JSON object format (single or multiple)
     if (t.startsWith('{') || t.includes('"name"')) {
-      const tc = this.parseToolContent(t);
-      if (tc) {
-        // Check for tool name from opening tag attribute
-        if (!tc.name || tc.name === '') {
-          const attrName = extractToolName(this.currentOpenTag, t);
-          if (attrName) tc.name = attrName;
+      const tcs = this.parseToolContent(t);
+      if (tcs.length > 0) {
+        for (const tc of tcs) {
+          // Check for tool name from opening tag attribute
+          if (!tc.name || tc.name === '') {
+            const attrName = extractToolName(this.currentOpenTag, t);
+            if (attrName) tc.name = attrName;
+          }
+          if (tc.name) {
+            result.toolCalls.push(tc);
+            this.emittedToolCallCount++;
+          }
         }
-        if (tc.name) {
-          result.toolCalls.push(tc);
-          this.emittedToolCallCount++;
-          this.pendingLeadIn = '';
-          return;
-        }
+        this.pendingLeadIn = '';
+        return;
       }
     }
 
     // 4) Tool call is malformed and unrecoverable.
     // Never leak internal XML to user-visible content.
     // Restore lead-in text if no tools were emitted.
-    console.warn('[parser] Dropping malformed tool call block');
+    logger.warn('[parser] Dropping malformed tool call block', { 
+      contentPreview: t.substring(0, 500), 
+      hasName: t.includes('"name"') || t.includes('"tool"') || t.includes('tool_name'),
+      hasArgs: t.includes('"arguments"') || t.includes('"args"') || t.includes('"parameters"') || t.includes('"input"'),
+      first100Chars: t.substring(0, 100)
+    });
     if (this.emittedToolCallCount === 0 && this.pendingLeadIn.trim().length > 0) {
       result.text += this.pendingLeadIn;
     }
@@ -377,34 +385,56 @@ export class StreamingToolParser {
       };
     }
 
-    // Try JSON
+    // Try JSON (single or multiple)
     const jsonParsed = this.parseToolContent(block);
-    if (jsonParsed) {
+    if (jsonParsed.length > 0) {
+      const first = jsonParsed[0];
       const attrName = extractToolName(this.currentOpenTag, block);
-      if (attrName && !jsonParsed.name) jsonParsed.name = attrName;
-      if (jsonParsed.name) return jsonParsed;
+      if (attrName && !first.name) first.name = attrName;
+      if (first.name) return first;
     }
 
     return null;
   }
 
-  private parseToolContent(str: string): ParsedToolCall | null {
+  private parseToolContent(str: string): ParsedToolCall[] {
+    const calls: ParsedToolCall[] = [];
+    
+    // Try parsing as single JSON first
     try {
       const parsed = robustParseJSON(str);
-      if (!parsed || typeof parsed !== 'object') return null;
-      return this.parseToolCall(parsed);
-    } catch {
-      return null;
+      if (parsed && typeof parsed === 'object') {
+        const tc = this.parseToolCall(parsed);
+        if (tc) calls.push(tc);
+      }
+    } catch {}
+    
+    // Always try line-by-line parsing for multi-JSON content (independent of single parse)
+    if (str.includes('\n')) {
+      const lines = str.split('\n').map(l => l.trim()).filter(l => l.startsWith('{') && l.endsWith('}'));
+      for (const line of lines) {
+        try {
+          const parsed = JSON.parse(line);
+          if (parsed && typeof parsed === 'object') {
+            const tc = this.parseToolCall(parsed);
+            if (tc && !calls.some(c => c.name === tc.name && JSON.stringify(c.arguments) === JSON.stringify(tc.arguments))) {
+              calls.push(tc);
+            }
+          }
+        } catch {}
+      }
     }
+    
+    return calls;
   }
 
   private parseToolCall(parsed: any): ParsedToolCall | null {
     if (!parsed || typeof parsed !== 'object') return null;
     
-    const name = parsed.name || parsed.function?.name;
-    if (!name || typeof name !== 'string') return null;
+    const name = parsed.name || parsed.function?.name || parsed.tool_name || parsed.tool;
+    if (!name || typeof name !== 'string' || name.length === 0) return null;
     
-    let args = parsed.arguments || parsed.function?.arguments || {};
+    let args = parsed.arguments || parsed.function?.arguments || parsed.args || parsed.parameters || parsed.input || {};
     if (typeof args === 'string') {
       try { args = JSON.parse(args); }
       catch { args = {}; }
@@ -412,7 +442,7 @@ export class StreamingToolParser {
     if (typeof args !== 'object' || args === null) args = {};
 
     return {
-      id: `call_${uuidv4()}`,
+      id: parsed.id || parsed.tool_call_id || `call_${uuidv4()}`,
       name,
       arguments: args,
     };

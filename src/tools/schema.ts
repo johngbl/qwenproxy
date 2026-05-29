@@ -4,7 +4,7 @@
  * Strict JSON Schema validator for tool calling
  */
 
-import type { JsonSchema } from './types.ts';
+import type { JsonSchema } from './types';
 
 /**
  * Error thrown when schema validation fails.

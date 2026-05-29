@@ -10,8 +10,8 @@ import type {
   ToolContext,
   ToolHandler,
   ToolRegistration,
-} from './types.ts';
-import { validateAgainstSchema, SchemaValidationError } from './schema.ts';
+} from './types';
+import { validateAgainstSchema, SchemaValidationError } from './schema';
 
 /**
  * Central tool registry. Tools are registered at startup and looked up by name

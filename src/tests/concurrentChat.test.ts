@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert';
 import net from 'node:net';
 import { serve } from '@hono/node-server';
-import { app } from '../index.ts';
+import { app } from '../api/server.js';
 import { initPlaywright, closePlaywright } from '../services/playwright.ts';
 
 function isPortAvailable(port: number): Promise<boolean> {

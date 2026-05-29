@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import net from 'node:net';
 import { serve } from '@hono/node-server';
-import { app } from '../index.ts';
+import { app } from '../api/server.js';
 import { initPlaywright, closePlaywright } from '../services/playwright.ts';
 
 const SANDBOX_DIR = '/tmp/kilo/sandbox';

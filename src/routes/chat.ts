@@ -19,14 +19,20 @@ import { robustParseJSON } from '../utils/json.ts';
 import { StreamingToolParser } from '../tools/parser.ts';
 import { RetryableQwenStreamError } from '../services/qwen.ts';
 import { Mutex } from '../services/playwright.ts';
+import { getModelContextWindow } from '../core/model-registry.js'
+import { truncateMessages, estimateTokenCount } from '../utils/context-truncation.ts';
+import { getNextAccount, getNextAvailableAccount, markAccountRateLimited, getAccountCooldownInfo } from '../core/account-manager.ts';
+import { registerStream, removeStream, getStream } from '../core/stream-registry.ts';
 
-// Global mutex that serializes ALL Qwen chat completions requests.
-// The Qwen web backend is stateful: it only allows one generation at a time
-// per session. Concurrent requests to the same session produce:
-//   "Bad_Request: The chat is in progress!"
-// A single global lock is the safest approach because the proxy currently
-// shares one browser session (and therefore one Qwen auth context).
-const qwenChatMutex = new Mutex();
+const accountMutexes = new Map<string, Mutex>();
+function getAccountMutex(accountId: string): Mutex {
+  let mutex = accountMutexes.get(accountId);
+  if (!mutex) {
+    mutex = new Mutex();
+    accountMutexes.set(accountId, mutex);
+  }
+  return mutex;
+}
 
 export interface DeltaResult {
   delta: string;
@@ -183,7 +189,17 @@ export async function chatCompletions(c: Context) {
       }
     }
 
-    const finalPrompt = systemPrompt ? `${systemPrompt}\n${prompt}` : prompt;
+    const modelId = body.model.replace('-no-thinking', '');
+    const modelContextWindow = getModelContextWindow(modelId)
+    const estimatedTokens = estimateTokenCount(systemPrompt + prompt);
+    
+    let finalPrompt: string;
+    if (estimatedTokens > modelContextWindow - 1000) {
+      const truncated = truncateMessages(messages, modelContextWindow, systemPrompt);
+      finalPrompt = truncated.map(m => `${m.role === 'user' ? 'User' : m.role === 'assistant' ? 'Assistant' : m.role}: ${m.content}`).join('\n\n');
+    } else {
+      finalPrompt = systemPrompt ? `${systemPrompt}\n${prompt}` : prompt;
+    }
 
     const isThinkingModel = !body.model.includes('no-thinking');
     
@@ -191,46 +207,125 @@ export async function chatCompletions(c: Context) {
     // This handles cases where the first request has [System, User] messages.
     const isNewSession = !messages.some(m => m.role === 'assistant');
 
-    // Acquire the global Qwen chat mutex to prevent concurrent generations.
-    // The Qwen backend only allows one active generation per session; without
-    // this lock, parallel requests would race and one would get:
-    //   "Bad_Request: The chat is in progress!"
-    const releaseChatLock = await qwenChatMutex.acquire();
+    // Account selection with fallback on rate-limit/failure
+    let account = getNextAccount();
+    let triedAccountIds = new Set<string>();
+    let lastError: any = null;
 
-    // Retry logic with exponential backoff for "chat is in progress" errors
-    let stream: ReadableStream;
+    let stream: ReadableStream | undefined;
     let uiSessionId = '';
-    let retries = 3;
-    let retryDelay = 500;
-    while (retries > 0) {
-      try {
-        // If it's a new session, force parent_message_id to null
-        const result = await createQwenStream(finalPrompt, isThinkingModel, body.model, isNewSession ? null : undefined);
-        stream = result.stream;
-        uiSessionId = result.uiSessionId;
-        break; // Success
+    let releaseChatLock: (() => void) | undefined;
+
+    while (account) {
+      const accountId = account.id;
+      const accountEmail = account.email;
+
+      if (triedAccountIds.has(accountId)) {
+        account = getNextAvailableAccount(accountId);
+        continue;
+      }
+      triedAccountIds.add(accountId);
+
+      const cooldownInfo = getAccountCooldownInfo(accountId);
+      if (cooldownInfo && accountId !== 'global') {
+        console.log(`[Chat] Skipping account ${accountEmail} (${accountId}) — on cooldown for ${Math.round(cooldownInfo.remainingMs / 1000)}s (${cooldownInfo.reason})`);
+        account = getNextAvailableAccount(accountId);
+        continue;
+      }
+
+      console.log(`[Chat] Routing request to account: ${accountEmail} (${accountId})`);
+
+    const accountMutex = getAccountMutex(accountId);
+    releaseChatLock = await accountMutex.acquire();
+    const completionId = 'chatcmpl-' + uuidv4();
+
+    try {
+        let retries = 3;
+        let retryDelay = 500;
+        let success = false;
+
+        while (retries > 0) {
+          try {
+            const result = await createQwenStream(
+              finalPrompt,
+              isThinkingModel,
+              body.model,
+              isNewSession ? null : undefined,
+              accountId === 'global' ? undefined : accountId
+            );
+            stream = result.stream;
+            uiSessionId = result.uiSessionId;
+            registerStream(completionId, {
+              abortController: result.controller,
+              accountId: result.accountId,
+              uiSessionId: result.uiSessionId,
+              targetResponseId: '',
+              headers: result.headers,
+            });
+            success = true;
+            break;
+          } catch (err: any) {
+            retries--;
+
+            if (err.upstreamCode === 'RateLimited' || err.upstreamStatus === 429) {
+              const hourHint = err.message?.match(/Wait about (\d+) hour/);
+              const cooldownMs = hourHint ? parseInt(hourHint[1]) * 60 * 60 * 1000 : undefined;
+              markAccountRateLimited(accountId, cooldownMs, 'RateLimited');
+              console.warn(`[Chat] Account ${accountEmail} (${accountId}) rate-limited. Marked for cooldown.`);
+              releaseChatLock();
+              releaseChatLock = undefined;
+              lastError = err;
+              break;
+            }
+
+            if (retries === 0) {
+              if (err.upstreamStatus && err.upstreamStatus >= 500) {
+                markAccountRateLimited(accountId, undefined, 'ServerError');
+                console.warn(`[Chat] Account ${accountEmail} (${accountId}) returned server error. Marked for cooldown.`);
+              }
+              releaseChatLock();
+              releaseChatLock = undefined;
+              lastError = err;
+              break;
+            }
+
+            let useDelay = retryDelay;
+            if (err instanceof RetryableQwenStreamError && err.retryAfterMs !== undefined) {
+              useDelay = err.retryAfterMs;
+            }
+            const isRetryable = err instanceof RetryableQwenStreamError || err.message?.includes('in progress') || err.message?.includes('Bad_Request');
+            if (!isRetryable) {
+              releaseChatLock();
+              releaseChatLock = undefined;
+              lastError = err;
+              break;
+            }
+            console.warn(`[Chat] Qwen request failed for ${accountEmail}, retrying in ${useDelay}ms... (${retries} left)`);
+            await new Promise(r => setTimeout(r, useDelay));
+            retryDelay = Math.min(retryDelay * 2, 5000);
+          }
+        }
+
+        if (success) {
+          break;
+        }
+
+        releaseChatLock = undefined;
+        account = getNextAvailableAccount(accountId);
+        continue;
       } catch (err: any) {
-        retries--;
-        if (retries === 0) {
-          releaseChatLock();
-          throw err;
-        }
-        let useDelay = retryDelay;
-        if (err instanceof RetryableQwenStreamError && err.retryAfterMs !== undefined) {
-          useDelay = err.retryAfterMs;
-        }
-        const isRetryable = err instanceof RetryableQwenStreamError || err.message?.includes('in progress') || err.message?.includes('Bad_Request');
-        if (!isRetryable) {
-          releaseChatLock();
-          throw err;
-        }
-        console.warn(`[Chat] Qwen request failed, retrying in ${useDelay}ms... (${retries} left)`);
-        await new Promise(r => setTimeout(r, useDelay));
-        retryDelay = Math.min(retryDelay * 2, 5000);
+        releaseChatLock?.();
+        releaseChatLock = undefined;
+        lastError = err;
+        account = getNextAvailableAccount(accountId);
       }
     }
 
     const completionId = 'chatcmpl-' + uuidv4();
+
+    if (!stream) {
+      throw lastError || new Error('All accounts failed');
+    }
 
     if (!isStream) {
       const reader = stream!.getReader();
@@ -341,7 +436,7 @@ export async function chatCompletions(c: Context) {
 
       const upstreamError = parseQwenErrorPayload(buffer);
       if (upstreamError) {
-        releaseChatLock();
+        releaseChatLock?.();
         return c.json({ error: { message: upstreamError.message } }, upstreamError.status as any);
       }
 
@@ -371,7 +466,7 @@ export async function chatCompletions(c: Context) {
       if (toolCallsOut.length) toolCallsOut.forEach((tc, idx) => tc.index = idx);
       if (toolCallsOut.length) message.tool_calls = toolCallsOut;
 
-      releaseChatLock();
+      releaseChatLock?.();
       return c.json({
         id: completionId,
         object: 'chat.completion',
@@ -650,12 +745,68 @@ export async function chatCompletions(c: Context) {
 
       } finally {
         clearInterval(heartbeatInterval);
-        releaseChatLock();
+        releaseChatLock?.();
       }
     });
   } catch (err: any) {
     console.error('Error in chatCompletions:', err);
     const status = err.upstreamStatus || 500;
     return c.json({ error: { message: err.message } }, status);
+  }
+}
+
+export async function chatCompletionsStop(c: Context) {
+  try {
+    const body = await c.req.json();
+    const { chat_id, response_id } = body;
+
+    if (!chat_id || !response_id) {
+      return c.json({ error: 'chat_id and response_id are required' }, 400);
+    }
+
+    const stream = getStream(chat_id);
+    if (!stream) {
+      return c.json({ error: 'Stream not found' }, 404);
+    }
+
+    if (stream.targetResponseId && stream.targetResponseId !== response_id) {
+      return c.json({ error: 'response_id mismatch' }, 400);
+    }
+
+    const stopResponse = await fetch(`https://chat.qwen.ai/api/v2/chat/completions/stop?chat_id=${chat_id}`, {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'pt-BR,pt;q=0.9',
+        'Content-Type': 'application/json',
+        'Cookie': stream.headers.cookie,
+        'Origin': 'https://chat.qwen.ai',
+        'Referer': `https://chat.qwen.ai/c/${chat_id}`,
+        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': 'same-origin',
+        'User-Agent': stream.headers['user-agent'],
+        'X-Request-Id': uuidv4(),
+        'bx-ua': stream.headers['bx-ua'],
+        'bx-umidtoken': stream.headers['bx-umidtoken'],
+        'bx-v': stream.headers['bx-v'],
+      },
+      body: JSON.stringify({ chat_id, response_id }),
+    });
+
+    if (!stopResponse.ok) {
+      const errorText = await stopResponse.text();
+      console.error(`[Stop] Failed to stop generation for chat_id=${chat_id}: ${stopResponse.status} ${errorText}`);
+      return c.json({ error: 'Failed to stop generation' }, stopResponse.status as any);
+    }
+
+    stream.abortController.abort();
+    removeStream(chat_id);
+
+    console.log(`[Stop] Generation stopped for chat_id=${chat_id}`);
+    return c.json({ success: true });
+  } catch (err: any) {
+    console.error('Error in chatCompletionsStop:', err);
+    return c.json({ error: err.message }, 500);
   }
 }

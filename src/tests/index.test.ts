@@ -5,7 +5,7 @@ process.env.TEST_MOCK_PLAYWRIGHT = 'true';
 // Ensure API_KEY is empty by default for existing tests
 process.env.API_KEY = '';
 
-import { app } from '../index.ts';
+import { app } from '../api/server.js';
 import { initPlaywright, closePlaywright } from '../services/playwright.ts';
 
 test('Health check endpoint returns status ok', async () => {

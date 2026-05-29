@@ -3,7 +3,7 @@ import assert from 'node:assert';
 
 process.env.TEST_MOCK_PLAYWRIGHT = 'true';
 
-import { app } from '../index.ts';
+import { app } from '../api/server.js';
 
 delete process.env.API_KEY;
 
