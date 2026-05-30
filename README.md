@@ -146,19 +146,6 @@ O servidor inicia em `http://localhost:3000` com as seguintes rotas:
 | `/health` | GET | Health check com status do sistema |
 | `/metrics` | GET | Métricas no formato Prometheus |
 
-### Modelos suportados
-
-| Modelo | Context Window |
-|--------|---------------|
-| `qwen-max` | 32K |
-| `qwen-plus` | 128K |
-| `qwen-turbo` | 128K |
-| `qwen-long` | 1M |
-| `qwen-coder` | 128K |
-| `qwen-coder-plus` | 128K |
-
-> Adicione `-no-thinking` ao nome do modelo para desativar o bloco de raciocínio (ex: `qwen-plus-no-thinking`).
-
 ---
 
 ## Exemplos de Integração
