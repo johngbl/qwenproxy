@@ -43,9 +43,17 @@ export class QwenSessionExpiredError extends Error {
 const sessionStates: Record<string, string | null> = (globalThis as any)._sessionStates || {};
 (globalThis as any)._sessionStates = sessionStates;
 
+const SESSION_STATES_MAX = 1000;
+
 export function updateSessionParent(sessionId: string, parentId: string | null) {
   if (sessionId) {
     sessionStates[sessionId] = parentId;
+    const keys = Object.keys(sessionStates);
+    if (keys.length > SESSION_STATES_MAX) {
+      for (let i = 0; i < keys.length - SESSION_STATES_MAX; i++) {
+        delete sessionStates[keys[i]];
+      }
+    }
   }
 }
 
@@ -276,30 +284,34 @@ export async function createQwenStream(
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 120000);
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'accept': 'application/json',
-      'accept-language': 'pt-BR,pt;q=0.9',
-      'content-type': 'application/json',
-      'cookie': headers['cookie'],
-      'origin': 'https://chat.qwen.ai',
-      'referer': chatSessionId ? `https://chat.qwen.ai/c/${chatSessionId}` : 'https://chat.qwen.ai/',
-      'sec-fetch-dest': 'empty',
-      'sec-fetch-mode': 'cors',
-      'sec-fetch-site': 'same-origin',
-      'timezone': new Date().toString().split(' (')[0],
-      'user-agent': headers['user-agent'],
-      'x-accel-buffering': 'no',
-      'x-request-id': uuidv4(),
-      'bx-ua': headers['bx-ua'],
-      'bx-umidtoken': headers['bx-umidtoken'],
-      'bx-v': headers['bx-v']
-    },
-    body: JSON.stringify(payload),
-    signal: controller.signal
-  });
-  clearTimeout(timeoutId);
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'accept': 'application/json',
+        'accept-language': 'pt-BR,pt;q=0.9',
+        'content-type': 'application/json',
+        'cookie': headers['cookie'],
+        'origin': 'https://chat.qwen.ai',
+        'referer': chatSessionId ? `https://chat.qwen.ai/c/${chatSessionId}` : 'https://chat.qwen.ai/',
+        'sec-fetch-dest': 'empty',
+        'sec-fetch-mode': 'cors',
+        'sec-fetch-site': 'same-origin',
+        'timezone': new Date().toString().split(' (')[0],
+        'user-agent': headers['user-agent'],
+        'x-accel-buffering': 'no',
+        'x-request-id': uuidv4(),
+        'bx-ua': headers['bx-ua'],
+        'bx-umidtoken': headers['bx-umidtoken'],
+        'bx-v': headers['bx-v']
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal
+    });
+  } finally {
+    clearTimeout(timeoutId);
+  }
 
   if (!response.ok || !response.body) {
     const errText = await response.text().catch(() => '');
@@ -351,7 +363,8 @@ export async function createQwenStream(
         }
       } catch (parseOrRetryError) {
         if (parseOrRetryError instanceof RetryableQwenStreamError ||
-            parseOrRetryError instanceof QwenUpstreamError) {
+            parseOrRetryError instanceof QwenUpstreamError ||
+            parseOrRetryError instanceof QwenSessionExpiredError) {
           throw parseOrRetryError;
         }
       }

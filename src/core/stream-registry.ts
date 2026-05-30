@@ -20,6 +20,15 @@ export function getStream(key: string): ReturnType<typeof activeStreams.get> {
   return activeStreams.get(key);
 }
 
+export function getStreamBySessionId(sessionId: string): ReturnType<typeof activeStreams.get> {
+  for (const entry of activeStreams.values()) {
+    if (entry.uiSessionId === sessionId) {
+      return entry;
+    }
+  }
+  return undefined;
+}
+
 export function removeStream(key: string): void {
   activeStreams.delete(key);
 }

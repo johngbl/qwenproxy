@@ -116,11 +116,10 @@ export async function getBasicHeaders(accountId?: string): Promise<{ cookie: str
   
   if (!page) throw new Error('Playwright not initialized');
   
-  const cookie = await getCookies(accountId);
-  const userAgent = await page.evaluate(() => navigator.userAgent);
-  
   const cacheKey = accountId || 'global';
   const cache = getAccountHeaderCache(cacheKey);
+  const cookie = await getCookies(accountId);
+  const userAgent = cache.currentHeaders['user-agent'] || await page.evaluate(() => navigator.userAgent);
   const bxV = cache.currentHeaders['bx-v'] || '2.5.36';
   
   return { cookie, userAgent, bxV };
@@ -322,7 +321,6 @@ export async function getQwenHeaders(forceNew = false, accountId?: string, _skip
   const release = await uiMutex.acquire();
   try {
     if (!forceNew && cache.cachedQwenHeaders && (Date.now() - cache.lastHeadersTime < HEADERS_TTL)) {
-      release();
       return cache.cachedQwenHeaders;
     }
     return await _getQwenHeadersInternal(forceNew, accountId);
@@ -415,7 +413,7 @@ async function _getQwenHeadersInternal(forceNew = false, accountId?: string): Pr
     }
   }
 
-  console.log(`[Playwright] Waiting for chat input for ${cacheKey}...`);
+  console.log(`[Playwright] Intercepting headers for ${cacheKey}...`);
   const inputSelector = 'textarea:visible, [contenteditable="true"]:visible';
   await page.waitForSelector(inputSelector, { timeout: 30000 }).catch(() => {
     console.error(`[Playwright] Chat input not found for ${cacheKey}. Current URL:`, page.url());
@@ -425,7 +423,7 @@ async function _getQwenHeadersInternal(forceNew = false, accountId?: string): Pr
   return new Promise((resolve, reject) => {
     const routePattern = '**/api/v2/chat/completions*';
     const timeout = setTimeout(async () => {
-      console.error(`[Playwright] Timeout waiting for Qwen headers for ${cacheKey}. Current URL:`, page.url());
+      console.error(`[Playwright] Timeout waiting for headers for ${cacheKey}. URL:`, page.url());
       try {
         const screenshotPath = path.resolve(`qwen_profiles/error_${cacheKey}.png`);
         await page.screenshot({ path: screenshotPath });
@@ -437,7 +435,6 @@ async function _getQwenHeadersInternal(forceNew = false, accountId?: string): Pr
       reject(new Error(`Timeout waiting for Qwen headers for ${cacheKey}`));
     }, 60000);
 
-    console.log(`[Playwright] Setting up route interception for ${cacheKey}...`);
     const routeHandler = async (route: any, request: any) => {
       clearTimeout(timeout);
       
@@ -497,6 +494,7 @@ async function _getQwenHeadersInternal(forceNew = false, accountId?: string): Pr
         
         console.warn(`[Playwright] Failed to get headers for ${cacheKey}. Delete qwen_profiles/${accountId || 'default'} and restart.`);
         await route.continue();
+        reject(new Error(`Failed to get headers for ${cacheKey}: missing critical headers and re-login failed`));
         return;
       }
 
@@ -519,13 +517,11 @@ async function _getQwenHeadersInternal(forceNew = false, accountId?: string): Pr
     };
 
     page.route(routePattern, routeHandler).then(async () => {
-      console.log(`[Playwright] Triggering request for ${cacheKey}...`);
       const inputSelector = 'textarea:visible, [contenteditable="true"]:visible';
       
       await page.focus(inputSelector);
       await page.fill(inputSelector, '');
       await page.type(inputSelector, 'a', { delay: 100 });
-      console.log(`[Playwright] Typed char for ${cacheKey}, waiting for UI to update...`);
       await sleep(2000);
       
       const selectors = [
@@ -539,7 +535,6 @@ async function _getQwenHeadersInternal(forceNew = false, accountId?: string): Pr
         try {
           const btn = await page.$(selector);
           if (btn && await btn.isVisible()) {
-            console.log(`[Playwright] Attempting click on: ${selector}`);
             
             await page.evaluate((sel) => {
               const element = document.querySelector(sel) as HTMLElement;
@@ -560,10 +555,13 @@ async function _getQwenHeadersInternal(forceNew = false, accountId?: string): Pr
       }
 
       if (!clicked) {
-        console.log(`[Playwright] No send button found/clicked for ${cacheKey}, fallback to Enter...`);
         await page.focus(inputSelector);
         await page.keyboard.press('Enter');
       }
+    }).catch((err) => {
+      console.error(`[Playwright] UI automation failed for ${cacheKey}:`, err.message);
+      clearTimeout(timeout);
+      reject(new Error(`UI automation failed for ${cacheKey}: ${err.message}`));
     });
   });
 }

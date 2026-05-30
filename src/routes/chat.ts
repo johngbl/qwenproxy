@@ -19,7 +19,7 @@ import { Mutex } from '../services/playwright.ts';
 import { getModelContextWindow } from '../core/model-registry.js'
 import { truncateMessages, estimateTokenCount } from '../utils/context-truncation.ts';
 import { getNextAccount, getNextAvailableAccount, markAccountRateLimited, getAccountCooldownInfo } from '../core/account-manager.ts';
-import { registerStream, removeStream, getStream } from '../core/stream-registry.ts';
+import { registerStream, removeStream, getStream, getStreamBySessionId } from '../core/stream-registry.ts';
 
 const accountMutexes = new Map<string, Mutex>();
 function getAccountMutex(accountId: string): Mutex {
@@ -233,10 +233,10 @@ export async function chatCompletions(c: Context) {
 
       console.log(`[Chat] Routing request to account: ${accountEmail} (${accountId})`);
 
-    const accountMutex = getAccountMutex(accountId);
-    releaseChatLock = await accountMutex.acquire();
+      const accountMutex = getAccountMutex(accountId);
+      releaseChatLock = await accountMutex.acquire();
 
-    try {
+      try {
         let retries = 3;
         let retryDelay = 500;
         let success = false;
@@ -343,159 +343,156 @@ export async function chatCompletions(c: Context) {
     }
 
     if (!isStream) {
-      const reader = stream!.getReader();
-      const decoder = new TextDecoder();
+      try {
+        const reader = stream!.getReader();
+        const decoder = new TextDecoder();
 
-      let currentThoughtIndex = 0;
-      let reasoningBuffer = '';
-      let lastFullContent = '';
-      let targetResponseId: string | null = null;
-      const toolParser = new StreamingToolParser(bodyAny.tools || []);
-      const toolCallsOut: any[] = [];
-      let buffer = '';
-      let completionTokens = 0;
-      let promptTokens = Math.ceil(finalPrompt.length / 3.5);
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+        let currentThoughtIndex = 0;
+        let reasoningBuffer = '';
+        let lastFullContent = '';
+        let targetResponseId: string | null = null;
+        const toolParser = new StreamingToolParser(bodyAny.tools || []);
+        const toolCallsOut: any[] = [];
+        let buffer = '';
+        let completionTokens = 0;
+        let promptTokens = Math.ceil(finalPrompt.length / 3.5);
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
 
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
 
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed || !trimmed.startsWith('data: ')) continue;
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed || !trimmed.startsWith('data: ')) continue;
 
-          const dataStr = trimmed.slice(6);
-          if (dataStr === '[DONE]') continue;
+            const dataStr = trimmed.slice(6);
+            if (dataStr === '[DONE]') continue;
 
-          try {
-            const chunk = JSON.parse(dataStr);
+            try {
+              const chunk = JSON.parse(dataStr);
 
-            if (chunk['response.created'] && chunk['response.created'].response_id) {
-              if (!targetResponseId) {
-                targetResponseId = chunk['response.created'].response_id;
-              }
-              updateSessionParent(uiSessionId, chunk['response.created'].response_id);
-            } else if (chunk.response_id && !targetResponseId) {
-              targetResponseId = chunk.response_id;
-              updateSessionParent(uiSessionId, chunk.response_id);
-            }
-
-            if (chunk.usage) {
-              if (chunk.usage.output_tokens) completionTokens = chunk.usage.output_tokens;
-              if (chunk.usage.input_tokens) promptTokens = chunk.usage.input_tokens;
-            }
-
-            let vStr = '';
-            let foundStr = false;
-            let isThinkingChunk = false;
-
-            if (chunk.choices && chunk.choices[0] && chunk.choices[0].delta && 
-                (targetResponseId === null || chunk.response_id === targetResponseId)) {
-              const delta = chunk.choices[0].delta;
-
-              if (delta.phase === 'thinking_summary') {
-                isThinkingChunk = true;
-                if (delta.extra && delta.extra.summary_thought && delta.extra.summary_thought.content) {
-                  const thoughts = delta.extra.summary_thought.content;
-                  if (thoughts.length > currentThoughtIndex) {
-                    vStr = thoughts.slice(currentThoughtIndex).join('\n');
-                    currentThoughtIndex = thoughts.length;
-                    foundStr = true;
-                  }
+              if (chunk['response.created'] && chunk['response.created'].response_id) {
+                if (!targetResponseId) {
+                  targetResponseId = chunk['response.created'].response_id;
                 }
-              } else if (delta.phase === 'answer') {
-                isThinkingChunk = false;
-                if (delta.content !== undefined) {
-                  const newContent = delta.content || '';
-                  const result = getIncrementalDelta(lastFullContent, newContent);
-                  vStr = result.delta;
-                  if (vStr) {
-                    lastFullContent = result.matchedContent;
-                    foundStr = true;
-                  }
-                }
+                updateSessionParent(uiSessionId, chunk['response.created'].response_id);
+              } else if (chunk.response_id && !targetResponseId) {
+                targetResponseId = chunk.response_id;
+                updateSessionParent(uiSessionId, chunk.response_id);
               }
-            }
 
-            if (foundStr && vStr !== '') {
-              if (vStr === 'FINISHED') continue;
-              if (isThinkingChunk) {
-                reasoningBuffer += vStr;
-              } else {
-                const { text, toolCalls } = toolParser.feed(vStr);
-                // text is the lead-in before any tool_call tag.
-                // We skip emitting it here because OpenAI-compatible clients
-                // expect a structured tool_calls message when the assistant
-                // invokes tools. The lead-in is preserved in the parser and
-                // will be recovered only if the tool call fails to parse.
-                for (const tc of toolCalls) {
-                  toolCallsOut.push({
-                    id: tc.id,
-                    type: 'function',
-                    function: {
-                      name: tc.name,
-                      arguments: JSON.stringify(tc.arguments)
+              if (chunk.usage) {
+                if (chunk.usage.output_tokens) completionTokens = chunk.usage.output_tokens;
+                if (chunk.usage.input_tokens) promptTokens = chunk.usage.input_tokens;
+              }
+
+              let vStr = '';
+              let foundStr = false;
+              let isThinkingChunk = false;
+
+              if (chunk.choices && chunk.choices[0] && chunk.choices[0].delta && 
+                  (targetResponseId === null || chunk.response_id === targetResponseId)) {
+                const delta = chunk.choices[0].delta;
+
+                if (delta.phase === 'thinking_summary') {
+                  isThinkingChunk = true;
+                  if (delta.extra && delta.extra.summary_thought && delta.extra.summary_thought.content) {
+                    const thoughts = delta.extra.summary_thought.content;
+                    if (thoughts.length > currentThoughtIndex) {
+                      vStr = thoughts.slice(currentThoughtIndex).join('\n');
+                      currentThoughtIndex = thoughts.length;
+                      foundStr = true;
                     }
-                  });
+                  }
+                } else if (delta.phase === 'answer') {
+                  isThinkingChunk = false;
+                  if (delta.content !== undefined) {
+                    const newContent = delta.content || '';
+                    const result = getIncrementalDelta(lastFullContent, newContent);
+                    vStr = result.delta;
+                    if (vStr) {
+                      lastFullContent = result.matchedContent;
+                      foundStr = true;
+                    }
+                  }
                 }
               }
+
+              if (foundStr && vStr !== '') {
+                if (vStr === 'FINISHED') continue;
+                if (isThinkingChunk) {
+                  reasoningBuffer += vStr;
+                } else {
+                  const { text, toolCalls } = toolParser.feed(vStr);
+                  for (const tc of toolCalls) {
+                    toolCallsOut.push({
+                      id: tc.id,
+                      type: 'function',
+                      function: {
+                        name: tc.name,
+                        arguments: JSON.stringify(tc.arguments)
+                      }
+                    });
+                  }
+                }
+              }
+            } catch (e) {
+              // parse error, ignore partial chunk
             }
-          } catch (e) {
-            // parse error, ignore partial chunk
           }
         }
-      }
 
-      const upstreamError = parseQwenErrorPayload(buffer);
-      if (upstreamError) {
-        releaseChatLock?.();
-        return c.json({ error: { message: upstreamError.message } }, upstreamError.status as any);
-      }
+        const upstreamError = parseQwenErrorPayload(buffer);
+        if (upstreamError) {
+          return c.json({ error: { message: upstreamError.message } }, upstreamError.status as any);
+        }
 
-      const { text: remainingText, toolCalls: remainingToolCalls } = toolParser.flush();
-      if (remainingText) {
-        lastFullContent += remainingText;
-      }
-      for (const tc of remainingToolCalls) {
-        toolCallsOut.push({
-          id: tc.id,
-          type: 'function',
-          function: {
-            name: tc.name,
-            arguments: JSON.stringify(tc.arguments)
-          }
+        const { text: remainingText, toolCalls: remainingToolCalls } = toolParser.flush();
+        if (remainingText) {
+          lastFullContent += remainingText;
+        }
+        for (const tc of remainingToolCalls) {
+          toolCallsOut.push({
+            id: tc.id,
+            type: 'function',
+            function: {
+              name: tc.name,
+              arguments: JSON.stringify(tc.arguments)
+            }
+          });
+        }
+
+        const usage = {
+          prompt_tokens: promptTokens,
+          completion_tokens: completionTokens,
+          total_tokens: promptTokens + completionTokens,
+          prompt_tokens_details: { cached_tokens: 0 }
+        };
+        const message: any = { role: 'assistant', content: toolCallsOut.length ? null : lastFullContent };
+        if (reasoningBuffer) message.reasoning_content = reasoningBuffer;
+        if (toolCallsOut.length) toolCallsOut.forEach((tc, idx) => tc.index = idx);
+        if (toolCallsOut.length) message.tool_calls = toolCallsOut;
+
+        return c.json({
+          id: completionId,
+          object: 'chat.completion',
+          created: Math.floor(Date.now() / 1000),
+          model: body.model,
+          choices: [{
+            index: 0,
+            message,
+            logprobs: null,
+            finish_reason: toolCallsOut.length ? 'tool_calls' : 'stop'
+          }],
+          usage
         });
+      } finally {
+        releaseChatLock?.();
+        removeStream(completionId);
       }
-
-      const usage = {
-        prompt_tokens: promptTokens,
-        completion_tokens: completionTokens,
-        total_tokens: promptTokens + completionTokens,
-        prompt_tokens_details: { cached_tokens: 0 }
-      };
-      const message: any = { role: 'assistant', content: toolCallsOut.length ? null : lastFullContent };
-      if (reasoningBuffer) message.reasoning_content = reasoningBuffer;
-      if (toolCallsOut.length) toolCallsOut.forEach((tc, idx) => tc.index = idx);
-      if (toolCallsOut.length) message.tool_calls = toolCallsOut;
-
-      releaseChatLock?.();
-      removeStream(completionId);
-      return c.json({
-        id: completionId,
-        object: 'chat.completion',
-        created: Math.floor(Date.now() / 1000),
-        model: body.model,
-        choices: [{
-          index: 0,
-          message,
-          logprobs: null,
-          finish_reason: toolCallsOut.length ? 'tool_calls' : 'stop'
-        }],
-        usage
-      });
     }
 
     c.header('Content-Type', 'text/event-stream');
@@ -540,10 +537,7 @@ export async function chatCompletions(c: Context) {
       const reader = stream.getReader();
       const decoder = new TextDecoder();
       
-      let inThinkingState = false;
-      let thinkingFragments: Record<string, boolean> = {};
       let currentThoughtIndex = 0;
-      let currentAppendPath = '';
       
        let reasoningBuffer = '';
        let lastFullContent = '';
@@ -627,7 +621,6 @@ export async function chatCompletions(c: Context) {
               if (vStr === 'FINISHED') continue;
 
               if (isThinkingChunk) {
-                inThinkingState = true;
                 reasoningBuffer += vStr;
                 await writeEvent({
                   id: completionId,
@@ -637,7 +630,6 @@ export async function chatCompletions(c: Context) {
                   choices: [makeChoice({ reasoning_content: vStr })]
                 });
               } else {
-                inThinkingState = false;
                 const { text, toolCalls } = toolParser.feed(vStr);
 
                 if (text) {
@@ -781,7 +773,7 @@ export async function chatCompletionsStop(c: Context) {
       return c.json({ error: 'chat_id and response_id are required' }, 400);
     }
 
-    const stream = getStream(chat_id);
+    const stream = getStreamBySessionId(chat_id) || getStream(chat_id);
     if (!stream) {
       return c.json({ error: 'Stream not found' }, 404);
     }

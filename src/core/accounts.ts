@@ -98,7 +98,7 @@ export function addAccount(email: string, password: string, id?: string): QwenAc
 
   const existing = db.prepare('SELECT id FROM accounts WHERE email = ?').get(email.trim())
   if (existing) {
-    throw new Error(`Account with email ${email} already exists`)
+    throw new Error('Account with this email already exists')
   }
 
   const newAccount: QwenAccount = {
