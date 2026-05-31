@@ -1,3 +1,4 @@
+import crypto from 'crypto'
 import { Hono } from 'hono'
 import { serve } from '@hono/node-server'
 import { config } from '../core/config.js'
@@ -33,7 +34,9 @@ app.use('/v1/*', async (c, next) => {
       return c.json({ error: 'Missing or invalid Authorization header' }, 401)
     }
     const token = auth.slice(7)
-    if (token !== apiKey) {
+    const tokenBuf = Buffer.from(token)
+    const keyBuf = Buffer.from(apiKey)
+    if (tokenBuf.length !== keyBuf.length || !crypto.timingSafeEqual(tokenBuf, keyBuf)) {
       return c.json({ error: 'Invalid API key' }, 401)
     }
   }
