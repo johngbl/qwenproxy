@@ -23,6 +23,7 @@ import { getModelContextWindow } from '../core/model-registry.js'
 import { truncateMessages, estimateTokenCount } from '../utils/context-truncation.ts';
 import { getNextAccount, getNextAvailableAccount, markAccountRateLimited, getAccountCooldownInfo } from '../core/account-manager.ts';
 import { registerStream, removeStream, getStream } from '../core/stream-registry.ts';
+import { metrics } from '../core/metrics.js'
 
 const accountMutexes = new Map<string, Mutex>();
 function getAccountMutex(accountId: string): Mutex {
@@ -215,6 +216,7 @@ export async function chatCompletions(c: Context) {
     let stream: ReadableStream | undefined;
     let uiSessionId = '';
     let releaseChatLock: (() => void) | undefined;
+    const completionId = 'chatcmpl-' + uuidv4();
 
     while (account) {
       const accountId = account.id;
@@ -237,7 +239,6 @@ export async function chatCompletions(c: Context) {
 
     const accountMutex = getAccountMutex(accountId);
     releaseChatLock = await accountMutex.acquire();
-    const completionId = 'chatcmpl-' + uuidv4();
 
     try {
         let retries = 3;
@@ -321,9 +322,8 @@ export async function chatCompletions(c: Context) {
       }
     }
 
-    const completionId = 'chatcmpl-' + uuidv4();
-
     if (!stream) {
+      removeStream(completionId);
       throw lastError || new Error('All accounts failed');
     }
 
@@ -436,6 +436,7 @@ export async function chatCompletions(c: Context) {
 
       const upstreamError = parseQwenErrorPayload(buffer);
       if (upstreamError) {
+        removeStream(completionId);
         releaseChatLock?.();
         return c.json({ error: { message: upstreamError.message } }, upstreamError.status as any);
       }
@@ -466,6 +467,7 @@ export async function chatCompletions(c: Context) {
       if (toolCallsOut.length) toolCallsOut.forEach((tc, idx) => tc.index = idx);
       if (toolCallsOut.length) message.tool_calls = toolCallsOut;
 
+      removeStream(completionId);
       releaseChatLock?.();
       return c.json({
         id: completionId,
@@ -745,13 +747,17 @@ export async function chatCompletions(c: Context) {
 
       } finally {
         clearInterval(heartbeatInterval);
+        removeStream(completionId);
         releaseChatLock?.();
       }
     });
   } catch (err: any) {
-    console.error('Error in chatCompletions:', err);
-    const status = err.upstreamStatus || 500;
-    return c.json({ error: { message: err.message } }, status);
+    console.error('Error in chatCompletions:', err)
+    const status = err.upstreamStatus || 500
+    if (status >= 500) {
+      metrics.increment('requests.errors')
+    }
+    return c.json({ error: { message: err.message } }, status)
   }
 }
 

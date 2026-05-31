@@ -30,13 +30,42 @@ export class QwenUpstreamError extends Error {
   }
 }
 
-const sessionStates: Record<string, string | null> = (globalThis as any)._sessionStates || {};
+interface SessionEntry {
+  parentId: string | null;
+  timestamp: number;
+}
+
+const sessionStates: Map<string, SessionEntry> = (globalThis as any)._sessionStates || new Map();
 (globalThis as any)._sessionStates = sessionStates;
+
+const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+
+function cleanupStaleSessions() {
+  const now = Date.now();
+  for (const [key, entry] of sessionStates.entries()) {
+    if (now - entry.timestamp > SESSION_TTL_MS) {
+      sessionStates.delete(key);
+    }
+  }
+}
 
 export function updateSessionParent(sessionId: string, parentId: string | null) {
   if (sessionId) {
-    sessionStates[sessionId] = parentId;
+    if (sessionStates.size > 10000) {
+      cleanupStaleSessions();
+    }
+    sessionStates.set(sessionId, { parentId, timestamp: Date.now() });
   }
+}
+
+function getSessionParent(sessionId: string): string | null | undefined {
+  const entry = sessionStates.get(sessionId);
+  if (!entry) return undefined;
+  if (Date.now() - entry.timestamp > SESSION_TTL_MS) {
+    sessionStates.delete(sessionId);
+    return undefined;
+  }
+  return entry.parentId;
 }
 
 export interface QwenMessage {
@@ -211,8 +240,11 @@ export async function createQwenStream(
   
   if (forcedParentId !== undefined) {
     actualParentId = forcedParentId;
-  } else if (chatSessionId && sessionStates[chatSessionId] !== undefined) {
-    actualParentId = sessionStates[chatSessionId];
+  } else if (chatSessionId) {
+    const storedParent = getSessionParent(chatSessionId);
+    if (storedParent !== undefined) {
+      actualParentId = storedParent;
+    }
   }
 
   const timestamp = Math.floor(Date.now() / 1000);

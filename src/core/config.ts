@@ -73,7 +73,7 @@ export const config = {
       warningThreshold: parseInt(env.RAM_WARNING),
       criticalThreshold: parseInt(env.RAM_CRITICAL),
     },
-    websocket: {
+    streams: {
       warningThreshold: parseInt(env.WS_WARNING),
       criticalThreshold: parseInt(env.WS_CRITICAL),
     },

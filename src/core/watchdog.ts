@@ -4,7 +4,7 @@ import { metrics } from './metrics.js'
 
 interface HealthStatus {
   ram: 'ok' | 'warning' | 'critical'
-  websocket: 'ok' | 'congested' | 'blocked'
+  streams: 'ok' | 'congested' | 'blocked'
   overall: 'healthy' | 'degraded' | 'unhealthy'
 }
 
@@ -29,7 +29,7 @@ export class Watchdog extends EventEmitter {
   private async performHealthCheck(): Promise<void> {
     const status: HealthStatus = {
       ram: this.checkRAM(),
-      websocket: this.checkWebSocket(),
+      streams: this.checkStreams(),
       overall: 'healthy',
     }
 
@@ -58,10 +58,10 @@ export class Watchdog extends EventEmitter {
     return 'ok'
   }
 
-  private checkWebSocket(): 'ok' | 'congested' | 'blocked' {
+  private checkStreams(): 'ok' | 'congested' | 'blocked' {
     const activeStreams = metrics.get('streams.active')?.value || 0
-    if (activeStreams > config.watchdog.websocket.criticalThreshold) return 'blocked'
-    if (activeStreams > config.watchdog.websocket.warningThreshold) return 'congested'
+    if (activeStreams > config.watchdog.streams.criticalThreshold) return 'blocked'
+    if (activeStreams > config.watchdog.streams.warningThreshold) return 'congested'
     return 'ok'
   }
 
@@ -86,8 +86,8 @@ export class Watchdog extends EventEmitter {
       if (status.ram === 'critical') {
         await this.recoverRAM()
       }
-      if (status.websocket === 'blocked') {
-        await this.recoverWebSocket()
+      if (status.streams === 'blocked') {
+        await this.recoverStreams()
       }
 
       this.emit('recovery:complete')
@@ -106,8 +106,8 @@ export class Watchdog extends EventEmitter {
     this.emit('recovery:ram:freed')
   }
 
-  private async recoverWebSocket(): Promise<void> {
-    this.emit('recovery:websocket:throttled')
+  private async recoverStreams(): Promise<void> {
+    this.emit('recovery:streams:throttled')
   }
 
   stop(): void {
@@ -121,7 +121,7 @@ export class Watchdog extends EventEmitter {
   getStatus(): Promise<HealthStatus> {
     const status: HealthStatus = {
       ram: this.checkRAM(),
-      websocket: this.checkWebSocket(),
+      streams: this.checkStreams(),
       overall: 'healthy',
     }
     status.overall = this.calculateOverall(status)

@@ -17,6 +17,7 @@ let watchdog: Watchdog
 let server: any
 
 app.use('*', async (c, next) => {
+  metrics.increment('requests.total')
   const start = Date.now()
   await next()
   const duration = Date.now() - start
