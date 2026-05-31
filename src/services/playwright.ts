@@ -116,7 +116,7 @@ export async function initPlaywright(headless = true, browserType: BrowserType =
     return;
   }
 
-  const profilePath = path.resolve('qwen_profile');
+  const profilePath = path.resolve('qwen_profiles', '_default');
   
   let browserEngine;
   let channel: string | undefined;

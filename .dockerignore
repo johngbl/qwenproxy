@@ -17,7 +17,6 @@ accounts.json
 accounts.json.bak
 
 # Browser profiles (session data)
-qwen_profile/
 qwen_profiles/
 
 # Logs
