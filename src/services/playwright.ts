@@ -112,6 +112,15 @@ export async function getBasicHeaders(
     return { cookie: "token=mock", userAgent: "mock", bxV: "2.5.36" };
 
   let page = accountId ? accountPages.get(accountId) : activePage;
+
+  // Fallback: if no page found, try the first available account
+  if (!page && accountPages.size > 0) {
+    const firstEntry = accountPages.entries().next().value;
+    if (firstEntry) {
+      page = firstEntry[1];
+    }
+  }
+
   if (accountId && !page) {
     const { getAccountCredentials } = await import("../core/accounts.ts");
     const creds = getAccountCredentials(accountId);
