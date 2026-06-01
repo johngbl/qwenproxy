@@ -13,7 +13,9 @@ RUN npm ci --omit=dev && npm cache clean --force
 COPY . .
 
 # Set permissions and switch to non-root user
-RUN mkdir -p /app/data && chown -R pwuser:pwuser /app
+RUN mkdir -p /app/data /app/qwen_profiles && \
+    chown -R pwuser:pwuser /app/data /app/qwen_profiles && \
+    chmod 755 /app/data /app/qwen_profiles
 USER pwuser
 
 # Declare volume for persistent data (SQLite database)
