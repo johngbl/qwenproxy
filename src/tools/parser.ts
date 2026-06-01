@@ -105,9 +105,10 @@ function parseXmlParameterToolCall(
   const args: Record<string, unknown> = {};
   const parameterRe =
     /<parameter\b[^>]*\bname\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/parameter>/gi;
-  let match: RegExpExecArray | null;
-  while ((match = parameterRe.exec(block)) !== null) {
+  let match: RegExpExecArray | null = parameterRe.exec(block);
+  while (match !== null) {
     args[match[1]] = coerceParameterValue(match[2]);
+    match = parameterRe.exec(block);
   }
 
   if (Object.keys(args).length === 0) return null;
@@ -133,11 +134,12 @@ function parseRecoverableXmlToolCall(
   // First, extract all properly closed parameters
   const closedParameterRe =
     /<parameter\b[^>]*\bname\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/parameter>/gi;
-  let match: RegExpExecArray | null;
+  let match: RegExpExecArray | null = closedParameterRe.exec(block);
   let lastClosedEnd = 0;
-  while ((match = closedParameterRe.exec(block)) !== null) {
+  while (match !== null) {
     args[match[1]] = coerceParameterValue(match[2]);
     lastClosedEnd = closedParameterRe.lastIndex;
+    match = closedParameterRe.exec(block);
   }
 
   // Then look for an unclosed parameter at the tail
