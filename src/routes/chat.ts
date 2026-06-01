@@ -15,12 +15,11 @@ import {
   createQwenStream,
   updateSessionParent,
   QwenSessionExpiredError,
-  clearSessionState,
   clearAllSessionsForAccount,
+  RetryableQwenStreamError,
 } from "../services/qwen.ts";
 import { OpenAIRequest } from "../utils/types.ts";
 import { StreamingToolParser } from "../tools/parser.ts";
-import { RetryableQwenStreamError } from "../services/qwen.ts";
 import { Mutex } from "../services/playwright.ts";
 import { getModelContextWindow } from "../core/model-registry.js";
 import {
@@ -41,11 +40,7 @@ import {
   updateStreamTargetResponseId,
 } from "../core/stream-registry.ts";
 import { metrics } from "../core/metrics.js";
-import {
-  logger,
-  isToolcallDebugEnabled,
-  isToolcallErrorDebugEnabled,
-} from "../core/logger.js";
+import { logger, isToolcallDebugEnabled } from "../core/logger.js";
 
 const accountMutexes = new Map<string, Mutex>();
 function getAccountMutex(accountId: string): Mutex {

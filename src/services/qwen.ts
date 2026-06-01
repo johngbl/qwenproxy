@@ -72,13 +72,6 @@ export function updateSessionParent(
   }
 }
 
-export function clearSessionState(sessionId: string): void {
-  if (sessionId) {
-    sessionStates.delete(sessionId);
-    console.log(`[Qwen] Session state cleared for ${sessionId}`);
-  }
-}
-
 export function clearAllSessionsForAccount(accountId: string): void {
   // Clear all sessions that might be associated with this account
   // Since we don't store accountId in session, clear all stale sessions
