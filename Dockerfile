@@ -13,13 +13,11 @@ RUN npm ci --omit=dev && npm cache clean --force
 COPY . .
 
 # Set permissions and switch to non-root user
-RUN mkdir -p /app/data /app/qwen_profiles && \
-    chown -R pwuser:pwuser /app/data /app/qwen_profiles && \
-    chmod 755 /app/data /app/qwen_profiles
+RUN mkdir -p /app/data /app/qwen_profiles && chown -R pwuser:pwuser /app
 USER pwuser
 
-# Declare volume for persistent data (SQLite database)
-VOLUME ["/app/data"]
+# Declare volumes for persistent data
+VOLUME ["/app/data", "/app/qwen_profiles"]
 
 EXPOSE 3000
 ENV NODE_ENV=production PORT=3000
