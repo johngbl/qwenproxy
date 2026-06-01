@@ -90,6 +90,7 @@ jobs:
         with:
           context: .
           push: true
+          platforms: linux/amd64,linux/arm64
           tags: |
             pedrofariasx/qwenproxy:latest
             pedrofariasx/qwenproxy:${{ github.sha }}
