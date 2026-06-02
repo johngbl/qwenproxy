@@ -502,9 +502,6 @@ async function _getQwenHeadersInternal(
   ) {
     await page.goto("https://chat.qwen.ai/", { waitUntil: "domcontentloaded" });
   } else if (hasCachedHeaders) {
-    console.log(
-      `[Playwright] Using cached headers for ${cacheKey} (age: ${Math.round((Date.now() - cache.lastHeadersTime) / 1000)}s)`,
-    );
     return cache.cachedQwenHeaders!;
   }
 
