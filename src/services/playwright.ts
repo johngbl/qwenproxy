@@ -46,6 +46,7 @@ interface AccountHeaderCache {
   } | null;
   lastHeadersTime: number;
   refreshTimeout: NodeJS.Timeout | null;
+  refreshInProgress: boolean;
 }
 
 const accountHeaderCaches = new Map<string, AccountHeaderCache>();
@@ -58,6 +59,7 @@ function getAccountHeaderCache(accountId: string): AccountHeaderCache {
       cachedQwenHeaders: null,
       lastHeadersTime: 0,
       refreshTimeout: null,
+      refreshInProgress: false,
     };
     accountHeaderCaches.set(accountId, cache);
   }
@@ -274,7 +276,11 @@ export async function closePlaywright() {
     }
   }
   if (context) {
-    await context.close();
+    try {
+      await context.close();
+    } catch {
+      // Browser context may already be closed
+    }
     context = null;
     activePage = null;
   }
@@ -473,6 +479,19 @@ async function _getQwenHeadersInternal(
     return cache.cachedQwenHeaders;
   }
 
+  // Prevent concurrent header refreshes
+  if (cache.refreshInProgress) {
+    // Wait for the in-progress refresh to complete (max 30s)
+    for (let i = 0; i < 300; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      if (!cache.refreshInProgress && cache.cachedQwenHeaders) {
+        return cache.cachedQwenHeaders;
+      }
+    }
+    // If still in progress after 30s, proceed anyway
+  }
+  cache.refreshInProgress = true;
+
   if (accountId && !accountPages.has(accountId)) {
     const { getAccountCredentials } = await import("../core/accounts.ts");
     const creds = getAccountCredentials(accountId);
@@ -502,9 +521,6 @@ async function _getQwenHeadersInternal(
   ) {
     await page.goto("https://chat.qwen.ai/", { waitUntil: "domcontentloaded" });
   } else if (hasCachedHeaders) {
-    console.log(
-      `[Playwright] Using cached headers for ${cacheKey} (age: ${Math.round((Date.now() - cache.lastHeadersTime) / 1000)}s)`,
-    );
     return cache.cachedQwenHeaders!;
   }
 
@@ -585,6 +601,7 @@ async function _getQwenHeadersInternal(
         );
       }
       await page.unroute(routePattern).catch(() => {});
+      cache.refreshInProgress = false;
       reject(new Error(`Timeout waiting for Qwen headers for ${cacheKey}`));
     }, 60000);
 
@@ -653,6 +670,7 @@ async function _getQwenHeadersInternal(
         console.warn(
           `[Playwright] Failed to get headers for ${cacheKey}. Delete qwen_profiles/${accountId || "default"} and restart.`,
         );
+        cache.refreshInProgress = false;
         await route.continue();
         reject(
           new Error(
@@ -676,6 +694,8 @@ async function _getQwenHeadersInternal(
         clearTimeout(cache.refreshTimeout);
         cache.refreshTimeout = null;
       }
+
+      cache.refreshInProgress = false;
 
       await route.abort("aborted");
 
@@ -737,6 +757,7 @@ async function _getQwenHeadersInternal(
           `[Playwright] UI automation failed for ${cacheKey}:`,
           err.message,
         );
+        cache.refreshInProgress = false;
         clearTimeout(timeout);
         reject(
           new Error(`UI automation failed for ${cacheKey}: ${err.message}`),
@@ -847,7 +868,11 @@ export async function extractAccountInfoFromContext(
 export async function closePlaywrightForAccount(accountId: string) {
   const acctContext = accountContexts.get(accountId);
   if (acctContext) {
-    await acctContext.close();
+    try {
+      await acctContext.close();
+    } catch {
+      // Browser context may already be closed
+    }
     accountContexts.delete(accountId);
     accountPages.delete(accountId);
   }

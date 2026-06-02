@@ -341,16 +341,6 @@ export async function chatCompletions(c: Context) {
           logger.debug("[chat] forced tool_choice", { forcedTool });
         }
       }
-
-      // Anti-hallucination rules
-      systemPrompt +=
-        "ANTI-HALLUCINATION RULES:\n" +
-        "- NEVER describe tool usage as plain text (e.g. 'tool: Edited', 'I edited the file', 'File created').\n" +
-        "- NEVER fake tool results. NEVER write 'Tool Response:' or pretend a tool returned something.\n" +
-        "- You MUST use <tool_call> tags or the tool will NOT be executed.\n" +
-        "- Tools ONLY work through <tool_call> tags. There is no other way to use tools.\n" +
-        "- If you cannot use a tool, explain why. Never pretend the action was done.\n" +
-        "- After using a tool, WAIT for the tool response. Do not assume the result.\n\n";
     }
 
     const modelId = body.model.replace("-no-thinking", "");
@@ -394,6 +384,12 @@ export async function chatCompletions(c: Context) {
 
     // Account selection with fallback on rate-limit/failure
     let account = getNextAccount();
+
+    // In mock/test mode, create a dummy account if none configured
+    if (!account && process.env.TEST_MOCK_PLAYWRIGHT) {
+      account = { id: "mock-account", email: "mock@test.com", password: "" };
+    }
+
     let triedAccountIds = new Set<string>();
     let lastError: any = null;
 

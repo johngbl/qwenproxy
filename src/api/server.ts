@@ -7,23 +7,21 @@ import { MemoryCache } from "../cache/memory-cache.js";
 import { Watchdog } from "../core/watchdog.js";
 import { app as modelsApp } from "./models.js";
 import { chatCompletions, chatCompletionsStop } from "../routes/chat.js";
-import { uploadFile } from "../routes/upload.ts";
+import { uploadFile } from "../routes/upload.js";
 
-const app = new Hono();
-app.route("", modelsApp);
-app.post("/v1/chat/completions", chatCompletions);
-app.post("/v1/chat/completions/stop", chatCompletionsStop);
-app.post("/v1/upload", uploadFile);
-
+// Module-level state (initialized in startServer)
 let cache: MemoryCache;
 let watchdog: Watchdog;
 let server: any;
+
+const app = new Hono();
 
 // Module-level accessor for cross-module cache access
 export function getCache(): MemoryCache {
   return cache;
 }
 
+// Middleware must be registered BEFORE routes
 app.use("*", async (c, next) => {
   metrics.increment("requests.total");
   const start = Date.now();
@@ -52,6 +50,12 @@ app.use("/v1/*", async (c, next) => {
   }
   await next();
 });
+
+// Routes
+app.route("", modelsApp);
+app.post("/v1/chat/completions", chatCompletions);
+app.post("/v1/chat/completions/stop", chatCompletionsStop);
+app.post("/v1/upload", uploadFile);
 
 app.get("/health", async (c) => {
   const status = await watchdog?.getStatus();
@@ -127,7 +131,7 @@ export async function startServer(): Promise<void> {
     watchdog.stop();
     metrics.stopCollection();
     await cache.close();
-    const { closePlaywright } = await import("../services/playwright.js");
+    const { closePlaywright } = await import("../services/playwright.ts");
     await closePlaywright();
     const { closeDatabase } = await import("../core/database.ts");
     closeDatabase();
