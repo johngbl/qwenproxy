@@ -108,13 +108,6 @@ export class Logger {
       );
     }
   }
-
-  child(context: string): Logger {
-    return new Logger(
-      this.minLevel,
-      this.context ? `${this.context}.${context}` : context,
-    );
-  }
 }
 
 // Determine initial log level from environment

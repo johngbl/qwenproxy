@@ -203,6 +203,55 @@ test("Chat Completions returns explicit error for non-SSE upstream JSON errors",
   }
 });
 
+test("Chat Completions returns explicit error for stream=true upstream JSON errors", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input: any) => {
+    const url = typeof input === "string" ? input : input.url;
+    if (url.includes("/api/v2/chat/completions")) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          data: {
+            code: "RateLimited",
+            details: "You've reached the upper limit for today's usage.",
+            num: 3,
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    return originalFetch(input);
+  };
+
+  await initPlaywright(false);
+
+  try {
+    const req = new Request("http://localhost/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "qwen3.6-plus",
+        messages: [{ role: "user", content: "hello" }],
+        stream: true,
+      }),
+    });
+
+    const res = await app.fetch(req);
+    assert.strictEqual(res.status, 429);
+    assert.ok(
+      res.headers.get("Content-Type")?.includes("application/json"),
+      "stream=true upstream JSON errors must stay JSON errors",
+    );
+
+    const body = await res.json();
+    assert.match(body.error.message, /Qwen upstream error: RateLimited/);
+    assert.match(body.error.message, /upper limit/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await closePlaywright();
+  }
+});
+
 test("Chat Completions returns a JSON chat.completion object for non-streaming requests", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input: any) => {

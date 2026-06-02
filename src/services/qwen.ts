@@ -41,6 +41,7 @@ export class QwenSessionExpiredError extends Error {
 }
 
 interface SessionEntry {
+  accountId: string;
   parentId: string | null;
   timestamp: number;
 }
@@ -63,33 +64,46 @@ function cleanupStaleSessions() {
 export function updateSessionParent(
   sessionId: string,
   parentId: string | null,
+  accountId?: string,
 ) {
-  if (sessionId) {
-    if (sessionStates.size > 10000) {
-      cleanupStaleSessions();
-    }
-    sessionStates.set(sessionId, { parentId, timestamp: Date.now() });
+  if (!sessionId) return;
+
+  if (sessionStates.size > 10000) {
+    cleanupStaleSessions();
   }
+
+  const existing = sessionStates.get(sessionId);
+  sessionStates.set(sessionId, {
+    accountId: accountId || existing?.accountId || "global",
+    parentId,
+    timestamp: Date.now(),
+  });
 }
 
 export function clearAllSessionsForAccount(accountId: string): void {
-  // Clear all sessions that might be associated with this account
-  // Since we don't store accountId in session, clear all stale sessions
-  const now = Date.now();
+  let removed = 0;
+
   for (const [key, entry] of sessionStates.entries()) {
-    if (now - entry.timestamp > 60000) {
-      // Clear sessions older than 1 minute
+    if (entry.accountId === accountId) {
       sessionStates.delete(key);
+      removed++;
     }
   }
-  console.log(`[Qwen] Cleared stale sessions for account ${accountId}`);
+
+  console.log(`[Qwen] Cleared ${removed} session(s) for account ${accountId}`);
 }
 
-function getSessionParent(sessionId: string): string | null | undefined {
+function getSessionParent(
+  sessionId: string,
+  accountId?: string,
+): string | null | undefined {
   const entry = sessionStates.get(sessionId);
   if (!entry) return undefined;
   if (Date.now() - entry.timestamp > SESSION_TTL_MS) {
     sessionStates.delete(sessionId);
+    return undefined;
+  }
+  if (accountId && entry.accountId !== accountId) {
     return undefined;
   }
   return entry.parentId;
@@ -136,7 +150,17 @@ export interface QwenPayload {
   timestamp: number;
 }
 
-let cachedModels: any[] | null = null;
+interface PublicQwenModel {
+  id: string;
+  name: string;
+  object: "model";
+  owned_by: string;
+  created: number;
+  context_window?: number;
+  capabilities?: any;
+}
+
+let cachedModels: PublicQwenModel[] | null = null;
 let lastModelsFetch = 0;
 
 const nativeToolsDisabled = new Set<string>();
@@ -212,7 +236,24 @@ export async function disableNativeTools(accountId?: string): Promise<void> {
   }
 }
 
-export async function fetchQwenModels(accountId?: string): Promise<any[]> {
+function formatPublicQwenModel(
+  model: any,
+  noThinking = false,
+): PublicQwenModel {
+  return {
+    id: noThinking ? `${model.id}-no-thinking` : model.id,
+    name: noThinking ? `${model.name} (No Thinking)` : model.name,
+    object: "model",
+    owned_by: model.owned_by || "qwen",
+    created: model.info?.created_at || Date.now(),
+    context_window: model.info?.meta?.max_context_length,
+    capabilities: model.info?.meta?.capabilities,
+  };
+}
+
+export async function fetchQwenModels(
+  accountId?: string,
+): Promise<PublicQwenModel[]> {
   const now = Date.now();
   if (cachedModels && now - lastModelsFetch < 3600000) {
     // 1 hour cache
@@ -243,24 +284,14 @@ export async function fetchQwenModels(accountId?: string): Promise<any[]> {
 
   const json = await response.json();
   if (json.data && Array.isArray(json.data)) {
-    const models = json.data.map((m: any) => ({
-      id: m.id,
-      object: "model",
-      created: m.info?.created_at || Math.floor(Date.now() / 1000),
-      owned_by: m.owned_by || "qwen",
-    }));
+    const models = json.data.flatMap((model: any) => [
+      formatPublicQwenModel(model),
+      formatPublicQwenModel(model, true),
+    ]);
 
-    const extendedModels = [...models];
-    for (const m of models) {
-      extendedModels.push({
-        ...m,
-        id: `${m.id}-no-thinking`,
-      });
-    }
-
-    cachedModels = extendedModels;
+    cachedModels = models;
     lastModelsFetch = now;
-    return extendedModels;
+    return models;
   }
 
   return [];
@@ -289,8 +320,11 @@ export async function createQwenStream(
   controller: AbortController;
   accountId: string;
 }> {
+  // A new logical chat session should reuse the warmed header cache when available.
+  // Header recapture is much more expensive and should be reserved for real refresh/login cases,
+  // not for ordinary first prompts that simply need parent_id reset.
   const { headers, chatSessionId, parentMessageId } = await getQwenHeaders(
-    forcedParentId === null,
+    false,
     accountId,
   );
 
@@ -299,7 +333,7 @@ export async function createQwenStream(
   if (forcedParentId !== undefined) {
     actualParentId = forcedParentId;
   } else if (chatSessionId) {
-    const storedParent = getSessionParent(chatSessionId);
+    const storedParent = getSessionParent(chatSessionId, accountId ?? "global");
     if (storedParent !== undefined) {
       actualParentId = storedParent;
     }
