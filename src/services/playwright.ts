@@ -276,7 +276,11 @@ export async function closePlaywright() {
     }
   }
   if (context) {
-    await context.close();
+    try {
+      await context.close();
+    } catch {
+      // Browser context may already be closed
+    }
     context = null;
     activePage = null;
   }
@@ -864,7 +868,11 @@ export async function extractAccountInfoFromContext(
 export async function closePlaywrightForAccount(accountId: string) {
   const acctContext = accountContexts.get(accountId);
   if (acctContext) {
-    await acctContext.close();
+    try {
+      await acctContext.close();
+    } catch {
+      // Browser context may already be closed
+    }
     accountContexts.delete(accountId);
     accountPages.delete(accountId);
   }

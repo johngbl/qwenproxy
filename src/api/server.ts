@@ -10,15 +10,8 @@ import { chatCompletions, chatCompletionsStop } from "../routes/chat.js";
 import { uploadFile } from "../routes/upload.ts";
 
 const app = new Hono();
-app.route("", modelsApp);
-app.post("/v1/chat/completions", chatCompletions);
-app.post("/v1/chat/completions/stop", chatCompletionsStop);
-app.post("/v1/upload", uploadFile);
 
-let cache: MemoryCache;
-let watchdog: Watchdog;
-let server: any;
-
+// Middleware must be registered BEFORE routes
 app.use("*", async (c, next) => {
   metrics.increment("requests.total");
   const start = Date.now();
@@ -47,6 +40,16 @@ app.use("/v1/*", async (c, next) => {
   }
   await next();
 });
+
+// Routes
+app.route("", modelsApp);
+app.post("/v1/chat/completions", chatCompletions);
+app.post("/v1/chat/completions/stop", chatCompletionsStop);
+app.post("/v1/upload", uploadFile);
+
+let cache: MemoryCache;
+let watchdog: Watchdog;
+let server: any;
 
 app.get("/health", async (c) => {
   const status = await watchdog?.getStatus();

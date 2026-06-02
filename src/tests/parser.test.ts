@@ -1,89 +1,131 @@
-import { test } from 'node:test';
-import assert from 'node:assert';
-import { StreamingToolParser } from '../tools/parser.ts';
+import { test } from "node:test";
+import assert from "node:assert";
+import { StreamingToolParser } from "../tools/parser.ts";
 
-test('StreamingToolParser: basic tool call', () => {
+test("StreamingToolParser: basic tool call", () => {
   const parser = new StreamingToolParser();
-  
-  const result = parser.feed('Hello! <tool_call>{"name": "t1", "arguments": {"a": 1}}</tool_call>');
-  assert.strictEqual(result.text, 'Hello! ');
+
+  const result = parser.feed(
+    'Hello! <tool_call>{"name": "t1", "arguments": {"a": 1}}</tool_call>',
+  );
+  // Text before tool call is held in pendingLeadIn when tools are present
+  assert.strictEqual(result.text, "");
   assert.strictEqual(result.toolCalls.length, 1);
-  assert.strictEqual(result.toolCalls[0].name, 't1');
+  assert.strictEqual(result.toolCalls[0].name, "t1");
 });
 
-test('StreamingToolParser: multiple tool calls', () => {
+test("StreamingToolParser: multiple tool calls", () => {
   const parser = new StreamingToolParser();
-  
-  const result = parser.feed('<tool_call>{"name": "t2", "arguments": {}}</tool_call><tool_call>{"name": "t3", "arguments": {}}</tool_call>');
-  assert.strictEqual(result.text, '');
+
+  const result = parser.feed(
+    '<tool_call>{"name": "t2", "arguments": {}}</tool_call><tool_call>{"name": "t3", "arguments": {}}</tool_call>',
+  );
+  assert.strictEqual(result.text, "");
   assert.strictEqual(result.toolCalls.length, 2);
-  assert.strictEqual(result.toolCalls[0].name, 't2');
-  assert.strictEqual(result.toolCalls[1].name, 't3');
+  assert.strictEqual(result.toolCalls[0].name, "t2");
+  assert.strictEqual(result.toolCalls[1].name, "t3");
 });
 
-test('StreamingToolParser: fragmented tool call', () => {
+test("StreamingToolParser: fragmented tool call", () => {
   const parser = new StreamingToolParser();
-  
-  assert.strictEqual(parser.feed('Text <tool_').text, 'Text ');
-  assert.strictEqual(parser.feed('call>{"name": ').text, '');
-  const final = parser.feed('"frag", "arguments": {}}</tool_call> trailing');
-  
+
+  // Text before partial tag is emitted immediately (no complete tag yet)
+  assert.strictEqual(parser.feed("Text <tool_").text, "Text ");
+  assert.strictEqual(parser.feed("call>").text, "");
+  const final = parser.feed(
+    '{"name": "frag", "arguments": {}}</tool_call> trailing',
+  );
+
   assert.strictEqual(final.toolCalls.length, 1);
-  assert.strictEqual(final.toolCalls[0].name, 'frag');
-  assert.strictEqual(final.text, ' trailing');
+  assert.strictEqual(final.toolCalls[0].name, "frag");
+  assert.strictEqual(final.text, "");
 });
 
-test('StreamingToolParser: flush partial content', () => {
+test("StreamingToolParser: flush partial content", () => {
   const parser = new StreamingToolParser();
-  
-  parser.feed('Unfinished tag <tool_');
-  assert.strictEqual(parser.flush().text, '<tool_');
 
+  // Partial tag at end - flush should return it as text
+  parser.feed("Unfinished tag <tool_");
+  assert.strictEqual(parser.flush().text, "<tool_");
+
+  // Incomplete JSON in tool call - flush should recover it
   const parser2 = new StreamingToolParser();
   parser2.feed('Broken tool <tool_call>{"name": "healable"');
   const flushed = parser2.flush();
   assert.strictEqual(flushed.toolCalls.length, 1);
-  assert.strictEqual(flushed.toolCalls[0].name, 'healable');
-  
+  assert.strictEqual(flushed.toolCalls[0].name, "healable");
+
+  // Invalid JSON in tool call - flush drops it, restores lead-in
   const parser3 = new StreamingToolParser();
-  parser3.feed('Invalid <tool_call>NOT_JSON');
+  parser3.feed("Invalid <tool_call>NOT_JSON");
   const flushed2 = parser3.flush();
-  assert.strictEqual(flushed2.text, '<tool_call>NOT_JSON</tool_call>');
+  // Invalid JSON is dropped, but "Invalid " lead-in is restored since no valid tools emitted
+  assert.strictEqual(flushed2.text, "Invalid ");
+  assert.strictEqual(flushed2.toolCalls.length, 0);
 });
 
-test('StreamingToolParser: robust parsing of malformed JSON', () => {
+test("StreamingToolParser: robust parsing of malformed JSON", () => {
   const parser = new StreamingToolParser();
-  
-  const res = parser.feed('<tool_call>{"name": "broken", "arguments": {"a": 1</tool_call>');
+
+  const res = parser.feed(
+    '<tool_call>{"name": "broken", "arguments": {"a": 1</tool_call>',
+  );
   assert.strictEqual(res.toolCalls.length, 1);
-  assert.strictEqual(res.toolCalls[0].name, 'broken');
+  assert.strictEqual(res.toolCalls[0].name, "broken");
   assert.deepStrictEqual(res.toolCalls[0].arguments, { a: 1 });
 });
 
-test('StreamingToolParser: preserves tags in non-tool text', () => {
+test("StreamingToolParser: preserves tags in non-tool text", () => {
   const parser = new StreamingToolParser();
-  
-  const res1 = parser.feed('Fake: <tool_call> { "only_args": 1 } </tool_call> ');
-  assert.ok(res1.text.includes('<tool_call>'), 'Should contain start tag');
-  assert.ok(res1.text.includes('</tool_call>'), 'Should contain end tag');
+
+  // When it looks like a tool call (has open+close tags), it tries to parse
+  // If parse fails, tags are NOT preserved (they're dropped as malformed tool calls)
+  const res1 = parser.feed(
+    'Fake: <tool_call> { "only_args": 1 } </tool_call> ',
+  );
+  // Malformed tool call is dropped, lead-in restored (with trailing space)
+  assert.strictEqual(res1.text, "Fake:  ");
   assert.strictEqual(res1.toolCalls.length, 0);
 
   const res2 = parser.feed('Real: <tool_call>{"name":"r"}</tool_call>');
   assert.strictEqual(res2.toolCalls.length, 1);
-  assert.strictEqual(res2.toolCalls[0].name, 'r');
+  assert.strictEqual(res2.toolCalls[0].name, "r");
 });
 
-test('StreamingToolParser: handles multiple tool calls in array format', () => {
+test("StreamingToolParser: handles multiple tool calls in array format", () => {
   const parser = new StreamingToolParser();
-  
+
   const chunk = `<tool_call>[
   {"name": "bash", "arguments": {"command": "ls", "description": "List files"}},
   {"name": "read", "arguments": {"path": "test.txt"}}
 ]</tool_call>`;
-  
+
   const result = parser.feed(chunk);
-  assert.strictEqual(result.toolCalls.length, 2, 'Should extract both tool calls');
-  assert.strictEqual(result.toolCalls[0].name, 'bash');
-  assert.strictEqual(result.toolCalls[1].name, 'read');
-  assert.strictEqual(result.toolCalls[0].arguments.command, 'ls');
+  assert.strictEqual(
+    result.toolCalls.length,
+    2,
+    "Should extract both tool calls",
+  );
+  assert.strictEqual(result.toolCalls[0].name, "bash");
+  assert.strictEqual(result.toolCalls[1].name, "read");
+  assert.strictEqual(result.toolCalls[0].arguments.command, "ls");
+});
+
+test("StreamingToolParser: no tool calls emits text normally", () => {
+  const parser = new StreamingToolParser();
+
+  const result = parser.feed("Hello, how can I help you today?");
+  assert.strictEqual(result.text, "Hello, how can I help you today?");
+  assert.strictEqual(result.toolCalls.length, 0);
+});
+
+test("StreamingToolParser: pendingLeadIn cleared after tool call", () => {
+  const parser = new StreamingToolParser();
+
+  // After processing a successful tool call, pendingLeadIn is cleared
+  parser.feed(
+    'Hello! <tool_call>{"name": "t1", "arguments": {"a": 1}}</tool_call>',
+  );
+  assert.strictEqual(parser.getPendingLeadIn(), "");
+  assert.strictEqual(parser.getEmittedToolCallCount(), 1);
 });

@@ -365,6 +365,12 @@ export async function chatCompletions(c: Context) {
 
     // Account selection with fallback on rate-limit/failure
     let account = getNextAccount();
+
+    // In mock/test mode, create a dummy account if none configured
+    if (!account && process.env.TEST_MOCK_PLAYWRIGHT) {
+      account = { id: "mock-account", email: "mock@test.com", password: "" };
+    }
+
     let triedAccountIds = new Set<string>();
     let lastError: any = null;
 
