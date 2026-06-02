@@ -267,12 +267,22 @@ export async function fetchQwenModels(accountId?: string): Promise<any[]> {
   return [];
 }
 
+export interface QwenFileEntry {
+  type: string;
+  file: any;
+  id: string;
+  url: string;
+  name: string;
+  [key: string]: any;
+}
+
 export async function createQwenStream(
   prompt: string,
   enableThinking: boolean,
   modelId: string,
   forcedParentId?: string | null,
   accountId?: string,
+  files?: QwenFileEntry[],
 ): Promise<{
   stream: ReadableStream;
   headers: Record<string, string>;
@@ -316,7 +326,7 @@ export async function createQwenStream(
         role: "user",
         content: prompt,
         user_action: "chat",
-        files: [],
+        files: files || [],
         timestamp: timestamp,
         models: [model],
         chat_type: "t2t",

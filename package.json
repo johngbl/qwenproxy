@@ -20,6 +20,7 @@
   "license": "ISC",
   "dependencies": {
     "@hono/node-server": "^2.0.4",
+    "ali-oss": "^6.23.0",
     "better-sqlite3": "^12.10.0",
     "dotenv": "^17.4.2",
     "hono": "^4.12.23",

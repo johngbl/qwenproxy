@@ -105,11 +105,21 @@ export async function getCookies(accountId?: string): Promise<string> {
   return cookies.map((c) => `${c.name}=${c.value}`).join("; ");
 }
 
-export async function getBasicHeaders(
-  accountId?: string,
-): Promise<{ cookie: string; userAgent: string; bxV: string }> {
+export async function getBasicHeaders(accountId?: string): Promise<{
+  cookie: string;
+  userAgent: string;
+  bxV: string;
+  bxUa: string;
+  bxUmidtoken: string;
+}> {
   if (process.env.TEST_MOCK_PLAYWRIGHT)
-    return { cookie: "token=mock", userAgent: "mock", bxV: "2.5.36" };
+    return {
+      cookie: "token=mock",
+      userAgent: "mock",
+      bxV: "2.5.36",
+      bxUa: "",
+      bxUmidtoken: "",
+    };
 
   let page = accountId ? accountPages.get(accountId) : activePage;
 
@@ -132,15 +142,33 @@ export async function getBasicHeaders(
 
   if (!page) throw new Error("Playwright not initialized");
 
-  const cacheKey = accountId || "global";
+  // Find the correct cache key for this page
+  let cacheKey = accountId || "global";
+  if (!accountId) {
+    // In multi-account mode, find which account this page belongs to
+    for (const [id, p] of accountPages.entries()) {
+      if (p === page) {
+        cacheKey = id;
+        break;
+      }
+    }
+  }
+
   const cache = getAccountHeaderCache(cacheKey);
-  const cookie = await getCookies(accountId);
+  // Get cookies from the correct page (not accountId)
+  const cookie = page
+    ? (await page.context().cookies())
+        .map((c) => `${c.name}=${c.value}`)
+        .join("; ")
+    : "";
   const userAgent =
     cache.currentHeaders["user-agent"] ||
     (await page.evaluate(() => navigator.userAgent));
   const bxV = cache.currentHeaders["bx-v"] || "2.5.36";
+  const bxUa = cache.currentHeaders["bx-ua"] || "";
+  const bxUmidtoken = cache.currentHeaders["bx-umidtoken"] || "";
 
-  return { cookie, userAgent, bxV };
+  return { cookie, userAgent, bxV, bxUa, bxUmidtoken };
 }
 
 export async function initPlaywright(

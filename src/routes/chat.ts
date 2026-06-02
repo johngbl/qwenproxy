@@ -22,6 +22,7 @@ import { OpenAIRequest } from "../utils/types.ts";
 import { StreamingToolParser } from "../tools/parser.ts";
 import { Mutex } from "../services/playwright.ts";
 import { getModelContextWindow } from "../core/model-registry.js";
+import { processImagesForQwen, QwenFileEntry } from "./upload.ts";
 import {
   truncateMessages,
   estimateTokenCount,
@@ -149,14 +150,57 @@ export async function chatCompletions(c: Context) {
     let prompt = "";
     const messages = body.messages || [];
     let systemPrompt = "";
+    const allFiles: QwenFileEntry[] = [];
+
+    // Get headers for image upload
+    let uploadHeaders: Record<string, string> | null = null;
 
     for (let i = 0; i < messages.length; i++) {
       const msg = messages[i];
       let contentStr = "";
       if (Array.isArray(msg.content)) {
-        contentStr = msg.content
-          .map((c: any) => c.text || JSON.stringify(c))
-          .join("\n");
+        // Handle multimodal content (text + images)
+        const imageParts = msg.content.filter(
+          (p: any) => p.type === "image_url" && p.image_url?.url,
+        );
+
+        if (imageParts.length > 0) {
+          // Process images for Qwen format
+          try {
+            if (!uploadHeaders) {
+              const { getBasicHeaders } =
+                await import("../services/playwright.ts");
+              const { cookie, userAgent, bxV, bxUa, bxUmidtoken } =
+                await getBasicHeaders();
+              uploadHeaders = {
+                cookie,
+                "user-agent": userAgent,
+                "bx-ua": bxUa,
+                "bx-umidtoken": bxUmidtoken,
+                "bx-v": bxV,
+              };
+            }
+            const { text, files } = await processImagesForQwen(
+              msg.content,
+              uploadHeaders,
+            );
+            contentStr = text;
+            allFiles.push(...files);
+          } catch (err: any) {
+            console.error("[Chat] Failed to process images:", err.message);
+            // Fallback to text-only
+            contentStr = msg.content
+              .filter((p: any) => p.type === "text")
+              .map((p: any) => p.text)
+              .join("\n");
+          }
+        } else {
+          // No images, just extract text
+          contentStr = msg.content
+            .filter((p: any) => p.type === "text")
+            .map((p: any) => p.text)
+            .join("\n");
+        }
       } else if (typeof msg.content === "object" && msg.content !== null) {
         contentStr = JSON.stringify(msg.content);
       } else {
@@ -391,6 +435,7 @@ export async function chatCompletions(c: Context) {
               body.model,
               isNewSession ? null : undefined,
               accountId === "global" ? undefined : accountId,
+              allFiles.length > 0 ? allFiles : undefined,
             );
             stream = result.stream;
             uiSessionId = result.uiSessionId;
