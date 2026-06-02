@@ -19,6 +19,11 @@ let cache: MemoryCache;
 let watchdog: Watchdog;
 let server: any;
 
+// Module-level accessor for cross-module cache access
+export function getCache(): MemoryCache {
+  return cache;
+}
+
 app.use("*", async (c, next) => {
   metrics.increment("requests.total");
   const start = Date.now();

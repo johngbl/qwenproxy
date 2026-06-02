@@ -13,6 +13,15 @@ const envSchema = z.object({
   CHAT_TIMEOUT: z.string().default('120000'),
   CACHE_TTL: z.string().default('3600'),
   RESPONSE_TTL: z.string().default('1800'),
+  CACHE_COMPRESSION_ENABLED: z.string().default('true'),
+  CACHE_COMPRESSION_THRESHOLD: z.string().default('1024'),
+  CACHE_COMPRESSION_LEVEL: z.string().default('6'),
+  TOPIC_DETECTION_ENABLED: z.string().default('true'),
+  TOPIC_DETECTION_CONFIDENCE: z.string().default('0.7'),
+  CONTEXT_SUMMARIZATION_ENABLED: z.string().default('true'),
+  CONTEXT_SUMMARIZATION_MODEL: z.string().default('qwen3.5-flash'),
+  CONTEXT_SUMMARIZATION_TIMEOUT: z.string().default('15000'),
+  CONTEXT_MIN_MESSAGES_TO_KEEP: z.string().default('4'),
   METRICS_INTERVAL: z.string().default('10000'),
   WATCHDOG_INTERVAL: z.string().default('5000'),
   WATCHDOG_FAILURES: z.string().default('3'),
@@ -62,6 +71,23 @@ export const config = {
   cache: {
     defaultTTL: parseInt(env.CACHE_TTL),
     responseTTL: parseInt(env.RESPONSE_TTL),
+    compression: {
+      enabled: env.CACHE_COMPRESSION_ENABLED !== 'false',
+      threshold: parseInt(env.CACHE_COMPRESSION_THRESHOLD),
+      level: parseInt(env.CACHE_COMPRESSION_LEVEL),
+    },
+  },
+  topicDetection: {
+    enabled: env.TOPIC_DETECTION_ENABLED !== 'false',
+    confidence: parseFloat(env.TOPIC_DETECTION_CONFIDENCE),
+  },
+  context: {
+    summarization: {
+      enabled: env.CONTEXT_SUMMARIZATION_ENABLED !== 'false',
+      model: env.CONTEXT_SUMMARIZATION_MODEL,
+      timeout: parseInt(env.CONTEXT_SUMMARIZATION_TIMEOUT),
+    },
+    minMessagesToKeep: parseInt(env.CONTEXT_MIN_MESSAGES_TO_KEEP),
   },
   metrics: {
     interval: parseInt(env.METRICS_INTERVAL),

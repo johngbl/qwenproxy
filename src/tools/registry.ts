@@ -12,6 +12,7 @@ import type {
   ToolRegistration,
 } from "./types";
 import { validateAgainstSchema, SchemaValidationError } from "./schema";
+import { lintToolDefinition } from "./linter.js";
 import {
   logger,
   isToolcallDebugEnabled,
@@ -44,6 +45,9 @@ export class ToolRegistry {
     if (this.tools.has(name)) {
       throw new Error(`Tool '${name}' is already registered`);
     }
+
+    // Validate tool definition structure before storing (testing)
+    lintToolDefinition(name, description, parameters);
 
     // If strict mode, ensure the schema enforces additionalProperties: false
     const enforcedParams = strict

@@ -2,6 +2,7 @@ services:
   qwenproxy:
     build: .
     container_name: qwenproxy
+    user: "root" 
     ports:
       - "${PORT:-3000}:3000"
     env_file:
