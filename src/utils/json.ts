@@ -12,6 +12,7 @@ function sanitizeAndBalance(input: string): {
   result: string;
   openBraces: number;
   openBrackets: number;
+  recoveredUnclosedString: boolean;
 } {
   let out = "";
   let openBraces = 0;
@@ -68,7 +69,17 @@ function sanitizeAndBalance(input: string): {
       if (char === "]") openBrackets--;
     }
   }
-  return { result: out, openBraces, openBrackets };
+  
+  let recoveredUnclosedString = false;
+  if (escaped) {
+    out += "\\";
+  }
+  if (inString) {
+    out += '"';
+    recoveredUnclosedString = true;
+  }
+  
+  return { result: out, openBraces, openBrackets, recoveredUnclosedString };
 }
 
 function closeBraces(
@@ -166,7 +177,15 @@ export function robustParseJSON(str: string): any {
     result: fixedJson,
     openBraces,
     openBrackets,
+    recoveredUnclosedString,
   } = sanitizeAndBalance(cleaned);
+  
+  if (isDebug && recoveredUnclosedString) {
+    logger.debug("[json] robustParseJSON: recovered unclosed string at end of input", {
+      originalPreview: cleaned.substring(0, 150),
+    });
+  }
+  
   let lastBalancedIndex = -1;
 
   {
@@ -245,7 +264,15 @@ export function robustParseJSON(str: string): any {
       result: aggFixed,
       openBraces: ob,
       openBrackets: bk,
+      recoveredUnclosedString: aggRecovered,
     } = sanitizeAndBalance(aggressive);
+    
+    if (isDebug && aggRecovered) {
+      logger.debug("[json] robustParseJSON: aggressive recovery of unclosed string", {
+        originalPreview: aggressive.substring(0, 150),
+      });
+    }
+    
     try {
       const result = JSON.parse(closeBraces(aggFixed, ob, bk));
       if (isDebug) {

@@ -29,12 +29,30 @@ export function getStream(key: string): ReturnType<typeof activeStreams.get> {
   return activeStreams.get(key);
 }
 
-export function getStreamBySessionId(
-  sessionId: string,
-): ReturnType<typeof activeStreams.get> {
-  for (const entry of activeStreams.values()) {
+export function getStreamKeysBySessionId(sessionId: string): string[] {
+  const keys: string[] = [];
+  for (const [key, entry] of activeStreams.entries()) {
     if (entry.uiSessionId === sessionId) {
-      return entry;
+      keys.push(key);
+    }
+  }
+  return keys;
+}
+
+export function getStreamKeyBySessionId(sessionId: string): string | undefined {
+  return getStreamKeysBySessionId(sessionId)[0];
+}
+
+export function getStreamKeyBySessionAndResponse(
+  sessionId: string,
+  responseId: string,
+): string | undefined {
+  for (const [key, entry] of activeStreams.entries()) {
+    if (
+      entry.uiSessionId === sessionId &&
+      entry.targetResponseId === responseId
+    ) {
+      return key;
     }
   }
   return undefined;
@@ -53,15 +71,4 @@ export function updateStreamTargetResponseId(
   if (entry) {
     entry.targetResponseId = targetResponseId;
   }
-}
-
-export function abortStream(key: string): boolean {
-  const entry = activeStreams.get(key);
-  if (entry) {
-    entry.abortController.abort();
-    activeStreams.delete(key);
-    metrics.gauge("streams.active", activeStreams.size);
-    return true;
-  }
-  return false;
 }

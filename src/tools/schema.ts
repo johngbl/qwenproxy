@@ -5,9 +5,6 @@
  */
 
 import type { JsonSchema } from "./types";
-import { logger } from "../core/logger.js";
-
-const isDebug = process.env.TOOLCALL_DEBUG === "1";
 
 /**
  * Error thrown when schema validation fails.

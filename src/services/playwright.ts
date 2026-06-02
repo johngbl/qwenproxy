@@ -51,6 +51,26 @@ interface AccountHeaderCache {
 
 const accountHeaderCaches = new Map<string, AccountHeaderCache>();
 
+function resetAccountHeaderCache(cache: AccountHeaderCache): void {
+  if (cache.refreshTimeout) {
+    clearTimeout(cache.refreshTimeout);
+  }
+
+  cache.currentHeaders = {};
+  cache.cachedQwenHeaders = null;
+  cache.lastHeadersTime = 0;
+  cache.refreshTimeout = null;
+  cache.refreshInProgress = false;
+}
+
+export function clearAccountHeaderCache(accountId: string): void {
+  const cache = accountHeaderCaches.get(accountId);
+  if (!cache) return;
+
+  resetAccountHeaderCache(cache);
+  accountHeaderCaches.delete(accountId);
+}
+
 function getAccountHeaderCache(accountId: string): AccountHeaderCache {
   let cache = accountHeaderCaches.get(accountId);
   if (!cache) {
@@ -97,7 +117,16 @@ export class Mutex {
   }
 }
 
-const uiMutex = new Mutex();
+const headerMutexes = new Map<string, Mutex>();
+
+function getHeaderMutex(cacheKey: string): Mutex {
+  let mutex = headerMutexes.get(cacheKey);
+  if (!mutex) {
+    mutex = new Mutex();
+    headerMutexes.set(cacheKey, mutex);
+  }
+  return mutex;
+}
 
 export async function getCookies(accountId?: string): Promise<string> {
   if (process.env.TEST_MOCK_PLAYWRIGHT) return "token=mock";
@@ -192,6 +221,7 @@ export async function initPlaywright(
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
     ignoreDefaultArgs: ["--enable-automation"],
     args: ["--disable-blink-features=AutomationControlled"],
+    serviceWorkers: "block",
   });
 
   await context.addInitScript(() => {
@@ -270,11 +300,10 @@ async function attemptAutoLogin(): Promise<void> {
 export async function closePlaywright() {
   if (process.env.TEST_MOCK_PLAYWRIGHT) return;
   for (const cache of accountHeaderCaches.values()) {
-    if (cache.refreshTimeout) {
-      clearTimeout(cache.refreshTimeout);
-      cache.refreshTimeout = null;
-    }
+    resetAccountHeaderCache(cache);
   }
+  accountHeaderCaches.clear();
+  headerMutexes.clear();
   if (context) {
     try {
       await context.close();
@@ -424,7 +453,7 @@ export async function getQwenHeaders(
     return await _getQwenHeadersInternal(forceNew, accountId);
   }
 
-  const release = await uiMutex.acquire();
+  const release = await getHeaderMutex(cacheKey).acquire();
   try {
     if (
       !forceNew &&
@@ -479,6 +508,16 @@ async function _getQwenHeadersInternal(
     return cache.cachedQwenHeaders;
   }
 
+  if (forceNew) {
+    if (cache.refreshTimeout) {
+      clearTimeout(cache.refreshTimeout);
+      cache.refreshTimeout = null;
+    }
+    cache.currentHeaders = {};
+    cache.cachedQwenHeaders = null;
+    cache.lastHeadersTime = 0;
+  }
+
   // Prevent concurrent header refreshes
   if (cache.refreshInProgress) {
     // Wait for the in-progress refresh to complete (max 30s)
@@ -492,278 +531,393 @@ async function _getQwenHeadersInternal(
   }
   cache.refreshInProgress = true;
 
-  if (accountId && !accountPages.has(accountId)) {
-    const { getAccountCredentials } = await import("../core/accounts.ts");
-    const creds = getAccountCredentials(accountId);
-    if (creds) {
-      await initPlaywrightForAccount(creds, config.browser.headless);
-    }
-  }
-
-  const page = accountId ? accountPages.get(accountId) : activePage;
-  if (!page) {
-    throw new Error(`Playwright not initialized for account: ${cacheKey}`);
-  }
-
-  const currentUrl = page.url();
-  const isOnQwen = currentUrl.includes("chat.qwen.ai");
-  const isOnSpecificChat = isOnQwen && /\/c\//.test(currentUrl);
-  const hasCachedHeaders =
-    cache.cachedQwenHeaders &&
-    Object.keys(cache.currentHeaders).length > 0 &&
-    cache.currentHeaders["bx-ua"];
-
-  // Only navigate if: not on Qwen, forced refresh, or on specific chat WITHOUT cached headers
-  if (
-    !isOnQwen ||
-    (forceNew && !hasCachedHeaders) ||
-    (isOnSpecificChat && !hasCachedHeaders)
-  ) {
-    await page.goto("https://chat.qwen.ai/", { waitUntil: "domcontentloaded" });
-  } else if (hasCachedHeaders) {
-    return cache.cachedQwenHeaders!;
-  }
-
-  const isLoginPage =
-    page.url().includes("login") ||
-    (await page.$('input[type="email"], input[placeholder*="Email"]'));
-  if (isLoginPage) {
-    if (!accountId) {
-      const email = process.env.QWEN_EMAIL;
-      const password = process.env.QWEN_PASSWORD;
-
-      if (email && password) {
-        console.log(
-          "[Playwright] Detected login page. Attempting automated login...",
-        );
-        try {
-          const loggedIn = await loginToQwen(email, password);
-          if (!loggedIn) {
-            throw new Error("loginToQwen returned false");
-          }
-          console.log("[Playwright] Automated login successful.");
-        } catch (err: any) {
-          console.error("[Playwright] Automated login failed:", err.message);
-        }
-      } else {
-        console.warn(
-          "[Playwright] Detected login page but QWEN_EMAIL/PASSWORD not provided in .env",
-        );
-      }
-    } else {
+  try {
+    if (accountId && !accountPages.has(accountId)) {
       const { getAccountCredentials } = await import("../core/accounts.ts");
       const creds = getAccountCredentials(accountId);
-      if (creds && creds.email && creds.password) {
-        console.log(
-          `[Playwright] Detected login page for account ${creds.email}. Attempting login...`,
-        );
-        const acctContext = accountContexts.get(accountId);
-        if (acctContext) {
-          await loginToQwenWithContext(
-            acctContext,
-            page,
-            creds.email,
-            creds.password,
+      if (creds) {
+        await initPlaywrightForAccount(creds, config.browser.headless);
+      }
+    }
+
+    const page = accountId ? accountPages.get(accountId) : activePage;
+    if (!page) {
+      throw new Error(`Playwright not initialized for account: ${cacheKey}`);
+    }
+
+    const currentUrl = page.url();
+    const isOnQwen = currentUrl.includes("chat.qwen.ai");
+    const isOnSpecificChat = isOnQwen && /\/c\//.test(currentUrl);
+    const hasCachedHeaders =
+      cache.cachedQwenHeaders &&
+      Object.keys(cache.currentHeaders).length > 0 &&
+      cache.currentHeaders["bx-ua"];
+
+    // Only reuse cached headers when not forcing a new Qwen session.
+    if (forceNew) {
+      await page.goto("https://chat.qwen.ai/", {
+        waitUntil: "domcontentloaded",
+      });
+    } else if (!isOnQwen || (isOnSpecificChat && !hasCachedHeaders)) {
+      await page.goto("https://chat.qwen.ai/", {
+        waitUntil: "domcontentloaded",
+      });
+    } else if (hasCachedHeaders) {
+      cache.refreshInProgress = false;
+      return cache.cachedQwenHeaders!;
+    }
+
+    const isLoginPage =
+      page.url().includes("login") ||
+      (await page.$('input[type="email"], input[placeholder*="Email"]'));
+    if (isLoginPage) {
+      if (!accountId) {
+        const email = process.env.QWEN_EMAIL;
+        const password = process.env.QWEN_PASSWORD;
+
+        if (email && password) {
+          console.log(
+            "[Playwright] Detected login page. Attempting automated login...",
           );
+          try {
+            const loggedIn = await loginToQwen(email, password);
+            if (!loggedIn) {
+              throw new Error("loginToQwen returned false");
+            }
+            console.log("[Playwright] Automated login successful.");
+          } catch (err: any) {
+            console.error("[Playwright] Automated login failed:", err.message);
+          }
+        } else {
+          console.warn(
+            "[Playwright] Detected login page but QWEN_EMAIL/PASSWORD not provided in .env",
+          );
+        }
+      } else {
+        const { getAccountCredentials } = await import("../core/accounts.ts");
+        const creds = getAccountCredentials(accountId);
+        if (creds && creds.email && creds.password) {
+          console.log(
+            `[Playwright] Detected login page for account ${creds.email}. Attempting login...`,
+          );
+          const acctContext = accountContexts.get(accountId);
+          if (acctContext) {
+            await loginToQwenWithContext(
+              acctContext,
+              page,
+              creds.email,
+              creds.password,
+            );
+          }
         }
       }
     }
-  }
 
-  const inputSelector = 'textarea:visible, [contenteditable="true"]:visible';
-  await page.waitForSelector(inputSelector, { timeout: 30000 }).catch(() => {
-    console.error(
-      `[Playwright] Chat input not found for ${cacheKey}. Current URL:`,
-      page.url(),
-    );
-    throw new Error(
-      `Timeout waiting for chat input for ${cacheKey}. Are you logged in?`,
-    );
-  });
-
-  return new Promise((resolve, reject) => {
-    const routePattern = "**/api/v2/chat/completions*";
-    const timeout = setTimeout(async () => {
+    const inputSelector = 'textarea:visible, [contenteditable="true"]:visible';
+    await page.waitForSelector(inputSelector, { timeout: 30000 }).catch(() => {
       console.error(
-        `[Playwright] Timeout waiting for headers for ${cacheKey}. URL:`,
+        `[Playwright] Chat input not found for ${cacheKey}. Current URL:`,
         page.url(),
       );
-      try {
-        const screenshotPath = path.resolve(
-          `qwen_profiles/error_${cacheKey}.png`,
-        );
-        await page.screenshot({ path: screenshotPath });
-        console.log(`[Playwright] Error screenshot saved to ${screenshotPath}`);
-      } catch (err: any) {
+      throw new Error(
+        `Timeout waiting for chat input for ${cacheKey}. Are you logged in?`,
+      );
+    });
+
+    return await new Promise((resolve, reject) => {
+      const routePattern = "**/api/v2/chat/completions*";
+      let requestIntercepted = false;
+      let captureMethod: "direct-click" | "enter-fallback" = "direct-click";
+      let resolveRequestIntercepted!: () => void;
+      const requestInterceptedPromise = new Promise<void>((resolve) => {
+        resolveRequestIntercepted = resolve;
+      });
+      const timeout = setTimeout(async () => {
         console.error(
-          "[Playwright] Failed to save error screenshot:",
-          err.message,
+          `[Playwright] Timeout waiting for headers for ${cacheKey}. URL:`,
+          page.url(),
         );
-      }
-      await page.unroute(routePattern).catch(() => {});
-      cache.refreshInProgress = false;
-      reject(new Error(`Timeout waiting for Qwen headers for ${cacheKey}`));
-    }, 60000);
-
-    const routeHandler = async (route: any, request: any) => {
-      clearTimeout(timeout);
-
-      const reqHeaders = request.headers();
-      let uiSessionId = "";
-      let uiParentMessageId: string | null = null;
-
-      const postData = request.postData();
-      if (postData) {
         try {
-          const payload = JSON.parse(postData);
-          if (payload.chat_id) {
-            uiSessionId = payload.chat_id;
-          }
-          if (payload.parent_id !== undefined) {
-            uiParentMessageId = payload.parent_id;
-          }
-        } catch (e) {}
-      }
+          const composerState = await page.evaluate(() => {
+            const textarea = document.querySelector(
+              "textarea.message-input-textarea",
+            ) as HTMLTextAreaElement | null;
+            return {
+              inputValue: textarea?.value || "",
+              hasSendButton: !!document.querySelector(
+                ".message-input-right-button-send .send-button, .message-input-right-button-send button, .chat-prompt-send-button, button.send-button",
+              ),
+              hasOmniButton: !!document.querySelector(
+                ".message-input-right-button-send .omni-button-content-btn",
+              ),
+            };
+          });
+          console.error(
+            `[Playwright] Composer state for ${cacheKey}:`,
+            composerState,
+          );
+        } catch {}
+        try {
+          const screenshotPath = path.resolve(
+            `qwen_profiles/error_${cacheKey}.png`,
+          );
+          await page.screenshot({ path: screenshotPath });
+          console.log(
+            `[Playwright] Error screenshot saved to ${screenshotPath}`,
+          );
+        } catch (err: any) {
+          console.error(
+            "[Playwright] Failed to save error screenshot:",
+            err.message,
+          );
+        }
+        await page.unroute(routePattern).catch(() => {});
+        cache.refreshInProgress = false;
+        reject(new Error(`Timeout waiting for Qwen headers for ${cacheKey}`));
+      }, 60000);
 
-      const extractedHeaders = {
-        cookie: reqHeaders["cookie"] || "",
-        "bx-ua": reqHeaders["bx-ua"] || "",
-        "bx-umidtoken": reqHeaders["bx-umidtoken"] || "",
-        "bx-v": reqHeaders["bx-v"] || "",
-        "x-request-id": reqHeaders["x-request-id"] || "",
-        "user-agent": reqHeaders["user-agent"] || "",
-      };
-
-      if (!extractedHeaders.cookie || !extractedHeaders["bx-ua"]) {
-        console.warn(`[Playwright] Missing critical headers for ${cacheKey}:`, {
-          hasCookie: !!extractedHeaders.cookie,
-          hasBxUa: !!extractedHeaders["bx-ua"],
-          url: request.url(),
-          method: request.method(),
-        });
-
-        if (accountId) {
-          const { getAccountCredentials } = await import("../core/accounts.ts");
-          const creds = getAccountCredentials(accountId);
-          if (creds && creds.email && creds.password) {
-            const acctContext = accountContexts.get(accountId);
-            if (acctContext) {
-              const loginSuccess = await loginToQwenWithContext(
-                acctContext,
-                page,
-                creds.email,
-                creds.password,
-              );
-              if (loginSuccess) {
-                console.log(
-                  `[Playwright] Re-login successful for ${cacheKey}, retrying...`,
-                );
-                await route.abort("aborted");
-                await page.unroute(routePattern, routeHandler);
-                resolve(await getQwenHeaders(true, accountId, true));
-                return;
-              }
-            }
-          }
+      const waitForRequestIntercepted = async (
+        timeoutMs: number,
+      ): Promise<boolean> => {
+        if (requestIntercepted) {
+          return true;
         }
 
-        console.warn(
-          `[Playwright] Failed to get headers for ${cacheKey}. Delete qwen_profiles/${accountId || "default"} and restart.`,
-        );
-        cache.refreshInProgress = false;
-        await route.continue();
-        reject(
-          new Error(
-            `Failed to get headers for ${cacheKey}: missing critical headers and re-login failed`,
-          ),
-        );
-        return;
-      }
+        const startedAt = Date.now();
+        while (Date.now() - startedAt < timeoutMs) {
+          if (requestIntercepted) {
+            return true;
+          }
 
-      console.log(
-        `[Playwright] Successfully intercepted headers for ${cacheKey}.`,
-      );
-      cache.currentHeaders = extractedHeaders;
-      cache.cachedQwenHeaders = {
-        headers: extractedHeaders,
-        chatSessionId: uiSessionId,
-        parentMessageId: uiParentMessageId,
+          const remainingMs = timeoutMs - (Date.now() - startedAt);
+          await Promise.race([
+            requestInterceptedPromise,
+            sleep(Math.min(100, Math.max(1, remainingMs))),
+          ]);
+        }
+
+        return requestIntercepted;
       };
-      cache.lastHeadersTime = Date.now();
-      if (cache.refreshTimeout) {
-        clearTimeout(cache.refreshTimeout);
-        cache.refreshTimeout = null;
-      }
 
-      cache.refreshInProgress = false;
+      const waitForSendButtonReady = async (
+        timeoutMs: number,
+      ): Promise<boolean> => {
+        const startedAt = Date.now();
 
-      await route.abort("aborted");
+        while (Date.now() - startedAt < timeoutMs) {
+          const ready = await page
+            .evaluate(() => {
+              const textarea = document.querySelector(
+                "textarea.message-input-textarea",
+              ) as HTMLTextAreaElement | null;
+              const inputValue = textarea?.value?.trim() || "";
+              const sendButton = document.querySelector(
+                ".message-input-right-button-send button.send-button, .message-input-right-button-send button, button.send-button",
+              ) as HTMLButtonElement | null;
 
-      await page.unroute(routePattern, routeHandler);
+              return !!inputValue && !!sendButton && !sendButton.disabled;
+            })
+            .catch(() => false);
 
-      resolve(cache.cachedQwenHeaders);
-    };
+          if (ready) {
+            return true;
+          }
 
-    page
-      .route(routePattern, routeHandler)
-      .then(async () => {
-        const inputSelector =
-          'textarea:visible, [contenteditable="true"]:visible';
+          await sleep(100);
+        }
 
-        await page.focus(inputSelector);
-        await page.fill(inputSelector, "");
-        await page.type(inputSelector, "a", { delay: 100 });
-        await sleep(2000);
+        return false;
+      };
 
+      const clickSendButton = async (): Promise<boolean> => {
         const selectors = [
-          ".message-input-right-button-send .send-button",
-          ".chat-prompt-send-button",
+          ".message-input-right-button-send button.send-button",
+          ".message-input-right-button-send button",
           "button.send-button",
+          ".chat-prompt-send-button button",
         ];
 
-        let clicked = false;
         for (const selector of selectors) {
           try {
-            const btn = await page.$(selector);
-            if (btn && (await btn.isVisible())) {
-              await page.evaluate((sel) => {
-                const element = document.querySelector(sel) as HTMLElement;
-                if (element) {
-                  element.focus();
-                  element.click();
-                }
-              }, selector);
-
-              await btn.click({ force: true, delay: 50 }).catch(() => {});
-
-              clicked = true;
-              break;
+            const btn = page.locator(selector).first();
+            if ((await btn.count()) > 0 && (await btn.isVisible())) {
+              await btn.click({ force: true, delay: 50 });
+              return true;
             }
-          } catch (e) {
+          } catch (err) {
             console.error(
               `[Playwright] Error clicking ${selector} for ${cacheKey}:`,
-              e,
+              err,
             );
           }
         }
 
-        if (!clicked) {
-          await page.focus(inputSelector);
-          await page.keyboard.press("Enter");
-        }
-      })
-      .catch((err) => {
-        console.error(
-          `[Playwright] UI automation failed for ${cacheKey}:`,
-          err.message,
-        );
-        cache.refreshInProgress = false;
+        return false;
+      };
+
+      const routeHandler = async (route: any, request: any) => {
+        requestIntercepted = true;
+        resolveRequestIntercepted();
         clearTimeout(timeout);
-        reject(
-          new Error(`UI automation failed for ${cacheKey}: ${err.message}`),
+
+        const reqHeaders = request.headers();
+        let uiSessionId = "";
+        let uiParentMessageId: string | null = null;
+
+        const postData = request.postData();
+        if (postData) {
+          try {
+            const payload = JSON.parse(postData);
+            if (payload.chat_id) {
+              uiSessionId = payload.chat_id;
+            }
+            if (payload.parent_id !== undefined) {
+              uiParentMessageId = payload.parent_id;
+            }
+          } catch (e) {}
+        }
+
+        const extractedHeaders = {
+          cookie: reqHeaders["cookie"] || "",
+          "bx-ua": reqHeaders["bx-ua"] || "",
+          "bx-umidtoken": reqHeaders["bx-umidtoken"] || "",
+          "bx-v": reqHeaders["bx-v"] || "",
+          "x-request-id": reqHeaders["x-request-id"] || "",
+          "user-agent": reqHeaders["user-agent"] || "",
+        };
+
+        if (!extractedHeaders.cookie || !extractedHeaders["bx-ua"]) {
+          console.warn(
+            `[Playwright] Missing critical headers for ${cacheKey}:`,
+            {
+              hasCookie: !!extractedHeaders.cookie,
+              hasBxUa: !!extractedHeaders["bx-ua"],
+              url: request.url(),
+              method: request.method(),
+            },
+          );
+
+          if (accountId) {
+            const { getAccountCredentials } =
+              await import("../core/accounts.ts");
+            const creds = getAccountCredentials(accountId);
+            if (creds && creds.email && creds.password) {
+              const acctContext = accountContexts.get(accountId);
+              if (acctContext) {
+                const loginSuccess = await loginToQwenWithContext(
+                  acctContext,
+                  page,
+                  creds.email,
+                  creds.password,
+                );
+                if (loginSuccess) {
+                  console.log(
+                    `[Playwright] Re-login successful for ${cacheKey}, retrying...`,
+                  );
+                  await route.abort("aborted");
+                  await page.unroute(routePattern, routeHandler);
+                  resolve(await getQwenHeaders(true, accountId, true));
+                  return;
+                }
+              }
+            }
+          }
+
+          console.warn(
+            `[Playwright] Failed to get headers for ${cacheKey}. Delete qwen_profiles/${accountId || "default"} and restart.`,
+          );
+          cache.refreshInProgress = false;
+          await route.continue();
+          reject(
+            new Error(
+              `Failed to get headers for ${cacheKey}: missing critical headers and re-login failed`,
+            ),
+          );
+          return;
+        }
+
+        console.log(
+          `[Playwright] Successfully intercepted headers for ${cacheKey} via ${captureMethod}.`,
         );
-      });
-  });
+        cache.currentHeaders = extractedHeaders;
+        cache.cachedQwenHeaders = {
+          headers: extractedHeaders,
+          chatSessionId: uiSessionId,
+          parentMessageId: uiParentMessageId,
+        };
+        cache.lastHeadersTime = Date.now();
+        if (cache.refreshTimeout) {
+          clearTimeout(cache.refreshTimeout);
+          cache.refreshTimeout = null;
+        }
+
+        cache.refreshInProgress = false;
+
+        await route.abort("aborted");
+
+        await page.unroute(routePattern, routeHandler);
+
+        resolve(cache.cachedQwenHeaders);
+      };
+
+      page
+        .route(routePattern, routeHandler)
+        .then(async () => {
+          const inputSelector =
+            'textarea:visible, [contenteditable="true"]:visible';
+
+          await page.focus(inputSelector);
+          await page.fill(inputSelector, "");
+          await page.type(inputSelector, "a", { delay: 100 });
+
+          const sendButtonReady = await waitForSendButtonReady(3000);
+          let requestStarted = false;
+
+          if (sendButtonReady) {
+            captureMethod = "direct-click";
+            await clickSendButton();
+            requestStarted = await waitForRequestIntercepted(1500);
+          }
+
+          if (!requestStarted) {
+            captureMethod = "enter-fallback";
+            await page.focus(inputSelector);
+            await page.keyboard.press("Enter");
+            requestStarted = await waitForRequestIntercepted(1000);
+          }
+
+          if (!requestStarted) {
+            captureMethod = "direct-click";
+
+            const sendButtonReadyOnRetry = await waitForSendButtonReady(1000);
+            if (sendButtonReadyOnRetry) {
+              await clickSendButton();
+              requestStarted = await waitForRequestIntercepted(1500);
+            }
+          }
+
+          if (!requestStarted && !requestIntercepted) {
+            console.warn(
+              `[Playwright] Header capture retries exhausted for ${cacheKey}; waiting for timeout diagnostics.`,
+            );
+          }
+        })
+        .catch((err) => {
+          console.error(
+            `[Playwright] UI automation failed for ${cacheKey}:`,
+            err.message,
+          );
+          cache.refreshInProgress = false;
+          clearTimeout(timeout);
+          reject(
+            new Error(`UI automation failed for ${cacheKey}: ${err.message}`),
+          );
+        });
+    });
+  } catch (err) {
+    cache.refreshInProgress = false;
+    throw err;
+  }
 }
 
 export async function initPlaywrightForAccount(
@@ -771,6 +925,9 @@ export async function initPlaywrightForAccount(
   headless = true,
   browserType: BrowserType = "chromium",
 ) {
+  await closePlaywrightForAccount(account.id);
+  clearAccountHeaderCache(account.id);
+
   const profilePath = path.resolve("qwen_profiles", account.id);
   const { engine: browserEngine, channel } = getBrowserEngine(browserType);
 
@@ -781,6 +938,7 @@ export async function initPlaywrightForAccount(
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
     ignoreDefaultArgs: ["--enable-automation"],
     args: ["--disable-blink-features=AutomationControlled"],
+    serviceWorkers: "block",
   });
 
   await acctContext.addInitScript(() => {
@@ -824,6 +982,7 @@ export async function launchManualLoginAccount(
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
     ignoreDefaultArgs: ["--enable-automation"],
     args: ["--disable-blink-features=AutomationControlled"],
+    serviceWorkers: "block",
   });
 
   await acctContext.addInitScript(() => {
@@ -866,6 +1025,9 @@ export async function extractAccountInfoFromContext(
 }
 
 export async function closePlaywrightForAccount(accountId: string) {
+  clearAccountHeaderCache(accountId);
+  headerMutexes.delete(accountId);
+
   const acctContext = accountContexts.get(accountId);
   if (acctContext) {
     try {
@@ -873,9 +1035,10 @@ export async function closePlaywrightForAccount(accountId: string) {
     } catch {
       // Browser context may already be closed
     }
-    accountContexts.delete(accountId);
-    accountPages.delete(accountId);
   }
+
+  accountContexts.delete(accountId);
+  accountPages.delete(accountId);
 }
 
 async function loginToQwenWithContext(

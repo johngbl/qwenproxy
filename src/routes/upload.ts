@@ -24,6 +24,230 @@ interface STSResponse {
   };
 }
 
+interface FileTypeInfo {
+  mime: string;
+  showType: "image" | "video" | "audio" | "file";
+  fileClass: "vision" | "video" | "audio" | "file";
+  qwenFileType: "image" | "video" | "audio" | "file";
+}
+
+const DEFAULT_FILE_TYPE_INFO: FileTypeInfo = {
+  mime: "application/octet-stream",
+  showType: "file",
+  fileClass: "file",
+  qwenFileType: "file",
+};
+
+const FILE_TYPE_MAP: Record<string, FileTypeInfo> = {
+  png: {
+    mime: "image/png",
+    showType: "image",
+    fileClass: "vision",
+    qwenFileType: "image",
+  },
+  jpg: {
+    mime: "image/jpeg",
+    showType: "image",
+    fileClass: "vision",
+    qwenFileType: "image",
+  },
+  jpeg: {
+    mime: "image/jpeg",
+    showType: "image",
+    fileClass: "vision",
+    qwenFileType: "image",
+  },
+  gif: {
+    mime: "image/gif",
+    showType: "image",
+    fileClass: "vision",
+    qwenFileType: "image",
+  },
+  webp: {
+    mime: "image/webp",
+    showType: "image",
+    fileClass: "vision",
+    qwenFileType: "image",
+  },
+  mp4: {
+    mime: "video/mp4",
+    showType: "video",
+    fileClass: "video",
+    qwenFileType: "video",
+  },
+  mov: {
+    mime: "video/quicktime",
+    showType: "video",
+    fileClass: "video",
+    qwenFileType: "video",
+  },
+  avi: {
+    mime: "video/x-msvideo",
+    showType: "video",
+    fileClass: "video",
+    qwenFileType: "video",
+  },
+  webm: {
+    mime: "video/webm",
+    showType: "video",
+    fileClass: "video",
+    qwenFileType: "video",
+  },
+  mkv: {
+    mime: "video/x-matroska",
+    showType: "video",
+    fileClass: "video",
+    qwenFileType: "video",
+  },
+  mp3: {
+    mime: "audio/mpeg",
+    showType: "audio",
+    fileClass: "audio",
+    qwenFileType: "audio",
+  },
+  wav: {
+    mime: "audio/wav",
+    showType: "audio",
+    fileClass: "audio",
+    qwenFileType: "audio",
+  },
+  ogg: {
+    mime: "audio/ogg",
+    showType: "audio",
+    fileClass: "audio",
+    qwenFileType: "audio",
+  },
+  flac: {
+    mime: "audio/flac",
+    showType: "audio",
+    fileClass: "audio",
+    qwenFileType: "audio",
+  },
+  m4a: {
+    mime: "audio/mp4",
+    showType: "audio",
+    fileClass: "audio",
+    qwenFileType: "audio",
+  },
+  aac: {
+    mime: "audio/aac",
+    showType: "audio",
+    fileClass: "audio",
+    qwenFileType: "audio",
+  },
+  pdf: {
+    mime: "application/pdf",
+    showType: "file",
+    fileClass: "file",
+    qwenFileType: "file",
+  },
+  doc: {
+    mime: "application/msword",
+    showType: "file",
+    fileClass: "file",
+    qwenFileType: "file",
+  },
+  docx: {
+    mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    showType: "file",
+    fileClass: "file",
+    qwenFileType: "file",
+  },
+  xls: {
+    mime: "application/vnd.ms-excel",
+    showType: "file",
+    fileClass: "file",
+    qwenFileType: "file",
+  },
+  xlsx: {
+    mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    showType: "file",
+    fileClass: "file",
+    qwenFileType: "file",
+  },
+  ppt: {
+    mime: "application/vnd.ms-powerpoint",
+    showType: "file",
+    fileClass: "file",
+    qwenFileType: "file",
+  },
+  pptx: {
+    mime: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    showType: "file",
+    fileClass: "file",
+    qwenFileType: "file",
+  },
+  txt: {
+    mime: "text/plain",
+    showType: "file",
+    fileClass: "file",
+    qwenFileType: "file",
+  },
+  md: {
+    mime: "text/markdown",
+    showType: "file",
+    fileClass: "file",
+    qwenFileType: "file",
+  },
+  csv: {
+    mime: "text/csv",
+    showType: "file",
+    fileClass: "file",
+    qwenFileType: "file",
+  },
+  json: {
+    mime: "application/json",
+    showType: "file",
+    fileClass: "file",
+    qwenFileType: "file",
+  },
+  xml: {
+    mime: "application/xml",
+    showType: "file",
+    fileClass: "file",
+    qwenFileType: "file",
+  },
+  html: {
+    mime: "text/html",
+    showType: "file",
+    fileClass: "file",
+    qwenFileType: "file",
+  },
+  zip: {
+    mime: "application/zip",
+    showType: "file",
+    fileClass: "file",
+    qwenFileType: "file",
+  },
+};
+
+const SUPPORTED_MIME_TYPES = new Set(
+  Object.values(FILE_TYPE_MAP).map((typeInfo) => typeInfo.mime),
+);
+
+function getFileExtension(filename: string): string {
+  return filename.split(".").pop()?.toLowerCase() || "";
+}
+
+function detectFileType(filename: string): FileTypeInfo {
+  return FILE_TYPE_MAP[getFileExtension(filename)] || DEFAULT_FILE_TYPE_INFO;
+}
+
+function getExtensionFromMime(mime: string): string | undefined {
+  for (const [ext, typeInfo] of Object.entries(FILE_TYPE_MAP)) {
+    if (typeInfo.mime === mime) {
+      return ext;
+    }
+  }
+  return undefined;
+}
+
+function getMaxUploadSize(fileType: string): number {
+  if (fileType.startsWith("video/")) return 100 * 1024 * 1024;
+  if (fileType.startsWith("audio/")) return 50 * 1024 * 1024;
+  return 20 * 1024 * 1024;
+}
+
 /**
  * Get STS token from Qwen for file upload
  */
@@ -74,7 +298,7 @@ async function getSTSToken(
  * Upload file to Alibaba Cloud OSS using STS credentials
  */
 async function uploadToOSS(
-  fileBuffer: ArrayBuffer,
+  fileBuffer: ArrayBuffer | Buffer,
   stsData: STSResponse["data"],
   filename: string,
 ): Promise<string> {
@@ -106,45 +330,10 @@ async function uploadToOSS(
     refreshSTSTokenInterval: 300000,
   });
 
-  const buffer = Buffer.from(fileBuffer);
-  const ext = filename.split(".").pop()?.toLowerCase() || "";
-  const mimeMap: Record<string, string> = {
-    // Images
-    png: "image/png",
-    jpg: "image/jpeg",
-    jpeg: "image/jpeg",
-    gif: "image/gif",
-    webp: "image/webp",
-    // Video
-    mp4: "video/mp4",
-    mov: "video/quicktime",
-    avi: "video/x-msvideo",
-    webm: "video/webm",
-    mkv: "video/x-matroska",
-    // Audio
-    mp3: "audio/mpeg",
-    wav: "audio/wav",
-    ogg: "audio/ogg",
-    flac: "audio/flac",
-    m4a: "audio/mp4",
-    aac: "audio/aac",
-    // Documents
-    pdf: "application/pdf",
-    doc: "application/msword",
-    docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    xls: "application/vnd.ms-excel",
-    xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    ppt: "application/vnd.ms-powerpoint",
-    pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    txt: "text/plain",
-    md: "text/markdown",
-    csv: "text/csv",
-    json: "application/json",
-    xml: "application/xml",
-    html: "text/html",
-    zip: "application/zip",
-  };
-  const contentType = mimeMap[ext] || "application/octet-stream";
+  const buffer = Buffer.isBuffer(fileBuffer)
+    ? fileBuffer
+    : Buffer.from(fileBuffer);
+  const contentType = detectFileType(filename).mime;
 
   await client.put(file_path, buffer, {
     headers: { "Content-Type": contentType },
@@ -169,75 +358,11 @@ export async function uploadFile(c: Context) {
     // Detect MIME from filename if browser sends generic type
     let fileType = file.type;
     if (fileType === "application/octet-stream" || !fileType) {
-      const ext = file.name.split(".").pop()?.toLowerCase() || "";
-      const extMimeMap: Record<string, string> = {
-        jpg: "image/jpeg",
-        jpeg: "image/jpeg",
-        png: "image/png",
-        gif: "image/gif",
-        webp: "image/webp",
-        mp4: "video/mp4",
-        mov: "video/quicktime",
-        avi: "video/x-msvideo",
-        webm: "video/webm",
-        mkv: "video/x-matroska",
-        mp3: "audio/mpeg",
-        wav: "audio/wav",
-        ogg: "audio/ogg",
-        flac: "audio/flac",
-        m4a: "audio/mp4",
-        aac: "audio/aac",
-        pdf: "application/pdf",
-        doc: "application/msword",
-        docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        xls: "application/vnd.ms-excel",
-        xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        ppt: "application/vnd.ms-powerpoint",
-        pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        txt: "text/plain",
-        md: "text/markdown",
-        csv: "text/csv",
-        json: "application/json",
-        xml: "application/xml",
-        html: "text/html",
-        zip: "application/zip",
-      };
-      fileType = extMimeMap[ext] || "application/octet-stream";
+      fileType = detectFileType(file.name).mime;
     }
 
     // Validate file type is supported by Qwen
-    const supportedTypes = [
-      "image/jpeg",
-      "image/png",
-      "image/gif",
-      "image/webp",
-      "video/mp4",
-      "video/quicktime",
-      "video/x-msvideo",
-      "video/webm",
-      "video/x-matroska",
-      "audio/mpeg",
-      "audio/wav",
-      "audio/ogg",
-      "audio/flac",
-      "audio/mp4",
-      "audio/aac",
-      "application/pdf",
-      "application/msword",
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "application/vnd.ms-excel",
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "application/vnd.ms-powerpoint",
-      "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-      "text/plain",
-      "text/markdown",
-      "text/csv",
-      "application/json",
-      "application/xml",
-      "text/html",
-      "application/zip",
-    ];
-    if (!supportedTypes.includes(fileType)) {
+    if (!SUPPORTED_MIME_TYPES.has(fileType)) {
       return c.json(
         {
           error: `Unsupported file type: ${file.type || "unknown"}. Supported: images, videos, audio, documents (PDF, DOC, XLS, PPT, TXT, MD, CSV, JSON, XML, HTML, ZIP)`,
@@ -250,10 +375,7 @@ export async function uploadFile(c: Context) {
     const isVideo = fileType.startsWith("video/");
     const isAudio = fileType.startsWith("audio/");
     const isImage = fileType.startsWith("image/");
-    let maxSize = 20 * 1024 * 1024; // 20MB default for docs/images
-    if (isVideo)
-      maxSize = 100 * 1024 * 1024; // 100MB for video
-    else if (isAudio) maxSize = 50 * 1024 * 1024; // 50MB for audio
+    const maxSize = getMaxUploadSize(fileType);
     if (file.size > maxSize) {
       const sizeLabel = isVideo
         ? "100MB (video)"
@@ -291,10 +413,7 @@ export async function uploadFile(c: Context) {
     }
 
     // Determine Qwen filetype for STS token
-    let qwenFileType = "file";
-    if (isVideo) qwenFileType = "video";
-    else if (isAudio) qwenFileType = "audio";
-    else if (isImage) qwenFileType = "image";
+    const qwenFileType = detectFileType(file.name).qwenFileType;
 
     const stsData = await getSTSToken(
       file.name,
@@ -354,217 +473,6 @@ export interface QwenFileEntry {
 }
 
 /**
- * Detect file type from URL or filename
- */
-function detectFileType(filename: string): {
-  mime: string;
-  showType: string;
-  fileClass: string;
-  qwenFileType: string;
-} {
-  const ext = filename.split(".").pop()?.toLowerCase() || "";
-
-  const typeMap: Record<
-    string,
-    { mime: string; showType: string; fileClass: string; qwenFileType: string }
-  > = {
-    // Images
-    png: {
-      mime: "image/png",
-      showType: "image",
-      fileClass: "vision",
-      qwenFileType: "image",
-    },
-    jpg: {
-      mime: "image/jpeg",
-      showType: "image",
-      fileClass: "vision",
-      qwenFileType: "image",
-    },
-    jpeg: {
-      mime: "image/jpeg",
-      showType: "image",
-      fileClass: "vision",
-      qwenFileType: "image",
-    },
-    gif: {
-      mime: "image/gif",
-      showType: "image",
-      fileClass: "vision",
-      qwenFileType: "image",
-    },
-    webp: {
-      mime: "image/webp",
-      showType: "image",
-      fileClass: "vision",
-      qwenFileType: "image",
-    },
-    // Video
-    mp4: {
-      mime: "video/mp4",
-      showType: "video",
-      fileClass: "video",
-      qwenFileType: "video",
-    },
-    mov: {
-      mime: "video/quicktime",
-      showType: "video",
-      fileClass: "video",
-      qwenFileType: "video",
-    },
-    avi: {
-      mime: "video/x-msvideo",
-      showType: "video",
-      fileClass: "video",
-      qwenFileType: "video",
-    },
-    webm: {
-      mime: "video/webm",
-      showType: "video",
-      fileClass: "video",
-      qwenFileType: "video",
-    },
-    mkv: {
-      mime: "video/x-matroska",
-      showType: "video",
-      fileClass: "video",
-      qwenFileType: "video",
-    },
-    // Audio
-    mp3: {
-      mime: "audio/mpeg",
-      showType: "audio",
-      fileClass: "audio",
-      qwenFileType: "audio",
-    },
-    wav: {
-      mime: "audio/wav",
-      showType: "audio",
-      fileClass: "audio",
-      qwenFileType: "audio",
-    },
-    ogg: {
-      mime: "audio/ogg",
-      showType: "audio",
-      fileClass: "audio",
-      qwenFileType: "audio",
-    },
-    flac: {
-      mime: "audio/flac",
-      showType: "audio",
-      fileClass: "audio",
-      qwenFileType: "audio",
-    },
-    m4a: {
-      mime: "audio/mp4",
-      showType: "audio",
-      fileClass: "audio",
-      qwenFileType: "audio",
-    },
-    aac: {
-      mime: "audio/aac",
-      showType: "audio",
-      fileClass: "audio",
-      qwenFileType: "audio",
-    },
-    // Documents
-    pdf: {
-      mime: "application/pdf",
-      showType: "file",
-      fileClass: "file",
-      qwenFileType: "file",
-    },
-    doc: {
-      mime: "application/msword",
-      showType: "file",
-      fileClass: "file",
-      qwenFileType: "file",
-    },
-    docx: {
-      mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      showType: "file",
-      fileClass: "file",
-      qwenFileType: "file",
-    },
-    xls: {
-      mime: "application/vnd.ms-excel",
-      showType: "file",
-      fileClass: "file",
-      qwenFileType: "file",
-    },
-    xlsx: {
-      mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      showType: "file",
-      fileClass: "file",
-      qwenFileType: "file",
-    },
-    ppt: {
-      mime: "application/vnd.ms-powerpoint",
-      showType: "file",
-      fileClass: "file",
-      qwenFileType: "file",
-    },
-    pptx: {
-      mime: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-      showType: "file",
-      fileClass: "file",
-      qwenFileType: "file",
-    },
-    txt: {
-      mime: "text/plain",
-      showType: "file",
-      fileClass: "file",
-      qwenFileType: "file",
-    },
-    md: {
-      mime: "text/markdown",
-      showType: "file",
-      fileClass: "file",
-      qwenFileType: "file",
-    },
-    csv: {
-      mime: "text/csv",
-      showType: "file",
-      fileClass: "file",
-      qwenFileType: "file",
-    },
-    json: {
-      mime: "application/json",
-      showType: "file",
-      fileClass: "file",
-      qwenFileType: "file",
-    },
-    xml: {
-      mime: "application/xml",
-      showType: "file",
-      fileClass: "file",
-      qwenFileType: "file",
-    },
-    html: {
-      mime: "text/html",
-      showType: "file",
-      fileClass: "file",
-      qwenFileType: "file",
-    },
-    zip: {
-      mime: "application/zip",
-      showType: "file",
-      fileClass: "file",
-      qwenFileType: "file",
-    },
-  };
-
-  return (
-    typeMap[ext] || {
-      mime: "application/octet-stream",
-      showType: "file",
-      fileClass: "file",
-      qwenFileType: "file",
-    }
-  );
-}
-
-/**
  * Process OpenAI-style image/video content into Qwen file format
  */
 export async function processImagesForQwen(
@@ -613,23 +521,8 @@ export async function processImagesForQwen(
           const dataMime = mediaUrl.match(/^data:([^;]+)/)?.[1] || "";
           const isVideoData = dataMime.startsWith("video/");
           const isAudioData = dataMime.startsWith("audio/");
-          const extFromMime: Record<string, string> = {
-            "video/mp4": "mp4",
-            "video/webm": "webm",
-            "video/quicktime": "mov",
-            "audio/mpeg": "mp3",
-            "audio/wav": "wav",
-            "audio/ogg": "ogg",
-            "audio/flac": "flac",
-            "audio/mp4": "m4a",
-            "audio/aac": "aac",
-            "image/png": "png",
-            "image/jpeg": "jpg",
-            "image/gif": "gif",
-            "image/webp": "webp",
-          };
           const detectedExt =
-            extFromMime[dataMime] ||
+            getExtensionFromMime(dataMime) ||
             (isVideoData ? "mp4" : isAudioData ? "mp3" : "png");
           const base64Data = mediaUrl.split(",")[1];
           const buffer = Buffer.from(base64Data, "base64");
@@ -642,7 +535,7 @@ export async function processImagesForQwen(
             typeInfo.qwenFileType,
             headers,
           );
-          fileUrl = await uploadToOSS(buffer.buffer, stsData, filename);
+          fileUrl = await uploadToOSS(buffer, stsData, filename);
           fileId = stsData.file_id;
         } catch (err: any) {
           console.error("[Upload] Failed to upload media:", err.message);

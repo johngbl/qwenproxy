@@ -35,11 +35,14 @@ import {
   markAccountRateLimited,
   getAccountCooldownInfo,
 } from "../core/account-manager.ts";
+import { loadAccounts } from "../core/accounts.ts";
 import {
   registerStream,
   removeStream,
   getStream,
-  getStreamBySessionId,
+  getStreamKeyBySessionAndResponse,
+  getStreamKeyBySessionId,
+  getStreamKeysBySessionId,
   updateStreamTargetResponseId,
 } from "../core/stream-registry.ts";
 import { metrics } from "../core/metrics.js";
@@ -76,9 +79,16 @@ export function getIncrementalDelta(
     return { delta: "", matchedContent: oldStr };
   }
 
+  if (newStr.length >= oldStr.length && newStr.startsWith(oldStr)) {
+    return {
+      delta: newStr.substring(oldStr.length),
+      matchedContent: newStr,
+    };
+  }
+
   // Heuristic to detect if newStr is cumulative or incremental:
   // If newStr is cumulative, it should share a common prefix with oldStr.
-  // Limit scan window to avoid O(n) on very long cumulative content
+  // Limit scan window to avoid O(n) overlap scanning on ambiguous content.
   const scanWindow = Math.min(2000, oldStr.length);
   let commonPrefixLen = 0;
   const maxLen = Math.min(scanWindow, newStr.length);
@@ -154,9 +164,10 @@ export async function chatCompletions(c: Context) {
     const isStream = body.stream ?? false;
 
     // Extract the prompt
-    let prompt = "";
+    const promptParts: string[] = [];
     const messages = body.messages || [];
-    let systemPrompt = "";
+    const systemPromptParts: string[] = [];
+    const toolCallNamesById = new Map<string, string>();
     const allFiles: QwenFileEntry[] = [];
 
     // Get headers for image upload
@@ -219,14 +230,17 @@ export async function chatCompletions(c: Context) {
       }
 
       if (msg.role === "system") {
-        systemPrompt += (contentStr || "") + "\n\n";
+        systemPromptParts.push((contentStr || "") + "\n\n");
       } else if (msg.role === "user") {
-        prompt += `User: ${contentStr || ""}\n\n`;
+        promptParts.push(`User: ${contentStr || ""}\n\n`);
       } else if (msg.role === "assistant") {
-        let assistantContent = contentStr || "";
+        const assistantContentParts: string[] = [];
         const reasoning = (msg as any).reasoning_content;
         if (reasoning) {
-          assistantContent = `<think>\n${reasoning}\n</think>\n${assistantContent}`;
+          assistantContentParts.push(`<think>\n${reasoning}\n</think>\n`);
+        }
+        if (contentStr) {
+          assistantContentParts.push(contentStr);
         }
         if (msg.tool_calls && Array.isArray(msg.tool_calls)) {
           if (isToolcallDebugEnabled()) {
@@ -253,9 +267,15 @@ export async function chatCompletions(c: Context) {
               arguments: parsedArgs,
             };
             const toolCallStr = `\n<tool_call>\n${JSON.stringify(payload)}\n</tool_call>`;
-            assistantContent = assistantContent
-              ? assistantContent + toolCallStr
-              : toolCallStr.trim();
+            assistantContentParts.push(
+              assistantContentParts.length > 0
+                ? toolCallStr
+                : toolCallStr.trim(),
+            );
+
+            if (tc.id && tc.function?.name) {
+              toolCallNamesById.set(tc.id, tc.function.name);
+            }
 
             if (isToolcallDebugEnabled()) {
               logger.debug("[chat] tool_call serialized to prompt", {
@@ -266,11 +286,16 @@ export async function chatCompletions(c: Context) {
             }
           }
         }
-        prompt += `Assistant: ${assistantContent.trim()}\n\n`;
+        const assistantContent = assistantContentParts.join("");
+        promptParts.push(`Assistant: ${assistantContent.trim()}\n\n`);
       } else if (msg.role === "tool" || msg.role === "function") {
-        let toolName = msg.name;
+        let toolName =
+          msg.name ||
+          (msg.tool_call_id
+            ? toolCallNamesById.get(msg.tool_call_id)
+            : undefined);
         if (!toolName && msg.tool_call_id) {
-          // Look up tool name in history by tool_call_id
+          // Fallback: look up tool name in history by tool_call_id
           for (let j = i - 1; j >= 0; j--) {
             const prevMsg = messages[j];
             if (prevMsg.role === "assistant" && prevMsg.tool_calls) {
@@ -279,6 +304,9 @@ export async function chatCompletions(c: Context) {
               );
               if (call) {
                 toolName = call.function?.name;
+                if (toolName) {
+                  toolCallNamesById.set(msg.tool_call_id, toolName);
+                }
                 break;
               }
             }
@@ -293,7 +321,9 @@ export async function chatCompletions(c: Context) {
             contentPreview: contentStr.substring(0, 200),
           });
         }
-        prompt += `Tool Response (${toolName || "tool"}): ${contentStr || ""}\n\n`;
+        promptParts.push(
+          `Tool Response (${toolName || "tool"}): ${contentStr || ""}\n\n`,
+        );
       }
     }
 
@@ -327,7 +357,9 @@ export async function chatCompletions(c: Context) {
       });
       const toolsJson = JSON.stringify(formattedTools, null, 2);
 
-      systemPrompt += `\n\n# TOOLS AVAILABLE\nYou have access to the following tools:\n${toolsJson}\n\n# TOOL CALLING FORMAT (MANDATORY)\nTo use a tool, you MUST output a JSON object wrapped EXACTLY in these tags:\n<tool_call>\n{"name": "tool_name", "arguments": {"param_name": "value"}}\n</tool_call>\n\nEXAMPLE OF MULTIPLE TOOL CALLS:\n<tool_call>\n{"name": "read_file", "arguments": {"path": "file1.txt"}}\n</tool_call>\n<tool_call>\n{"name": "read_file", "arguments": {"path": "file2.txt"}}\n</tool_call>\n\nCRITICAL RULES:\n1. ONLY use the tags above for tool calling. NEVER output raw JSON without tags.\n2. You can call multiple tools by outputting multiple <tool_call> blocks consecutively.\n3. Do NOT output any other text (explanations, chat, etc.) after your <tool_call> blocks. Wait for the user to provide the tool response.\n4. The JSON inside the tags MUST be valid and include ALL required braces and the "arguments" field.\n5. If you need to use a tool, do it IMMEDIATELY without preamble.\n\n`;
+      systemPromptParts.push(
+        `\n\n# TOOLS AVAILABLE\nYou have access to the following tools:\n${toolsJson}\n\n# TOOL CALLING FORMAT (MANDATORY)\nTo use a tool, you MUST output a JSON object wrapped EXACTLY in these tags:\n<tool_call>\n{"name": "tool_name", "arguments": {"param_name": "value"}}\n</tool_call>\n\nEXAMPLE OF MULTIPLE TOOL CALLS:\n<tool_call>\n{"name": "read_file", "arguments": {"path": "file1.txt"}}\n</tool_call>\n<tool_call>\n{"name": "read_file", "arguments": {"path": "file2.txt"}}\n</tool_call>\n\nCRITICAL RULES:\n1. ONLY use the tags above for tool calling. NEVER output raw JSON without tags.\n2. You can call multiple tools by outputting multiple <tool_call> blocks consecutively.\n3. Do NOT output any other text (explanations, chat, etc.) after your <tool_call> blocks. Wait for the user to provide the tool response.\n4. The JSON inside the tags MUST be valid and include ALL required braces and the "arguments" field.\n5. If you need to use a tool, do it IMMEDIATELY without preamble.\n\n`,
+      );
 
       if (
         bodyAny.tool_choice &&
@@ -335,13 +367,18 @@ export async function chatCompletions(c: Context) {
         bodyAny.tool_choice.function
       ) {
         const forcedTool = bodyAny.tool_choice.function.name;
-        systemPrompt += `CRITICAL: You MUST call the tool "${forcedTool}" in this response.\n\n`;
+        systemPromptParts.push(
+          `CRITICAL: You MUST call the tool "${forcedTool}" in this response.\n\n`,
+        );
 
         if (isToolcallDebugEnabled()) {
           logger.debug("[chat] forced tool_choice", { forcedTool });
         }
       }
     }
+
+    const systemPrompt = systemPromptParts.join("");
+    const prompt = promptParts.join("");
 
     const modelId = body.model.replace("-no-thinking", "");
     const modelContextWindow = getModelContextWindow(modelId);
@@ -382,20 +419,28 @@ export async function chatCompletions(c: Context) {
     // This handles cases where the first request has [System, User] messages.
     const isNewSession = !messages.some((m) => m.role === "assistant");
 
-    // Account selection with fallback on rate-limit/failure
-    let account = getNextAccount();
+    const configuredAccounts = process.env.TEST_MOCK_PLAYWRIGHT
+      ? []
+      : loadAccounts();
 
-    // In mock/test mode, create a dummy account if none configured
-    if (!account && process.env.TEST_MOCK_PLAYWRIGHT) {
-      account = { id: "mock-account", email: "mock@test.com", password: "" };
-    }
+    // Account selection with fallback on rate-limit/failure.
+    // If no explicit accounts are configured, fall back to the global Playwright session.
+    let account = process.env.TEST_MOCK_PLAYWRIGHT
+      ? { id: "mock-account", email: "mock@test.com", password: "" }
+      : configuredAccounts.length > 0
+        ? getNextAccount()
+        : {
+            id: "global",
+            email: process.env.QWEN_EMAIL || "global-session",
+            password: process.env.QWEN_PASSWORD || "",
+          };
 
     let triedAccountIds = new Set<string>();
     let lastError: any = null;
 
     let stream: ReadableStream | undefined;
     let uiSessionId = "";
-    let releaseChatLock: (() => void) | undefined;
+    let activeAccountId = "";
     const completionId = "chatcmpl-" + uuidv4();
 
     while (account) {
@@ -427,22 +472,23 @@ export async function chatCompletions(c: Context) {
         });
       }
 
-      const accountMutex = getAccountMutex(accountId);
-      releaseChatLock = await accountMutex.acquire();
-
-      if (isToolcallDebugEnabled()) {
-        logger.debug("[chat] account lock acquired", {
-          accountId,
-          accountEmail,
-        });
-      }
-
       try {
         let retries = 3;
         let retryDelay = 500;
         let success = false;
 
         while (retries > 0) {
+          let attemptError: any = null;
+          const accountMutex = getAccountMutex(accountId);
+          const releaseAccountStartupLock = await accountMutex.acquire();
+
+          if (isToolcallDebugEnabled()) {
+            logger.debug("[chat] account startup lock acquired", {
+              accountId,
+              accountEmail,
+            });
+          }
+
           try {
             const result = await createQwenStream(
               finalPrompt,
@@ -454,6 +500,7 @@ export async function chatCompletions(c: Context) {
             );
             stream = result.stream;
             uiSessionId = result.uiSessionId;
+            activeAccountId = result.accountId;
             registerStream(completionId, {
               abortController: result.controller,
               accountId: result.accountId,
@@ -471,105 +518,109 @@ export async function chatCompletions(c: Context) {
                 completionId,
               });
             }
-
-            break;
           } catch (err: any) {
-            retries--;
-
-            if (err.name === "QwenSessionExpiredError") {
-              console.warn(
-                `[Chat] Session expired for ${accountEmail} (${accountId}). Attempting re-login...`,
-              );
-              try {
-                const { initPlaywrightForAccount } =
-                  await import("../services/playwright.ts");
-                const { getAccountCredentials } =
-                  await import("../core/accounts.ts");
-                const creds = getAccountCredentials(accountId);
-                if (creds) {
-                  await initPlaywrightForAccount(creds, true);
-                  console.log(
-                    `[Chat] Re-login successful for ${accountEmail}. Retrying...`,
-                  );
-                  continue;
-                }
-              } catch (reLoginErr: any) {
-                console.error(
-                  `[Chat] Re-login failed for ${accountEmail}: ${reLoginErr.message}`,
-                );
-              }
-              releaseChatLock();
-              releaseChatLock = undefined;
-              lastError = err;
-              break;
-            }
-
-            if (
-              err.upstreamCode === "RateLimited" ||
-              err.upstreamStatus === 429
-            ) {
-              const hourHint = err.message?.match(/Wait about (\d+) hour/);
-              const cooldownMs = hourHint
-                ? parseInt(hourHint[1]) * 60 * 60 * 1000
-                : undefined;
-              markAccountRateLimited(accountId, cooldownMs, "RateLimited");
-              console.warn(
-                `[Chat] Account ${accountEmail} (${accountId}) rate-limited. Marked for cooldown.`,
-              );
-              releaseChatLock();
-              releaseChatLock = undefined;
-              lastError = err;
-              break;
-            }
-
-            if (retries === 0) {
-              if (err.upstreamStatus && err.upstreamStatus >= 500) {
-                markAccountRateLimited(accountId, undefined, "ServerError");
-                console.warn(
-                  `[Chat] Account ${accountEmail} (${accountId}) returned server error. Marked for cooldown.`,
-                );
-              }
-
-              // Clear session state when "chat is in progress" persists
-              if (
-                err instanceof RetryableQwenStreamError ||
-                err.message?.includes("in progress")
-              ) {
-                console.warn(
-                  `[Chat] Clearing session state for ${accountEmail} (${accountId}) due to persistent 'chat in progress'`,
-                );
-                clearAllSessionsForAccount(accountId);
-              }
-
-              releaseChatLock();
-              releaseChatLock = undefined;
-              lastError = err;
-              break;
-            }
-
-            let useDelay = retryDelay;
-            if (
-              err instanceof RetryableQwenStreamError &&
-              err.retryAfterMs !== undefined
-            ) {
-              useDelay = err.retryAfterMs;
-            }
-            const isRetryable =
-              err instanceof RetryableQwenStreamError ||
-              err.message?.includes("in progress") ||
-              err.message?.includes("Bad_Request");
-            if (!isRetryable) {
-              releaseChatLock();
-              releaseChatLock = undefined;
-              lastError = err;
-              break;
-            }
-            console.warn(
-              `[Chat] Qwen request failed for ${accountEmail}, retrying in ${useDelay}ms... (${retries} left)`,
-            );
-            await new Promise((r) => setTimeout(r, useDelay));
-            retryDelay = Math.min(retryDelay * 2, 5000);
+            attemptError = err;
+          } finally {
+            releaseAccountStartupLock();
           }
+
+          if (success) {
+            break;
+          }
+
+          retries--;
+          const err = attemptError;
+
+          if (!err) {
+            lastError = new Error("Failed to create Qwen stream");
+            break;
+          }
+
+          if (err.name === "QwenSessionExpiredError") {
+            console.warn(
+              `[Chat] Session expired for ${accountEmail} (${accountId}). Attempting re-login...`,
+            );
+            try {
+              const { initPlaywrightForAccount } =
+                await import("../services/playwright.ts");
+              const { getAccountCredentials } =
+                await import("../core/accounts.ts");
+              const creds = getAccountCredentials(accountId);
+              if (creds) {
+                await initPlaywrightForAccount(creds, true);
+                console.log(
+                  `[Chat] Re-login successful for ${accountEmail}. Retrying...`,
+                );
+                continue;
+              }
+            } catch (reLoginErr: any) {
+              console.error(
+                `[Chat] Re-login failed for ${accountEmail}: ${reLoginErr.message}`,
+              );
+            }
+            lastError = err;
+            break;
+          }
+
+          if (
+            err.upstreamCode === "RateLimited" ||
+            err.upstreamStatus === 429
+          ) {
+            const hourHint = err.message?.match(/Wait about (\d+) hour/);
+            const cooldownMs = hourHint
+              ? parseInt(hourHint[1]) * 60 * 60 * 1000
+              : undefined;
+            markAccountRateLimited(accountId, cooldownMs, "RateLimited");
+            console.warn(
+              `[Chat] Account ${accountEmail} (${accountId}) rate-limited. Marked for cooldown.`,
+            );
+            lastError = err;
+            break;
+          }
+
+          if (retries === 0) {
+            if (err.upstreamStatus && err.upstreamStatus >= 500) {
+              markAccountRateLimited(accountId, undefined, "ServerError");
+              console.warn(
+                `[Chat] Account ${accountEmail} (${accountId}) returned server error. Marked for cooldown.`,
+              );
+            }
+
+            // Clear session state when "chat is in progress" persists
+            if (
+              err instanceof RetryableQwenStreamError ||
+              err.message?.includes("in progress")
+            ) {
+              console.warn(
+                `[Chat] Clearing session state for ${accountEmail} (${accountId}) due to persistent 'chat in progress'`,
+              );
+              clearAllSessionsForAccount(accountId);
+            }
+
+            lastError = err;
+            break;
+          }
+
+          let useDelay = retryDelay;
+          if (
+            err instanceof RetryableQwenStreamError &&
+            err.retryAfterMs !== undefined
+          ) {
+            useDelay = err.retryAfterMs;
+          }
+          const isRetryable =
+            err instanceof RetryableQwenStreamError ||
+            err.message?.includes("in progress") ||
+            err.message?.includes("Bad_Request");
+          if (!isRetryable) {
+            lastError = err;
+            break;
+          }
+          console.warn(
+            `[Chat] Qwen request failed for ${accountEmail}, retrying in ${useDelay}ms... (${retries} left)`,
+          );
+          await new Promise((r) => setTimeout(r, useDelay));
+          retryDelay = Math.min(retryDelay * 2, 5000);
         }
 
         if (success) {
@@ -584,12 +635,9 @@ export async function chatCompletions(c: Context) {
           });
         }
 
-        releaseChatLock = undefined;
         account = getNextAvailableAccount(accountId);
         continue;
       } catch (err: any) {
-        releaseChatLock?.();
-        releaseChatLock = undefined;
         lastError = err;
         account = getNextAvailableAccount(accountId);
       }
@@ -597,6 +645,31 @@ export async function chatCompletions(c: Context) {
 
     if (!stream) {
       removeStream(completionId);
+
+      if (!lastError && configuredAccounts.length > 0) {
+        const cooldownInfos = configuredAccounts
+          .map((configuredAccount) =>
+            getAccountCooldownInfo(configuredAccount.id),
+          )
+          .filter(
+            (
+              info,
+            ): info is NonNullable<ReturnType<typeof getAccountCooldownInfo>> =>
+              info !== null,
+          );
+
+        if (cooldownInfos.length === configuredAccounts.length) {
+          const retryAfterMs = Math.min(
+            ...cooldownInfos.map((info) => info.remainingMs),
+          );
+          const cooldownError: any = new Error(
+            `All configured accounts are on cooldown. Retry in about ${Math.max(1, Math.ceil(retryAfterMs / 1000))}s.`,
+          );
+          cooldownError.upstreamStatus = 429;
+          throw cooldownError;
+        }
+      }
+
       throw lastError || new Error("All accounts failed");
     }
 
@@ -642,10 +715,15 @@ export async function chatCompletions(c: Context) {
                 updateSessionParent(
                   uiSessionId,
                   chunk["response.created"].response_id,
+                  activeAccountId,
                 );
               } else if (chunk.response_id && !targetResponseId) {
                 targetResponseId = chunk.response_id;
-                updateSessionParent(uiSessionId, chunk.response_id);
+                updateSessionParent(
+                  uiSessionId,
+                  chunk.response_id,
+                  activeAccountId,
+                );
               }
 
               if (chunk.usage) {
@@ -746,7 +824,6 @@ export async function chatCompletions(c: Context) {
         const upstreamError = parseQwenErrorPayload(buffer);
         if (upstreamError) {
           removeStream(completionId);
-          releaseChatLock?.();
           return c.json(
             { error: { message: upstreamError.message } },
             upstreamError.status as any,
@@ -837,9 +914,38 @@ export async function chatCompletions(c: Context) {
         if (isToolcallDebugEnabled()) {
           logger.debug("[chat] non-stream: cleanup", { completionId });
         }
-        releaseChatLock?.();
         removeStream(completionId);
       }
+    }
+
+    const streamReader = stream.getReader();
+    const streamDecoder = new TextDecoder();
+    let initialStreamBuffer = "";
+
+    while (true) {
+      const { done, value } = await streamReader.read();
+      if (done) {
+        initialStreamBuffer += streamDecoder.decode();
+        break;
+      }
+
+      initialStreamBuffer += streamDecoder.decode(value, { stream: true });
+      const trimmedInitialBuffer = initialStreamBuffer.trimStart();
+      if (
+        trimmedInitialBuffer.startsWith("data: ") ||
+        trimmedInitialBuffer.startsWith(":")
+      ) {
+        break;
+      }
+    }
+
+    const upstreamError = parseQwenErrorPayload(initialStreamBuffer);
+    if (upstreamError) {
+      removeStream(completionId);
+      return c.json(
+        { error: { message: upstreamError.message } },
+        upstreamError.status as any,
+      );
     }
 
     c.header("Content-Type", "text/event-stream");
@@ -926,7 +1032,6 @@ export async function chatCompletions(c: Context) {
         // Clean up
         clearInterval(heartbeatInterval);
         removeStream(completionId);
-        releaseChatLock?.();
       };
 
       // Listen for client disconnect via the request's close event
@@ -970,17 +1075,15 @@ export async function chatCompletions(c: Context) {
           choices: [makeChoice({ role: "assistant", content: "" })],
         });
 
-        const reader = stream.getReader();
+        const reader = streamReader;
         const decoder = new TextDecoder();
 
         let currentThoughtIndex = 0;
-
-        let reasoningBuffer = "";
         let lastFullContent = "";
         let targetResponseId: string | null = null;
         const toolParser = new StreamingToolParser(bodyAny.tools || []);
 
-        let buffer = "";
+        let buffer = initialStreamBuffer;
         let completionTokens = 0;
         let promptTokens = Math.ceil(finalPrompt.length / 3.5);
 
@@ -995,10 +1098,12 @@ export async function chatCompletions(c: Context) {
             break;
           }
 
-          const { done, value } = await reader.read();
-          if (done) break;
+          if (!buffer.includes("\n")) {
+            const { done, value } = await reader.read();
+            if (done) break;
 
-          buffer += decoder.decode(value, { stream: true });
+            buffer += decoder.decode(value, { stream: true });
+          }
           const lines = buffer.split("\n");
           buffer = lines.pop() || "";
 
@@ -1035,6 +1140,7 @@ export async function chatCompletions(c: Context) {
                 updateSessionParent(
                   uiSessionId,
                   chunk["response.created"].response_id,
+                  activeAccountId,
                 );
               } else if (chunk.response_id && !targetResponseId) {
                 targetResponseId = chunk.response_id;
@@ -1042,7 +1148,11 @@ export async function chatCompletions(c: Context) {
                 if (targetResponseId) {
                   updateStreamTargetResponseId(completionId, targetResponseId);
                 }
-                updateSessionParent(uiSessionId, chunk.response_id);
+                updateSessionParent(
+                  uiSessionId,
+                  chunk.response_id,
+                  activeAccountId,
+                );
               }
 
               if (chunk.usage) {
@@ -1100,7 +1210,6 @@ export async function chatCompletions(c: Context) {
                 if (vStr === "FINISHED") continue;
 
                 if (isThinkingChunk) {
-                  reasoningBuffer += vStr;
                   await writeEvent({
                     id: completionId,
                     object: "chat.completion.chunk",
@@ -1337,7 +1446,6 @@ export async function chatCompletions(c: Context) {
 
         clearInterval(heartbeatInterval);
         removeStream(completionId);
-        releaseChatLock?.();
 
         if (isToolcallDebugEnabled()) {
           logger.debug("[chat] stream: cleanup completed", {
@@ -1365,9 +1473,30 @@ export async function chatCompletionsStop(c: Context) {
       return c.json({ error: "chat_id and response_id are required" }, 400);
     }
 
-    const stream = getStreamBySessionId(chat_id) || getStream(chat_id);
+    const exactStreamKey = getStreamKeyBySessionAndResponse(
+      chat_id,
+      response_id,
+    );
+    const matchingSessionStreamKeys = getStreamKeysBySessionId(chat_id);
+    const streamKey =
+      exactStreamKey ||
+      (matchingSessionStreamKeys.length === 1
+        ? matchingSessionStreamKeys[0]
+        : getStreamKeyBySessionId(chat_id)) ||
+      chat_id;
+    const stream = getStream(streamKey);
     if (!stream) {
       return c.json({ error: "Stream not found" }, 404);
+    }
+
+    if (!exactStreamKey && matchingSessionStreamKeys.length > 1) {
+      return c.json(
+        {
+          error:
+            "Multiple active streams for this chat_id; wait for response_id registration and retry",
+        },
+        409,
+      );
     }
 
     if (stream.targetResponseId && stream.targetResponseId !== response_id) {
@@ -1410,7 +1539,7 @@ export async function chatCompletionsStop(c: Context) {
     }
 
     stream.abortController.abort();
-    removeStream(chat_id);
+    removeStream(streamKey);
 
     console.log(`[Stop] Generation stopped for chat_id=${chat_id}`);
     return c.json({ success: true });

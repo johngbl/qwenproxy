@@ -21,6 +21,7 @@ interface CacheEntry<T> {
 }
 
 export class MemoryCache {
+  private connected = false;
   private store: Map<string, CacheEntry<any>>
   private defaultTTL: number
   private prefix: string
@@ -51,7 +52,7 @@ export class MemoryCache {
   }
 
   async connect(): Promise<void> {
-    // No-op for in-memory cache
+    this.connected = true;
   }
 
   async set<T>(key: CacheKey, value: T, ttl?: number): Promise<void> {
@@ -211,9 +212,9 @@ export class MemoryCache {
   }
 
   async getStats(): Promise<{
-    connected: boolean
-    keysCount: number
-    memoryUsage: string
+    connected: boolean;
+    keysCount: number;
+    memoryUsage: string;
     hitRatio: number
     compressionRatio: number
     bytesSaved: number
@@ -243,21 +244,17 @@ export class MemoryCache {
     metrics.gauge('cache.entries.count', validKeys)
     
     return {
-      connected: true,
+      connected: this.connected,
       keysCount: validKeys,
       memoryUsage: `${(totalBytes / 1024).toFixed(2)}KB`,
       hitRatio,
       compressionRatio: avgCompressionRatio,
       bytesSaved: this.totalBytesSaved,
-    }
+    };
   }
 
   async close(): Promise<void> {
-    if (this.cleanupInterval) {
-      clearInterval(this.cleanupInterval)
-      this.cleanupInterval = null
-    }
-    this.store.clear()
+    this.connected = false;
   }
 
   // Optimized serialization for primitives
@@ -322,4 +319,5 @@ export class MemoryCache {
     const pattern = `*session:*${sessionId}*`
     return this.invalidateByPattern(pattern)
   }
+
 }
