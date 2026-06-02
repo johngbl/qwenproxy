@@ -286,6 +286,13 @@ export async function chatCompletions(c: Context) {
           logger.debug("[chat] forced tool_choice", { forcedTool });
         }
       }
+
+      // Anti-hallucination rules
+      systemPrompt +=
+        "ANTI-HALLUCINATION RULES:\n" +
+        "- NEVER pretend to have used a tool. NEVER write 'tool: Edited' or 'tool: Created' as plain text.\n" +
+        "- You MUST use <tool_call> tags or the tool will NOT be executed.\n" +
+        "- If you cannot use a tool, explain why in plain text instead of pretending.\n\n";
     }
 
     const modelId = body.model.replace("-no-thinking", "");
