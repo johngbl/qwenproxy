@@ -7,13 +7,13 @@ import { MemoryCache } from "../cache/memory-cache.js";
 import { Watchdog } from "../core/watchdog.js";
 import { app as modelsApp } from "./models.js";
 import { chatCompletions, chatCompletionsStop } from "../routes/chat.js";
-import { uploadImage } from "../routes/upload.ts";
+import { uploadFile } from "../routes/upload.ts";
 
 const app = new Hono();
 app.route("", modelsApp);
 app.post("/v1/chat/completions", chatCompletions);
 app.post("/v1/chat/completions/stop", chatCompletionsStop);
-app.post("/v1/upload", uploadImage);
+app.post("/v1/upload", uploadFile);
 
 let cache: MemoryCache;
 let watchdog: Watchdog;
@@ -81,14 +81,15 @@ export async function startServer(): Promise<void> {
   const accounts = loadAccounts();
 
   if (accounts.length > 0) {
-    console.log(
-      `[Server] Pre-warming ${accounts.length} configured account(s)...`,
-    );
-    const { initPlaywrightForAccount } =
+    const { initPlaywrightForAccount, getQwenHeaders } =
       await import("../services/playwright.ts");
+    const { disableNativeTools } = await import("../services/qwen.ts");
     for (const account of accounts) {
       try {
         await initPlaywrightForAccount(account, config.browser.headless);
+        await getQwenHeaders(false, account.id);
+        await disableNativeTools(account.id).catch(() => {});
+        console.log(`[Server] Account ready: ${account.email}`);
       } catch (err: any) {
         console.error(
           `[Server] Failed to initialize account ${account.email}:`,
@@ -106,15 +107,14 @@ export async function startServer(): Promise<void> {
 
   metrics.startCollection();
 
-  server = serve(
-    {
-      fetch: app.fetch,
-      port: config.server.port,
-      hostname: config.server.host,
-    },
-    (info) => {
-      console.log(`Server listening on http://localhost:${info.port}/v1`);
-    },
+  server = serve({
+    fetch: app.fetch,
+    port: config.server.port,
+    hostname: config.server.host,
+  });
+
+  console.log(
+    `[Server] Listening on http://localhost:${config.server.port}/v1`,
   );
 
   const shutdown = async (signal: string) => {

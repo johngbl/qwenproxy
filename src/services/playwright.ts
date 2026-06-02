@@ -183,8 +183,6 @@ export async function initPlaywright(
   const profilePath = path.resolve("qwen_profiles", "default");
   const { engine: browserEngine, channel } = getBrowserEngine(browserType);
 
-  console.log(`[Playwright] Launching ${browserType}...`);
-
   context = await browserEngine.launchPersistentContext(profilePath, {
     headless,
     channel,
@@ -291,8 +289,6 @@ export async function loginToQwen(
 ): Promise<boolean> {
   if (!activePage) throw new Error("Playwright not initialized");
 
-  console.log(`[Playwright] Attempting API login for ${email}...`);
-
   await activePage.goto("https://chat.qwen.ai/auth", {
     waitUntil: "domcontentloaded",
   });
@@ -352,14 +348,12 @@ async function loginToQwenUI(
 ): Promise<boolean> {
   if (!activePage) throw new Error("Playwright not initialized");
 
-  console.log("[Playwright] Attempting UI login...");
   await activePage.goto("https://chat.qwen.ai/auth", {
     waitUntil: "domcontentloaded",
   });
   await sleep(2000);
 
   if (!activePage.url().includes("/auth")) {
-    console.log("[Playwright] Already logged in");
     return true;
   }
 
@@ -371,11 +365,9 @@ async function loginToQwenUI(
   } catch {
     if (activePage.url().includes("/auth"))
       throw new Error("Email input not found");
-    console.log("[Playwright] Already logged in");
     return true;
   }
 
-  console.log("[Playwright] UI: Filling email...");
   await activePage.fill(
     'input[type="email"], input[placeholder*="Email"]',
     email,
@@ -386,7 +378,6 @@ async function loginToQwenUI(
   await activePage.waitForSelector('input[type="password"]', {
     timeout: 10000,
   });
-  console.log("[Playwright] UI: Filling password...");
   await activePage.fill('input[type="password"]', password);
   await activePage.keyboard.press("Enter");
 
@@ -498,12 +489,23 @@ async function _getQwenHeadersInternal(
   const currentUrl = page.url();
   const isOnQwen = currentUrl.includes("chat.qwen.ai");
   const isOnSpecificChat = isOnQwen && /\/c\//.test(currentUrl);
+  const hasCachedHeaders =
+    cache.cachedQwenHeaders &&
+    Object.keys(cache.currentHeaders).length > 0 &&
+    cache.currentHeaders["bx-ua"];
 
-  if (!isOnQwen || forceNew || isOnSpecificChat) {
-    console.log(
-      `[Playwright] Navigating to Qwen home for ${cacheKey}... (Current: ${currentUrl})`,
-    );
+  // Only navigate if: not on Qwen, forced refresh, or on specific chat WITHOUT cached headers
+  if (
+    !isOnQwen ||
+    (forceNew && !hasCachedHeaders) ||
+    (isOnSpecificChat && !hasCachedHeaders)
+  ) {
     await page.goto("https://chat.qwen.ai/", { waitUntil: "domcontentloaded" });
+  } else if (hasCachedHeaders) {
+    console.log(
+      `[Playwright] Using cached headers for ${cacheKey} (age: ${Math.round((Date.now() - cache.lastHeadersTime) / 1000)}s)`,
+    );
+    return cache.cachedQwenHeaders!;
   }
 
   const isLoginPage =
@@ -552,7 +554,6 @@ async function _getQwenHeadersInternal(
     }
   }
 
-  console.log(`[Playwright] Intercepting headers for ${cacheKey}...`);
   const inputSelector = 'textarea:visible, [contenteditable="true"]:visible';
   await page.waitForSelector(inputSelector, { timeout: 30000 }).catch(() => {
     console.error(
@@ -628,7 +629,6 @@ async function _getQwenHeadersInternal(
           const { getAccountCredentials } = await import("../core/accounts.ts");
           const creds = getAccountCredentials(accountId);
           if (creds && creds.email && creds.password) {
-            console.log(`[Playwright] Attempting re-login for ${cacheKey}...`);
             const acctContext = accountContexts.get(accountId);
             if (acctContext) {
               const loginSuccess = await loginToQwenWithContext(
@@ -676,10 +676,6 @@ async function _getQwenHeadersInternal(
         clearTimeout(cache.refreshTimeout);
         cache.refreshTimeout = null;
       }
-
-      import("./qwen.ts").then((m) =>
-        m.disableNativeTools(accountId).catch(() => {}),
-      );
 
       await route.abort("aborted");
 
@@ -756,10 +752,6 @@ export async function initPlaywrightForAccount(
 ) {
   const profilePath = path.resolve("qwen_profiles", account.id);
   const { engine: browserEngine, channel } = getBrowserEngine(browserType);
-
-  console.log(
-    `[Playwright] Launching ${browserType} for account ${account.email}...`,
-  );
 
   const acctContext = await browserEngine.launchPersistentContext(profilePath, {
     headless,

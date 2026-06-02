@@ -119,7 +119,7 @@ export class Logger {
 
 // Determine initial log level from environment
 const envLevel = process.env.LOG_LEVEL as LogLevel | undefined;
-const toolcallDebugEnv = process.env.TOOLCALL_DEBUG || "0";
+const toolcallDebugEnv = process.env.TOOLCALL_DEBUG || "errors";
 
 export const toolcallDebugLevel: ToolcallDebugLevel =
   toolcallDebugEnv === "1"

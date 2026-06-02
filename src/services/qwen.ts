@@ -169,7 +169,6 @@ export async function disableNativeTools(accountId?: string): Promise<void> {
       },
     };
 
-    console.log(`[Qwen] Disabling native tools for ${cacheKey}...`);
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 30000);
     const response = await fetch(

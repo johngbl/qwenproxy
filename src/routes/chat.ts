@@ -159,11 +159,13 @@ export async function chatCompletions(c: Context) {
       const msg = messages[i];
       let contentStr = "";
       if (Array.isArray(msg.content)) {
-        // Handle multimodal content (text + images + videos)
+        // Handle multimodal content (text + images + videos + audio + files)
         const imageParts = msg.content.filter(
           (p: any) =>
             (p.type === "image_url" && p.image_url?.url) ||
-            (p.type === "video_url" && p.video_url?.url),
+            (p.type === "video_url" && p.video_url?.url) ||
+            (p.type === "audio_url" && p.audio_url?.url) ||
+            (p.type === "file_url" && p.file_url?.url),
         );
 
         if (imageParts.length > 0) {
@@ -399,10 +401,6 @@ export async function chatCompletions(c: Context) {
         account = getNextAvailableAccount(accountId);
         continue;
       }
-
-      console.log(
-        `[Chat] Routing request to account: ${accountEmail} (${accountId})`,
-      );
 
       if (isToolcallDebugEnabled()) {
         logger.debug("[chat] account selected", {
