@@ -548,6 +548,27 @@ export class StreamingToolParser {
       }
     }
 
+    // 3b) Try to recover malformed JSON (missing opening brace/quote)
+    if (!t.startsWith("{") && t.includes('"')) {
+      const recovered = this.tryRecoverMalformedJson(t);
+      if (recovered) {
+        if (isToolcallDebugEnabled()) {
+          logger.debug(
+            "[parser] processToolContent: recovered malformed JSON",
+            {
+              name: recovered.name,
+              arguments: recovered.arguments,
+              originalPreview: t.substring(0, 100),
+            },
+          );
+        }
+        result.toolCalls.push(recovered);
+        this.emittedToolCallCount++;
+        this.pendingLeadIn = "";
+        return;
+      }
+    }
+
     // 4) Tool call is malformed and unrecoverable.
     // Never leak internal XML to user-visible content.
     // Restore lead-in text if no tools were emitted.
@@ -643,6 +664,74 @@ export class StreamingToolParser {
     if (isToolcallDebugEnabled()) {
       logger.debug("[parser] tryRecoverToolCall: all recovery attempts failed");
     }
+    return null;
+  }
+
+  /**
+   * Try to recover malformed JSON that's missing opening brace/quote.
+   * Example: `name": "read", "arguments": {"backend/package.json"}}`
+   */
+  private tryRecoverMalformedJson(str: string): ParsedToolCall | null {
+    // Try adding {" at the beginning if it looks like a truncated JSON
+    if (str.includes('"name"') || str.includes('name":')) {
+      const candidates = [
+        `{"${str}`, // Missing {"
+        `{${str}`, // Missing {
+        `"${str}`, // Missing "
+      ];
+
+      for (const candidate of candidates) {
+        try {
+          const parsed = robustParseJSON(candidate);
+          if (parsed && typeof parsed === "object") {
+            const name =
+              parsed.name ||
+              parsed.function?.name ||
+              parsed.tool_name ||
+              parsed.tool;
+            if (name && typeof name === "string") {
+              let args =
+                parsed.arguments ||
+                parsed.function?.arguments ||
+                parsed.args ||
+                parsed.parameters ||
+                parsed.input ||
+                {};
+              if (typeof args === "string") {
+                try {
+                  args = JSON.parse(args);
+                } catch {
+                  args = {};
+                }
+              }
+              if (typeof args !== "object" || args === null) args = {};
+
+              if (isToolcallDebugEnabled()) {
+                logger.debug("[parser] tryRecoverMalformedJson: success", {
+                  name,
+                  argsKeys: Object.keys(args),
+                  method:
+                    candidate === candidates[0]
+                      ? 'add-{"'
+                      : candidate === candidates[1]
+                        ? "add-{"
+                        : 'add-"',
+                });
+              }
+
+              return {
+                id: `call_${uuidv4()}`,
+                name,
+                arguments: args,
+              };
+            }
+          }
+        } catch {
+          // Try next candidate
+        }
+      }
+    }
+
     return null;
   }
 
