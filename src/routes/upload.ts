@@ -107,7 +107,20 @@ async function uploadToOSS(
   });
 
   const buffer = Buffer.from(fileBuffer);
-  const contentType = filename.endsWith(".png") ? "image/png" : "image/jpeg";
+  const ext = filename.split(".").pop()?.toLowerCase() || "";
+  const mimeMap: Record<string, string> = {
+    png: "image/png",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    gif: "image/gif",
+    webp: "image/webp",
+    mp4: "video/mp4",
+    mov: "video/quicktime",
+    avi: "video/x-msvideo",
+    webm: "video/webm",
+    mkv: "video/x-matroska",
+  };
+  const contentType = mimeMap[ext] || "application/octet-stream";
 
   await client.put(file_path, buffer, {
     headers: { "Content-Type": contentType },
@@ -129,13 +142,58 @@ export async function uploadImage(c: Context) {
       return c.json({ error: "No file provided" }, 400);
     }
 
-    const validTypes = ["image/jpeg", "image/png", "image/gif", "image/webp"];
-    if (!validTypes.includes(file.type)) {
-      return c.json({ error: `Invalid file type: ${file.type}` }, 400);
+    const validImageTypes = [
+      "image/jpeg",
+      "image/png",
+      "image/gif",
+      "image/webp",
+    ];
+    const validVideoTypes = [
+      "video/mp4",
+      "video/quicktime",
+      "video/x-msvideo",
+      "video/webm",
+      "video/x-matroska",
+    ];
+    const allValidTypes = [...validImageTypes, ...validVideoTypes];
+
+    // Detect MIME from filename if browser sends generic type
+    let fileType = file.type;
+    if (fileType === "application/octet-stream" || !fileType) {
+      const ext = file.name.split(".").pop()?.toLowerCase() || "";
+      const extMimeMap: Record<string, string> = {
+        jpg: "image/jpeg",
+        jpeg: "image/jpeg",
+        png: "image/png",
+        gif: "image/gif",
+        webp: "image/webp",
+        mp4: "video/mp4",
+        mov: "video/quicktime",
+        avi: "video/x-msvideo",
+        webm: "video/webm",
+        mkv: "video/x-matroska",
+      };
+      fileType = extMimeMap[ext] || "application/octet-stream";
     }
 
-    if (file.size > 20 * 1024 * 1024) {
-      return c.json({ error: "File too large. Max size: 20MB" }, 400);
+    if (!allValidTypes.includes(fileType)) {
+      return c.json(
+        {
+          error: `Invalid file type: ${file.type} (${fileType}). Supported: ${allValidTypes.join(", ")}`,
+        },
+        400,
+      );
+    }
+
+    const isVideo = fileType.startsWith("video/");
+    const maxSize = isVideo ? 100 * 1024 * 1024 : 20 * 1024 * 1024;
+    if (file.size > maxSize) {
+      return c.json(
+        {
+          error: `File too large. Max size: ${isVideo ? "100MB (video)" : "20MB (image)"}`,
+        },
+        400,
+      );
     }
 
     // Wait for Playwright headers (max 60s)
@@ -165,7 +223,13 @@ export async function uploadImage(c: Context) {
       );
     }
 
-    const stsData = await getSTSToken(file.name, file.size, "image", headers);
+    const isVideoFile = file.type.startsWith("video/");
+    const stsData = await getSTSToken(
+      file.name,
+      file.size,
+      isVideoFile ? "video" : "image",
+      headers,
+    );
     const fileBuffer = await file.arrayBuffer();
     const fileUrl = await uploadToOSS(fileBuffer, stsData, file.name);
 
@@ -173,6 +237,7 @@ export async function uploadImage(c: Context) {
       url: fileUrl,
       file_id: stsData.file_id,
       filename: file.name,
+      type: isVideoFile ? "video" : "image",
     });
   } catch (error: any) {
     console.error("[Upload] Error:", error.message);
@@ -217,10 +282,42 @@ export interface QwenFileEntry {
 }
 
 /**
- * Process OpenAI-style image content into Qwen file format
+ * Detect file type from URL or filename
+ */
+function detectFileType(filename: string): {
+  mime: string;
+  showType: string;
+  fileClass: string;
+} {
+  const ext = filename.split(".").pop()?.toLowerCase() || "";
+  const videoExts = ["mp4", "mov", "avi", "webm", "mkv"];
+  if (videoExts.includes(ext)) {
+    const mimeMap: Record<string, string> = {
+      mp4: "video/mp4",
+      mov: "video/quicktime",
+      avi: "video/x-msvideo",
+      webm: "video/webm",
+      mkv: "video/x-matroska",
+    };
+    return {
+      mime: mimeMap[ext] || "video/mp4",
+      showType: "video",
+      fileClass: "video",
+    };
+  }
+  return { mime: "image/jpeg", showType: "image", fileClass: "vision" };
+}
+
+/**
+ * Process OpenAI-style image/video content into Qwen file format
  */
 export async function processImagesForQwen(
-  content: Array<{ type: string; text?: string; image_url?: { url: string } }>,
+  content: Array<{
+    type: string;
+    text?: string;
+    image_url?: { url: string };
+    video_url?: { url: string };
+  }>,
   headers: Record<string, string>,
 ): Promise<{ text: string; files: QwenFileEntry[] }> {
   const textParts: string[] = [];
@@ -229,41 +326,53 @@ export async function processImagesForQwen(
   for (const part of content) {
     if (part.type === "text" && part.text) {
       textParts.push(part.text);
-    } else if (part.type === "image_url" && part.image_url?.url) {
-      const imageUrl = part.image_url.url;
+    } else if (
+      (part.type === "image_url" && part.image_url?.url) ||
+      (part.type === "video_url" && part.video_url?.url)
+    ) {
+      const mediaUrl =
+        part.type === "video_url" ? part.video_url!.url : part.image_url!.url;
+      const isVideo =
+        part.type === "video_url" ||
+        mediaUrl.match(/\.(mp4|mov|avi|webm|mkv)(\?|$)/i);
       let fileUrl = "";
       let filename = "";
       let fileSize = 0;
       let fileId = "";
 
-      if (imageUrl.startsWith("http://") || imageUrl.startsWith("https://")) {
-        fileUrl = imageUrl;
-        filename = imageUrl.split("/").pop()?.split("?")[0] || "image.jpg";
+      if (mediaUrl.startsWith("http://") || mediaUrl.startsWith("https://")) {
+        fileUrl = mediaUrl;
+        filename =
+          mediaUrl.split("/").pop()?.split("?")[0] ||
+          (isVideo ? "video.mp4" : "image.jpg");
         fileId = uuidv4();
-      } else if (imageUrl.startsWith("data:image/")) {
+      } else if (mediaUrl.startsWith("data:")) {
         try {
-          const base64Data = imageUrl.split(",")[1];
+          const isBase64Video = mediaUrl.startsWith("data:video/");
+          const base64Data = mediaUrl.split(",")[1];
           const buffer = Buffer.from(base64Data, "base64");
-          filename = `image_${Date.now()}.png`;
+          filename = isBase64Video
+            ? `video_${Date.now()}.mp4`
+            : `image_${Date.now()}.png`;
           fileSize = buffer.length;
           const stsData = await getSTSToken(
             filename,
             fileSize,
-            "image",
+            isBase64Video ? "video" : "image",
             headers,
           );
           fileUrl = await uploadToOSS(buffer.buffer, stsData, filename);
           fileId = stsData.file_id;
         } catch (err: any) {
-          console.error("[Upload] Failed to upload image:", err.message);
+          console.error("[Upload] Failed to upload media:", err.message);
           continue;
         }
       }
 
       if (fileUrl) {
-        const isPng = filename.endsWith(".png");
+        const typeInfo = detectFileType(filename);
         files.push({
-          type: "image",
+          type: typeInfo.showType,
           file: {
             created_at: Date.now(),
             data: {},
@@ -274,14 +383,14 @@ export async function processImagesForQwen(
             meta: {
               name: filename,
               size: fileSize,
-              content_type: isPng ? "image/png" : "image/jpeg",
+              content_type: typeInfo.mime,
             },
             update_at: Date.now(),
             lastModified: Date.now(),
             name: filename,
             webkitRelativePath: "",
             size: fileSize,
-            type: isPng ? "image/png" : "image/jpeg",
+            type: typeInfo.mime,
           },
           id: fileId,
           url: fileUrl,
@@ -293,9 +402,9 @@ export async function processImagesForQwen(
           size: fileSize,
           error: "",
           itemId: uuidv4(),
-          file_type: isPng ? "image/png" : "image/jpeg",
-          showType: "image",
-          file_class: "vision",
+          file_type: typeInfo.mime,
+          showType: typeInfo.showType,
+          file_class: typeInfo.fileClass,
           uploadTaskId: uuidv4(),
         });
       }

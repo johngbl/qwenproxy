@@ -159,9 +159,11 @@ export async function chatCompletions(c: Context) {
       const msg = messages[i];
       let contentStr = "";
       if (Array.isArray(msg.content)) {
-        // Handle multimodal content (text + images)
+        // Handle multimodal content (text + images + videos)
         const imageParts = msg.content.filter(
-          (p: any) => p.type === "image_url" && p.image_url?.url,
+          (p: any) =>
+            (p.type === "image_url" && p.image_url?.url) ||
+            (p.type === "video_url" && p.video_url?.url),
         );
 
         if (imageParts.length > 0) {
