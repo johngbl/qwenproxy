@@ -290,9 +290,12 @@ export async function chatCompletions(c: Context) {
       // Anti-hallucination rules
       systemPrompt +=
         "ANTI-HALLUCINATION RULES:\n" +
-        "- NEVER pretend to have used a tool. NEVER write 'tool: Edited' or 'tool: Created' as plain text.\n" +
+        "- NEVER describe tool usage as plain text (e.g. 'tool: Edited', 'I edited the file', 'File created').\n" +
+        "- NEVER fake tool results. NEVER write 'Tool Response:' or pretend a tool returned something.\n" +
         "- You MUST use <tool_call> tags or the tool will NOT be executed.\n" +
-        "- If you cannot use a tool, explain why in plain text instead of pretending.\n\n";
+        "- Tools ONLY work through <tool_call> tags. There is no other way to use tools.\n" +
+        "- If you cannot use a tool, explain why. Never pretend the action was done.\n" +
+        "- After using a tool, WAIT for the tool response. Do not assume the result.\n\n";
     }
 
     const modelId = body.model.replace("-no-thinking", "");
