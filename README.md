@@ -30,21 +30,21 @@ Proxy local compatível com OpenAI para usar o **Qwen (`chat.qwen.ai`)** por mei
 ## Arquitetura
 
 ```mermaid
-graph TD
-    Client[Cliente OpenAI/SDK] -->|HTTP| Proxy[QwenProxy - Hono]
-    Proxy --> Chat[/v1/chat/completions]
-    Proxy --> Models[/v1/models]
-    Proxy --> Upload[/v1/upload]
-    Chat --> Context[Context manager]
-    Context --> Topic[Topic detector]
-    Context --> Summary[Context summarizer]
-    Chat --> Accounts[Account manager]
-    Accounts --> DB[(SQLite)]
-    Accounts --> PW[Playwright service]
-    PW --> Profiles[qwen_profiles/]
-    Chat --> Parser[Tool-call parser]
-    Chat --> Qwen[chat.qwen.ai]
-    Upload --> OSS[Qwen OSS upload]
+flowchart TD
+    Client["Cliente OpenAI/SDK"] -->|HTTP| Proxy["QwenProxy - Hono"]
+    Proxy --> Chat["/v1/chat/completions"]
+    Proxy --> Models["/v1/models"]
+    Proxy --> Upload["/v1/upload"]
+    Chat --> Context["Context manager"]
+    Context --> Topic["Topic detector"]
+    Context --> Summary["Context summarizer"]
+    Chat --> Accounts["Account manager"]
+    Accounts --> DB[("SQLite")]
+    Accounts --> PW["Playwright service"]
+    PW --> Profiles["qwen_profiles/"]
+    Chat --> Parser["Tool-call parser"]
+    Chat --> Qwen["chat.qwen.ai"]
+    Upload --> OSS["Qwen OSS upload"]
 ```
 
 ---
