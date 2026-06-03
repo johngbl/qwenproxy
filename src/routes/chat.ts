@@ -403,8 +403,10 @@ export async function chatCompletions(c: Context) {
         ? await detectTopicChange(messages, sessionId, cache).catch(() => null)
         : null;
 
+    const summarizationTriggerTokens = Math.floor(modelContextWindow * 0.9);
+
     let finalPrompt: string;
-    if (estimatedTokens > modelContextWindow - 1000) {
+    if (estimatedTokens > summarizationTriggerTokens) {
       const truncated = await truncateMessages(messages, {
         maxContextLength: modelContextWindow,
         systemPrompt,

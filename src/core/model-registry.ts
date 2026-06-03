@@ -1,16 +1,11 @@
 const modelContextWindows: Record<string, number> = {
-  "qwen-max": 32768,
-  "qwen-max-latest": 32768,
-  "qwen-plus": 131072,
-  "qwen-plus-latest": 131072,
-  "qwen-turbo": 131072,
-  "qwen-turbo-latest": 131072,
-  "qwen-long": 1000000,
-  "qwen-coder": 131072,
-  "qwen-coder-plus": 131072,
+  "qwen3.7-plus": 1000000,
+  "qwen3.7-max": 1000000,
+  "qwen3.6-plus": 1000000,
+  "qwen3.5-flash": 1000000,
 };
 
-const defaultContextWindow = 131072;
+const defaultContextWindow = 262144;
 
 export function getModelContextWindow(modelId: string): number {
   const baseId = modelId.replace("-no-thinking", "");
