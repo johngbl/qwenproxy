@@ -19,6 +19,21 @@ const TOOLS = [
   },
 ];
 
+const FLAT_TOOLS = [
+  {
+    name: "task",
+    description: "Spawn a task",
+    parameters: {
+      type: "object",
+      properties: {
+        description: { type: "string" },
+        prompt: { type: "string" },
+      },
+      required: ["description", "prompt"],
+    },
+  },
+];
+
 test("StreamingToolParser: basic tool call", () => {
   const parser = new StreamingToolParser();
 
@@ -214,4 +229,20 @@ test("StreamingToolParser: preserves literal tool_call block when tool name is u
   const result = parser.feed(literal);
   assert.strictEqual(result.text, literal);
   assert.strictEqual(result.toolCalls.length, 0);
+});
+
+test("StreamingToolParser: accepts declared tool names from flat tool definitions", () => {
+  const parser = new StreamingToolParser(FLAT_TOOLS as any);
+
+  const result = parser.feed(
+    '<tool_call>{"name":"task","arguments":{"description":"Resume backend analysis","prompt":"Analyze all files"}}</tool_call>',
+  );
+
+  assert.strictEqual(result.text, "");
+  assert.strictEqual(result.toolCalls.length, 1);
+  assert.strictEqual(result.toolCalls[0].name, "task");
+  assert.deepStrictEqual(result.toolCalls[0].arguments, {
+    description: "Resume backend analysis",
+    prompt: "Analyze all files",
+  });
 });

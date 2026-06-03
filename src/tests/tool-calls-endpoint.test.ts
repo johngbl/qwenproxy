@@ -37,6 +37,21 @@ const TOOLS = [
   },
 ];
 
+const FLAT_TOOLS = [
+  {
+    name: "task",
+    description: "Spawn a delegated task",
+    parameters: {
+      type: "object",
+      properties: {
+        description: { type: "string" },
+        prompt: { type: "string" },
+      },
+      required: ["description", "prompt"],
+    },
+  },
+];
+
 function setupFetchMock(
   handler: (url: string, init?: RequestInit) => Response | Promise<Response>,
 ) {
@@ -352,6 +367,56 @@ test("non-stream: undeclared tool name in literal example is preserved as text",
     assert.strictEqual(message.content, literal);
     assert.strictEqual(message.tool_calls, undefined);
     assert.strictEqual(body.choices[0].finish_reason, "stop");
+  } finally {
+    restore();
+  }
+});
+
+test("non-stream: flat tool definitions are treated as declared tools", async () => {
+  const restore = setupFetchMock(() =>
+    createSseResponse([
+      `data: ${JSON.stringify({
+        choices: [
+          {
+            delta: {
+              phase: "answer",
+              content:
+                '<tool_call>{"name":"task","arguments":{"description":"Resume backend analysis","prompt":"Analyze all files"}}</tool_call>',
+            },
+          },
+        ],
+      })}`,
+    ]),
+  );
+
+  try {
+    const req = new Request("http://localhost/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "qwen3.6-plus",
+        stream: false,
+        tools: FLAT_TOOLS,
+        messages: [{ role: "user", content: "delegate the task" }],
+      }),
+    });
+
+    const res = await app.fetch(req);
+    assert.strictEqual(res.status, 200);
+
+    const body = await res.json();
+    const message = body.choices[0].message;
+    assert.strictEqual(message.content, null);
+    assert.strictEqual(message.tool_calls.length, 1);
+    assert.strictEqual(message.tool_calls[0].function.name, "task");
+    assert.deepStrictEqual(
+      JSON.parse(message.tool_calls[0].function.arguments),
+      {
+        description: "Resume backend analysis",
+        prompt: "Analyze all files",
+      },
+    );
+    assert.strictEqual(body.choices[0].finish_reason, "tool_calls");
   } finally {
     restore();
   }
