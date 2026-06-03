@@ -340,26 +340,20 @@ function extractToolName(openTag: string, block: string): string {
  */
 function inferToolNameFromParameters(
   args: Record<string, unknown>,
-  tools: FunctionToolDefinition[],
+  tools: ToolDefinitionLike[],
 ): string {
   const argKeys = Object.keys(args);
   if (argKeys.length === 0 || !Array.isArray(tools)) return "";
 
   const matches = tools.filter((tool) => {
-    const fn =
-      tool?.type === "function" ? tool.function : (tool as any)?.function;
-    const properties = fn?.parameters?.properties || {};
+    const properties = getToolDefinitionProperties(tool);
     return argKeys.every((k) =>
       Object.prototype.hasOwnProperty.call(properties, k),
     );
   });
 
   if (matches.length === 1) {
-    const fn =
-      matches[0]?.type === "function"
-        ? matches[0].function
-        : (matches[0] as any)?.function;
-    return fn?.name || "";
+    return getToolDefinitionName(matches[0]) || "";
   }
 
   return "";
@@ -371,7 +365,7 @@ function inferToolNameFromParameters(
 function parseXmlParameterToolCall(
   block: string,
   openTag: string,
-  tools: FunctionToolDefinition[],
+  tools: ToolDefinitionLike[],
 ): { name: string; arguments: Record<string, unknown> } | null {
   const args: Record<string, unknown> = {};
   const parameterRe =
@@ -398,7 +392,7 @@ function parseXmlParameterToolCall(
 function parseRecoverableXmlToolCall(
   block: string,
   openTag: string,
-  tools: FunctionToolDefinition[],
+  tools: ToolDefinitionLike[],
 ): { name: string; arguments: Record<string, unknown> } | null {
   const args: Record<string, unknown> = {};
 
@@ -647,13 +641,46 @@ function inspectIncrementalJsonToolObject(
 
 // ─── StreamingToolParser ───────────────────────────────────────────────────────
 
+type FlatToolDefinition = {
+  type?: string;
+  name?: string;
+  description?: string;
+  parameters?: { properties?: Record<string, unknown> };
+  function?: {
+    name?: string;
+    description?: string;
+    parameters?: { properties?: Record<string, unknown> };
+  };
+};
+
+type ToolDefinitionLike = FunctionToolDefinition | FlatToolDefinition;
+
+function getToolDefinitionName(tool: ToolDefinitionLike): string | undefined {
+  if (tool.function?.name) return tool.function.name;
+  if ("name" in tool && typeof tool.name === "string") return tool.name;
+  return undefined;
+}
+
+function getToolDefinitionProperties(
+  tool: ToolDefinitionLike | undefined,
+): Record<string, unknown> {
+  if (!tool) return {};
+  if (tool.function?.parameters?.properties) {
+    return tool.function.parameters.properties;
+  }
+  if ("parameters" in tool && tool.parameters?.properties) {
+    return tool.parameters.properties;
+  }
+  return {};
+}
+
 export class StreamingToolParser {
   private buffer = "";
   private insideTool = false;
   private currentOpenTag = TOOL_START_LITERAL;
   private emittedToolCallCount = 0;
   private pendingLeadIn = "";
-  private tools: FunctionToolDefinition[] = [];
+  private tools: ToolDefinitionLike[] = [];
   private markdownCodeDelimiterLength = 0;
   private incrementalToolCalls = false;
   private activeIncrementalToolCall: ActiveIncrementalToolCall | null = null;
@@ -662,7 +689,7 @@ export class StreamingToolParser {
    * @param tools - Optional array of tool definitions for name inference
    */
   constructor(
-    tools: FunctionToolDefinition[] = [],
+    tools: ToolDefinitionLike[] = [],
     options: StreamingToolParserOptions = {},
   ) {
     this.tools = tools;
@@ -670,7 +697,7 @@ export class StreamingToolParser {
     if (isToolcallDebugEnabled()) {
       logger.debug("[parser] StreamingToolParser initialized", {
         toolsCount: tools.length,
-        toolNames: tools.map((t) => t.function?.name).filter(Boolean),
+        toolNames: tools.map((t) => this.getToolName(t)).filter(Boolean),
         incrementalToolCalls: this.incrementalToolCalls,
       });
     }
@@ -679,7 +706,7 @@ export class StreamingToolParser {
   /**
    * Update the tools list (e.g. if received after construction).
    */
-  setTools(tools: FunctionToolDefinition[]): void {
+  setTools(tools: ToolDefinitionLike[]): void {
     this.tools = tools;
   }
 
@@ -700,14 +727,24 @@ export class StreamingToolParser {
     this.activeIncrementalToolCall = null;
   }
 
+  private getToolName(tool: ToolDefinitionLike): string | undefined {
+    return getToolDefinitionName(tool);
+  }
+
+  private getToolProperties(
+    tool: ToolDefinitionLike | undefined,
+  ): Record<string, unknown> {
+    return getToolDefinitionProperties(tool);
+  }
+
   private normalizeArgumentsForTool(
     name: string,
     args: Record<string, unknown>,
   ): Record<string, unknown> {
     const matchingTool = this.tools.find(
-      (tool) => tool.function?.name === name,
+      (tool) => this.getToolName(tool) === name,
     );
-    const toolProperties = matchingTool?.function?.parameters?.properties || {};
+    const toolProperties = this.getToolProperties(matchingTool);
     if (
       Object.keys(args).length === 1 &&
       Object.prototype.hasOwnProperty.call(args, "arguments") &&
@@ -878,7 +915,7 @@ export class StreamingToolParser {
 
   private isDeclaredToolName(name: string): boolean {
     if (!name || this.tools.length === 0) return true;
-    return this.tools.some((tool) => tool.function?.name === name);
+    return this.tools.some((tool) => this.getToolName(tool) === name);
   }
 
   private preserveLiteralToolCall(
