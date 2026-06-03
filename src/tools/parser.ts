@@ -236,25 +236,25 @@ export class StreamingToolParser {
               textBeforePreview: textBefore.substring(0, 100),
             });
           }
-          // Preserve lead-in text
-          if (this.emittedToolCallCount === 0) {
-            result.text += textBefore;
-          } else {
-            this.pendingLeadIn += textBefore;
-          }
+          // Once a tool call appears, hold the lead-in text.
+          // OpenAI-compatible clients expect the whole assistant turn to be
+          // a structured tool_calls message when tools are invoked.
+          this.pendingLeadIn += textBefore;
           this.insideTool = true;
           this.currentOpenTag = match[0];
           this.buffer = this.buffer.substring(match.index + match[0].length);
           continue;
         } else {
-          // No full open tag found. Check for partial tag at end.
+          // No full open tag found. Check for partial at end.
           const partialIdx = findPartialToolOpenIndex(this.buffer);
           const flushIndex =
             partialIdx === -1 ? this.buffer.length : partialIdx;
           if (flushIndex > 0) {
             const textToEmit = this.buffer.substring(0, flushIndex);
-            // Always emit trailing text
-            result.text += textToEmit;
+            // Only emit as content if no tool calls have been emitted yet
+            if (this.emittedToolCallCount === 0) {
+              result.text += textToEmit;
+            }
             this.buffer = this.buffer.substring(flushIndex);
           }
           if (isToolcallDebugEnabled() && partialIdx !== -1) {
@@ -353,18 +353,18 @@ export class StreamingToolParser {
           this.emittedToolCallCount++;
           this.pendingLeadIn = "";
         } else {
-          // Recovery failed. Preserve the full tag block as text when no tools have been emmited yet (test)
+          // Recovery failed. Restore lead-in text if no tools were emitted.
           logger.warn(
             "[parser] Dropping unrecoverable unclosed tool call at end of stream",
             {
               bufferPreview: trimmed.substring(0, 500),
             },
           );
-          if (this.emittedToolCallCount === 0) {
-            if (this.pendingLeadIn.trim().length > 0) {
-              result.text += this.pendingLeadIn;
-            }
-            result.text += TOOL_START_LITERAL + trimmed + TOOL_END;
+          if (
+            this.emittedToolCallCount === 0 &&
+            this.pendingLeadIn.trim().length > 0
+          ) {
+            result.text += this.pendingLeadIn;
           }
           this.pendingLeadIn = "";
         }
@@ -570,7 +570,8 @@ export class StreamingToolParser {
     }
 
     // 4) Tool call is malformed and unrecoverable.
-    // Preserve the full tag block as text when no tools have been emitted yet
+    // Never leak internal XML to user-visible content.
+    // Restore lead-in text if no tools were emitted.
     logger.warn("[parser] Dropping malformed tool call block", {
       contentPreview: t.substring(0, 500),
       hasName:
@@ -583,11 +584,11 @@ export class StreamingToolParser {
       first100Chars: t.substring(0, 100),
       contentLength: t.length,
     });
-    if (this.emittedToolCallCount === 0) {
-      if (this.pendingLeadIn.trim().length > 0) {
-        result.text += this.pendingLeadIn;
-      }
-      result.text += this.currentOpenTag + t + TOOL_END;
+    if (
+      this.emittedToolCallCount === 0 &&
+      this.pendingLeadIn.trim().length > 0
+    ) {
+      result.text += this.pendingLeadIn;
     }
     this.pendingLeadIn = "";
   }
@@ -825,15 +826,29 @@ export class StreamingToolParser {
     }
 
     // Fallback: extract JSON tool call via balanced-brace search for large payloads
-    if (calls.length === 0 && str.includes('"name"') && str.includes('"arguments"')) {
+    if (
+      calls.length === 0 &&
+      str.includes('"name"') &&
+      str.includes('"arguments"')
+    ) {
       const extracted = this.extractJsonToolCallByBraceMatching(str);
       if (extracted) {
         const tc = this.parseToolCall(extracted);
-        if (tc && !calls.some(c => c.name === tc.name && JSON.stringify(c.arguments) === JSON.stringify(tc.arguments))) {
+        if (
+          tc &&
+          !calls.some(
+            (c) =>
+              c.name === tc.name &&
+              JSON.stringify(c.arguments) === JSON.stringify(tc.arguments),
+          )
+        ) {
           if (isToolcallDebugEnabled()) {
-            logger.debug("[parser] parseToolContent: brace-matching extraction succeeded", {
-              name: tc.name,
-            });
+            logger.debug(
+              "[parser] parseToolContent: brace-matching extraction succeeded",
+              {
+                name: tc.name,
+              },
+            );
           }
           calls.push(tc);
         }
@@ -850,7 +865,7 @@ export class StreamingToolParser {
     return calls;
   }
 
-  // Extract a JSON object from a string 
+  // Extract a JSON object from a string
   private extractJsonToolCallByBraceMatching(str: string): any | null {
     const startIdx = str.indexOf("{");
     if (startIdx === -1) return null;
@@ -940,5 +955,4 @@ export class StreamingToolParser {
       arguments: args,
     };
   }
-
 }

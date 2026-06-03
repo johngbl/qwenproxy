@@ -48,10 +48,7 @@ import {
 import { metrics } from "../core/metrics.js";
 import { logger, isToolcallDebugEnabled } from "../core/logger.js";
 import { getCache } from "../api/server.ts";
-import {
-  deriveSessionId,
-  detectTopicChange,
-} from "../utils/topic-detector.ts";
+import { deriveSessionId, detectTopicChange } from "../utils/topic-detector.ts";
 
 const accountMutexes = new Map<string, Mutex>();
 function getAccountMutex(accountId: string): Mutex {
@@ -162,6 +159,12 @@ export async function chatCompletions(c: Context) {
   try {
     const body: OpenAIRequest = await c.req.json();
     const isStream = body.stream ?? false;
+    const isInternalSummarizationRequest =
+      c.req.header("X-Internal-Summarization") === "true";
+    const sessionKey =
+      typeof body.user === "string" && body.user.trim().length > 0
+        ? body.user.trim()
+        : null;
 
     // Extract the prompt
     const promptParts: string[] = [];
@@ -384,12 +387,14 @@ export async function chatCompletions(c: Context) {
     const modelContextWindow = getModelContextWindow(modelId);
     const estimatedTokens = estimateTokenCount(systemPrompt + prompt);
 
-    // Topic detection runs before truncation to have full message context.
-    // deriveSessionId generates a stable SHA-256 hash from system prompt + first user message,
-    // since chat.ts does not receive a sessionId from the OpenAI-compatible API
-    const sessionId = deriveSessionId(messages, systemPrompt);
+    // Topic detection is only enabled when the caller provides a stable user key.
+    // This avoids cross-conversation cache pollution from heuristic-only session IDs.
+    const sessionId =
+      !isInternalSummarizationRequest && sessionKey
+        ? deriveSessionId(messages, systemPrompt, sessionKey)
+        : null;
     const cache = getCache();
-    if (cache) {
+    if (cache && sessionId) {
       await detectTopicChange(messages, sessionId, cache).catch(() => {
         // Non-fatal: topic detection failure must not block the request pipeline
       });
@@ -400,8 +405,11 @@ export async function chatCompletions(c: Context) {
       const truncated = await truncateMessages(messages, {
         maxContextLength: modelContextWindow,
         systemPrompt,
-        enableSummarization: config.context.summarization.enabled,
+        enableSummarization:
+          !isInternalSummarizationRequest &&
+          config.context.summarization.enabled,
         summarizationModel: config.context.summarization.model,
+        minMessagesToKeep: config.context.minMessagesToKeep,
       });
       finalPrompt = truncated
         .map(
