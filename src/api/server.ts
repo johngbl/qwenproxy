@@ -3,11 +3,14 @@ import { Hono } from "hono";
 import { serve } from "@hono/node-server";
 import { config } from "../core/config.js";
 import { metrics } from "../core/metrics.js";
+import { logger } from "../core/logger.js";
 import { MemoryCache } from "../cache/memory-cache.js";
 import { Watchdog } from "../core/watchdog.js";
 import { app as modelsApp } from "./models.js";
 import { chatCompletions, chatCompletionsStop } from "../routes/chat.js";
 import { uploadFile } from "../routes/upload.js";
+import { sendOpenAIError } from "./error-helpers.js";
+import { AuthError, NotFoundError } from "../core/errors.js";
 
 // Module-level state (initialized in startServer)
 let cache: MemoryCache | undefined;
@@ -40,7 +43,7 @@ app.use("/v1/*", async (c, next) => {
   if (apiKey) {
     const auth = c.req.header("Authorization");
     if (!auth?.startsWith("Bearer ")) {
-      return c.json({ error: "Missing or invalid Authorization header" }, 401);
+      return sendOpenAIError(c, new AuthError("Missing or invalid Authorization header"));
     }
     const token = auth.slice(7);
     const tokenBuf = Buffer.from(token);
@@ -49,7 +52,7 @@ app.use("/v1/*", async (c, next) => {
       tokenBuf.length !== keyBuf.length ||
       !crypto.timingSafeEqual(tokenBuf, keyBuf)
     ) {
-      return c.json({ error: "Invalid API key" }, 401);
+      return sendOpenAIError(c, new AuthError("Invalid API key"));
     }
   }
   await next();
@@ -80,11 +83,14 @@ app.get("/metrics", (c) => {
 
 app.onError((err, c) => {
   metrics.increment("requests.errors");
-  console.error("API Error:", err);
-  return c.json({ error: err.message }, 500);
+  logger.error("API Error", {
+    error: err instanceof Error ? err.message : String(err),
+    stack: err instanceof Error ? err.stack : undefined
+  });
+  return sendOpenAIError(c, err);
 });
 
-app.notFound((c) => c.json({ error: "Not found" }, 404));
+app.notFound((c) => sendOpenAIError(c, new NotFoundError("Not found")));
 
 export async function startServer(): Promise<void> {
   cache = new MemoryCache();

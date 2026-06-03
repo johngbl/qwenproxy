@@ -1,0 +1,1113 @@
+/*
+ * File: streaming.ts
+ * Project: qproxy
+ *
+ * Upstream stream consumption: both non-streaming (JSON) and streaming (SSE)
+ * response modes. Encapsulates heartbeat, abort handling, reasoning tag
+ * sanitization, and incremental tool-call parsing.
+ */
+
+import { Context } from "hono";
+import { stream as honoStream } from "hono/streaming";
+import { v4 as uuidv4 } from "uuid";
+import { updateSessionParent } from "../../services/qwen.ts";
+import type { OpenAIRequest } from "../../utils/types.ts";
+import { StreamingToolParser } from "../../tools/parser.ts";
+import { StreamingReasoningTagSanitizer } from "../../utils/reasoning-tags.ts";
+import {
+    getStream,
+    removeStream,
+    updateStreamTargetResponseId,
+} from "../../core/stream-registry.ts";
+import { metrics } from "../../core/metrics.js";
+import { logger, isToolcallDebugEnabled } from "../../core/logger.js";
+import { sendOpenAIError, createError } from "../../api/error-helpers.js";
+import type { QproxyStatusCode } from "../../core/errors.js";
+import {
+    parseQwenErrorPayload,
+} from "./errors.ts";
+import {
+    getIncrementalDelta,
+    formatThinkingSummaryContent,
+    shouldSuppressStreamAbort,
+    createUsageAccumulator,
+    applyUpstreamUsage,
+    buildUsage,
+} from "./helpers.ts";
+
+export interface StreamProcessingParams {
+    c: Context;
+    completionId: string;
+    stream: ReadableStream;
+    uiSessionId: string;
+    activeAccountId: string;
+    body: OpenAIRequest & { stream_options?: { include_usage?: boolean } };
+    finalPrompt: string;
+    shouldParseToolCalls: boolean;
+    declaredTools: any[];
+}
+
+// ─── Non-streaming (JSON response) ─────────────────────────────────────────────
+
+export async function processNonStreamingResponse(
+    params: StreamProcessingParams,
+): Promise<Response> {
+    const {
+        c,
+        completionId,
+        stream,
+        uiSessionId,
+        activeAccountId,
+        body,
+        finalPrompt,
+        shouldParseToolCalls,
+        declaredTools,
+    } = params;
+
+    try {
+        const reader = stream.getReader();
+        const decoder = new TextDecoder();
+
+        let lastThinkingSummary = "";
+        let reasoningBuffer = "";
+        let lastRawContent = "";
+        let finalContent = "";
+        let targetResponseId: string | null = null;
+        const toolParser = shouldParseToolCalls
+            ? new StreamingToolParser(declaredTools)
+            : null;
+        const reasoningTagSanitizer = new StreamingReasoningTagSanitizer();
+        const toolCallsOut: any[] = [];
+        let loggedThinkTagLeak = false;
+        let buffer = "";
+        const usageAccumulator = createUsageAccumulator(
+            Math.ceil(finalPrompt.length / 3.5),
+        );
+
+        const consumeAnswerText = (textChunk: string) => {
+            if (!toolParser) {
+                finalContent += textChunk;
+                return;
+            }
+
+            const { text, toolCalls } = toolParser.feed(textChunk);
+            if (text) {
+                finalContent += text;
+            }
+            if (isToolcallDebugEnabled() && (text || toolCalls.length > 0)) {
+                logger.debug("[chat] non-stream: parser feed result", {
+                    textLength: text.length,
+                    textPreview: text.substring(0, 100),
+                    toolCallsCount: toolCalls.length,
+                    toolCallNames: toolCalls.map((tc) => tc.name),
+                });
+            }
+            for (const tc of toolCalls) {
+                toolCallsOut.push({
+                    id: tc.id,
+                    type: "function",
+                    function: {
+                        name: tc.name,
+                        arguments: JSON.stringify(tc.arguments),
+                    },
+                });
+
+                if (isToolcallDebugEnabled()) {
+                    logger.debug("[chat] non-stream: tool_call collected", {
+                        id: tc.id,
+                        name: tc.name,
+                        argsKeys: Object.keys(tc.arguments),
+                        totalCollected: toolCallsOut.length,
+                    });
+                }
+            }
+        };
+
+        const consumeSanitizedAnswerChunk = (textChunk: string) => {
+            const sanitized = reasoningTagSanitizer.feed(textChunk);
+            if (sanitized.detectedThinkTag && !loggedThinkTagLeak) {
+                logger.warn(
+                    "[chat] Detected <think> tags in answer content; sanitizing output",
+                    {
+                        completionId,
+                        mode: "non-stream",
+                        model: body.model,
+                        hadMalformedTag: sanitized.hadMalformedTag,
+                        hadUnclosedTag: sanitized.hadUnclosedTag,
+                    },
+                );
+                loggedThinkTagLeak = true;
+            }
+            if (sanitized.reasoning) {
+                reasoningBuffer += sanitized.reasoning;
+            }
+            if (sanitized.text) {
+                consumeAnswerText(sanitized.text);
+            }
+        };
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() || "";
+
+            for (const line of lines) {
+                const trimmed = line.trim();
+                if (!trimmed || !trimmed.startsWith("data: ")) continue;
+
+                const dataStr = trimmed.slice(6);
+                if (dataStr === "[DONE]") continue;
+
+                try {
+                    const chunk = JSON.parse(dataStr);
+
+                    if (
+                        chunk["response.created"] &&
+                        chunk["response.created"].response_id
+                    ) {
+                        if (!targetResponseId) {
+                            targetResponseId = chunk["response.created"].response_id;
+                        }
+                        updateSessionParent(
+                            uiSessionId,
+                            chunk["response.created"].response_id,
+                            activeAccountId,
+                        );
+                    } else if (chunk.response_id && !targetResponseId) {
+                        targetResponseId = chunk.response_id;
+                        updateSessionParent(
+                            uiSessionId,
+                            chunk.response_id,
+                            activeAccountId,
+                        );
+                    }
+
+                    applyUpstreamUsage(usageAccumulator, chunk.usage);
+
+                    let vStr = "";
+                    let foundStr = false;
+                    let isThinkingChunk = false;
+
+                    if (
+                        chunk.choices &&
+                        chunk.choices[0] &&
+                        chunk.choices[0].delta &&
+                        (targetResponseId === null ||
+                            chunk.response_id === targetResponseId)
+                    ) {
+                        const delta = chunk.choices[0].delta;
+
+                        if (delta.phase === "thinking_summary") {
+                            isThinkingChunk = true;
+                            const formattedSummary = formatThinkingSummaryContent(delta);
+                            if (formattedSummary) {
+                                const result = getIncrementalDelta(
+                                    lastThinkingSummary,
+                                    formattedSummary,
+                                );
+                                vStr = result.delta;
+                                lastThinkingSummary = result.matchedContent;
+                                if (vStr) {
+                                    foundStr = true;
+                                }
+                            }
+                        } else if (delta.phase === "answer") {
+                            isThinkingChunk = false;
+                            if (delta.content !== undefined) {
+                                const newContent = delta.content || "";
+                                const result = getIncrementalDelta(
+                                    lastRawContent,
+                                    newContent,
+                                );
+                                vStr = result.delta;
+                                if (vStr) {
+                                    lastRawContent = result.matchedContent;
+                                    foundStr = true;
+                                }
+                            }
+                        }
+                    }
+
+                    if (foundStr && vStr !== "") {
+                        if (vStr === "FINISHED") continue;
+                        if (isThinkingChunk) {
+                            reasoningBuffer += vStr;
+                        } else {
+                            consumeSanitizedAnswerChunk(vStr);
+                        }
+                    }
+                } catch (_e) {
+                    // Ignore partial chunk parse errors
+                }
+            }
+        }
+
+        const upstreamError = parseQwenErrorPayload(buffer);
+        if (upstreamError) {
+            removeStream(completionId);
+            return sendOpenAIError(
+                c,
+                createError(
+                    upstreamError.status as QproxyStatusCode,
+                    upstreamError.message,
+                ),
+            );
+        }
+
+        const remainingSanitized = reasoningTagSanitizer.flush();
+        if (remainingSanitized.detectedThinkTag && !loggedThinkTagLeak) {
+            logger.warn(
+                "[chat] Detected <think> tags in answer content; sanitizing output",
+                {
+                    completionId,
+                    mode: "non-stream",
+                    model: body.model,
+                    hadMalformedTag: remainingSanitized.hadMalformedTag,
+                    hadUnclosedTag: remainingSanitized.hadUnclosedTag,
+                },
+            );
+            loggedThinkTagLeak = true;
+        }
+        if (remainingSanitized.reasoning) {
+            reasoningBuffer += remainingSanitized.reasoning;
+        }
+        if (remainingSanitized.text) {
+            consumeAnswerText(remainingSanitized.text);
+        }
+
+        const remainingParsed = toolParser
+            ? toolParser.flush()
+            : { text: "", toolCalls: [] };
+        const { text: remainingText, toolCalls: remainingToolCalls } =
+            remainingParsed;
+
+        if (toolParser && isToolcallDebugEnabled()) {
+            logger.debug("[chat] non-stream: parser flush result", {
+                remainingTextLength: remainingText?.length || 0,
+                remainingToolCallsCount: remainingToolCalls.length,
+                remainingToolCallNames: remainingToolCalls.map((tc) => tc.name),
+            });
+        }
+
+        if (remainingText) {
+            finalContent += remainingText;
+        }
+        for (const tc of remainingToolCalls) {
+            toolCallsOut.push({
+                id: tc.id,
+                type: "function",
+                function: {
+                    name: tc.name,
+                    arguments: JSON.stringify(tc.arguments),
+                },
+            });
+        }
+
+        if (isToolcallDebugEnabled()) {
+            logger.debug("[chat] non-stream: final toolcall summary", {
+                totalToolCalls: toolCallsOut.length,
+                toolCallNames: toolCallsOut.map((tc: any) => tc.function?.name),
+                contentLength: finalContent.length,
+                hasReasoning: !!reasoningBuffer,
+            });
+        }
+
+        const usage = buildUsage(usageAccumulator);
+        const message: any = {
+            role: "assistant",
+            content: toolCallsOut.length ? null : finalContent,
+        };
+        if (reasoningBuffer) message.reasoning_content = reasoningBuffer;
+        if (toolCallsOut.length) {
+            toolCallsOut.forEach((tc, idx) => {
+                tc.index = idx;
+            });
+            message.tool_calls = toolCallsOut;
+        }
+
+        const finishReason = toolCallsOut.length ? "tool_calls" : "stop";
+
+        if (isToolcallDebugEnabled()) {
+            logger.debug("[chat] non-stream: sending response", {
+                completionId,
+                finishReason,
+                totalToolCalls: toolCallsOut.length,
+                contentLength: message.content?.length || 0,
+                hasReasoning: !!message.reasoning_content,
+                usage,
+            });
+        }
+
+        return c.json({
+            id: completionId,
+            object: "chat.completion",
+            created: Math.floor(Date.now() / 1000),
+            model: body.model,
+            choices: [
+                {
+                    index: 0,
+                    message,
+                    logprobs: null,
+                    finish_reason: finishReason,
+                },
+            ],
+            usage,
+        });
+    } finally {
+        if (isToolcallDebugEnabled()) {
+            logger.debug("[chat] non-stream: cleanup", { completionId });
+        }
+        removeStream(completionId);
+    }
+}
+
+// ─── Streaming (SSE) ───────────────────────────────────────────────────────────
+
+export async function processStreamingResponse(
+    params: StreamProcessingParams,
+): Promise<Response> {
+    const {
+        c,
+        completionId,
+        stream,
+        uiSessionId,
+        activeAccountId,
+        body,
+        finalPrompt,
+        shouldParseToolCalls,
+        declaredTools,
+    } = params;
+
+    // Pre-read initial bytes to detect upstream error before committing to SSE
+    const streamReader = stream.getReader();
+    const streamDecoder = new TextDecoder();
+    let initialStreamBuffer = "";
+
+    while (true) {
+        const { done, value } = await streamReader.read();
+        if (done) {
+            initialStreamBuffer += streamDecoder.decode();
+            break;
+        }
+
+        initialStreamBuffer += streamDecoder.decode(value, { stream: true });
+        const trimmedInitialBuffer = initialStreamBuffer.trimStart();
+        if (
+            trimmedInitialBuffer.startsWith("data: ") ||
+            trimmedInitialBuffer.startsWith(":")
+        ) {
+            break;
+        }
+    }
+
+    const upstreamError = parseQwenErrorPayload(initialStreamBuffer);
+    if (upstreamError) {
+        removeStream(completionId);
+        return sendOpenAIError(
+            c,
+            createError(
+                upstreamError.status as QproxyStatusCode,
+                upstreamError.message,
+            ),
+        );
+    }
+
+    c.header("Content-Type", "text/event-stream");
+    c.header("Cache-Control", "no-cache");
+    c.header("Connection", "keep-alive");
+
+    return honoStream(c, async (streamWriter: any) => {
+        let heartbeatInterval: any;
+        let clientDisconnected = false;
+
+        const abortHandler = async () => {
+            if (clientDisconnected) return;
+            clientDisconnected = true;
+
+            console.log(
+                `[Chat] Client disconnected for ${completionId}, stopping Qwen generation...`,
+            );
+
+            if (isToolcallDebugEnabled()) {
+                logger.debug("[chat] stream: client disconnected", {
+                    completionId,
+                    uiSessionId,
+                });
+            }
+
+            try {
+                const streamData = getStream(completionId);
+                if (streamData && uiSessionId) {
+                    const targetResponseId = streamData.targetResponseId;
+                    if (targetResponseId) {
+                        console.log(
+                            `[Chat] Calling Qwen stop for session=${uiSessionId}, response=${targetResponseId}`,
+                        );
+                        await fetch(
+                            `https://chat.qwen.ai/api/v2/chat/completions/stop?chat_id=${uiSessionId}`,
+                            {
+                                method: "POST",
+                                headers: {
+                                    Accept: "application/json",
+                                    "Content-Type": "application/json",
+                                    Cookie: streamData.headers.cookie,
+                                    Origin: "https://chat.qwen.ai",
+                                    Referer: `https://chat.qwen.ai/c/${uiSessionId}`,
+                                    "User-Agent": streamData.headers["user-agent"],
+                                    "X-Request-Id": uuidv4(),
+                                    "bx-ua": streamData.headers["bx-ua"],
+                                    "bx-umidtoken": streamData.headers["bx-umidtoken"],
+                                    "bx-v": streamData.headers["bx-v"],
+                                },
+                                body: JSON.stringify({
+                                    chat_id: uiSessionId,
+                                    response_id: targetResponseId,
+                                }),
+                            },
+                        ).catch((err) => {
+                            console.error(`[Chat] Error calling Qwen stop: ${err.message}`);
+                        });
+                    } else {
+                        console.log(
+                            `[Chat] No targetResponseId yet for ${completionId}, skipping Qwen stop`,
+                        );
+                    }
+                }
+
+                try {
+                    streamData?.abortController.abort();
+                } catch (abortErr: any) {
+                    if (abortErr.name !== "AbortError") {
+                        console.error(
+                            `[Chat] Error aborting stream: ${abortErr.message}`,
+                        );
+                    }
+                }
+            } catch (err: any) {
+                console.error(
+                    `[Chat] Error during disconnect cleanup: ${err.message}`,
+                );
+            }
+
+            clearInterval(heartbeatInterval);
+            removeStream(completionId);
+        };
+
+        c.req.raw.signal.addEventListener("abort", abortHandler);
+
+        try {
+            await streamWriter.write(": heartbeat\n\n");
+
+            heartbeatInterval = setInterval(async () => {
+                try {
+                    if (!clientDisconnected) {
+                        await streamWriter.write(": keep-alive\n\n");
+                    }
+                } catch (_e) {
+                    clearInterval(heartbeatInterval);
+                }
+            }, 15000);
+
+            const writeEvent = async (data: any) => {
+                await streamWriter.write(`data: ${JSON.stringify(data)}\n\n`);
+            };
+
+            const makeChoice = (
+                delta: any,
+                finishReason: string | null = null,
+            ) => ({
+                index: 0,
+                delta,
+                logprobs: null,
+                finish_reason: finishReason,
+            });
+
+            // Initial role chunk
+            await writeEvent({
+                id: completionId,
+                object: "chat.completion.chunk",
+                created: Math.floor(Date.now() / 1000),
+                model: body.model,
+                choices: [makeChoice({ role: "assistant", content: "" })],
+            });
+
+            const reader = streamReader;
+            const decoder = new TextDecoder();
+
+            let lastThinkingSummary = "";
+            let lastRawContent = "";
+            let targetResponseId: string | null = null;
+            const toolParser = shouldParseToolCalls
+                ? new StreamingToolParser(declaredTools, {
+                    incrementalToolCalls: true,
+                })
+                : null;
+            const reasoningTagSanitizer = new StreamingReasoningTagSanitizer();
+            let loggedThinkTagLeak = false;
+
+            let buffer = initialStreamBuffer;
+            const usageAccumulator = createUsageAccumulator(
+                Math.ceil(finalPrompt.length / 3.5),
+            );
+
+            const emitAnswerText = async (textChunk: string) => {
+                if (!toolParser) {
+                    await writeEvent({
+                        id: completionId,
+                        object: "chat.completion.chunk",
+                        created: Math.floor(Date.now() / 1000),
+                        model: body.model,
+                        choices: [makeChoice({ content: textChunk })],
+                    });
+                    return;
+                }
+
+                const { text, toolCalls, toolCallDeltas } =
+                    toolParser.feed(textChunk);
+
+                if (
+                    isToolcallDebugEnabled() &&
+                    (text || toolCalls.length > 0 || toolCallDeltas.length > 0)
+                ) {
+                    logger.debug("[chat] stream: parser feed result", {
+                        textLength: text.length,
+                        textPreview: text.substring(0, 100),
+                        toolCallsCount: toolCalls.length,
+                        toolCallNames: toolCalls.map((tc) => tc.name),
+                        toolCallDeltaCount: toolCallDeltas.length,
+                    });
+                }
+
+                if (text) {
+                    await writeEvent({
+                        id: completionId,
+                        object: "chat.completion.chunk",
+                        created: Math.floor(Date.now() / 1000),
+                        model: body.model,
+                        choices: [makeChoice({ content: text })],
+                    });
+                }
+
+                for (const delta of toolCallDeltas) {
+                    if (isToolcallDebugEnabled()) {
+                        logger.debug(
+                            "[chat] stream: emitting incremental tool_call delta",
+                            {
+                                index: delta.index,
+                                id: delta.id,
+                                name: delta.function.name,
+                                argumentsChunkLength: delta.function.arguments?.length || 0,
+                            },
+                        );
+                    }
+
+                    await writeEvent({
+                        id: completionId,
+                        object: "chat.completion.chunk",
+                        created: Math.floor(Date.now() / 1000),
+                        model: body.model,
+                        choices: [
+                            makeChoice({
+                                tool_calls: [
+                                    {
+                                        index: delta.index,
+                                        ...(delta.id ? { id: delta.id } : {}),
+                                        ...(delta.type ? { type: delta.type } : {}),
+                                        function: {
+                                            ...(delta.function.name
+                                                ? { name: delta.function.name }
+                                                : {}),
+                                            ...(delta.function.arguments !== undefined
+                                                ? { arguments: delta.function.arguments }
+                                                : {}),
+                                        },
+                                    },
+                                ],
+                            }),
+                        ],
+                    });
+                }
+
+                for (const tc of toolCalls) {
+                    if (isToolcallDebugEnabled()) {
+                        logger.debug("[chat] stream: emitting tool_call chunk", {
+                            id: tc.id,
+                            name: tc.name,
+                            argsKeys: Object.keys(tc.arguments),
+                            index:
+                                toolParser.getEmittedToolCallCount() -
+                                toolCalls.length +
+                                toolCalls.indexOf(tc),
+                        });
+                    }
+
+                    await writeEvent({
+                        id: completionId,
+                        object: "chat.completion.chunk",
+                        created: Math.floor(Date.now() / 1000),
+                        model: body.model,
+                        choices: [
+                            makeChoice({
+                                tool_calls: [
+                                    {
+                                        index:
+                                            toolParser.getEmittedToolCallCount() -
+                                            toolCalls.length +
+                                            toolCalls.indexOf(tc),
+                                        id: tc.id,
+                                        type: "function",
+                                        function: {
+                                            name: tc.name,
+                                            arguments: JSON.stringify(tc.arguments),
+                                        },
+                                    },
+                                ],
+                            }),
+                        ],
+                    });
+                }
+            };
+
+            const emitSanitizedAnswerChunk = async (textChunk: string) => {
+                const sanitized = reasoningTagSanitizer.feed(textChunk);
+                if (sanitized.detectedThinkTag && !loggedThinkTagLeak) {
+                    logger.warn(
+                        "[chat] Detected <think> tags in answer content; sanitizing output",
+                        {
+                            completionId,
+                            mode: "stream",
+                            model: body.model,
+                            hadMalformedTag: sanitized.hadMalformedTag,
+                            hadUnclosedTag: sanitized.hadUnclosedTag,
+                        },
+                    );
+                    loggedThinkTagLeak = true;
+                }
+
+                if (sanitized.reasoning) {
+                    await writeEvent({
+                        id: completionId,
+                        object: "chat.completion.chunk",
+                        created: Math.floor(Date.now() / 1000),
+                        model: body.model,
+                        choices: [makeChoice({ reasoning_content: sanitized.reasoning })],
+                    });
+                }
+
+                if (sanitized.text) {
+                    await emitAnswerText(sanitized.text);
+                }
+            };
+
+            // Main SSE reader loop
+            while (true) {
+                if (clientDisconnected) {
+                    if (isToolcallDebugEnabled()) {
+                        logger.debug(
+                            "[chat] stream: breaking loop - client disconnected",
+                        );
+                    }
+                    break;
+                }
+
+                if (!buffer.includes("\n")) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                }
+                const lines = buffer.split("\n");
+                buffer = lines.pop() || "";
+
+                for (const line of lines) {
+                    const trimmed = line.trim();
+                    if (!trimmed || !trimmed.startsWith("data: ")) continue;
+
+                    const dataStr = trimmed.slice(6);
+                    if (dataStr === "[DONE]") {
+                        if (!clientDisconnected) {
+                            await streamWriter.write("data: [DONE]\n\n");
+                        }
+                        continue;
+                    }
+
+                    try {
+                        const chunk = JSON.parse(dataStr);
+
+                        if (
+                            chunk["response.created"] &&
+                            chunk["response.created"].response_id
+                        ) {
+                            if (!targetResponseId) {
+                                targetResponseId = chunk["response.created"].response_id;
+                                if (targetResponseId) {
+                                    updateStreamTargetResponseId(
+                                        completionId,
+                                        targetResponseId,
+                                    );
+                                }
+                            }
+                            updateSessionParent(
+                                uiSessionId,
+                                chunk["response.created"].response_id,
+                                activeAccountId,
+                            );
+                        } else if (chunk.response_id && !targetResponseId) {
+                            targetResponseId = chunk.response_id;
+                            if (targetResponseId) {
+                                updateStreamTargetResponseId(completionId, targetResponseId);
+                            }
+                            updateSessionParent(
+                                uiSessionId,
+                                chunk.response_id,
+                                activeAccountId,
+                            );
+                        }
+
+                        applyUpstreamUsage(usageAccumulator, chunk.usage);
+
+                        let vStr = "";
+                        let foundStr = false;
+                        let isThinkingChunk = false;
+
+                        if (
+                            chunk.choices &&
+                            chunk.choices[0] &&
+                            chunk.choices[0].delta &&
+                            (targetResponseId === null ||
+                                chunk.response_id === targetResponseId)
+                        ) {
+                            const delta = chunk.choices[0].delta;
+
+                            if (delta.phase === "thinking_summary") {
+                                isThinkingChunk = true;
+                                const formattedSummary = formatThinkingSummaryContent(delta);
+                                if (formattedSummary) {
+                                    const result = getIncrementalDelta(
+                                        lastThinkingSummary,
+                                        formattedSummary,
+                                    );
+                                    vStr = result.delta;
+                                    lastThinkingSummary = result.matchedContent;
+                                    if (vStr) {
+                                        foundStr = true;
+                                    }
+                                }
+                            } else if (delta.phase === "answer") {
+                                isThinkingChunk = false;
+                                if (delta.content !== undefined) {
+                                    const newContent = delta.content || "";
+                                    const result = getIncrementalDelta(
+                                        lastRawContent,
+                                        newContent,
+                                    );
+                                    vStr = result.delta;
+                                    if (vStr) {
+                                        lastRawContent = result.matchedContent;
+                                        foundStr = true;
+                                    }
+                                }
+                            }
+                        }
+
+                        if (foundStr && vStr !== "") {
+                            if (vStr === "FINISHED") continue;
+
+                            if (isThinkingChunk) {
+                                await writeEvent({
+                                    id: completionId,
+                                    object: "chat.completion.chunk",
+                                    created: Math.floor(Date.now() / 1000),
+                                    model: body.model,
+                                    choices: [makeChoice({ reasoning_content: vStr })],
+                                });
+                            } else {
+                                await emitSanitizedAnswerChunk(vStr);
+                            }
+                        }
+                    } catch (_e) {
+                        // Ignore partial chunk parse errors
+                    }
+                }
+            }
+
+            // Post-stream: error check + flush remaining content
+            const upstreamError = parseQwenErrorPayload(buffer);
+            if (upstreamError) {
+                await writeEvent({
+                    id: completionId,
+                    object: "chat.completion.chunk",
+                    created: Math.floor(Date.now() / 1000),
+                    model: body.model,
+                    choices: [makeChoice({ content: upstreamError.message })],
+                });
+                await writeEvent({
+                    id: completionId,
+                    object: "chat.completion.chunk",
+                    created: Math.floor(Date.now() / 1000),
+                    model: body.model,
+                    choices: [makeChoice({}, "stop")],
+                });
+                await streamWriter.write("data: [DONE]\n\n");
+                return;
+            }
+
+            const remainingSanitized = reasoningTagSanitizer.flush();
+            if (remainingSanitized.detectedThinkTag && !loggedThinkTagLeak) {
+                logger.warn(
+                    "[chat] Detected <think> tags in answer content; sanitizing output",
+                    {
+                        completionId,
+                        mode: "stream",
+                        model: body.model,
+                        hadMalformedTag: remainingSanitized.hadMalformedTag,
+                        hadUnclosedTag: remainingSanitized.hadUnclosedTag,
+                    },
+                );
+                loggedThinkTagLeak = true;
+            }
+            if (remainingSanitized.reasoning) {
+                await writeEvent({
+                    id: completionId,
+                    object: "chat.completion.chunk",
+                    created: Math.floor(Date.now() / 1000),
+                    model: body.model,
+                    choices: [
+                        makeChoice({ reasoning_content: remainingSanitized.reasoning }),
+                    ],
+                });
+            }
+            if (remainingSanitized.text) {
+                await emitAnswerText(remainingSanitized.text);
+            }
+
+            const remainingParsed = toolParser
+                ? toolParser.flush()
+                : { text: "", toolCalls: [], toolCallDeltas: [] };
+            const {
+                text: remainingText,
+                toolCalls: remainingToolCalls,
+                toolCallDeltas: remainingToolCallDeltas,
+            } = remainingParsed;
+
+            if (toolParser && isToolcallDebugEnabled()) {
+                logger.debug("[chat] stream: parser flush result", {
+                    remainingTextLength: remainingText?.length || 0,
+                    remainingToolCallsCount: remainingToolCalls.length,
+                    remainingToolCallNames: remainingToolCalls.map((tc) => tc.name),
+                    remainingToolCallDeltaCount: remainingToolCallDeltas.length,
+                    totalEmittedToolCalls: toolParser.getEmittedToolCallCount(),
+                });
+            }
+
+            if (remainingText) {
+                await writeEvent({
+                    id: completionId,
+                    object: "chat.completion.chunk",
+                    created: Math.floor(Date.now() / 1000),
+                    model: body.model,
+                    choices: [makeChoice({ content: remainingText })],
+                });
+            }
+            for (const delta of remainingToolCallDeltas) {
+                if (toolParser && isToolcallDebugEnabled()) {
+                    logger.debug(
+                        "[chat] stream: emitting flushed incremental tool_call delta",
+                        {
+                            index: delta.index,
+                            id: delta.id,
+                            name: delta.function.name,
+                            argumentsChunkLength: delta.function.arguments?.length || 0,
+                        },
+                    );
+                }
+
+                await writeEvent({
+                    id: completionId,
+                    object: "chat.completion.chunk",
+                    created: Math.floor(Date.now() / 1000),
+                    model: body.model,
+                    choices: [
+                        makeChoice({
+                            tool_calls: [
+                                {
+                                    index: delta.index,
+                                    ...(delta.id ? { id: delta.id } : {}),
+                                    ...(delta.type ? { type: delta.type } : {}),
+                                    function: {
+                                        ...(delta.function.name
+                                            ? { name: delta.function.name }
+                                            : {}),
+                                        ...(delta.function.arguments !== undefined
+                                            ? { arguments: delta.function.arguments }
+                                            : {}),
+                                    },
+                                },
+                            ],
+                        }),
+                    ],
+                });
+            }
+            for (const tc of remainingToolCalls) {
+                if (toolParser && isToolcallDebugEnabled()) {
+                    logger.debug("[chat] stream: emitting flushed tool_call chunk", {
+                        id: tc.id,
+                        name: tc.name,
+                        argsKeys: Object.keys(tc.arguments),
+                        index:
+                            toolParser.getEmittedToolCallCount() -
+                            remainingToolCalls.length +
+                            remainingToolCalls.indexOf(tc),
+                    });
+                }
+
+                await writeEvent({
+                    id: completionId,
+                    object: "chat.completion.chunk",
+                    created: Math.floor(Date.now() / 1000),
+                    model: body.model,
+                    choices: [
+                        makeChoice({
+                            tool_calls: [
+                                {
+                                    index: toolParser
+                                        ? toolParser.getEmittedToolCallCount() -
+                                        remainingToolCalls.length +
+                                        remainingToolCalls.indexOf(tc)
+                                        : remainingToolCalls.indexOf(tc),
+                                    id: tc.id,
+                                    type: "function",
+                                    function: {
+                                        name: tc.name,
+                                        arguments: JSON.stringify(tc.arguments),
+                                    },
+                                },
+                            ],
+                        }),
+                    ],
+                });
+            }
+
+            // Finish reason + usage + [DONE]
+            const usage = buildUsage(usageAccumulator);
+
+            const finalFinishReason =
+                toolParser && toolParser.getEmittedToolCallCount() > 0
+                    ? "tool_calls"
+                    : "stop";
+
+            if (toolParser && isToolcallDebugEnabled()) {
+                logger.debug("[chat] stream: sending finish reason", {
+                    finishReason: finalFinishReason,
+                    totalEmittedToolCalls: toolParser.getEmittedToolCallCount(),
+                    usage,
+                    includeUsage: body.stream_options?.include_usage,
+                });
+            }
+
+            await writeEvent({
+                id: completionId,
+                object: "chat.completion.chunk",
+                created: Math.floor(Date.now() / 1000),
+                model: body.model,
+                choices: [makeChoice({}, finalFinishReason)],
+                ...(body.stream_options?.include_usage ? {} : { usage }),
+            });
+
+            if (body.stream_options?.include_usage) {
+                if (isToolcallDebugEnabled()) {
+                    logger.debug("[chat] stream: sending usage event", { usage });
+                }
+                await writeEvent({
+                    id: completionId,
+                    object: "chat.completion.chunk",
+                    created: Math.floor(Date.now() / 1000),
+                    model: body.model,
+                    choices: [],
+                    usage,
+                });
+            }
+
+            if (!clientDisconnected) {
+                if (isToolcallDebugEnabled()) {
+                    logger.debug("[chat] stream: sending [DONE]");
+                }
+                await streamWriter.write("data: [DONE]\n\n");
+
+                if (isToolcallDebugEnabled()) {
+                    logger.debug("[chat] stream: completed successfully", {
+                        completionId,
+                        totalEmittedToolCalls: toolParser
+                            ? toolParser.getEmittedToolCallCount()
+                            : 0,
+                        finishReason: finalFinishReason,
+                    });
+                }
+            } else {
+                if (isToolcallDebugEnabled()) {
+                    logger.debug(
+                        "[chat] stream: skipped [DONE] - client already disconnected",
+                    );
+                }
+            }
+        } catch (err: any) {
+            const streamStillRegistered = Boolean(getStream(completionId));
+            if (
+                shouldSuppressStreamAbort(
+                    err,
+                    clientDisconnected,
+                    c.req.raw.signal.aborted,
+                    streamStillRegistered,
+                )
+            ) {
+                if (isToolcallDebugEnabled()) {
+                    logger.debug("[chat] stream: suppressed expected abort", {
+                        completionId,
+                        clientDisconnected,
+                        requestAborted: c.req.raw.signal.aborted,
+                        streamStillRegistered,
+                        errorName: err?.name,
+                        errorMessage: err?.message,
+                    });
+                }
+                return;
+            }
+            throw err;
+        } finally {
+            if (isToolcallDebugEnabled()) {
+                logger.debug("[chat] stream: cleanup started", {
+                    completionId,
+                    clientDisconnected,
+                });
+            }
+
+            c.req.raw.signal.removeEventListener("abort", abortHandler);
+            clearInterval(heartbeatInterval);
+            removeStream(completionId);
+
+            if (isToolcallDebugEnabled()) {
+                logger.debug("[chat] stream: cleanup completed", {
+                    completionId,
+                });
+            }
+        }
+    });
+}
+
+// ─── Top-level error wrapper ───────────────────────────────────────────────────
+
+export function handleChatCompletionsError(c: Context, err: unknown): Response {
+    console.error("Error in chatCompletions:", err);
+    const hint =
+        err != null && typeof err === "object"
+            ? (err as Record<string, unknown>).upstreamStatus
+            : undefined;
+    const status = typeof hint === "number" ? hint : 500;
+    if (status >= 500) {
+        metrics.increment("requests.errors");
+    }
+    return sendOpenAIError(c, err, 500);
+}

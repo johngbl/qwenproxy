@@ -11,6 +11,7 @@ dist/
 
 # Database
 data/
+docs/
 *.db
 *.db-wal
 *.db-shm
@@ -33,6 +34,7 @@ Thumbs.db
 
 # IDE / Editor
 .kilo
+.roo
 
 # Legacy
 /core/

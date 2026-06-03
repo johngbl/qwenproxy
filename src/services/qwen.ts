@@ -7,8 +7,9 @@
 
 import { getQwenHeaders, getBasicHeaders } from "./playwright.ts";
 import { v4 as uuidv4 } from "uuid";
+import { UpstreamRateLimit, UpstreamError, AuthError } from "../core/errors.js";
 
-export class RetryableQwenStreamError extends Error {
+export class RetryableQwenStreamError extends UpstreamRateLimit {
   readonly retryAfterMs: number;
 
   constructor(message: string, retryAfterMs: number) {
@@ -18,7 +19,7 @@ export class RetryableQwenStreamError extends Error {
   }
 }
 
-export class QwenUpstreamError extends Error {
+export class QwenUpstreamError extends UpstreamError {
   readonly upstreamCode: string;
   readonly upstreamStatus: number;
 
@@ -30,7 +31,7 @@ export class QwenUpstreamError extends Error {
   }
 }
 
-export class QwenSessionExpiredError extends Error {
+export class QwenSessionExpiredError extends AuthError {
   readonly accountId: string;
 
   constructor(message: string, accountId: string) {

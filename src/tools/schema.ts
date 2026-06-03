@@ -5,11 +5,12 @@
  */
 
 import type { JsonSchema } from "./types";
+import { ValidationError } from "../core/errors.js";
 
 /**
  * Error thrown when schema validation fails.
  */
-export class SchemaValidationError extends Error {
+export class SchemaValidationError extends ValidationError {
   public readonly path: string;
   public readonly value: unknown;
 
@@ -18,6 +19,7 @@ export class SchemaValidationError extends Error {
     this.name = "SchemaValidationError";
     this.path = path;
     this.value = value;
+    this.param = path;
   }
 }
 

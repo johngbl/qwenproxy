@@ -1,5 +1,7 @@
 import { Hono } from "hono";
 import { fetchQwenModels } from "../services/qwen.js";
+import { NotFoundError } from "../core/errors.js";
+import { sendOpenAIError } from "./error-helpers.js";
 
 const app = new Hono();
 app.get("/v1/models", async (c) => {
@@ -10,9 +12,9 @@ app.get("/v1/models", async (c) => {
       object: "list",
       data: models,
     });
-  } catch (error: any) {
+  } catch (error) {
     console.error("Error fetching models:", error);
-    return c.json({ error: error.message }, 500);
+    return sendOpenAIError(c, error);
   }
 });
 
@@ -23,13 +25,13 @@ app.get("/v1/models/:model", async (c) => {
     const model = models.find((entry) => entry.id === modelId);
 
     if (!model) {
-      return c.json({ error: "Model not found" }, 404);
+      return sendOpenAIError(c, new NotFoundError("Model not found"));
     }
 
     return c.json(model);
-  } catch (error: any) {
+  } catch (error) {
     console.error("Error fetching model:", error);
-    return c.json({ error: error.message }, 500);
+    return sendOpenAIError(c, error);
   }
 });
 
