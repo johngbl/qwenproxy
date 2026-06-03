@@ -63,12 +63,12 @@ test("Chat Completions endpoint with qwen3.6-plus (thinking enabled)", async () 
         start(c) {
           c.enqueue(
             new TextEncoder().encode(
-              'data: {"choices": [{"delta": {"phase": "thinking_summary", "extra": {"summary_thought": {"content": ["Thinking..."]}}}}]}\n\n',
+              'data: {"choices": [{"delta": {"phase": "thinking_summary", "extra": {"summary_thought": {"content": ["Thinking..."]}}}}], "usage": {"input_tokens": 23, "output_tokens": 56, "total_tokens": 79, "input_tokens_details": {"text_tokens": 23}, "output_tokens_details": {"reasoning_tokens": 54, "text_tokens": 56}, "prompt_tokens_details": {"cached_tokens": 1}}}\n\n',
             ),
           );
           c.enqueue(
             new TextEncoder().encode(
-              'data: {"choices": [{"delta": {"phase": "answer", "content": "Hello"}}]}\n\n',
+              'data: {"choices": [{"delta": {"phase": "answer", "content": "Hello"}}], "usage": {"input_tokens": 23, "output_tokens": 60, "total_tokens": 83, "input_tokens_details": {"text_tokens": 23}, "output_tokens_details": {"reasoning_tokens": 54, "text_tokens": 60}, "prompt_tokens_details": {"cached_tokens": 1}}}\n\n',
             ),
           );
           c.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
@@ -365,12 +365,12 @@ test("Chat Completions endpoint - Non-streaming (stream: false)", async () => {
         start(c) {
           c.enqueue(
             new TextEncoder().encode(
-              'data: {"choices": [{"delta": {"phase": "thinking_summary", "extra": {"summary_thought": {"content": ["Thinking non-stream..."]}}}}]}\n\n',
+              'data: {"choices": [{"delta": {"phase": "thinking_summary", "extra": {"summary_thought": {"content": ["Thinking non-stream..."]}}}}], "usage": {"input_tokens": 23, "output_tokens": 56, "total_tokens": 79, "input_tokens_details": {"text_tokens": 23}, "output_tokens_details": {"reasoning_tokens": 54, "text_tokens": 56}, "prompt_tokens_details": {"cached_tokens": 1}}}\n\n',
             ),
           );
           c.enqueue(
             new TextEncoder().encode(
-              'data: {"choices": [{"delta": {"phase": "answer", "content": "Hello non-stream"}}]}\n\n',
+              'data: {"choices": [{"delta": {"phase": "answer", "content": "Hello non-stream"}}], "usage": {"input_tokens": 23, "output_tokens": 60, "total_tokens": 83, "input_tokens_details": {"text_tokens": 23}, "output_tokens_details": {"reasoning_tokens": 54, "text_tokens": 60}, "prompt_tokens_details": {"cached_tokens": 1}}}\n\n',
             ),
           );
           c.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
@@ -418,8 +418,13 @@ test("Chat Completions endpoint - Non-streaming (stream: false)", async () => {
     assert.strictEqual(choice.finish_reason, "stop");
 
     assert.ok(body.usage);
-    assert.ok(body.usage.prompt_tokens > 0);
-    assert.ok(body.usage.completion_tokens >= 0);
+    assert.strictEqual(body.usage.prompt_tokens, 23);
+    assert.strictEqual(body.usage.completion_tokens, 60);
+    assert.strictEqual(body.usage.total_tokens, 83);
+    assert.strictEqual(body.usage.prompt_tokens_details.cached_tokens, 1);
+    assert.strictEqual(body.usage.prompt_tokens_details.text_tokens, 23);
+    assert.strictEqual(body.usage.completion_tokens_details.reasoning_tokens, 54);
+    assert.strictEqual(body.usage.completion_tokens_details.text_tokens, 60);
   } finally {
     globalThis.fetch = originalFetch;
     await closePlaywright();

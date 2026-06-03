@@ -95,6 +95,11 @@ export interface Usage {
   total_tokens: number;
   prompt_tokens_details?: {
     cached_tokens: number;
+    text_tokens?: number;
+  };
+  completion_tokens_details?: {
+    reasoning_tokens?: number;
+    text_tokens?: number;
   };
 }
 

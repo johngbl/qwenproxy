@@ -18,7 +18,7 @@ import {
   clearAllSessionsForAccount,
   RetryableQwenStreamError,
 } from "../services/qwen.ts";
-import { OpenAIRequest } from "../utils/types.ts";
+import { OpenAIRequest, Usage } from "../utils/types.ts";
 import { StreamingToolParser } from "../tools/parser.ts";
 import { Mutex } from "../services/playwright.ts";
 import { getModelContextWindow } from "../core/model-registry.js";
@@ -28,6 +28,7 @@ import {
   estimateTokenCount,
   PrioritizedMessage,
 } from "../utils/context-truncation.ts";
+import { StreamingReasoningTagSanitizer } from "../utils/reasoning-tags.ts";
 import { config } from "../core/config.ts";
 import {
   getNextAccount,
@@ -153,6 +154,127 @@ function parseQwenErrorPayload(
   }
 
   return null;
+}
+
+interface UsageAccumulator {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  hasRealPromptTokens: boolean;
+  hasRealCompletionTokens: boolean;
+  hasRealTotalTokens: boolean;
+  cachedPromptTokens: number;
+  promptTextTokens?: number;
+  reasoningTokens?: number;
+  completionTextTokens?: number;
+}
+
+function asFiniteNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function createUsageAccumulator(estimatedPromptTokens: number): UsageAccumulator {
+  return {
+    promptTokens: estimatedPromptTokens,
+    completionTokens: 0,
+    totalTokens: estimatedPromptTokens,
+    hasRealPromptTokens: false,
+    hasRealCompletionTokens: false,
+    hasRealTotalTokens: false,
+    cachedPromptTokens: 0,
+  };
+}
+
+function applyUpstreamUsage(
+  accumulator: UsageAccumulator,
+  candidate: unknown,
+): void {
+  if (!candidate || typeof candidate !== "object") return;
+
+  const usage = candidate as Record<string, unknown>;
+  const promptTokens = asFiniteNumber(usage.input_tokens);
+  const completionTokens = asFiniteNumber(usage.output_tokens);
+  const totalTokens = asFiniteNumber(usage.total_tokens);
+
+  if (promptTokens !== null) {
+    accumulator.promptTokens = promptTokens;
+    accumulator.hasRealPromptTokens = true;
+  }
+
+  if (completionTokens !== null) {
+    accumulator.completionTokens = completionTokens;
+    accumulator.hasRealCompletionTokens = true;
+  }
+
+  if (totalTokens !== null) {
+    accumulator.totalTokens = totalTokens;
+    accumulator.hasRealTotalTokens = true;
+  }
+
+  const promptTokensDetails =
+    usage.prompt_tokens_details && typeof usage.prompt_tokens_details === "object"
+      ? (usage.prompt_tokens_details as Record<string, unknown>)
+      : null;
+  const inputTokensDetails =
+    usage.input_tokens_details && typeof usage.input_tokens_details === "object"
+      ? (usage.input_tokens_details as Record<string, unknown>)
+      : null;
+  const outputTokensDetails =
+    usage.output_tokens_details && typeof usage.output_tokens_details === "object"
+      ? (usage.output_tokens_details as Record<string, unknown>)
+      : null;
+
+  const cachedTokens = asFiniteNumber(promptTokensDetails?.cached_tokens);
+  if (cachedTokens !== null) {
+    accumulator.cachedPromptTokens = cachedTokens;
+  }
+
+  const promptTextTokens = asFiniteNumber(inputTokensDetails?.text_tokens);
+  if (promptTextTokens !== null) {
+    accumulator.promptTextTokens = promptTextTokens;
+  }
+
+  const reasoningTokens = asFiniteNumber(outputTokensDetails?.reasoning_tokens);
+  if (reasoningTokens !== null) {
+    accumulator.reasoningTokens = reasoningTokens;
+  }
+
+  const completionTextTokens = asFiniteNumber(outputTokensDetails?.text_tokens);
+  if (completionTextTokens !== null) {
+    accumulator.completionTextTokens = completionTextTokens;
+  }
+}
+
+function buildUsage(accumulator: UsageAccumulator): Usage {
+  const usage: Usage = {
+    prompt_tokens: accumulator.promptTokens,
+    completion_tokens: accumulator.completionTokens,
+    total_tokens: accumulator.hasRealTotalTokens
+      ? accumulator.totalTokens
+      : accumulator.promptTokens + accumulator.completionTokens,
+    prompt_tokens_details: {
+      cached_tokens: accumulator.cachedPromptTokens,
+      ...(accumulator.promptTextTokens !== undefined
+        ? { text_tokens: accumulator.promptTextTokens }
+        : {}),
+    },
+  };
+
+  if (
+    accumulator.reasoningTokens !== undefined ||
+    accumulator.completionTextTokens !== undefined
+  ) {
+    usage.completion_tokens_details = {
+      ...(accumulator.reasoningTokens !== undefined
+        ? { reasoning_tokens: accumulator.reasoningTokens }
+        : {}),
+      ...(accumulator.completionTextTokens !== undefined
+        ? { text_tokens: accumulator.completionTextTokens }
+        : {}),
+    };
+  }
+
+  return usage;
 }
 
 export async function chatCompletions(c: Context) {
@@ -695,13 +817,78 @@ export async function chatCompletions(c: Context) {
 
         let currentThoughtIndex = 0;
         let reasoningBuffer = "";
-        let lastFullContent = "";
+        let lastRawContent = "";
+        let finalContent = "";
         let targetResponseId: string | null = null;
         const toolParser = new StreamingToolParser(bodyAny.tools || []);
+        const reasoningTagSanitizer = new StreamingReasoningTagSanitizer();
         const toolCallsOut: any[] = [];
+        let loggedThinkTagLeak = false;
         let buffer = "";
-        let completionTokens = 0;
-        let promptTokens = Math.ceil(finalPrompt.length / 3.5);
+        const usageAccumulator = createUsageAccumulator(
+          Math.ceil(finalPrompt.length / 3.5),
+        );
+
+        const consumeAnswerText = (textChunk: string) => {
+          const { text, toolCalls } = toolParser.feed(textChunk);
+          if (text) {
+            finalContent += text;
+          }
+          if (
+            isToolcallDebugEnabled() &&
+            (text || toolCalls.length > 0)
+          ) {
+            logger.debug("[chat] non-stream: parser feed result", {
+              textLength: text.length,
+              textPreview: text.substring(0, 100),
+              toolCallsCount: toolCalls.length,
+              toolCallNames: toolCalls.map((tc) => tc.name),
+            });
+          }
+          for (const tc of toolCalls) {
+            toolCallsOut.push({
+              id: tc.id,
+              type: "function",
+              function: {
+                name: tc.name,
+                arguments: JSON.stringify(tc.arguments),
+              },
+            });
+
+            if (isToolcallDebugEnabled()) {
+              logger.debug("[chat] non-stream: tool_call collected", {
+                id: tc.id,
+                name: tc.name,
+                argsKeys: Object.keys(tc.arguments),
+                totalCollected: toolCallsOut.length,
+              });
+            }
+          }
+        };
+
+        const consumeSanitizedAnswerChunk = (textChunk: string) => {
+          const sanitized = reasoningTagSanitizer.feed(textChunk);
+          if (sanitized.detectedThinkTag && !loggedThinkTagLeak) {
+            logger.warn(
+              "[chat] Detected <think> tags in answer content; sanitizing output",
+              {
+                completionId,
+                mode: "non-stream",
+                model: body.model,
+                hadMalformedTag: sanitized.hadMalformedTag,
+                hadUnclosedTag: sanitized.hadUnclosedTag,
+              },
+            );
+            loggedThinkTagLeak = true;
+          }
+          if (sanitized.reasoning) {
+            reasoningBuffer += sanitized.reasoning;
+          }
+          if (sanitized.text) {
+            consumeAnswerText(sanitized.text);
+          }
+        };
+
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
@@ -741,12 +928,7 @@ export async function chatCompletions(c: Context) {
                 );
               }
 
-              if (chunk.usage) {
-                if (chunk.usage.output_tokens)
-                  completionTokens = chunk.usage.output_tokens;
-                if (chunk.usage.input_tokens)
-                  promptTokens = chunk.usage.input_tokens;
-              }
+              applyUpstreamUsage(usageAccumulator, chunk.usage);
 
               let vStr = "";
               let foundStr = false;
@@ -780,12 +962,12 @@ export async function chatCompletions(c: Context) {
                   if (delta.content !== undefined) {
                     const newContent = delta.content || "";
                     const result = getIncrementalDelta(
-                      lastFullContent,
+                      lastRawContent,
                       newContent,
                     );
                     vStr = result.delta;
                     if (vStr) {
-                      lastFullContent = result.matchedContent;
+                      lastRawContent = result.matchedContent;
                       foundStr = true;
                     }
                   }
@@ -797,37 +979,7 @@ export async function chatCompletions(c: Context) {
                 if (isThinkingChunk) {
                   reasoningBuffer += vStr;
                 } else {
-                  const { text, toolCalls } = toolParser.feed(vStr);
-                  if (
-                    isToolcallDebugEnabled() &&
-                    (text || toolCalls.length > 0)
-                  ) {
-                    logger.debug("[chat] non-stream: parser feed result", {
-                      textLength: text.length,
-                      textPreview: text.substring(0, 100),
-                      toolCallsCount: toolCalls.length,
-                      toolCallNames: toolCalls.map((tc) => tc.name),
-                    });
-                  }
-                  for (const tc of toolCalls) {
-                    toolCallsOut.push({
-                      id: tc.id,
-                      type: "function",
-                      function: {
-                        name: tc.name,
-                        arguments: JSON.stringify(tc.arguments),
-                      },
-                    });
-
-                    if (isToolcallDebugEnabled()) {
-                      logger.debug("[chat] non-stream: tool_call collected", {
-                        id: tc.id,
-                        name: tc.name,
-                        argsKeys: Object.keys(tc.arguments),
-                        totalCollected: toolCallsOut.length,
-                      });
-                    }
-                  }
+                  consumeSanitizedAnswerChunk(vStr);
                 }
               }
             } catch (e) {
@@ -845,6 +997,27 @@ export async function chatCompletions(c: Context) {
           );
         }
 
+        const remainingSanitized = reasoningTagSanitizer.flush();
+        if (remainingSanitized.detectedThinkTag && !loggedThinkTagLeak) {
+          logger.warn(
+            "[chat] Detected <think> tags in answer content; sanitizing output",
+            {
+              completionId,
+              mode: "non-stream",
+              model: body.model,
+              hadMalformedTag: remainingSanitized.hadMalformedTag,
+              hadUnclosedTag: remainingSanitized.hadUnclosedTag,
+            },
+          );
+          loggedThinkTagLeak = true;
+        }
+        if (remainingSanitized.reasoning) {
+          reasoningBuffer += remainingSanitized.reasoning;
+        }
+        if (remainingSanitized.text) {
+          consumeAnswerText(remainingSanitized.text);
+        }
+
         const { text: remainingText, toolCalls: remainingToolCalls } =
           toolParser.flush();
 
@@ -857,7 +1030,7 @@ export async function chatCompletions(c: Context) {
         }
 
         if (remainingText) {
-          lastFullContent += remainingText;
+          finalContent += remainingText;
         }
         for (const tc of remainingToolCalls) {
           toolCallsOut.push({
@@ -874,20 +1047,15 @@ export async function chatCompletions(c: Context) {
           logger.debug("[chat] non-stream: final toolcall summary", {
             totalToolCalls: toolCallsOut.length,
             toolCallNames: toolCallsOut.map((tc: any) => tc.function?.name),
-            contentLength: lastFullContent.length,
+            contentLength: finalContent.length,
             hasReasoning: !!reasoningBuffer,
           });
         }
 
-        const usage = {
-          prompt_tokens: promptTokens,
-          completion_tokens: completionTokens,
-          total_tokens: promptTokens + completionTokens,
-          prompt_tokens_details: { cached_tokens: 0 },
-        };
+        const usage = buildUsage(usageAccumulator);
         const message: any = {
           role: "assistant",
-          content: toolCallsOut.length ? null : lastFullContent,
+          content: toolCallsOut.length ? null : finalContent,
         };
         if (reasoningBuffer) message.reasoning_content = reasoningBuffer;
         if (toolCallsOut.length) {
@@ -1094,13 +1262,112 @@ export async function chatCompletions(c: Context) {
         const decoder = new TextDecoder();
 
         let currentThoughtIndex = 0;
-        let lastFullContent = "";
+        let lastRawContent = "";
         let targetResponseId: string | null = null;
         const toolParser = new StreamingToolParser(bodyAny.tools || []);
+        const reasoningTagSanitizer = new StreamingReasoningTagSanitizer();
+        let loggedThinkTagLeak = false;
 
         let buffer = initialStreamBuffer;
-        let completionTokens = 0;
-        let promptTokens = Math.ceil(finalPrompt.length / 3.5);
+        const usageAccumulator = createUsageAccumulator(
+          Math.ceil(finalPrompt.length / 3.5),
+        );
+
+        const emitAnswerText = async (textChunk: string) => {
+          const { text, toolCalls } = toolParser.feed(textChunk);
+
+          if (
+            isToolcallDebugEnabled() &&
+            (text || toolCalls.length > 0)
+          ) {
+            logger.debug("[chat] stream: parser feed result", {
+              textLength: text.length,
+              textPreview: text.substring(0, 100),
+              toolCallsCount: toolCalls.length,
+              toolCallNames: toolCalls.map((tc) => tc.name),
+            });
+          }
+
+          if (text) {
+            await writeEvent({
+              id: completionId,
+              object: "chat.completion.chunk",
+              created: Math.floor(Date.now() / 1000),
+              model: body.model,
+              choices: [makeChoice({ content: text })],
+            });
+          }
+
+          for (const tc of toolCalls) {
+            if (isToolcallDebugEnabled()) {
+              logger.debug("[chat] stream: emitting tool_call chunk", {
+                id: tc.id,
+                name: tc.name,
+                argsKeys: Object.keys(tc.arguments),
+                index:
+                  toolParser.getEmittedToolCallCount() -
+                  toolCalls.length +
+                  toolCalls.indexOf(tc),
+              });
+            }
+
+            await writeEvent({
+              id: completionId,
+              object: "chat.completion.chunk",
+              created: Math.floor(Date.now() / 1000),
+              model: body.model,
+              choices: [
+                makeChoice({
+                  tool_calls: [
+                    {
+                      index:
+                        toolParser.getEmittedToolCallCount() -
+                        toolCalls.length +
+                        toolCalls.indexOf(tc),
+                      id: tc.id,
+                      type: "function",
+                      function: {
+                        name: tc.name,
+                        arguments: JSON.stringify(tc.arguments),
+                      },
+                    },
+                  ],
+                }),
+              ],
+            });
+          }
+        };
+
+        const emitSanitizedAnswerChunk = async (textChunk: string) => {
+          const sanitized = reasoningTagSanitizer.feed(textChunk);
+          if (sanitized.detectedThinkTag && !loggedThinkTagLeak) {
+            logger.warn(
+              "[chat] Detected <think> tags in answer content; sanitizing output",
+              {
+                completionId,
+                mode: "stream",
+                model: body.model,
+                hadMalformedTag: sanitized.hadMalformedTag,
+                hadUnclosedTag: sanitized.hadUnclosedTag,
+              },
+            );
+            loggedThinkTagLeak = true;
+          }
+
+          if (sanitized.reasoning) {
+            await writeEvent({
+              id: completionId,
+              object: "chat.completion.chunk",
+              created: Math.floor(Date.now() / 1000),
+              model: body.model,
+              choices: [makeChoice({ reasoning_content: sanitized.reasoning })],
+            });
+          }
+
+          if (sanitized.text) {
+            await emitAnswerText(sanitized.text);
+          }
+        };
 
         while (true) {
           // Check if client disconnected
@@ -1170,12 +1437,7 @@ export async function chatCompletions(c: Context) {
                 );
               }
 
-              if (chunk.usage) {
-                if (chunk.usage.output_tokens)
-                  completionTokens = chunk.usage.output_tokens;
-                if (chunk.usage.input_tokens)
-                  promptTokens = chunk.usage.input_tokens;
-              }
+              applyUpstreamUsage(usageAccumulator, chunk.usage);
 
               let vStr = "";
               let foundStr = false;
@@ -1209,12 +1471,12 @@ export async function chatCompletions(c: Context) {
                   if (delta.content !== undefined) {
                     const newContent = delta.content || "";
                     const result = getIncrementalDelta(
-                      lastFullContent,
+                      lastRawContent,
                       newContent,
                     );
                     vStr = result.delta;
                     if (vStr) {
-                      lastFullContent = result.matchedContent;
+                      lastRawContent = result.matchedContent;
                       foundStr = true;
                     }
                   }
@@ -1233,68 +1495,7 @@ export async function chatCompletions(c: Context) {
                     choices: [makeChoice({ reasoning_content: vStr })],
                   });
                 } else {
-                  const { text, toolCalls } = toolParser.feed(vStr);
-
-                  if (
-                    isToolcallDebugEnabled() &&
-                    (text || toolCalls.length > 0)
-                  ) {
-                    logger.debug("[chat] stream: parser feed result", {
-                      textLength: text.length,
-                      textPreview: text.substring(0, 100),
-                      toolCallsCount: toolCalls.length,
-                      toolCallNames: toolCalls.map((tc) => tc.name),
-                    });
-                  }
-
-                  if (text) {
-                    await writeEvent({
-                      id: completionId,
-                      object: "chat.completion.chunk",
-                      created: Math.floor(Date.now() / 1000),
-                      model: body.model,
-                      choices: [makeChoice({ content: text })],
-                    });
-                  }
-
-                  for (const tc of toolCalls) {
-                    if (isToolcallDebugEnabled()) {
-                      logger.debug("[chat] stream: emitting tool_call chunk", {
-                        id: tc.id,
-                        name: tc.name,
-                        argsKeys: Object.keys(tc.arguments),
-                        index:
-                          toolParser.getEmittedToolCallCount() -
-                          toolCalls.length +
-                          toolCalls.indexOf(tc),
-                      });
-                    }
-
-                    await writeEvent({
-                      id: completionId,
-                      object: "chat.completion.chunk",
-                      created: Math.floor(Date.now() / 1000),
-                      model: body.model,
-                      choices: [
-                        makeChoice({
-                          tool_calls: [
-                            {
-                              index:
-                                toolParser.getEmittedToolCallCount() -
-                                toolCalls.length +
-                                toolCalls.indexOf(tc),
-                              id: tc.id,
-                              type: "function",
-                              function: {
-                                name: tc.name,
-                                arguments: JSON.stringify(tc.arguments),
-                              },
-                            },
-                          ],
-                        }),
-                      ],
-                    });
-                  }
+                  await emitSanitizedAnswerChunk(vStr);
                 }
               }
             } catch (e) {
@@ -1321,6 +1522,35 @@ export async function chatCompletions(c: Context) {
           });
           await streamWriter.write("data: [DONE]\n\n");
           return;
+        }
+
+        const remainingSanitized = reasoningTagSanitizer.flush();
+        if (remainingSanitized.detectedThinkTag && !loggedThinkTagLeak) {
+          logger.warn(
+            "[chat] Detected <think> tags in answer content; sanitizing output",
+            {
+              completionId,
+              mode: "stream",
+              model: body.model,
+              hadMalformedTag: remainingSanitized.hadMalformedTag,
+              hadUnclosedTag: remainingSanitized.hadUnclosedTag,
+            },
+          );
+          loggedThinkTagLeak = true;
+        }
+        if (remainingSanitized.reasoning) {
+          await writeEvent({
+            id: completionId,
+            object: "chat.completion.chunk",
+            created: Math.floor(Date.now() / 1000),
+            model: body.model,
+            choices: [
+              makeChoice({ reasoning_content: remainingSanitized.reasoning }),
+            ],
+          });
+        }
+        if (remainingSanitized.text) {
+          await emitAnswerText(remainingSanitized.text);
         }
 
         // Flush tool parser
@@ -1385,12 +1615,7 @@ export async function chatCompletions(c: Context) {
         }
 
         // Send finish reason
-        const usage = {
-          prompt_tokens: promptTokens,
-          completion_tokens: completionTokens,
-          total_tokens: promptTokens + completionTokens,
-          prompt_tokens_details: { cached_tokens: 0 },
-        };
+        const usage = buildUsage(usageAccumulator);
 
         const finalFinishReason =
           toolParser.getEmittedToolCallCount() > 0 ? "tool_calls" : "stop";

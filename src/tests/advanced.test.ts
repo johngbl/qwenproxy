@@ -174,7 +174,7 @@ test("caching-streaming and cache-control: returns prompt_tokens_details", async
       start(c) {
         c.enqueue(
           new TextEncoder().encode(
-            'data: {"choices": [{"delta": {"content": "done", "phase": "answer"}}], "usage": {"output_tokens": 10}}\n\n',
+            'data: {"choices": [{"delta": {"content": "done", "phase": "answer"}}], "usage": {"input_tokens": 23, "output_tokens": 10, "total_tokens": 33, "input_tokens_details": {"text_tokens": 23}, "output_tokens_details": {"reasoning_tokens": 9, "text_tokens": 10}, "prompt_tokens_details": {"cached_tokens": 2}}}\n\n',
           ),
         );
         c.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
@@ -216,9 +216,13 @@ test("caching-streaming and cache-control: returns prompt_tokens_details", async
     }
 
     assert.ok(usageBlock);
+    assert.strictEqual(usageBlock.prompt_tokens, 23);
     assert.strictEqual(usageBlock.completion_tokens, 10);
-    assert.ok(usageBlock.prompt_tokens > 0);
-    assert.strictEqual(usageBlock.prompt_tokens_details.cached_tokens, 0); // Tests caching-streaming shape!
+    assert.strictEqual(usageBlock.total_tokens, 33);
+    assert.strictEqual(usageBlock.prompt_tokens_details.cached_tokens, 2);
+    assert.strictEqual(usageBlock.prompt_tokens_details.text_tokens, 23);
+    assert.strictEqual(usageBlock.completion_tokens_details.reasoning_tokens, 9);
+    assert.strictEqual(usageBlock.completion_tokens_details.text_tokens, 10);
   } finally {
     restore();
   }
