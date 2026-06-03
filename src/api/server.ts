@@ -97,19 +97,26 @@ export async function startServer(): Promise<void> {
     const { initPlaywrightForAccount, getQwenHeaders } =
       await import("../services/playwright.ts");
     const { disableNativeTools } = await import("../services/qwen.ts");
-    for (const account of accounts) {
-      try {
-        await initPlaywrightForAccount(account, config.browser.headless);
-        await getQwenHeaders(false, account.id);
-        await disableNativeTools(account.id).catch(() => {});
-        console.log(`[Server] Account ready: ${account.email}`);
-      } catch (err: any) {
-        console.error(
-          `[Server] Failed to initialize account ${account.email}:`,
-          err.message,
-        );
-      }
-    }
+
+    console.log(
+      `[Server] Preparing ${accounts.length} configured account(s) in parallel...`,
+    );
+
+    await Promise.all(
+      accounts.map(async (account) => {
+        try {
+          await initPlaywrightForAccount(account, config.browser.headless);
+          await getQwenHeaders(false, account.id);
+          await disableNativeTools(account.id).catch(() => {});
+          console.log(`[Server] Account ready: ${account.email}`);
+        } catch (err: any) {
+          console.error(
+            `[Server] Failed to initialize account ${account.email}:`,
+            err.message,
+          );
+        }
+      }),
+    );
   } else {
     const { initPlaywright } = await import("../services/playwright.ts");
     await initPlaywright(config.browser.headless);

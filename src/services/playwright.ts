@@ -440,11 +440,12 @@ export async function getQwenHeaders(
 }> {
   const cacheKey = accountId || "global";
   const cache = getAccountHeaderCache(cacheKey);
+  const cacheAge = Date.now() - cache.lastHeadersTime;
 
   if (
     !forceNew &&
     cache.cachedQwenHeaders &&
-    Date.now() - cache.lastHeadersTime < HEADERS_TTL * REFRESH_THRESHOLD
+    cacheAge < HEADERS_TTL * REFRESH_THRESHOLD
   ) {
     return cache.cachedQwenHeaders;
   }
@@ -455,10 +456,11 @@ export async function getQwenHeaders(
 
   const release = await getHeaderMutex(cacheKey).acquire();
   try {
+    const refreshedCacheAge = Date.now() - cache.lastHeadersTime;
     if (
       !forceNew &&
       cache.cachedQwenHeaders &&
-      Date.now() - cache.lastHeadersTime < HEADERS_TTL
+      refreshedCacheAge < HEADERS_TTL * REFRESH_THRESHOLD
     ) {
       return cache.cachedQwenHeaders;
     }
@@ -504,6 +506,7 @@ async function _getQwenHeadersInternal(
         cache.refreshTimeout = null;
         getQwenHeaders(true, accountId, true).catch(() => {});
       }, HEADERS_TTL - age);
+      cache.refreshTimeout.unref?.();
     }
     return cache.cachedQwenHeaders;
   }
