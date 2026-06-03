@@ -161,10 +161,13 @@ export async function chatCompletions(c: Context) {
     const isStream = body.stream ?? false;
     const isInternalSummarizationRequest =
       c.req.header("X-Internal-Summarization") === "true";
-    const sessionKey =
-      typeof body.user === "string" && body.user.trim().length > 0
-        ? body.user.trim()
-        : null;
+    const conversationKey =
+      typeof body.session_id === "string" && body.session_id.trim().length > 0
+        ? body.session_id.trim()
+        : typeof body.conversation_id === "string" &&
+            body.conversation_id.trim().length > 0
+          ? body.conversation_id.trim()
+          : null;
 
     // Extract the prompt
     const promptParts: string[] = [];
@@ -387,18 +390,18 @@ export async function chatCompletions(c: Context) {
     const modelContextWindow = getModelContextWindow(modelId);
     const estimatedTokens = estimateTokenCount(systemPrompt + prompt);
 
-    // Topic detection is only enabled when the caller provides a stable user key.
-    // This avoids cross-conversation cache pollution from heuristic-only session IDs.
+    // Topic detection is only enabled when the caller provides an explicit
+    // conversation/session identifier. This avoids cross-conversation state
+    // pollution from heuristic-only IDs.
     const sessionId =
-      !isInternalSummarizationRequest && sessionKey
-        ? deriveSessionId(messages, systemPrompt, sessionKey)
+      !isInternalSummarizationRequest && conversationKey
+        ? deriveSessionId(messages, systemPrompt, conversationKey)
         : null;
     const cache = getCache();
-    if (cache && sessionId) {
-      await detectTopicChange(messages, sessionId, cache).catch(() => {
-        // Non-fatal: topic detection failure must not block the request pipeline
-      });
-    }
+    const topicAnalysis =
+      cache && sessionId
+        ? await detectTopicChange(messages, sessionId, cache).catch(() => null)
+        : null;
 
     let finalPrompt: string;
     if (estimatedTokens > modelContextWindow - 1000) {
@@ -426,6 +429,8 @@ export async function chatCompletions(c: Context) {
     // A session is new if it doesn't have any assistant messages yet.
     // This handles cases where the first request has [System, User] messages.
     const isNewSession = !messages.some((m) => m.role === "assistant");
+    const shouldResetUpstreamThread =
+      isNewSession || topicAnalysis?.hasChanged === true;
 
     const configuredAccounts = process.env.TEST_MOCK_PLAYWRIGHT
       ? []
@@ -502,7 +507,7 @@ export async function chatCompletions(c: Context) {
               finalPrompt,
               isThinkingModel,
               body.model,
-              isNewSession ? null : undefined,
+              shouldResetUpstreamThread ? null : undefined,
               accountId === "global" ? undefined : accountId,
               allFiles.length > 0 ? allFiles : undefined,
             );

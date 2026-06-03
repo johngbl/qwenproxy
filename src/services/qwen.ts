@@ -332,6 +332,9 @@ export async function createQwenStream(
 
   if (forcedParentId !== undefined) {
     actualParentId = forcedParentId;
+    if (chatSessionId && forcedParentId === null) {
+      updateSessionParent(chatSessionId, null, accountId ?? "global");
+    }
   } else if (chatSessionId) {
     const storedParent = getSessionParent(chatSessionId, accountId ?? "global");
     if (storedParent !== undefined) {

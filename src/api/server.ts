@@ -10,15 +10,19 @@ import { chatCompletions, chatCompletionsStop } from "../routes/chat.js";
 import { uploadFile } from "../routes/upload.js";
 
 // Module-level state (initialized in startServer)
-let cache: MemoryCache;
+let cache: MemoryCache | undefined;
 let watchdog: Watchdog;
 let server: any;
 
 const app = new Hono();
 
 // Module-level accessor for cross-module cache access
-export function getCache(): MemoryCache {
+export function getCache(): MemoryCache | undefined {
   return cache;
+}
+
+export function setCacheForTesting(nextCache: MemoryCache | undefined): void {
+  cache = nextCache;
 }
 
 // Middleware must be registered BEFORE routes
@@ -130,7 +134,7 @@ export async function startServer(): Promise<void> {
     console.log(`Received ${signal}, shutting down gracefully...`);
     watchdog.stop();
     metrics.stopCollection();
-    await cache.close();
+    await cache?.close();
     const { closePlaywright } = await import("../services/playwright.ts");
     await closePlaywright();
     const { closeDatabase } = await import("../core/database.ts");

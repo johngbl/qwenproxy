@@ -125,17 +125,17 @@ const STOPWORDS = new Set([
 ]);
 
 /**
- * Derive a deterministic session ID from a caller-provided key plus the
- * conversation's anchoring content.
+ * Derive a deterministic session ID from a caller-provided conversation key
+ * plus the conversation's anchoring content.
  */
 export function deriveSessionId(
   messages: Message[],
   systemPrompt: string = "",
-  sessionKey?: string,
+  conversationKey?: string,
 ): string {
   const firstUser = messages.find((m) => m.role === "user");
   const anchor = [
-    sessionKey?.trim(),
+    conversationKey?.trim(),
     systemPrompt.trim(),
     extractTextContent(firstUser),
   ]
@@ -216,7 +216,6 @@ export async function detectTopicChange(
       currentKeywords,
       changeConfidence,
       cached.topic,
-      cached.keywords,
     );
   }
 
@@ -247,13 +246,9 @@ async function handleTopicChange(
   currentKeywords: string[],
   confidence: number,
   previousTopic?: string,
-  _previousKeywords?: string[],
 ): Promise<TopicAnalysis> {
   const newTopic = currentText.slice(0, 200);
-
-  // Invalidate cached responses for this session
   const sessionId = cacheKey.replace("topic:", "");
-  const invalidated = await cache.invalidateBySession(sessionId);
 
   // Store new topic state
   await cache.set<CachedTopic>(
@@ -270,7 +265,6 @@ async function handleTopicChange(
   logger.debug("Topic change detected", {
     sessionId,
     confidence,
-    invalidated,
     previousTopic: previousTopic?.slice(0, 80),
     newTopic: newTopic.slice(0, 80),
   });

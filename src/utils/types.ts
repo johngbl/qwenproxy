@@ -56,6 +56,8 @@ export interface OpenAIRequest {
   tools?: FunctionToolDefinition[];
   tool_choice?: ToolChoice;
   user?: string;
+  session_id?: string;
+  conversation_id?: string;
   stream_options?: {
     include_usage?: boolean;
   };
