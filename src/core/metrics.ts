@@ -28,28 +28,41 @@ export class Metrics extends EventEmitter {
 
   private registerDefaults(): void {
     const defaults: Array<[string, MetricType, string]> = [
-      ["requests.total", "counter", "Total requests processed"],
-      ["requests.errors", "counter", "Total request errors"],
-      ["latency.request", "histogram", "Request latency (ms)"],
-      ["streams.active", "gauge", "Active SSE streams"],
-      ["streams.errors", "counter", "Stream errors"],
-      ["memory.heap.used", "gauge", "Heap memory used (bytes)"],
-      ["memory.heap.total", "gauge", "Heap memory total (bytes)"],
+      // Core request metrics
+      ['requests.total', 'counter', 'Total requests processed'],
+      ['requests.errors', 'counter', 'Total request errors'],
+      ['latency.request', 'histogram', 'Request latency (ms)'],
 
-      [
-        "watchdog.ram.status",
-        "gauge",
-        "Watchdog RAM status (0=ok, 1=warning, 2=critical)",
-      ],
-      [
-        "watchdog.overall",
-        "gauge",
-        "Watchdog overall status (0=healthy, 1=degraded, 2=unhealthy)",
-      ],
-      ["watchdog.recovery.triggered", "counter", "Recovery attempts triggered"],
-      ["watchdog.recovery.success", "counter", "Successful recoveries"],
-      ["watchdog.recovery.failed", "counter", "Failed recoveries"],
-    ];
+      // Stream metrics
+      ['streams.active', 'gauge', 'Active SSE streams'],
+      ['streams.errors', 'counter', 'Stream errors'],
+
+      // Memory metrics
+      ['memory.heap.used', 'gauge', 'Heap memory used (bytes)'],
+      ['memory.heap.total', 'gauge', 'Heap memory total (bytes)'],
+
+      // Cache metrics
+      ['cache.set', 'counter', 'Cache set operations'],
+      ['cache.hit', 'counter', 'Cache hits'],
+      ['cache.miss', 'counter', 'Cache misses'],
+      ['cache.deleted', 'counter', 'Cache deletions'],
+      ['cache.flushed', 'counter', 'Cache flushes'],
+      ['cache.value.size', 'histogram', 'Cache value size (bytes)'],
+      ['cache.get.latency', 'histogram', 'Cache get latency (ms)'],
+      ['cache.hit.ratio', 'gauge', 'Cache hit ratio (hits / (hits + misses))'],
+      ['cache.compression.ratio', 'histogram', 'Compression ratio (original / compressed)'],
+      ['cache.compression.bytes.saved', 'counter', 'Total bytes saved by compression'],
+      ['cache.topic.invalidation', 'counter', 'Cache entries invalidated by topic change'],
+      ['cache.memory.usage.bytes', 'gauge', 'Estimated cache memory usage (bytes)'],
+      ['cache.entries.count', 'gauge', 'Current number of cache entries'],
+
+      // Watchdog metrics
+      ['watchdog.ram.status', 'gauge', 'Watchdog RAM status (0=ok, 1=warning, 2=critical)'],
+      ['watchdog.overall', 'gauge', 'Watchdog overall status (0=healthy, 1=degraded, 2=unhealthy)'],
+      ['watchdog.recovery.triggered', 'counter', 'Recovery attempts triggered'],
+      ['watchdog.recovery.success', 'counter', 'Successful recoveries'],
+      ['watchdog.recovery.failed', 'counter', 'Failed recoveries'],
+    ]
 
     for (const [name, type, help] of defaults) {
       this.metrics.set(name, {
@@ -169,6 +182,13 @@ export class Metrics extends EventEmitter {
       }
     }
     return output;
+  }
+
+  reset(): void {
+    for (const metric of this.metrics.values()) {
+      metric.values.clear();
+    }
+    this.emit('reset', {});
   }
 
   stopCollection(): void {

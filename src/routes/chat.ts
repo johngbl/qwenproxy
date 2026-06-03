@@ -26,7 +26,9 @@ import { processImagesForQwen, QwenFileEntry } from "./upload.ts";
 import {
   truncateMessages,
   estimateTokenCount,
+  PrioritizedMessage,
 } from "../utils/context-truncation.ts";
+import { config } from "../core/config.ts";
 import {
   getNextAccount,
   getNextAvailableAccount,
@@ -45,6 +47,11 @@ import {
 } from "../core/stream-registry.ts";
 import { metrics } from "../core/metrics.js";
 import { logger, isToolcallDebugEnabled } from "../core/logger.js";
+import { getCache } from "../api/server.ts";
+import {
+  deriveSessionId,
+  detectTopicChange,
+} from "../utils/topic-detector.ts";
 
 const accountMutexes = new Map<string, Mutex>();
 function getAccountMutex(accountId: string): Mutex {
@@ -377,16 +384,28 @@ export async function chatCompletions(c: Context) {
     const modelContextWindow = getModelContextWindow(modelId);
     const estimatedTokens = estimateTokenCount(systemPrompt + prompt);
 
+    // Topic detection runs before truncation to have full message context.
+    // deriveSessionId generates a stable SHA-256 hash from system prompt + first user message,
+    // since chat.ts does not receive a sessionId from the OpenAI-compatible API
+    const sessionId = deriveSessionId(messages, systemPrompt);
+    const cache = getCache();
+    if (cache) {
+      await detectTopicChange(messages, sessionId, cache).catch(() => {
+        // Non-fatal: topic detection failure must not block the request pipeline
+      });
+    }
+
     let finalPrompt: string;
     if (estimatedTokens > modelContextWindow - 1000) {
-      const truncated = truncateMessages(
-        messages,
-        modelContextWindow,
+      const truncated = await truncateMessages(messages, {
+        maxContextLength: modelContextWindow,
         systemPrompt,
-      );
+        enableSummarization: config.context.summarization.enabled,
+        summarizationModel: config.context.summarization.model,
+      });
       finalPrompt = truncated
         .map(
-          (m) =>
+          (m: PrioritizedMessage) =>
             `${m.role === "user" ? "User" : m.role === "assistant" ? "Assistant" : m.role}: ${m.content}`,
         )
         .join("\n\n");
