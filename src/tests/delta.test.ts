@@ -1,6 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert";
-import { getIncrementalDelta } from "../routes/chat.ts";
+import {
+  formatThinkingSummaryContent,
+  getIncrementalDelta,
+  isAbortError,
+  shouldSuppressStreamAbort,
+} from "../routes/chat.ts";
 
 test("getIncrementalDelta: handles strictly cumulative stream correctly", () => {
   let accumulated = "";
@@ -74,4 +79,38 @@ test("getIncrementalDelta: handles long cumulative streams without duplicating p
 
   assert.strictEqual(res.delta, "-more-content");
   assert.strictEqual(res.matchedContent, nextChunk);
+});
+
+test("formatThinkingSummaryContent: combines titles and thoughts by section", () => {
+  const formatted = formatThinkingSummaryContent({
+    extra: {
+      summary_title: { content: ["Title 1", "Title 2"] },
+      summary_thought: { content: ["Thought 1", "Thought 2"] },
+    },
+  });
+
+  assert.strictEqual(
+    formatted,
+    "**Title 1**\n\nThought 1\n\n**Title 2**\n\nThought 2",
+  );
+});
+
+test("isAbortError: recognizes DOMException AbortError", () => {
+  assert.ok(
+    isAbortError(new DOMException("This operation was aborted", "AbortError")),
+  );
+  assert.ok(!isAbortError(new Error("ordinary failure")));
+});
+
+test("shouldSuppressStreamAbort: suppresses expected disconnect aborts", () => {
+  const abortError = new DOMException(
+    "This operation was aborted",
+    "AbortError",
+  );
+
+  assert.ok(shouldSuppressStreamAbort(abortError, true, false, true));
+  assert.ok(shouldSuppressStreamAbort(abortError, false, true, true));
+  assert.ok(shouldSuppressStreamAbort(abortError, false, false, false));
+  assert.ok(!shouldSuppressStreamAbort(abortError, false, false, true));
+  assert.ok(!shouldSuppressStreamAbort(new Error("boom"), true, true, false));
 });

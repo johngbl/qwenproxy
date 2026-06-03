@@ -2,6 +2,23 @@ import { test } from "node:test";
 import assert from "node:assert";
 import { StreamingToolParser } from "../tools/parser.ts";
 
+const TOOLS = [
+  {
+    type: "function" as const,
+    function: {
+      name: "read_file",
+      description: "Read a file",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string" },
+        },
+        required: ["path"],
+      },
+    },
+  },
+];
+
 test("StreamingToolParser: basic tool call", () => {
   const parser = new StreamingToolParser();
 
@@ -75,6 +92,30 @@ test("StreamingToolParser: robust parsing of malformed JSON", () => {
   assert.deepStrictEqual(res.toolCalls[0].arguments, { a: 1 });
 });
 
+test("StreamingToolParser: recovers missing opening tag and flattens nested arguments", () => {
+  const parser = new StreamingToolParser([
+    {
+      type: "function",
+      function: {
+        name: "recovered",
+        description: "",
+        parameters: {
+          type: "object",
+          properties: { path: { type: "string" } },
+          required: ["path"],
+        },
+      },
+    },
+  ]);
+
+  const res = parser.feed(
+    '{"name": "recovered", "arguments": {"arguments": {"path": "a.txt"}}}</tool_call>',
+  );
+  assert.strictEqual(res.toolCalls.length, 1);
+  assert.strictEqual(res.toolCalls[0].name, "recovered");
+  assert.deepStrictEqual(res.toolCalls[0].arguments, { path: "a.txt" });
+});
+
 test("StreamingToolParser: preserves tags in non-tool text", () => {
   const parser = new StreamingToolParser();
 
@@ -128,4 +169,49 @@ test("StreamingToolParser: pendingLeadIn cleared after tool call", () => {
   );
   assert.strictEqual(parser.getPendingLeadIn(), "");
   assert.strictEqual(parser.getEmittedToolCallCount(), 1);
+});
+
+test("StreamingToolParser: preserves literal <tool_call> inside inline code across chunks", () => {
+  const parser = new StreamingToolParser(TOOLS);
+
+  const first = parser.feed(
+    "Para usar uma ferramenta, eu gero um bloco JSON envolto exatamente nas tags `",
+  );
+  assert.strictEqual(
+    first.text,
+    "Para usar uma ferramenta, eu gero um bloco JSON envolto exatamente nas tags `",
+  );
+  assert.strictEqual(first.toolCalls.length, 0);
+
+  const second = parser.feed("<tool_call>`. A estrutura é sempre esta:");
+  assert.strictEqual(second.text, "<tool_call>`. A estrutura é sempre esta:");
+  assert.strictEqual(second.toolCalls.length, 0);
+});
+
+test("StreamingToolParser: preserves literal <tool_call> example in fenced code block", () => {
+  const parser = new StreamingToolParser(TOOLS);
+
+  const literal = [
+    "Exemplo:",
+    "```json",
+    "<tool_call>",
+    '{"name":"nome_da_ferramenta","arguments":{"parametro":"valor"}}',
+    "</tool_call>",
+    "```",
+  ].join("\n");
+
+  const result = parser.feed(literal);
+  assert.strictEqual(result.text, literal);
+  assert.strictEqual(result.toolCalls.length, 0);
+});
+
+test("StreamingToolParser: preserves literal tool_call block when tool name is undeclared", () => {
+  const parser = new StreamingToolParser(TOOLS);
+
+  const literal =
+    '<tool_call>{"name":"nome_da_ferramenta","arguments":{"parametro":"valor"}}</tool_call>';
+
+  const result = parser.feed(literal);
+  assert.strictEqual(result.text, literal);
+  assert.strictEqual(result.toolCalls.length, 0);
 });

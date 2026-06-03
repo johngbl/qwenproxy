@@ -158,6 +158,159 @@ test("Chat Completions endpoint with qwen3.6-plus (thinking enabled)", async () 
   }
 });
 
+test("Chat Completions stream preserves thinking titles inside reasoning_content", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input: any) => {
+    const url = typeof input === "string" ? input : input.url;
+    if (url.includes("/api/models")) {
+      return new Response(
+        JSON.stringify({ data: [{ id: "qwen3.6-plus", owned_by: "qwen" }] }),
+        { status: 200 },
+      );
+    }
+    if (url.includes("/api/v2/chat/completions")) {
+      const stream = new ReadableStream({
+        start(c) {
+          c.enqueue(
+            new TextEncoder().encode(
+              'data: {"choices": [{"delta": {"phase": "thinking_summary", "extra": {"summary_title": {"content": ["Title 1"]}, "summary_thought": {"content": ["Thought 1"]}}}}]}\n\n',
+            ),
+          );
+          c.enqueue(
+            new TextEncoder().encode(
+              'data: {"choices": [{"delta": {"phase": "thinking_summary", "extra": {"summary_title": {"content": ["Title 1", "Title 2"]}, "summary_thought": {"content": ["Thought 1", "Thought 2"]}}}}]}\n\n',
+            ),
+          );
+          c.enqueue(
+            new TextEncoder().encode(
+              'data: {"choices": [{"delta": {"phase": "answer", "content": "Hello"}}]}\n\n',
+            ),
+          );
+          c.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
+          c.close();
+        },
+      });
+      return new Response(stream, { status: 200 });
+    }
+    return originalFetch(input);
+  };
+
+  await initPlaywright(false);
+
+  try {
+    const req = new Request("http://localhost/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "qwen3.6-plus",
+        messages: [{ role: "user", content: "hello" }],
+        stream: true,
+      }),
+    });
+
+    const res = await app.fetch(req);
+    assert.strictEqual(res.status, 200);
+
+    const reader = res.body?.getReader();
+    assert.ok(reader, "Response should have a readable body");
+
+    const decoder = new TextDecoder();
+    let reasoning = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      const chunk = decoder.decode(value);
+      for (const line of chunk.split("\n")) {
+        if (!line.startsWith("data: ") || line.trim() === "data: [DONE]") {
+          continue;
+        }
+        try {
+          const data = JSON.parse(line.slice(6));
+          const delta = data.choices?.[0]?.delta;
+          if (typeof delta?.reasoning_content === "string") {
+            reasoning += delta.reasoning_content;
+          }
+        } catch {}
+      }
+    }
+
+    assert.strictEqual(
+      reasoning,
+      "**Title 1**\n\nThought 1\n\n**Title 2**\n\nThought 2",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    await closePlaywright();
+  }
+});
+
+test("Chat Completions non-stream preserves thinking titles inside reasoning_content", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input: any) => {
+    const url = typeof input === "string" ? input : input.url;
+    if (url.includes("/api/models")) {
+      return new Response(
+        JSON.stringify({ data: [{ id: "qwen3.6-plus", owned_by: "qwen" }] }),
+        { status: 200 },
+      );
+    }
+    if (url.includes("/api/v2/chat/completions")) {
+      const stream = new ReadableStream({
+        start(c) {
+          c.enqueue(
+            new TextEncoder().encode(
+              'data: {"choices": [{"delta": {"phase": "thinking_summary", "extra": {"summary_title": {"content": ["Title 1"]}, "summary_thought": {"content": ["Thought 1"]}}}}]}\n\n',
+            ),
+          );
+          c.enqueue(
+            new TextEncoder().encode(
+              'data: {"choices": [{"delta": {"phase": "thinking_summary", "extra": {"summary_title": {"content": ["Title 1", "Title 2"]}, "summary_thought": {"content": ["Thought 1", "Thought 2"]}}}}]}\n\n',
+            ),
+          );
+          c.enqueue(
+            new TextEncoder().encode(
+              'data: {"choices": [{"delta": {"phase": "answer", "content": "Hello non-stream"}}]}\n\n',
+            ),
+          );
+          c.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
+          c.close();
+        },
+      });
+      return new Response(stream, { status: 200 });
+    }
+    return originalFetch(input);
+  };
+
+  await initPlaywright(false);
+
+  try {
+    const req = new Request("http://localhost/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "qwen3.6-plus",
+        messages: [{ role: "user", content: "hello" }],
+        stream: false,
+      }),
+    });
+
+    const res = await app.fetch(req);
+    assert.strictEqual(res.status, 200);
+
+    const body = await res.json();
+    assert.strictEqual(
+      body.choices[0].message.reasoning_content,
+      "**Title 1**\n\nThought 1\n\n**Title 2**\n\nThought 2",
+    );
+    assert.strictEqual(body.choices[0].message.content, "Hello non-stream");
+  } finally {
+    globalThis.fetch = originalFetch;
+    await closePlaywright();
+  }
+});
+
 test("Chat Completions returns explicit error for non-SSE upstream JSON errors", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input: any) => {
@@ -423,7 +576,10 @@ test("Chat Completions endpoint - Non-streaming (stream: false)", async () => {
     assert.strictEqual(body.usage.total_tokens, 83);
     assert.strictEqual(body.usage.prompt_tokens_details.cached_tokens, 1);
     assert.strictEqual(body.usage.prompt_tokens_details.text_tokens, 23);
-    assert.strictEqual(body.usage.completion_tokens_details.reasoning_tokens, 54);
+    assert.strictEqual(
+      body.usage.completion_tokens_details.reasoning_tokens,
+      54,
+    );
     assert.strictEqual(body.usage.completion_tokens_details.text_tokens, 60);
   } finally {
     globalThis.fetch = originalFetch;

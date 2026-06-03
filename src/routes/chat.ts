@@ -114,6 +114,37 @@ export function getIncrementalDelta(
   };
 }
 
+export function formatThinkingSummaryContent(delta: any): string {
+  const titles = Array.isArray(delta?.extra?.summary_title?.content)
+    ? delta.extra.summary_title.content.filter(
+        (item: unknown): item is string => typeof item === "string",
+      )
+    : [];
+  const thoughts = Array.isArray(delta?.extra?.summary_thought?.content)
+    ? delta.extra.summary_thought.content.filter(
+        (item: unknown): item is string => typeof item === "string",
+      )
+    : [];
+
+  const sectionCount = Math.max(titles.length, thoughts.length);
+  const sections: string[] = [];
+
+  for (let i = 0; i < sectionCount; i++) {
+    const title = titles[i]?.trim() || "";
+    const thought = thoughts[i]?.trim() || "";
+
+    if (title && thought) {
+      sections.push(`**${title}**\n\n${thought}`);
+    } else if (title) {
+      sections.push(`**${title}**`);
+    } else if (thought) {
+      sections.push(thought);
+    }
+  }
+
+  return sections.join("\n\n");
+}
+
 function parseQwenErrorPayload(
   raw: string,
 ): { message: string; status: number } | null {
@@ -156,6 +187,35 @@ function parseQwenErrorPayload(
   return null;
 }
 
+export function isAbortError(err: unknown): boolean {
+  if (err instanceof DOMException) {
+    return err.name === "AbortError";
+  }
+
+  if (!err || typeof err !== "object") return false;
+
+  const maybeError = err as { name?: unknown; message?: unknown };
+  const name = maybeError.name;
+  const message = maybeError.message;
+
+  return (
+    name === "AbortError" ||
+    (typeof message === "string" && /abort(ed)?/i.test(message))
+  );
+}
+
+export function shouldSuppressStreamAbort(
+  err: unknown,
+  clientDisconnected: boolean,
+  requestAborted: boolean,
+  streamStillRegistered: boolean,
+): boolean {
+  return (
+    isAbortError(err) &&
+    (clientDisconnected || requestAborted || !streamStillRegistered)
+  );
+}
+
 interface UsageAccumulator {
   promptTokens: number;
   completionTokens: number;
@@ -173,7 +233,9 @@ function asFiniteNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-function createUsageAccumulator(estimatedPromptTokens: number): UsageAccumulator {
+function createUsageAccumulator(
+  estimatedPromptTokens: number,
+): UsageAccumulator {
   return {
     promptTokens: estimatedPromptTokens,
     completionTokens: 0,
@@ -212,7 +274,8 @@ function applyUpstreamUsage(
   }
 
   const promptTokensDetails =
-    usage.prompt_tokens_details && typeof usage.prompt_tokens_details === "object"
+    usage.prompt_tokens_details &&
+    typeof usage.prompt_tokens_details === "object"
       ? (usage.prompt_tokens_details as Record<string, unknown>)
       : null;
   const inputTokensDetails =
@@ -220,7 +283,8 @@ function applyUpstreamUsage(
       ? (usage.input_tokens_details as Record<string, unknown>)
       : null;
   const outputTokensDetails =
-    usage.output_tokens_details && typeof usage.output_tokens_details === "object"
+    usage.output_tokens_details &&
+    typeof usage.output_tokens_details === "object"
       ? (usage.output_tokens_details as Record<string, unknown>)
       : null;
 
@@ -457,15 +521,13 @@ export async function chatCompletions(c: Context) {
 
     // Inject tools instructions
     const bodyAny = body as any;
-    if (
-      bodyAny.tools &&
-      Array.isArray(bodyAny.tools) &&
-      bodyAny.tools.length > 0
-    ) {
+    const declaredTools = Array.isArray(bodyAny.tools) ? bodyAny.tools : [];
+    const shouldParseToolCalls = declaredTools.length > 0;
+    if (shouldParseToolCalls) {
       if (isToolcallDebugEnabled()) {
         logger.debug("[chat] tools provided in request", {
-          toolsCount: bodyAny.tools.length,
-          toolNames: bodyAny.tools.map((t: any) =>
+          toolsCount: declaredTools.length,
+          toolNames: declaredTools.map((t: any) =>
             t.type === "function" ? t.function?.name : t.name,
           ),
           toolChoice: bodyAny.tool_choice || "none",
@@ -473,7 +535,7 @@ export async function chatCompletions(c: Context) {
       }
 
       // Better formatting for tools
-      const formattedTools = bodyAny.tools.map((t: any) => {
+      const formattedTools = declaredTools.map((t: any) => {
         if (t.type === "function") {
           return {
             name: t.function.name,
@@ -815,12 +877,14 @@ export async function chatCompletions(c: Context) {
         const reader = stream!.getReader();
         const decoder = new TextDecoder();
 
-        let currentThoughtIndex = 0;
+        let lastThinkingSummary = "";
         let reasoningBuffer = "";
         let lastRawContent = "";
         let finalContent = "";
         let targetResponseId: string | null = null;
-        const toolParser = new StreamingToolParser(bodyAny.tools || []);
+        const toolParser = shouldParseToolCalls
+          ? new StreamingToolParser(declaredTools)
+          : null;
         const reasoningTagSanitizer = new StreamingReasoningTagSanitizer();
         const toolCallsOut: any[] = [];
         let loggedThinkTagLeak = false;
@@ -830,14 +894,16 @@ export async function chatCompletions(c: Context) {
         );
 
         const consumeAnswerText = (textChunk: string) => {
+          if (!toolParser) {
+            finalContent += textChunk;
+            return;
+          }
+
           const { text, toolCalls } = toolParser.feed(textChunk);
           if (text) {
             finalContent += text;
           }
-          if (
-            isToolcallDebugEnabled() &&
-            (text || toolCalls.length > 0)
-          ) {
+          if (isToolcallDebugEnabled() && (text || toolCalls.length > 0)) {
             logger.debug("[chat] non-stream: parser feed result", {
               textLength: text.length,
               textPreview: text.substring(0, 100),
@@ -945,15 +1011,15 @@ export async function chatCompletions(c: Context) {
 
                 if (delta.phase === "thinking_summary") {
                   isThinkingChunk = true;
-                  if (
-                    delta.extra &&
-                    delta.extra.summary_thought &&
-                    delta.extra.summary_thought.content
-                  ) {
-                    const thoughts = delta.extra.summary_thought.content;
-                    if (thoughts.length > currentThoughtIndex) {
-                      vStr = thoughts.slice(currentThoughtIndex).join("\n");
-                      currentThoughtIndex = thoughts.length;
+                  const formattedSummary = formatThinkingSummaryContent(delta);
+                  if (formattedSummary) {
+                    const result = getIncrementalDelta(
+                      lastThinkingSummary,
+                      formattedSummary,
+                    );
+                    vStr = result.delta;
+                    lastThinkingSummary = result.matchedContent;
+                    if (vStr) {
                       foundStr = true;
                     }
                   }
@@ -1018,10 +1084,13 @@ export async function chatCompletions(c: Context) {
           consumeAnswerText(remainingSanitized.text);
         }
 
+        const remainingParsed = toolParser
+          ? toolParser.flush()
+          : { text: "", toolCalls: [] };
         const { text: remainingText, toolCalls: remainingToolCalls } =
-          toolParser.flush();
+          remainingParsed;
 
-        if (isToolcallDebugEnabled()) {
+        if (toolParser && isToolcallDebugEnabled()) {
           logger.debug("[chat] non-stream: parser flush result", {
             remainingTextLength: remainingText?.length || 0,
             remainingToolCallsCount: remainingToolCalls.length,
@@ -1261,10 +1330,14 @@ export async function chatCompletions(c: Context) {
         const reader = streamReader;
         const decoder = new TextDecoder();
 
-        let currentThoughtIndex = 0;
+        let lastThinkingSummary = "";
         let lastRawContent = "";
         let targetResponseId: string | null = null;
-        const toolParser = new StreamingToolParser(bodyAny.tools || []);
+        const toolParser = shouldParseToolCalls
+          ? new StreamingToolParser(declaredTools, {
+              incrementalToolCalls: true,
+            })
+          : null;
         const reasoningTagSanitizer = new StreamingReasoningTagSanitizer();
         let loggedThinkTagLeak = false;
 
@@ -1274,17 +1347,30 @@ export async function chatCompletions(c: Context) {
         );
 
         const emitAnswerText = async (textChunk: string) => {
-          const { text, toolCalls } = toolParser.feed(textChunk);
+          if (!toolParser) {
+            await writeEvent({
+              id: completionId,
+              object: "chat.completion.chunk",
+              created: Math.floor(Date.now() / 1000),
+              model: body.model,
+              choices: [makeChoice({ content: textChunk })],
+            });
+            return;
+          }
+
+          const { text, toolCalls, toolCallDeltas } =
+            toolParser.feed(textChunk);
 
           if (
             isToolcallDebugEnabled() &&
-            (text || toolCalls.length > 0)
+            (text || toolCalls.length > 0 || toolCallDeltas.length > 0)
           ) {
             logger.debug("[chat] stream: parser feed result", {
               textLength: text.length,
               textPreview: text.substring(0, 100),
               toolCallsCount: toolCalls.length,
               toolCallNames: toolCalls.map((tc) => tc.name),
+              toolCallDeltaCount: toolCallDeltas.length,
             });
           }
 
@@ -1295,6 +1381,46 @@ export async function chatCompletions(c: Context) {
               created: Math.floor(Date.now() / 1000),
               model: body.model,
               choices: [makeChoice({ content: text })],
+            });
+          }
+
+          for (const delta of toolCallDeltas) {
+            if (isToolcallDebugEnabled()) {
+              logger.debug(
+                "[chat] stream: emitting incremental tool_call delta",
+                {
+                  index: delta.index,
+                  id: delta.id,
+                  name: delta.function.name,
+                  argumentsChunkLength: delta.function.arguments?.length || 0,
+                },
+              );
+            }
+
+            await writeEvent({
+              id: completionId,
+              object: "chat.completion.chunk",
+              created: Math.floor(Date.now() / 1000),
+              model: body.model,
+              choices: [
+                makeChoice({
+                  tool_calls: [
+                    {
+                      index: delta.index,
+                      ...(delta.id ? { id: delta.id } : {}),
+                      ...(delta.type ? { type: delta.type } : {}),
+                      function: {
+                        ...(delta.function.name
+                          ? { name: delta.function.name }
+                          : {}),
+                        ...(delta.function.arguments !== undefined
+                          ? { arguments: delta.function.arguments }
+                          : {}),
+                      },
+                    },
+                  ],
+                }),
+              ],
             });
           }
 
@@ -1454,15 +1580,15 @@ export async function chatCompletions(c: Context) {
 
                 if (delta.phase === "thinking_summary") {
                   isThinkingChunk = true;
-                  if (
-                    delta.extra &&
-                    delta.extra.summary_thought &&
-                    delta.extra.summary_thought.content
-                  ) {
-                    const thoughts = delta.extra.summary_thought.content;
-                    if (thoughts.length > currentThoughtIndex) {
-                      vStr = thoughts.slice(currentThoughtIndex).join("\n");
-                      currentThoughtIndex = thoughts.length;
+                  const formattedSummary = formatThinkingSummaryContent(delta);
+                  if (formattedSummary) {
+                    const result = getIncrementalDelta(
+                      lastThinkingSummary,
+                      formattedSummary,
+                    );
+                    vStr = result.delta;
+                    lastThinkingSummary = result.matchedContent;
+                    if (vStr) {
                       foundStr = true;
                     }
                   }
@@ -1554,14 +1680,21 @@ export async function chatCompletions(c: Context) {
         }
 
         // Flush tool parser
-        const { text: remainingText, toolCalls: remainingToolCalls } =
-          toolParser.flush();
+        const remainingParsed = toolParser
+          ? toolParser.flush()
+          : { text: "", toolCalls: [], toolCallDeltas: [] };
+        const {
+          text: remainingText,
+          toolCalls: remainingToolCalls,
+          toolCallDeltas: remainingToolCallDeltas,
+        } = remainingParsed;
 
-        if (isToolcallDebugEnabled()) {
+        if (toolParser && isToolcallDebugEnabled()) {
           logger.debug("[chat] stream: parser flush result", {
             remainingTextLength: remainingText?.length || 0,
             remainingToolCallsCount: remainingToolCalls.length,
             remainingToolCallNames: remainingToolCalls.map((tc) => tc.name),
+            remainingToolCallDeltaCount: remainingToolCallDeltas.length,
             totalEmittedToolCalls: toolParser.getEmittedToolCallCount(),
           });
         }
@@ -1575,8 +1708,47 @@ export async function chatCompletions(c: Context) {
             choices: [makeChoice({ content: remainingText })],
           });
         }
+        for (const delta of remainingToolCallDeltas) {
+          if (toolParser && isToolcallDebugEnabled()) {
+            logger.debug(
+              "[chat] stream: emitting flushed incremental tool_call delta",
+              {
+                index: delta.index,
+                id: delta.id,
+                name: delta.function.name,
+                argumentsChunkLength: delta.function.arguments?.length || 0,
+              },
+            );
+          }
+
+          await writeEvent({
+            id: completionId,
+            object: "chat.completion.chunk",
+            created: Math.floor(Date.now() / 1000),
+            model: body.model,
+            choices: [
+              makeChoice({
+                tool_calls: [
+                  {
+                    index: delta.index,
+                    ...(delta.id ? { id: delta.id } : {}),
+                    ...(delta.type ? { type: delta.type } : {}),
+                    function: {
+                      ...(delta.function.name
+                        ? { name: delta.function.name }
+                        : {}),
+                      ...(delta.function.arguments !== undefined
+                        ? { arguments: delta.function.arguments }
+                        : {}),
+                    },
+                  },
+                ],
+              }),
+            ],
+          });
+        }
         for (const tc of remainingToolCalls) {
-          if (isToolcallDebugEnabled()) {
+          if (toolParser && isToolcallDebugEnabled()) {
             logger.debug("[chat] stream: emitting flushed tool_call chunk", {
               id: tc.id,
               name: tc.name,
@@ -1597,10 +1769,11 @@ export async function chatCompletions(c: Context) {
               makeChoice({
                 tool_calls: [
                   {
-                    index:
-                      toolParser.getEmittedToolCallCount() -
-                      remainingToolCalls.length +
-                      remainingToolCalls.indexOf(tc),
+                    index: toolParser
+                      ? toolParser.getEmittedToolCallCount() -
+                        remainingToolCalls.length +
+                        remainingToolCalls.indexOf(tc)
+                      : remainingToolCalls.indexOf(tc),
                     id: tc.id,
                     type: "function",
                     function: {
@@ -1618,9 +1791,11 @@ export async function chatCompletions(c: Context) {
         const usage = buildUsage(usageAccumulator);
 
         const finalFinishReason =
-          toolParser.getEmittedToolCallCount() > 0 ? "tool_calls" : "stop";
+          toolParser && toolParser.getEmittedToolCallCount() > 0
+            ? "tool_calls"
+            : "stop";
 
-        if (isToolcallDebugEnabled()) {
+        if (toolParser && isToolcallDebugEnabled()) {
           logger.debug("[chat] stream: sending finish reason", {
             finishReason: finalFinishReason,
             totalEmittedToolCalls: toolParser.getEmittedToolCallCount(),
@@ -1662,7 +1837,9 @@ export async function chatCompletions(c: Context) {
           if (isToolcallDebugEnabled()) {
             logger.debug("[chat] stream: completed successfully", {
               completionId,
-              totalEmittedToolCalls: toolParser.getEmittedToolCallCount(),
+              totalEmittedToolCalls: toolParser
+                ? toolParser.getEmittedToolCallCount()
+                : 0,
               finishReason: finalFinishReason,
             });
           }
@@ -1673,6 +1850,29 @@ export async function chatCompletions(c: Context) {
             );
           }
         }
+      } catch (err: any) {
+        const streamStillRegistered = Boolean(getStream(completionId));
+        if (
+          shouldSuppressStreamAbort(
+            err,
+            clientDisconnected,
+            c.req.raw.signal.aborted,
+            streamStillRegistered,
+          )
+        ) {
+          if (isToolcallDebugEnabled()) {
+            logger.debug("[chat] stream: suppressed expected abort", {
+              completionId,
+              clientDisconnected,
+              requestAborted: c.req.raw.signal.aborted,
+              streamStillRegistered,
+              errorName: err?.name,
+              errorMessage: err?.message,
+            });
+          }
+          return;
+        }
+        throw err;
       } finally {
         if (isToolcallDebugEnabled()) {
           logger.debug("[chat] stream: cleanup started", {
