@@ -29,7 +29,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CreateChatCompletionRequest'
+              $ref: "#/components/schemas/CreateChatCompletionRequest"
             examples:
               simple:
                 summary: Simple text completion
@@ -59,29 +59,29 @@ paths:
                           image_url:
                             url: https://example.com/image.jpg
       responses:
-        '200':
+        "200":
           description: Successful response
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/CreateChatCompletionResponse'
+                $ref: "#/components/schemas/CreateChatCompletionResponse"
             text/event-stream:
               schema:
-                $ref: '#/components/schemas/ChatCompletionStreamResponse'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '429':
-          $ref: '#/components/responses/RateLimited'
-        '502':
-          $ref: '#/components/responses/UpstreamError'
-        '503':
-          $ref: '#/components/responses/ServiceUnavailable'
-        '504':
-          $ref: '#/components/responses/UpstreamTimeout'
+                $ref: "#/components/schemas/ChatCompletionStreamResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "502":
+          $ref: "#/components/responses/UpstreamError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "504":
+          $ref: "#/components/responses/UpstreamTimeout"
 
   /v1/chat/completions/stop:
     post:
@@ -94,22 +94,22 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/StopChatCompletionRequest'
+              $ref: "#/components/schemas/StopChatCompletionRequest"
       responses:
-        '200':
+        "200":
           description: Stream stopped successfully
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/StopChatCompletionResponse'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '502':
-          $ref: '#/components/responses/UpstreamError'
+                $ref: "#/components/schemas/StopChatCompletionResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          $ref: "#/components/responses/UpstreamError"
 
   /v1/upload:
     post:
@@ -135,18 +135,18 @@ paths:
                     documents (pdf, doc, docx, xls, xlsx, ppt, pptx, txt, md, csv, json, xml, html, zip).
                     Max size: 100MB video, 50MB audio, 20MB other.
       responses:
-        '200':
+        "200":
           description: File uploaded successfully
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/UploadResponse'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '503':
-          $ref: '#/components/responses/ServiceUnavailable'
+                $ref: "#/components/schemas/UploadResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 
   /v1/models:
     get:
@@ -162,7 +162,7 @@ paths:
             type: string
           description: ETag value for conditional GET. Returns 304 if unchanged.
       responses:
-        '200':
+        "200":
           description: List of models
           headers:
             ETag:
@@ -176,8 +176,8 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ModelList'
-        '304':
+                $ref: "#/components/schemas/ModelList"
+        "304":
           description: Not modified (ETag match)
 
   /v1/models/{model}:
@@ -195,14 +195,14 @@ paths:
             type: string
           description: The ID of the model to retrieve
       responses:
-        '200':
+        "200":
           description: The model object
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Model'
-        '404':
-          $ref: '#/components/responses/NotFound'
+                $ref: "#/components/schemas/Model"
+        "404":
+          $ref: "#/components/responses/NotFound"
 
   /health:
     get:
@@ -212,12 +212,12 @@ paths:
         - Operations
       security: []
       responses:
-        '200':
+        "200":
           description: Health status
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HealthResponse'
+                $ref: "#/components/schemas/HealthResponse"
 
   /metrics:
     get:
@@ -227,7 +227,7 @@ paths:
         - Operations
       security: []
       responses:
-        '200':
+        "200":
           description: Prometheus metrics
           content:
             text/plain:
@@ -243,7 +243,7 @@ components:
     bearerAuth:
       type: http
       scheme: bearer
-      description: API key passed as `Authorization: Bearer <key>`
+      description: "API key passed as `Authorization: Bearer <key>`"
 
   schemas:
     CreateChatCompletionRequest:
@@ -262,7 +262,7 @@ components:
           type: array
           minItems: 1
           items:
-            $ref: '#/components/schemas/Message'
+            $ref: "#/components/schemas/Message"
           description: A list of messages comprising the conversation so far
         stream:
           type: boolean
@@ -285,13 +285,13 @@ components:
         tools:
           type: array
           items:
-            $ref: '#/components/schemas/Tool'
+            $ref: "#/components/schemas/Tool"
           description: A list of tools the model may call
         tool_choice:
           oneOf:
             - type: string
               enum: [auto, none, required]
-            - $ref: '#/components/schemas/ToolChoice'
+            - $ref: "#/components/schemas/ToolChoice"
           description: Controls which tool is called
         session_id:
           type: string
@@ -302,10 +302,10 @@ components:
 
     Message:
       oneOf:
-        - $ref: '#/components/schemas/SystemMessage'
-        - $ref: '#/components/schemas/UserMessage'
-        - $ref: '#/components/schemas/AssistantMessage'
-        - $ref: '#/components/schemas/ToolMessage'
+        - $ref: "#/components/schemas/SystemMessage"
+        - $ref: "#/components/schemas/UserMessage"
+        - $ref: "#/components/schemas/AssistantMessage"
+        - $ref: "#/components/schemas/ToolMessage"
       discriminator:
         propertyName: role
 
@@ -335,7 +335,7 @@ components:
             - type: string
             - type: array
               items:
-                $ref: '#/components/schemas/ContentPart'
+                $ref: "#/components/schemas/ContentPart"
 
     AssistantMessage:
       type: object
@@ -346,14 +346,14 @@ components:
           type: string
           enum: [assistant]
         content:
-          type: [string, 'null']
+          type: [string, "null"]
         reasoning_content:
           type: string
           description: Chain-of-thought reasoning (thinking models only)
         tool_calls:
           type: array
           items:
-            $ref: '#/components/schemas/ToolCall'
+            $ref: "#/components/schemas/ToolCall"
 
     ToolMessage:
       type: object
@@ -517,9 +517,9 @@ components:
         choices:
           type: array
           items:
-            $ref: '#/components/schemas/Choice'
+            $ref: "#/components/schemas/Choice"
         usage:
-          $ref: '#/components/schemas/Usage'
+          $ref: "#/components/schemas/Usage"
 
     Choice:
       type: object
@@ -531,9 +531,9 @@ components:
         index:
           type: integer
         message:
-          $ref: '#/components/schemas/AssistantMessage'
+          $ref: "#/components/schemas/AssistantMessage"
         finish_reason:
-          type: [string, 'null']
+          type: [string, "null"]
           enum: [stop, length, tool_calls, content_filter, null]
 
     Usage:
@@ -616,7 +616,7 @@ components:
         data:
           type: array
           items:
-            $ref: '#/components/schemas/Model'
+            $ref: "#/components/schemas/Model"
 
     Model:
       type: object
@@ -686,10 +686,10 @@ components:
                 - service_unavailable_error
                 - internal_error
             code:
-              type: [string, 'null']
+              type: [string, "null"]
               description: Machine-readable error code
             param:
-              type: [string, 'null']
+              type: [string, "null"]
               description: Request parameter associated with the error, if any
 
   responses:
@@ -698,7 +698,7 @@ components:
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/ErrorResponse'
+            $ref: "#/components/schemas/ErrorResponse"
           example:
             error:
               message: "messages is required and must be a non-empty array"
@@ -710,7 +710,7 @@ components:
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/ErrorResponse'
+            $ref: "#/components/schemas/ErrorResponse"
           example:
             error:
               message: "Invalid API key"
@@ -722,7 +722,7 @@ components:
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/ErrorResponse'
+            $ref: "#/components/schemas/ErrorResponse"
           example:
             error:
               message: "Not found"
@@ -734,7 +734,7 @@ components:
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/ErrorResponse'
+            $ref: "#/components/schemas/ErrorResponse"
           example:
             error:
               message: "Rate limit exceeded (RPM)"
@@ -746,7 +746,7 @@ components:
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/ErrorResponse'
+            $ref: "#/components/schemas/ErrorResponse"
           example:
             error:
               message: "Upstream request failed"
@@ -758,7 +758,7 @@ components:
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/ErrorResponse'
+            $ref: "#/components/schemas/ErrorResponse"
           example:
             error:
               message: "Authentication not ready. Send a chat message first."
@@ -770,7 +770,7 @@ components:
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/ErrorResponse'
+            $ref: "#/components/schemas/ErrorResponse"
           example:
             error:
               message: "Upstream request timed out"

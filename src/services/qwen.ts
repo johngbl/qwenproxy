@@ -165,6 +165,7 @@ const modelsCache = new Map<
 
 const nativeToolsDisabled = new Set<string>();
 const disablingNativeToolsInProgress = new Set<string>();
+const QWEN_WEB_VERSION = "0.2.63";
 
 export async function disableNativeTools(accountId?: string): Promise<void> {
   const cacheKey = accountId || "global";
@@ -246,6 +247,44 @@ function formatPublicQwenModel(
     context_window: model.info?.meta?.max_context_length,
     capabilities: model.info?.meta?.capabilities,
   };
+}
+
+export async function deleteAllQwenChats(accountId?: string): Promise<boolean> {
+  const { headers } = await getQwenHeaders(false, accountId);
+  const response = await fetch(`${config.qwen.baseUrl}/api/v2/chats/`, {
+    method: "DELETE",
+    headers: buildQwenRequestHeaders({
+      cookie: headers["cookie"],
+      userAgent: headers["user-agent"],
+      bxUa: headers["bx-ua"],
+      bxUmidtoken: headers["bx-umidtoken"],
+      bxV: headers["bx-v"],
+      extra: {
+        Referer: `${config.qwen.baseUrl}/settings/chats`,
+        source: "web",
+        timezone: new Date().toString().split(" (")[0],
+        version: QWEN_WEB_VERSION,
+      },
+    }),
+  });
+
+  const raw = await response.text();
+  if (!response.ok) {
+    throw new Error(
+      `Failed to delete chats from Qwen: ${response.status} ${raw.substring(0, 200)}`,
+    );
+  }
+
+  const parsed = raw ? JSON.parse(raw) : null;
+  const success = parsed?.success === true && parsed?.data?.status === true;
+  if (!success) {
+    throw new Error(
+      `Qwen delete chats returned unexpected payload: ${raw.substring(0, 200)}`,
+    );
+  }
+
+  clearAllSessionsForAccount(accountId || "global");
+  return true;
 }
 
 export async function fetchQwenModels(

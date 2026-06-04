@@ -51,7 +51,10 @@ app.use("/v1/*", async (c, next) => {
   if (apiKey) {
     const auth = c.req.header("Authorization");
     if (!auth?.startsWith("Bearer ")) {
-      return sendOpenAIError(c, new AuthError("Missing or invalid Authorization header"));
+      return sendOpenAIError(
+        c,
+        new AuthError("Missing or invalid Authorization header"),
+      );
     }
     const token = auth.slice(7);
     const tokenBuf = Buffer.from(token);
@@ -74,24 +77,34 @@ app.use("/v1/*", async (c, next) => {
 
   const auth = c.req.header("Authorization");
   const apiKey = auth?.startsWith("Bearer ") ? auth.slice(7) : "anonymous";
-  const clientIp = c.req.header("x-forwarded-for")?.split(",")[0].trim() || c.req.header("x-real-ip") || "unknown";
-  
-  const identifier = apiKey !== "anonymous" ? `key:${apiKey}` : `ip:${clientIp}`;
+  const clientIp =
+    c.req.header("x-forwarded-for")?.split(",")[0].trim() ||
+    c.req.header("x-real-ip") ||
+    "unknown";
+
+  const identifier =
+    apiKey !== "anonymous" ? `key:${apiKey}` : `ip:${clientIp}`;
 
   const concurrencyKey = `rate:concurrency:${identifier}` as CacheKey;
   const currentConcurrency = await cache.increment(concurrencyKey, 1, 60);
-  
+
   if (currentConcurrency > config.rateLimit.concurrency) {
     await cache.increment(concurrencyKey, -1);
-    return sendOpenAIError(c, new UpstreamRateLimit("Too many concurrent requests"));
+    return sendOpenAIError(
+      c,
+      new UpstreamRateLimit("Too many concurrent requests"),
+    );
   }
 
   try {
     const rpmKey = `rate:rpm:${identifier}` as CacheKey;
     const currentRpm = await cache.increment(rpmKey, 1, 60);
-    
+
     if (currentRpm > config.rateLimit.rpm) {
-      return sendOpenAIError(c, new UpstreamRateLimit("Rate limit exceeded (RPM)"));
+      return sendOpenAIError(
+        c,
+        new UpstreamRateLimit("Rate limit exceeded (RPM)"),
+      );
     }
 
     await next();
@@ -129,7 +142,7 @@ app.onError((err, c) => {
   logger.error("API Error", {
     requestId,
     error: err instanceof Error ? err.message : String(err),
-    stack: err instanceof Error ? err.stack : undefined
+    stack: err instanceof Error ? err.stack : undefined,
   });
   return sendOpenAIError(c, err);
 });
@@ -161,6 +174,24 @@ async function cleanupServerResources(): Promise<void> {
     await cache?.close();
   } finally {
     cache = undefined;
+  }
+
+  if (config.qwen.deleteAllChatsOnShutdown) {
+    try {
+      const { deleteChatsForConfiguredAccounts } =
+        await import("../services/chat-cleanup.ts");
+      const result = await deleteChatsForConfiguredAccounts({
+        useExistingSessions: true,
+      });
+      console.log(
+        `[Server] Deleted Qwen chats on shutdown: ${result.succeeded}/${result.attempted} scope(s).`,
+      );
+    } catch (error) {
+      console.error(
+        "[Server] Failed to delete Qwen chats on shutdown:",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
   }
 
   const { closePlaywright } = await import("../services/playwright.ts");

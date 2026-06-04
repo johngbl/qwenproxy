@@ -42,6 +42,7 @@ const envSchema = z.object({
   QWEN_BASE_URL: z.string().default("https://chat.qwen.ai"),
   QWEN_HTTP_ENDPOINT: z.string().default("https://api.qwen.ai/v1/chat"),
   QWEN_API_KEY: z.string().default(""),
+  DELETE_ALL_CHATS_ON_SHUTDOWN: z.string().default("false"),
   API_KEY: z.string().default(""),
 });
 
@@ -127,6 +128,7 @@ export const config = {
     baseUrl: env.QWEN_BASE_URL,
     httpEndpoint: env.QWEN_HTTP_ENDPOINT,
     apiKey: env.QWEN_API_KEY,
+    deleteAllChatsOnShutdown: env.DELETE_ALL_CHATS_ON_SHUTDOWN === "true",
   },
 };
 

@@ -173,8 +173,9 @@ Comandos úteis:
 | `QWEN_EMAIL` | vazio | Credencial de login automático para o modo single-account/global. |
 | `QWEN_PASSWORD` | vazio | Senha usada junto com `QWEN_EMAIL`. |
 | `QWEN_ACCOUNTS` | vazio | Lista de múltiplas contas no formato `email1:senha1,email2:senha2`. Essas contas são sincronizadas para o SQLite. |
-| `BROWSER` | vazio | Usado principalmente pelo `src/login.ts` para escolher o browser do CLI (`chromium`, `chrome`, `firefox`, `edge`, `webkit`). |
+| `BROWSER` | vazio | Usado principalmente pelos CLIs (`src/login.ts` e `src/delete-chats.ts`) para escolher o browser (`chromium`, `chrome`, `firefox`, `edge`, `webkit`). |
 | `USER_DATA_DIR` | `./data/profiles` | Diretório raiz dos perfis persistidos do browser por conta. |
+| `DELETE_ALL_CHATS_ON_SHUTDOWN` | `false` | Quando `true`, envia `DELETE /api/v2/chats/` no shutdown do proxy para limpar todos os chats do Qwen de todas as contas carregadas (ou da sessão global, se não houver contas). |
 | `USER_AGENT` | valor padrão de browser | Config avançada/reservada; o fluxo principal usa user agents próprios no Playwright. |
 
 ## Timeouts
@@ -296,6 +297,22 @@ O menu permite:
 - **Single-account/global**: usa `QWEN_EMAIL` + `QWEN_PASSWORD`.
 - **Multi-account persistido**: contas salvas no SQLite pelo CLI.
 - **Multi-account via env**: `QWEN_ACCOUNTS` sincroniza contas para o SQLite periodicamente.
+
+### Limpeza de chats
+
+Para apagar todos os chats do Qwen das contas configuradas, use:
+
+```bash
+npm run delete-chats
+```
+
+Há também variantes `delete-chats:chrome`, `delete-chats:firefox` e `delete-chats:edge`.
+
+Se você quiser limpar automaticamente todos os chats ao encerrar o proxy, configure:
+
+```env
+DELETE_ALL_CHATS_ON_SHUTDOWN=true
+```
 
 ### Rotação e cooldown
 
@@ -483,6 +500,11 @@ npm run login
 npm run login:chrome
 npm run login:firefox
 npm run login:edge
+
+npm run delete-chats
+npm run delete-chats:chrome
+npm run delete-chats:firefox
+npm run delete-chats:edge
 
 npm run typecheck
 npm test
