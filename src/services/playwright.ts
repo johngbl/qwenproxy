@@ -83,7 +83,6 @@ const REFRESH_THRESHOLD = 0.7;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const profilesRoot = path.resolve(config.browser.userDataDir);
-const legacyProfilesRoot = path.resolve("qwen_profiles");
 const diagnosticsRoot = path.resolve("data", "diagnostics", "playwright");
 
 function ensureDirectory(dirPath: string): string {
@@ -92,15 +91,6 @@ function ensureDirectory(dirPath: string): string {
 }
 
 function ensureProfilesRoot(): string {
-  if (
-    profilesRoot !== legacyProfilesRoot &&
-    !fs.existsSync(profilesRoot) &&
-    fs.existsSync(legacyProfilesRoot)
-  ) {
-    fs.renameSync(legacyProfilesRoot, profilesRoot);
-    console.log(`[Playwright] Migrated legacy profiles to ${profilesRoot}`);
-  }
-
   return ensureDirectory(profilesRoot);
 }
 
