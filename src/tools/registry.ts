@@ -1,9 +1,3 @@
-/*
- * File: registry.ts
- * Project: qwenproxy
- * Tool registry with register/lookup and OpenAI-compatible schema export
- */
-
 import type {
   FunctionToolDefinition,
   JsonSchema,

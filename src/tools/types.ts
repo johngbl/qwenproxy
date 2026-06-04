@@ -1,9 +1,3 @@
-/*
- * File: types.ts
- * Project: qwenproxy
- * Tool system types
- */
-
 /**
  * JSON Schema definition following the OpenAI function calling spec.
  */
@@ -40,7 +34,7 @@ export interface JsonSchema {
  * OpenAI-compatible function tool definition.
  */
 export interface FunctionToolDefinition {
-  type: 'function';
+  type: "function";
   function: {
     name: string;
     description?: string;
@@ -67,7 +61,7 @@ export interface ToolRegistration {
  */
 export type ToolHandler<TArgs = any, TResult = any> = (
   args: TArgs,
-  context: ToolContext
+  context: ToolContext,
 ) => Promise<TResult>;
 
 /**

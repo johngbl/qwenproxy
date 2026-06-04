@@ -1,9 +1,3 @@
-/*
- * File: json.ts
- * Project: qwenproxy
- * Robust JSON parsing utilities
- */
-
 import { logger } from "../core/logger.js";
 
 const isDebug = process.env.TOOLCALL_DEBUG === "1";
@@ -69,7 +63,7 @@ function sanitizeAndBalance(input: string): {
       if (char === "]") openBrackets--;
     }
   }
-  
+
   let recoveredUnclosedString = false;
   if (escaped) {
     out += "\\";
@@ -78,7 +72,7 @@ function sanitizeAndBalance(input: string): {
     out += '"';
     recoveredUnclosedString = true;
   }
-  
+
   return { result: out, openBraces, openBrackets, recoveredUnclosedString };
 }
 
@@ -179,13 +173,16 @@ export function robustParseJSON(str: string): any {
     openBrackets,
     recoveredUnclosedString,
   } = sanitizeAndBalance(cleaned);
-  
+
   if (isDebug && recoveredUnclosedString) {
-    logger.debug("[json] robustParseJSON: recovered unclosed string at end of input", {
-      originalPreview: cleaned.substring(0, 150),
-    });
+    logger.debug(
+      "[json] robustParseJSON: recovered unclosed string at end of input",
+      {
+        originalPreview: cleaned.substring(0, 150),
+      },
+    );
   }
-  
+
   let lastBalancedIndex = -1;
 
   {
@@ -266,13 +263,16 @@ export function robustParseJSON(str: string): any {
       openBrackets: bk,
       recoveredUnclosedString: aggRecovered,
     } = sanitizeAndBalance(aggressive);
-    
+
     if (isDebug && aggRecovered) {
-      logger.debug("[json] robustParseJSON: aggressive recovery of unclosed string", {
-        originalPreview: aggressive.substring(0, 150),
-      });
+      logger.debug(
+        "[json] robustParseJSON: aggressive recovery of unclosed string",
+        {
+          originalPreview: aggressive.substring(0, 150),
+        },
+      );
     }
-    
+
     try {
       const result = JSON.parse(closeBraces(aggFixed, ob, bk));
       if (isDebug) {

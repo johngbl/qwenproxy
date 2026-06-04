@@ -1,7 +1,7 @@
 {
-  "name": "qwenproxy",
+  "name": "qwenbridge",
   "version": "1.0.0",
-  "description": "",
+  "description": "API compatível com OpenAI que conecta clientes ao Qwen via automação com Playwright, com suporte a múltiplas contas, tool calling e sessões persistentes.",
   "main": "index.js",
   "scripts": {
     "start": "npx tsx src/index.ts",
