@@ -3,11 +3,14 @@
  * Project: qwenproxy
  * Author: Pedro Farias
  * Created: 2026-05-12
+ * Last Modified: 03/06/26
  */
 
 import { getQwenHeaders, getBasicHeaders } from "./playwright.ts";
 import { v4 as uuidv4 } from "uuid";
 import { UpstreamRateLimit, UpstreamError, AuthError } from "../core/errors.js";
+import { buildQwenRequestHeaders } from "./qwen-headers.ts";
+import { config } from "../core/config.js";
 
 export class RetryableQwenStreamError extends UpstreamRateLimit {
   readonly retryAfterMs: number;
@@ -195,24 +198,18 @@ export async function disableNativeTools(accountId?: string): Promise<void> {
     };
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 30000);
+    const timeoutId = setTimeout(() => controller.abort(), config.timeouts.http);
     const response = await fetch(
       "https://chat.qwen.ai/api/v2/users/user/settings/update",
       {
         method: "POST",
-        headers: {
-          accept: "application/json, text/plain, */*",
-          "accept-language": "pt-BR,pt;q=0.9",
-          "content-type": "application/json",
+        headers: buildQwenRequestHeaders({
           cookie: headers["cookie"],
-          origin: "https://chat.qwen.ai",
-          referer: "https://chat.qwen.ai/",
-          "user-agent": headers["user-agent"],
-          "x-request-id": uuidv4(),
-          "bx-ua": headers["bx-ua"],
-          "bx-umidtoken": headers["bx-umidtoken"],
-          "bx-v": headers["bx-v"],
-        },
+          userAgent: headers["user-agent"],
+          bxUa: headers["bx-ua"],
+          bxUmidtoken: headers["bx-umidtoken"],
+          bxV: headers["bx-v"],
+        }),
         body: JSON.stringify(payload),
         signal: controller.signal,
       },
@@ -264,17 +261,15 @@ export async function fetchQwenModels(
   const { cookie, userAgent, bxV } = await getBasicHeaders(accountId);
 
   const response = await fetch("https://chat.qwen.ai/api/models", {
-    headers: {
-      accept: "application/json, text/plain, */*",
-      "accept-language": "pt-BR,pt;q=0.9",
-      cookie: cookie,
-      referer: "https://chat.qwen.ai/",
-      "user-agent": userAgent,
-      "x-request-id": uuidv4(),
-      "bx-v": bxV,
-      timezone: new Date().toString(),
-      source: "web",
-    },
+    headers: buildQwenRequestHeaders({
+      cookie,
+      userAgent,
+      bxV,
+      extra: {
+        timezone: new Date().toString(),
+        source: "web",
+      },
+    }),
   });
 
   if (!response.ok) {
@@ -393,31 +388,27 @@ export async function createQwenStream(
     : "https://chat.qwen.ai/api/v2/chat/completions";
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 120000);
+  const timeoutMs = enableThinking || modelId.includes('thinking')
+    ? config.timeouts.reasoningModelTimeout
+    : config.timeouts.totalRequestTimeout;
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   let response: Response;
   try {
     response = await fetch(url, {
       method: "POST",
-      headers: {
-        accept: "application/json",
-        "accept-language": "pt-BR,pt;q=0.9",
-        "content-type": "application/json",
+      headers: buildQwenRequestHeaders({
         cookie: headers["cookie"],
-        origin: "https://chat.qwen.ai",
-        referer: chatSessionId
-          ? `https://chat.qwen.ai/c/${chatSessionId}`
-          : "https://chat.qwen.ai/",
-        "sec-fetch-dest": "empty",
-        "sec-fetch-mode": "cors",
-        "sec-fetch-site": "same-origin",
-        timezone: new Date().toString().split(" (")[0],
-        "user-agent": headers["user-agent"],
-        "x-accel-buffering": "no",
-        "x-request-id": uuidv4(),
-        "bx-ua": headers["bx-ua"],
-        "bx-umidtoken": headers["bx-umidtoken"],
-        "bx-v": headers["bx-v"],
-      },
+        userAgent: headers["user-agent"],
+        bxUa: headers["bx-ua"],
+        bxUmidtoken: headers["bx-umidtoken"],
+        bxV: headers["bx-v"],
+        chatSessionId,
+        extra: {
+          Accept: "application/json",
+          timezone: new Date().toString().split(" (")[0],
+          "x-accel-buffering": "no",
+        },
+      }),
       body: JSON.stringify(payload),
       signal: controller.signal,
     });
@@ -436,7 +427,13 @@ export async function createQwenStream(
           errorJson?.data?.details?.includes("chat is in progress") ||
           errorJson?.data?.details?.includes("The chat is in progress")
         ) {
-          const retryAfterMs = 2000 + Math.floor(Math.random() * 2000);
+          const attempt = errorJson.data?.retryCount ?? 1;
+          const baseDelay = 2000;
+          const exponentialDelay = baseDelay * Math.pow(2, attempt - 1);
+          const cappedDelay = Math.min(exponentialDelay, 30000);
+          const jitter = cappedDelay * 0.2 * Math.random();
+          const retryAfterMs = Math.floor(cappedDelay + jitter);
+
           throw new RetryableQwenStreamError(
             `Qwen: ${errorJson.data.details}`,
             retryAfterMs,
@@ -482,9 +479,12 @@ export async function createQwenStream(
           errorJson?.data?.details?.includes("not exist") ||
           errorJson?.data?.details?.includes("does not exist")
         ) {
+          const attempt = errorJson.data?.retryCount ?? 1;
+          const retryAfterMs = Math.min(1000 * Math.pow(2, attempt - 1), 10000);
+
           throw new RetryableQwenStreamError(
             `Qwen: ${errorJson.data.details}`,
-            0,
+            retryAfterMs,
           );
         }
       } catch (parseOrRetryError) {

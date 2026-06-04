@@ -5,7 +5,7 @@ import {
     QwenSessionExpiredError,
     RetryableQwenStreamError,
 } from "../../services/qwen.ts";
-import { Mutex } from "../../services/playwright.ts";
+import { Mutex, initPlaywrightForAccount } from "../../services/playwright.ts";
 import {
     getNextAccount,
     getNextAvailableAccount,
@@ -97,19 +97,18 @@ async function attemptRelogin(
     accountEmail: string,
 ): Promise<boolean> {
     try {
-        const { initPlaywrightForAccount } = await import(
-            "../../services/playwright.ts"
-        );
         const creds = getAccountCredentials(accountId);
         if (creds) {
             await initPlaywrightForAccount(creds, true);
             console.log(`[Chat] Re-login successful for ${accountEmail}. Retrying...`);
             return true;
         }
-    } catch (reLoginErr: any) {
-        console.error(
-            `[Chat] Re-login failed for ${accountEmail}: ${reLoginErr.message}`,
-        );
+    } catch (reLoginErr: unknown) {
+        logger.error("[Chat] Re-login failed", {
+            accountEmail,
+            error: reLoginErr instanceof Error ? reLoginErr.message : String(reLoginErr),
+            cause: reLoginErr instanceof Error ? reLoginErr.constructor.name : typeof reLoginErr,
+        });
     }
     return false;
 }

@@ -29,7 +29,61 @@ export interface TruncationOptions {
 }
 
 export function estimateTokenCount(text: string): number {
-  return Math.ceil(text.length / 3.5);
+  if (!text) return 0;
+
+  let tokens = 0;
+  let i = 0;
+
+  while (i < text.length) {
+    const char = text[i];
+    const codePoint = text.codePointAt(i) || 0;
+
+    // CJK Unified Ideographs (U+4E00-U+9FFF)
+    if (codePoint >= 0x4E00 && codePoint <= 0x9FFF) {
+      tokens += 1.5;
+      i += 1;
+    }
+    // CJK Extension A/B (U+3400-U+2A6DF)
+    else if (codePoint >= 0x3400 && codePoint <= 0x2A6DF) {
+      tokens += 1.5;
+      i += codePoint > 0xFFFF ? 2 : 1;
+    }
+    // Hiragana/Katakana (U+3040-U+30FF)
+    else if (codePoint >= 0x3040 && codePoint <= 0x30FF) {
+      tokens += 1.2;
+      i += 1;
+    }
+    // Hangul (U+AC00-U+D7AF)
+    else if (codePoint >= 0xAC00 && codePoint <= 0xD7AF) {
+      tokens += 1.3;
+      i += 1;
+    }
+    // ASCII printable (space to ~)
+    else if (codePoint >= 0x20 && codePoint <= 0x7E) {
+      if (
+        char === '{' || char === '}' || char === '[' || char === ']' ||
+        char === '"' || char === ':' || char === ',' || char === ';' ||
+        char === '(' || char === ')' || char === '/' || char === '\\'
+      ) {
+        tokens += 0.4;
+      } else {
+        tokens += 0.25; // Standard English: ~4 chars per token
+      }
+      i += 1;
+    }
+    // Newlines and whitespace
+    else if (char === '\n' || char === '\r' || char === '\t') {
+      tokens += 0.2;
+      i += 1;
+    }
+    // Other Unicode (emoji, symbols, etc.)
+    else {
+      tokens += 1.0;
+      i += codePoint > 0xFFFF ? 2 : 1;
+    }
+  }
+
+  return Math.ceil(tokens);
 }
 
 function normalizeMessageContent(content: string | null | any[]): string {
@@ -134,7 +188,16 @@ export async function truncateMessages(
     };
   });
 
-  // Allocate tokens by priority tier
+  // Group messages by priority
+  const messagesByPriority = new Map<MessagePriority, typeof scoredMessages>();
+  for (const msg of scoredMessages) {
+    if (!messagesByPriority.has(msg.priority)) {
+      messagesByPriority.set(msg.priority, []);
+    }
+    messagesByPriority.get(msg.priority)!.push(msg);
+  }
+
+  // Phase 1: Allocate up to budget for each priority tier (newest first within tier)
   const allocations = {
     [MessagePriority.SYSTEM]: 1.0,
     [MessagePriority.RECENT_USER]: 0.4,
@@ -143,41 +206,82 @@ export async function truncateMessages(
     [MessagePriority.OLDER_MESSAGES]: 0.1,
   };
 
-  const result: PrioritizedMessage[] = [];
+  const allocated = new Map<MessagePriority, typeof scoredMessages>();
   const usedTokensByPriority = new Map<MessagePriority, number>();
+  let totalUsedTokens = 0;
 
-  // Prepend summary if available
+  const priorityOrder = [
+    MessagePriority.SYSTEM,
+    MessagePriority.RECENT_USER,
+    MessagePriority.TOOL_CALLS,
+    MessagePriority.ASSISTANT,
+    MessagePriority.OLDER_MESSAGES,
+  ];
+
+  for (const priority of priorityOrder) {
+    const msgs = messagesByPriority.get(priority) || [];
+    const budget = Math.floor(availableTokens * allocations[priority]);
+    const allocatedMsgs: typeof scoredMessages = [];
+    let usedTokens = 0;
+
+    // Process newest first within priority tier
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const msg = msgs[i];
+      if (usedTokens + msg.tokens <= budget) {
+        allocatedMsgs.unshift(msg);
+        usedTokens += msg.tokens;
+      } else {
+        break; // Stop when budget exhausted
+      }
+    }
+
+    allocated.set(priority, allocatedMsgs);
+    usedTokensByPriority.set(priority, usedTokens);
+    totalUsedTokens += usedTokens;
+  }
+
+  // Phase 2: Redistribute unused budget to lower priorities
+  let remainingBudget = availableTokens - totalUsedTokens;
+  if (remainingBudget > 0) {
+    for (const priority of [MessagePriority.ASSISTANT, MessagePriority.TOOL_CALLS, MessagePriority.OLDER_MESSAGES]) {
+      if (remainingBudget <= 0) break;
+
+      const msgs = messagesByPriority.get(priority) || [];
+      const allocatedMsgs = allocated.get(priority) || [];
+      const allocatedIndices = new Set(allocatedMsgs.map(m => m.originalIndex));
+
+      // Add unallocated messages from this priority (newest first)
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const msg = msgs[i];
+        if (!allocatedIndices.has(msg.originalIndex) && msg.tokens <= remainingBudget) {
+          allocatedMsgs.unshift(msg);
+          remainingBudget -= msg.tokens;
+          totalUsedTokens += msg.tokens;
+
+          if (remainingBudget <= 0) break;
+        }
+      }
+
+      allocated.set(priority, allocatedMsgs);
+    }
+  }
+
+  // Build final result in chronological order
+  const result: PrioritizedMessage[] = [];
+
   if (summaryMessage) {
     result.push(summaryMessage);
   }
 
-  // Process messages in reverse order (newest first)
-  for (let i = scoredMessages.length - 1; i >= 0; i--) {
-    const msg = scoredMessages[i];
-    const priorityLimit = Math.floor(availableTokens * allocations[msg.priority]);
-    const usedForPriority = usedTokensByPriority.get(msg.priority) || 0;
-
-    if (usedForPriority + msg.tokens <= priorityLimit) {
-      result.unshift({
+  for (const priority of priorityOrder) {
+    const msgs = allocated.get(priority) || [];
+    for (const msg of msgs) {
+      result.push({
         role: msg.role,
         content: msg.content,
         priority: msg.priority,
         tokens: msg.tokens,
       });
-      usedTokensByPriority.set(msg.priority, usedForPriority + msg.tokens);
-    } else {
-      // Truncate or skip based on remaining budget
-      const remainingTokens = priorityLimit - usedForPriority;
-      if (remainingTokens > 100) {
-        const truncatedContent = msg.content.slice(0, Math.floor(remainingTokens * 3.5));
-        result.unshift({
-          role: msg.role,
-          content: `[Truncated] ${truncatedContent}...`,
-          priority: msg.priority,
-          tokens: remainingTokens,
-        });
-        usedTokensByPriority.set(msg.priority, priorityLimit);
-      }
     }
   }
 

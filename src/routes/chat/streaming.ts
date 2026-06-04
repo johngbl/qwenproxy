@@ -9,7 +9,7 @@
 
 import { Context } from "hono";
 import { stream as honoStream } from "hono/streaming";
-import { v4 as uuidv4 } from "uuid";
+import { buildQwenRequestHeaders } from "../../services/qwen-headers.ts";
 import { updateSessionParent } from "../../services/qwen.ts";
 import type { OpenAIRequest } from "../../utils/types.ts";
 import { StreamingToolParser } from "../../tools/parser.ts";
@@ -22,6 +22,7 @@ import {
 import { metrics } from "../../core/metrics.js";
 import { logger, isToolcallDebugEnabled } from "../../core/logger.js";
 import { sendOpenAIError, createError } from "../../api/error-helpers.js";
+import { classifyError } from "../../api/error-classifier.js";
 import type { QproxyStatusCode } from "../../core/errors.js";
 import {
     parseQwenErrorPayload,
@@ -420,7 +421,7 @@ export async function processStreamingResponse(
     c.header("Connection", "keep-alive");
 
     return honoStream(c, async (streamWriter: any) => {
-        let heartbeatInterval: any;
+        let heartbeatTimeout: NodeJS.Timeout | undefined;
         let clientDisconnected = false;
 
         const abortHandler = async () => {
@@ -450,18 +451,14 @@ export async function processStreamingResponse(
                             `https://chat.qwen.ai/api/v2/chat/completions/stop?chat_id=${uiSessionId}`,
                             {
                                 method: "POST",
-                                headers: {
-                                    Accept: "application/json",
-                                    "Content-Type": "application/json",
-                                    Cookie: streamData.headers.cookie,
-                                    Origin: "https://chat.qwen.ai",
-                                    Referer: `https://chat.qwen.ai/c/${uiSessionId}`,
-                                    "User-Agent": streamData.headers["user-agent"],
-                                    "X-Request-Id": uuidv4(),
-                                    "bx-ua": streamData.headers["bx-ua"],
-                                    "bx-umidtoken": streamData.headers["bx-umidtoken"],
-                                    "bx-v": streamData.headers["bx-v"],
-                                },
+                                headers: buildQwenRequestHeaders({
+                                    cookie: streamData.headers.cookie,
+                                    userAgent: streamData.headers["user-agent"],
+                                    bxUa: streamData.headers["bx-ua"],
+                                    bxUmidtoken: streamData.headers["bx-umidtoken"],
+                                    bxV: streamData.headers["bx-v"],
+                                    chatSessionId: uiSessionId,
+                                }),
                                 body: JSON.stringify({
                                     chat_id: uiSessionId,
                                     response_id: targetResponseId,
@@ -492,7 +489,9 @@ export async function processStreamingResponse(
                 );
             }
 
-            clearInterval(heartbeatInterval);
+            if (heartbeatTimeout) {
+                clearTimeout(heartbeatTimeout);
+            }
             removeStream(completionId);
         };
 
@@ -501,15 +500,21 @@ export async function processStreamingResponse(
         try {
             await streamWriter.write(": heartbeat\n\n");
 
-            heartbeatInterval = setInterval(async () => {
-                try {
-                    if (!clientDisconnected) {
+            const scheduleHeartbeat = () => {
+                heartbeatTimeout = setTimeout(async () => {
+                    if (clientDisconnected) return;
+                    try {
                         await streamWriter.write(": keep-alive\n\n");
+                        scheduleHeartbeat();
+                    } catch (err) {
+                        logger.debug("[streaming] Heartbeat error", {
+                            error: err instanceof Error ? err.message : String(err),
+                        });
                     }
-                } catch (_e) {
-                    clearInterval(heartbeatInterval);
-                }
-            }, 15000);
+                }, 15000);
+            };
+
+            scheduleHeartbeat();
 
             const writeEvent = async (data: any) => {
                 await streamWriter.write(`data: ${JSON.stringify(data)}\n\n`);
@@ -730,6 +735,26 @@ export async function processStreamingResponse(
                     if (dataStr === "[DONE]") {
                         if (!clientDisconnected) {
                             await streamWriter.write("data: [DONE]\n\n");
+                        }
+                        continue;
+                    }
+
+                    // Fast-path: simple text delta (avoids JSON.parse for ~90% of chunks)
+                    const fastMatch = dataStr.match(/^\{"response_id":"[^"]*","choices":\[\{"delta":\{"content":"((?:[^"\\]|\\.)*)"\}\}\]\}$/);
+                    if (fastMatch) {
+                        const unescaped = fastMatch[1]
+                            .replace(/\\n/g, '\n')
+                            .replace(/\\t/g, '\t')
+                            .replace(/\\"/g, '"')
+                            .replace(/\\\\/g, '\\');
+                        
+                        if (unescaped) {
+                            const result = getIncrementalDelta(lastRawContent, unescaped);
+                            const vStr = result.delta;
+                            if (vStr && vStr !== "FINISHED") {
+                                lastRawContent = result.matchedContent;
+                                await emitSanitizedAnswerChunk(vStr);
+                            }
                         }
                         continue;
                     }
@@ -1085,7 +1110,9 @@ export async function processStreamingResponse(
             }
 
             c.req.raw.signal.removeEventListener("abort", abortHandler);
-            clearInterval(heartbeatInterval);
+            if (heartbeatTimeout) {
+                clearTimeout(heartbeatTimeout);
+            }
             removeStream(completionId);
 
             if (isToolcallDebugEnabled()) {
@@ -1101,13 +1128,9 @@ export async function processStreamingResponse(
 
 export function handleChatCompletionsError(c: Context, err: unknown): Response {
     console.error("Error in chatCompletions:", err);
-    const hint =
-        err != null && typeof err === "object"
-            ? (err as Record<string, unknown>).upstreamStatus
-            : undefined;
-    const status = typeof hint === "number" ? hint : 500;
-    if (status >= 500) {
+    const classified = classifyError(err);
+    if (classified.statusCode >= 500) {
         metrics.increment("requests.errors");
     }
-    return sendOpenAIError(c, err, 500);
+    return sendOpenAIError(c, classified);
 }

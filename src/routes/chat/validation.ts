@@ -8,9 +8,10 @@ import { Context } from "hono";
 import { OpenAIRequest, Message } from "../../utils/types.ts";
 import { QwenFileEntry, processImagesForQwen } from "../upload.ts";
 import { logger, isToolcallDebugEnabled } from "../../core/logger.js";
+import { getBasicHeaders } from "../../services/playwright.ts";
 
 // Tag literals split to avoid proxy parser misinterpretation
-const TOOL_CALL_OPEN = "<tool_call>";
+const TOOL_CALL_OPEN = "<" + "tool_call>";
 const TOOL_CALL_CLOSE = "</" + "tool_call>";
 
 export interface ParsedRequest {
@@ -80,6 +81,17 @@ async function buildPromptFromMessages(
   const toolCallNamesById = new Map<string, string>();
   const allFiles: QwenFileEntry[] = [];
 
+  // Pre-build tool_call_id -> name mapping in O(n)
+  for (const msg of messages) {
+    if (msg.role === "assistant" && msg.tool_calls && Array.isArray(msg.tool_calls)) {
+      for (const tc of msg.tool_calls) {
+        if (tc.id && tc.function?.name) {
+          toolCallNamesById.set(tc.id, tc.function.name);
+        }
+      }
+    }
+  }
+
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
     let contentStr = "";
@@ -96,9 +108,6 @@ async function buildPromptFromMessages(
       if (imageParts.length > 0) {
         try {
           if (!uploadHeaders) {
-            const { getBasicHeaders } = await import(
-              "../../services/playwright.ts"
-            );
             const { cookie, userAgent, bxV, bxUa, bxUmidtoken } =
               await getBasicHeaders();
             uploadHeaders = {
@@ -143,7 +152,7 @@ async function buildPromptFromMessages(
       const assistantContentParts: string[] = [];
       const reasoning = (msg as any).reasoning_content;
       if (reasoning) {
-        assistantContentParts.push(`\n`);
+        assistantContentParts.push(reasoning + "\n");
       }
       if (contentStr) {
         assistantContentParts.push(contentStr);
@@ -162,8 +171,15 @@ async function buildPromptFromMessages(
           if (typeof args === "string") {
             try {
               parsedArgs = JSON.parse(args);
-            } catch {
-              parsedArgs = {};
+            } catch (parseErr) {
+              // Malformed JSON: preserve raw string for model visibility
+              logger.warn("[chat] Failed to parse tool_call arguments", {
+                toolCallId: tc.id,
+                toolName: tc.function?.name,
+                error: parseErr instanceof Error ? parseErr.message : "Unknown",
+                rawArgs: args.substring(0, 200),
+              });
+              parsedArgs = { _raw: args };
             }
           } else if (args && typeof args === "object") {
             parsedArgs = args;
@@ -185,10 +201,6 @@ async function buildPromptFromMessages(
               : toolCallStr.trim(),
           );
 
-          if (tc.id && tc.function?.name) {
-            toolCallNamesById.set(tc.id, tc.function.name);
-          }
-
           if (isToolcallDebugEnabled()) {
             logger.debug("[chat] tool_call serialized to prompt", {
               toolName: tc.function?.name,
@@ -206,23 +218,6 @@ async function buildPromptFromMessages(
         (msg.tool_call_id
           ? toolCallNamesById.get(msg.tool_call_id)
           : undefined);
-      if (!toolName && msg.tool_call_id) {
-        for (let j = i - 1; j >= 0; j--) {
-          const prevMsg = messages[j];
-          if (prevMsg.role === "assistant" && prevMsg.tool_calls) {
-            const call = prevMsg.tool_calls.find(
-              (tc) => tc.id === msg.tool_call_id,
-            );
-            if (call) {
-              toolName = call.function?.name;
-              if (toolName) {
-                toolCallNamesById.set(msg.tool_call_id, toolName);
-              }
-              break;
-            }
-          }
-        }
-      }
       if (isToolcallDebugEnabled()) {
         logger.debug("[chat] processing tool response in history", {
           messageIndex: i,

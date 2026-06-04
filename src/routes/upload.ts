@@ -9,6 +9,7 @@ import { getBasicHeaders } from "../services/playwright.ts";
 import { v4 as uuidv4 } from "uuid";
 import { ValidationError, ServiceUnavailable } from "../core/errors.js";
 import { sendOpenAIError } from "../api/error-helpers.js";
+import { buildQwenRequestHeaders } from "../services/qwen-headers.ts";
 
 interface STSResponse {
   success: boolean;
@@ -263,18 +264,13 @@ async function getSTSToken(
     "https://chat.qwen.ai/api/v2/files/getstsToken",
     {
       method: "POST",
-      headers: {
-        Accept: "application/json, text/plain, */*",
-        "Content-Type": "application/json",
-        Cookie: headers.cookie,
-        Origin: "https://chat.qwen.ai",
-        Referer: "https://chat.qwen.ai/",
-        "User-Agent": headers["user-agent"],
-        "X-Request-Id": uuidv4(),
-        "bx-ua": headers["bx-ua"],
-        "bx-umidtoken": headers["bx-umidtoken"],
-        "bx-v": headers["bx-v"],
-      },
+      headers: buildQwenRequestHeaders({
+        cookie: headers.cookie,
+        userAgent: headers["user-agent"],
+        bxUa: headers["bx-ua"],
+        bxUmidtoken: headers["bx-umidtoken"],
+        bxV: headers["bx-v"],
+      }),
       body: JSON.stringify({ filename, filesize: String(filesize), filetype }),
     },
   );

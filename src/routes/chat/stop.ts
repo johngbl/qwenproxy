@@ -8,7 +8,7 @@
  */
 
 import { Context } from "hono";
-import { v4 as uuidv4 } from "uuid";
+import { buildQwenRequestHeaders } from "../../services/qwen-headers.ts";
 import {
     getStream,
     getStreamKeyBySessionAndResponse,
@@ -68,22 +68,14 @@ export async function chatCompletionsStop(c: Context) {
             `https://chat.qwen.ai/api/v2/chat/completions/stop?chat_id=${chat_id}`,
             {
                 method: "POST",
-                headers: {
-                    Accept: "application/json, text/plain, */*",
-                    "Accept-Language": "pt-BR,pt;q=0.9",
-                    "Content-Type": "application/json",
-                    Cookie: stream.headers.cookie,
-                    Origin: "https://chat.qwen.ai",
-                    Referer: `https://chat.qwen.ai/c/${chat_id}`,
-                    "Sec-Fetch-Dest": "empty",
-                    "Sec-Fetch-Mode": "cors",
-                    "Sec-Fetch-Site": "same-origin",
-                    "User-Agent": stream.headers["user-agent"],
-                    "X-Request-Id": uuidv4(),
-                    "bx-ua": stream.headers["bx-ua"],
-                    "bx-umidtoken": stream.headers["bx-umidtoken"],
-                    "bx-v": stream.headers["bx-v"],
-                },
+                headers: buildQwenRequestHeaders({
+                    cookie: stream.headers.cookie,
+                    userAgent: stream.headers["user-agent"],
+                    bxUa: stream.headers["bx-ua"],
+                    bxUmidtoken: stream.headers["bx-umidtoken"],
+                    bxV: stream.headers["bx-v"],
+                    chatSessionId: chat_id,
+                }),
                 body: JSON.stringify({ chat_id, response_id }),
             },
         );
