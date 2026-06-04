@@ -9,7 +9,7 @@ dist/
 .env.local
 .env.production
 
-# Database
+# Persistent runtime data (DB, profiles, benchmarks, diagnostics)
 data/
 *.db
 *.db-wal
@@ -17,11 +17,9 @@ data/
 accounts.json
 accounts.json.bak
 
-# Browser profiles (session data)
-qwen_profiles/
-
 # Logs
 *.log
+log*.txt
 
 # Coverage & cache
 coverage/
@@ -34,9 +32,3 @@ Thumbs.db
 # IDE / Editor
 .kilo
 .roo
-
-# Legacy
-/core/
-
-*.log
-log*.txt

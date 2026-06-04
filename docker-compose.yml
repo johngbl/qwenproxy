@@ -2,14 +2,13 @@ services:
   qwenproxy:
     build: .
     container_name: qwenproxy
-    user: "root" 
+    user: "root"
     ports:
       - "${PORT:-3000}:3000"
     env_file:
       - .env
     volumes:
       - ./data:/app/data
-      - ./qwen_profiles:/app/qwen_profiles
     restart: unless-stopped
     logging:
       driver: "json-file"

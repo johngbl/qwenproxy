@@ -15,7 +15,7 @@ API compatível com OpenAI que conecta clientes ao **Qwen (`chat.qwen.ai`)** por
 - **Compatibilidade OpenAI** — Endpoints `/v1/chat/completions`, `/v1/models`, `/v1/chat/completions/stop` e `/v1/upload`.
 - **Modelos Qwen atuais** — Funciona com a família `qwen3.x` e expõe variantes sintéticas `-no-thinking` para respostas sem reasoning.
 - **Múltiplas contas** — Rotação round-robin, cooldown automático por rate limit e inicialização paralela das contas configuradas.
-- **Persistência de sessão** — Perfis de navegador por conta em `qwen_profiles/`.
+- **Persistência de sessão** — Perfis de navegador por conta em `data/profiles/`.
 - **Login automático** — Pode usar `QWEN_EMAIL`/`QWEN_PASSWORD`, contas persistidas em SQLite ou sincronização via `QWEN_ACCOUNTS`.
 - **Uploads multimodais** — Imagens, vídeo, áudio e documentos enviados ao OSS do Qwen e reutilizados no chat.
 - **Tool calling robusto** — Parser tolerante a stream fragmentado, JSON malformado e também blocos XML/Hermes-style.
@@ -41,7 +41,7 @@ flowchart TD
     Chat --> Accounts["Account manager"]
     Accounts --> DB[("SQLite")]
     Accounts --> PW["Playwright service"]
-    PW --> Profiles["qwen_profiles/"]
+    PW --> Profiles["data/profiles/"]
     Chat --> Parser["Tool-call parser"]
     Chat --> Qwen["chat.qwen.ai"]
     Upload --> OSS["Qwen OSS upload"]
@@ -137,6 +137,21 @@ npm start
 
 Existem scripts `start:chrome`, `start:firefox` e `start:edge` no `package.json`, mas o bootstrap atual do servidor ainda não consome `--browser` no `src/index.ts`. Hoje, a seleção explícita de browser funciona de forma confiável no **CLI de login** (`npm run login:*`).
 
+## Testes
+
+```bash
+npm test
+```
+
+O script principal roda primeiro os testes com mock e deixa os testes live reais por último.
+
+Comandos úteis:
+
+- `npm run test:mock` — roda só os testes com mocks
+- `npm run test:live` — roda só os testes reais/live
+
+> Os testes live dependem de contas/sessões reais do Qwen e tendem a ser mais lentos.
+
 ---
 
 ## Todas as variáveis de ambiente
@@ -159,7 +174,7 @@ Existem scripts `start:chrome`, `start:firefox` e `start:edge` no `package.json`
 | `QWEN_PASSWORD` | vazio | Senha usada junto com `QWEN_EMAIL`. |
 | `QWEN_ACCOUNTS` | vazio | Lista de múltiplas contas no formato `email1:senha1,email2:senha2`. Essas contas são sincronizadas para o SQLite. |
 | `BROWSER` | vazio | Usado principalmente pelo `src/login.ts` para escolher o browser do CLI (`chromium`, `chrome`, `firefox`, `edge`, `webkit`). |
-| `USER_DATA_DIR` | `./qwen_profiles` | Config avançada/reservada. A persistência real continua em `qwen_profiles/` por conta. |
+| `USER_DATA_DIR` | `./data/profiles` | Diretório raiz dos perfis persistidos do browser por conta. |
 | `USER_AGENT` | valor padrão de browser | Config avançada/reservada; o fluxo principal usa user agents próprios no Playwright. |
 
 ## Timeouts
@@ -258,7 +273,7 @@ Ela também entende frases explícitas como:
 
 ## Gerenciamento de contas
 
-As contas ficam em SQLite, em `data/qwenproxy.db`.
+As contas ficam em SQLite, em `data/db/qwenproxy.db`.
 
 ### CLI interativo
 
@@ -474,6 +489,21 @@ npm test
 npm run benchmark:proxy
 ```
 
+O benchmark do proxy agora foca em medições reais com menos ruído:
+
+- sobe o proxy automaticamente antes de medir e encerra no final;
+- usa um payload curto e determinístico;
+- mostra no console apenas latência total, first-token e leitura rápida do gargalo;
+- salva apenas um relatório JSON em `data/benchmarks/`.
+
+Exemplo com parâmetros:
+
+```bash
+npm run benchmark:proxy -- --model=qwen3.6-plus --samples=10
+```
+
+Se precisar apontar para um proxy já rodando, use `--manage-server=false`.
+
 ---
 
 ## Estrutura do projeto
@@ -492,8 +522,7 @@ qwenbridge/
 │   ├── tests/          # Suite de testes
 │   ├── index.ts        # Entry point do servidor
 │   └── login.ts        # CLI de gerenciamento de contas
-├── data/               # SQLite (gitignored)
-├── qwen_profiles/      # Perfis persistidos do browser (gitignored)
+├── data/               # DB, perfis, benchmarks e diagnósticos (gitignored)
 ├── docker-compose.yml
 ├── Dockerfile
 ├── package.json
@@ -532,7 +561,6 @@ services:
       - .env
     volumes:
       - ./data:/app/data
-      - ./qwen_profiles:/app/qwen_profiles
     restart: unless-stopped
 ```
 
@@ -540,8 +568,7 @@ Volumes persistentes:
 
 | Volume | Conteúdo |
 |---|---|
-| `./data` | Banco SQLite com contas e metadados |
-| `./qwen_profiles` | Cookies, sessões e perfis de navegador |
+| `./data` | Banco SQLite, perfis persistidos do browser, benchmarks e diagnósticos |
 
 ---
 

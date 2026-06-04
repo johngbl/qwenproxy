@@ -1,5 +1,6 @@
 import { chromium, firefox, webkit, BrowserContext, Page } from "playwright";
 import path from "path";
+import fs from "fs";
 import crypto from "crypto";
 import { QwenAccount } from "../core/accounts.ts";
 import { config } from "../core/config.ts";
@@ -80,6 +81,36 @@ const HEADERS_TTL = 30 * 60 * 1000;
 const REFRESH_THRESHOLD = 0.7;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const profilesRoot = path.resolve(config.browser.userDataDir);
+const legacyProfilesRoot = path.resolve("qwen_profiles");
+const diagnosticsRoot = path.resolve("data", "diagnostics", "playwright");
+
+function ensureDirectory(dirPath: string): string {
+  fs.mkdirSync(dirPath, { recursive: true });
+  return dirPath;
+}
+
+function ensureProfilesRoot(): string {
+  if (
+    profilesRoot !== legacyProfilesRoot &&
+    !fs.existsSync(profilesRoot) &&
+    fs.existsSync(legacyProfilesRoot)
+  ) {
+    fs.renameSync(legacyProfilesRoot, profilesRoot);
+    console.log(`[Playwright] Migrated legacy profiles to ${profilesRoot}`);
+  }
+
+  return ensureDirectory(profilesRoot);
+}
+
+function getProfilePath(profileName: string): string {
+  return path.join(ensureProfilesRoot(), profileName);
+}
+
+function getDiagnosticsPath(fileName: string): string {
+  return path.join(ensureDirectory(diagnosticsRoot), fileName);
+}
 
 export class Mutex {
   private queue: (() => void)[] = [];
@@ -201,7 +232,7 @@ export async function initPlaywright(
     return;
   }
 
-  const profilePath = path.resolve("qwen_profiles", "default");
+  const profilePath = getProfilePath("default");
   const { engine: browserEngine, channel } = getBrowserEngine(browserType);
 
   context = await browserEngine.launchPersistentContext(profilePath, {
@@ -651,9 +682,7 @@ async function _getQwenHeadersInternal(
           );
         } catch {}
         try {
-          const screenshotPath = path.resolve(
-            `qwen_profiles/error_${cacheKey}.png`,
-          );
+          const screenshotPath = getDiagnosticsPath(`error_${cacheKey}.png`);
           await page.screenshot({ path: screenshotPath });
           console.log(
             `[Playwright] Error screenshot saved to ${screenshotPath}`,
@@ -817,7 +846,7 @@ async function _getQwenHeadersInternal(
           }
 
           console.warn(
-            `[Playwright] Failed to get headers for ${cacheKey}. Delete qwen_profiles/${accountId || "default"} and restart.`,
+            `[Playwright] Failed to get headers for ${cacheKey}. Delete ${getProfilePath(accountId || "default")} and restart.`,
           );
           cache.refreshInProgress = false;
           await route.continue();
@@ -921,7 +950,7 @@ export async function initPlaywrightForAccount(
   await closePlaywrightForAccount(account.id);
   clearAccountHeaderCache(account.id);
 
-  const profilePath = path.resolve("qwen_profiles", account.id);
+  const profilePath = getProfilePath(account.id);
   const { engine: browserEngine, channel } = getBrowserEngine(browserType);
 
   const acctContext = await browserEngine.launchPersistentContext(profilePath, {
@@ -965,7 +994,7 @@ export async function launchManualLoginAccount(
   accountId: string,
   browserType: BrowserType = "chromium",
 ): Promise<{ context: BrowserContext; page: Page }> {
-  const profilePath = path.resolve("qwen_profiles", accountId);
+  const profilePath = getProfilePath(accountId);
   const { engine: browserEngine, channel } = getBrowserEngine(browserType);
 
   const acctContext = await browserEngine.launchPersistentContext(profilePath, {

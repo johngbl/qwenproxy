@@ -16,8 +16,11 @@ import type { CacheKey } from "../cache/memory-cache.js";
 
 // Module-level state (initialized in startServer)
 let cache: MemoryCache | undefined;
-let watchdog: Watchdog;
+let watchdog: Watchdog | undefined;
 let server: any;
+let startPromise: Promise<StartedServerInfo> | null = null;
+let stopPromise: Promise<void> | null = null;
+let signalHandlersInstalled = false;
 
 const app = new Hono();
 
@@ -133,72 +136,168 @@ app.onError((err, c) => {
 
 app.notFound((c) => sendOpenAIError(c, new NotFoundError("Not found")));
 
-export async function startServer(): Promise<void> {
-  cache = new MemoryCache();
-  await cache.connect();
+export interface StartedServerInfo {
+  host: string;
+  port: number;
+  url: string;
+}
 
-  const { loadAccounts } = await import("../core/accounts.ts");
-  const accounts = loadAccounts();
+function buildStartedServerInfo(): StartedServerInfo {
+  const host =
+    config.server.host === "0.0.0.0" ? "127.0.0.1" : config.server.host;
+  return {
+    host,
+    port: config.server.port,
+    url: `http://${host}:${config.server.port}`,
+  };
+}
 
-  if (accounts.length > 0) {
-    const { initPlaywrightForAccount, getQwenHeaders } =
-      await import("../services/playwright.ts");
-    const { disableNativeTools } = await import("../services/qwen.ts");
+async function cleanupServerResources(): Promise<void> {
+  watchdog?.stop();
+  watchdog = undefined;
+  metrics.stopCollection();
 
-    console.log(
-      `[Server] Preparing ${accounts.length} configured account(s) in parallel...`,
-    );
-
-    await Promise.all(
-      accounts.map(async (account) => {
-        try {
-          await initPlaywrightForAccount(account, config.browser.headless);
-          await getQwenHeaders(false, account.id);
-          await disableNativeTools(account.id).catch(() => {});
-          console.log(`[Server] Account ready: ${account.email}`);
-        } catch (err: any) {
-          console.error(
-            `[Server] Failed to initialize account ${account.email}:`,
-            err.message,
-          );
-        }
-      }),
-    );
-  } else {
-    const { initPlaywright } = await import("../services/playwright.ts");
-    await initPlaywright(config.browser.headless);
+  try {
+    await cache?.close();
+  } finally {
+    cache = undefined;
   }
 
-  watchdog = new Watchdog();
-  watchdog.start();
+  const { closePlaywright } = await import("../services/playwright.ts");
+  await closePlaywright();
 
-  metrics.startCollection();
+  const { closeDatabase } = await import("../core/database.ts");
+  closeDatabase();
 
-  server = serve({
-    fetch: app.fetch,
-    port: config.server.port,
-    hostname: config.server.host,
+  const activeServer = server;
+  server = undefined;
+  if (activeServer?.close) {
+    await new Promise<void>((resolve) => {
+      try {
+        if (activeServer.close.length > 0) {
+          activeServer.close(() => resolve());
+        } else {
+          activeServer.close();
+          resolve();
+        }
+      } catch {
+        resolve();
+      }
+    });
+  }
+}
+
+async function handleSignal(signal: string): Promise<never> {
+  console.log(`Received ${signal}, shutting down gracefully...`);
+  await stopServer();
+  process.exit(0);
+}
+
+function installSignalHandlers(): void {
+  if (signalHandlersInstalled) return;
+  process.on("SIGINT", () => {
+    void handleSignal("SIGINT");
   });
+  process.on("SIGTERM", () => {
+    void handleSignal("SIGTERM");
+  });
+  signalHandlersInstalled = true;
+}
 
-  console.log(
-    `[Server] Listening on http://localhost:${config.server.port}/v1`,
-  );
+export async function stopServer(): Promise<void> {
+  if (stopPromise) {
+    await stopPromise;
+    return;
+  }
 
-  const shutdown = async (signal: string) => {
-    console.log(`Received ${signal}, shutting down gracefully...`);
-    watchdog.stop();
-    metrics.stopCollection();
-    await cache?.close();
-    const { closePlaywright } = await import("../services/playwright.ts");
-    await closePlaywright();
-    const { closeDatabase } = await import("../core/database.ts");
-    closeDatabase();
-    server?.close();
-    process.exit(0);
-  };
+  stopPromise = (async () => {
+    if (!server && !cache && !watchdog) return;
+    await cleanupServerResources();
+  })();
 
-  process.on("SIGINT", () => shutdown("SIGINT"));
-  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  try {
+    await stopPromise;
+  } finally {
+    stopPromise = null;
+  }
+}
+
+export async function startServer(options?: {
+  installSignalHandlers?: boolean;
+}): Promise<StartedServerInfo> {
+  if (server) {
+    if (options?.installSignalHandlers !== false) installSignalHandlers();
+    return buildStartedServerInfo();
+  }
+
+  if (startPromise) {
+    return startPromise;
+  }
+
+  startPromise = (async () => {
+    cache = new MemoryCache();
+    await cache.connect();
+
+    const { loadAccounts } = await import("../core/accounts.ts");
+    const accounts = loadAccounts();
+
+    if (accounts.length > 0) {
+      const { initPlaywrightForAccount, getQwenHeaders } =
+        await import("../services/playwright.ts");
+      const { disableNativeTools } = await import("../services/qwen.ts");
+
+      console.log(
+        `[Server] Preparing ${accounts.length} configured account(s) in parallel...`,
+      );
+
+      await Promise.all(
+        accounts.map(async (account) => {
+          try {
+            await initPlaywrightForAccount(account, config.browser.headless);
+            await getQwenHeaders(false, account.id);
+            await disableNativeTools(account.id).catch(() => {});
+            console.log(`[Server] Account ready: ${account.email}`);
+          } catch (err: any) {
+            console.error(
+              `[Server] Failed to initialize account ${account.email}:`,
+              err.message,
+            );
+          }
+        }),
+      );
+    } else {
+      const { initPlaywright } = await import("../services/playwright.ts");
+      await initPlaywright(config.browser.headless);
+    }
+
+    watchdog = new Watchdog();
+    watchdog.start();
+
+    metrics.startCollection();
+
+    server = serve({
+      fetch: app.fetch,
+      port: config.server.port,
+      hostname: config.server.host,
+    });
+
+    if (options?.installSignalHandlers !== false) {
+      installSignalHandlers();
+    }
+
+    const started = buildStartedServerInfo();
+    console.log(`[Server] Listening on ${started.url}/v1`);
+    return started;
+  })();
+
+  try {
+    return await startPromise;
+  } catch (error) {
+    await cleanupServerResources().catch(() => {});
+    throw error;
+  } finally {
+    startPromise = null;
+  }
 }
 
 export { app };

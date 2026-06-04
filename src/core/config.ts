@@ -1,47 +1,51 @@
-import { z } from 'zod'
+import { z } from "zod";
 
 const envSchema = z.object({
-  PORT: z.string().default('3000'),
-  HOST: z.string().default('0.0.0.0'),
-  HEADLESS: z.string().default('true'),
-  USER_DATA_DIR: z.string().default('./qwen_profiles'),
-  USER_AGENT: z.string().default('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'),
-  LOG_CONSOLE: z.string().default('false'),
-  NAVIGATION_TIMEOUT: z.string().default('30000'),
-  PAGE_TIMEOUT: z.string().default('15000'),
-  HTTP_TIMEOUT: z.string().default('10000'),
-  CHAT_TIMEOUT: z.string().default('120000'),
-  TIME_TO_FIRST_BYTE: z.string().default('30000'),
-  IDLE_STREAM_TIMEOUT: z.string().default('60000'),
-  TOTAL_REQUEST_TIMEOUT: z.string().default('300000'),
-  REASONING_MODEL_TIMEOUT: z.string().default('600000'),
-  CACHE_TTL: z.string().default('3600'),
-  RESPONSE_TTL: z.string().default('1800'),
-  CACHE_COMPRESSION_ENABLED: z.string().default('true'),
-  CACHE_COMPRESSION_THRESHOLD: z.string().default('1024'),
-  CACHE_COMPRESSION_LEVEL: z.string().default('6'),
-  TOPIC_DETECTION_ENABLED: z.string().default('true'),
-  TOPIC_DETECTION_CONFIDENCE: z.string().default('0.7'),
-  CONTEXT_SUMMARIZATION_ENABLED: z.string().default('true'),
-  CONTEXT_SUMMARIZATION_MODEL: z.string().default('qwen3.5-flash'),
-  CONTEXT_SUMMARIZATION_TIMEOUT: z.string().default('15000'),
-  CONTEXT_MIN_MESSAGES_TO_KEEP: z.string().default('4'),
-  METRICS_INTERVAL: z.string().default('10000'),
-  WATCHDOG_INTERVAL: z.string().default('5000'),
-  WATCHDOG_FAILURES: z.string().default('3'),
-  RAM_WARNING: z.string().default('80'),
-  RAM_CRITICAL: z.string().default('95'),
-  WS_WARNING: z.string().default('50'),
-  WS_CRITICAL: z.string().default('100'),
-  RATE_LIMIT_RPM: z.string().default('60'),
-  RATE_LIMIT_CONCURRENCY: z.string().default('10'),
-  QWEN_BASE_URL: z.string().default('https://chat.qwen.ai'),
-  QWEN_HTTP_ENDPOINT: z.string().default('https://api.qwen.ai/v1/chat'),
-  QWEN_API_KEY: z.string().default(''),
-  API_KEY: z.string().default(''),
-})
+  PORT: z.string().default("3000"),
+  HOST: z.string().default("0.0.0.0"),
+  HEADLESS: z.string().default("true"),
+  USER_DATA_DIR: z.string().default("./data/profiles"),
+  USER_AGENT: z
+    .string()
+    .default(
+      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    ),
+  LOG_CONSOLE: z.string().default("false"),
+  NAVIGATION_TIMEOUT: z.string().default("30000"),
+  PAGE_TIMEOUT: z.string().default("15000"),
+  HTTP_TIMEOUT: z.string().default("10000"),
+  CHAT_TIMEOUT: z.string().default("120000"),
+  TIME_TO_FIRST_BYTE: z.string().default("30000"),
+  IDLE_STREAM_TIMEOUT: z.string().default("60000"),
+  TOTAL_REQUEST_TIMEOUT: z.string().default("300000"),
+  REASONING_MODEL_TIMEOUT: z.string().default("600000"),
+  CACHE_TTL: z.string().default("3600"),
+  RESPONSE_TTL: z.string().default("1800"),
+  CACHE_COMPRESSION_ENABLED: z.string().default("true"),
+  CACHE_COMPRESSION_THRESHOLD: z.string().default("1024"),
+  CACHE_COMPRESSION_LEVEL: z.string().default("6"),
+  TOPIC_DETECTION_ENABLED: z.string().default("true"),
+  TOPIC_DETECTION_CONFIDENCE: z.string().default("0.7"),
+  CONTEXT_SUMMARIZATION_ENABLED: z.string().default("true"),
+  CONTEXT_SUMMARIZATION_MODEL: z.string().default("qwen3.5-flash"),
+  CONTEXT_SUMMARIZATION_TIMEOUT: z.string().default("15000"),
+  CONTEXT_MIN_MESSAGES_TO_KEEP: z.string().default("4"),
+  METRICS_INTERVAL: z.string().default("10000"),
+  WATCHDOG_INTERVAL: z.string().default("5000"),
+  WATCHDOG_FAILURES: z.string().default("3"),
+  RAM_WARNING: z.string().default("80"),
+  RAM_CRITICAL: z.string().default("95"),
+  WS_WARNING: z.string().default("50"),
+  WS_CRITICAL: z.string().default("100"),
+  RATE_LIMIT_RPM: z.string().default("60"),
+  RATE_LIMIT_CONCURRENCY: z.string().default("10"),
+  QWEN_BASE_URL: z.string().default("https://chat.qwen.ai"),
+  QWEN_HTTP_ENDPOINT: z.string().default("https://api.qwen.ai/v1/chat"),
+  QWEN_API_KEY: z.string().default(""),
+  API_KEY: z.string().default(""),
+});
 
-const env = envSchema.parse(process.env)
+const env = envSchema.parse(process.env);
 
 export const config = {
   server: {
@@ -49,24 +53,24 @@ export const config = {
     host: env.HOST,
   },
   browser: {
-    headless: env.HEADLESS !== 'false',
+    headless: env.HEADLESS !== "false",
     userDataDir: env.USER_DATA_DIR,
     userAgent: env.USER_AGENT,
     args: [
-      '--disable-gpu',
-      '--disable-dev-shm-usage',
-      '--disable-accelerated-2d-canvas',
-      '--no-first-run',
-      '--no-zygote',
-      '--disable-features=IsolateOrigins,site-per-process',
+      "--disable-gpu",
+      "--disable-dev-shm-usage",
+      "--disable-accelerated-2d-canvas",
+      "--no-first-run",
+      "--no-zygote",
+      "--disable-features=IsolateOrigins,site-per-process",
     ],
     launchTimeout: 30000,
     healthCheckInterval: 30000,
     headers: {
-      'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      'accept-language': 'en-US,en;q=0.9',
+      accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "accept-language": "en-US,en;q=0.9",
     },
-    logConsole: env.LOG_CONSOLE === 'true',
+    logConsole: env.LOG_CONSOLE === "true",
   },
   timeouts: {
     navigation: parseInt(env.NAVIGATION_TIMEOUT),
@@ -82,18 +86,18 @@ export const config = {
     defaultTTL: parseInt(env.CACHE_TTL),
     responseTTL: parseInt(env.RESPONSE_TTL),
     compression: {
-      enabled: env.CACHE_COMPRESSION_ENABLED !== 'false',
+      enabled: env.CACHE_COMPRESSION_ENABLED !== "false",
       threshold: parseInt(env.CACHE_COMPRESSION_THRESHOLD),
       level: parseInt(env.CACHE_COMPRESSION_LEVEL),
     },
   },
   topicDetection: {
-    enabled: env.TOPIC_DETECTION_ENABLED !== 'false',
+    enabled: env.TOPIC_DETECTION_ENABLED !== "false",
     confidence: parseFloat(env.TOPIC_DETECTION_CONFIDENCE),
   },
   context: {
     summarization: {
-      enabled: env.CONTEXT_SUMMARIZATION_ENABLED !== 'false',
+      enabled: env.CONTEXT_SUMMARIZATION_ENABLED !== "false",
       model: env.CONTEXT_SUMMARIZATION_MODEL,
       timeout: parseInt(env.CONTEXT_SUMMARIZATION_TIMEOUT),
     },
@@ -124,6 +128,6 @@ export const config = {
     httpEndpoint: env.QWEN_HTTP_ENDPOINT,
     apiKey: env.QWEN_API_KEY,
   },
-}
+};
 
-export type Config = typeof config
+export type Config = typeof config;
