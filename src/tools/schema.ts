@@ -1,9 +1,3 @@
-/*
- * File: schema.ts
- * Project: qwenproxy
- * Strict JSON Schema validator for tool calling
- */
-
 import type { JsonSchema } from "./types";
 
 /**

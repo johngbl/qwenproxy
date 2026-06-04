@@ -1294,7 +1294,7 @@ function buildMarkdown(
   const lines: string[] = [];
   const primaryConcurrency = report.config.concurrencyLevels[0] ?? 1;
 
-  lines.push("# QwenProxy Benchmark Report");
+  lines.push("# QwenBridge Benchmark Report");
   lines.push("");
   lines.push(`- Gerado em: \`${report.generatedAt}\``);
   lines.push(`- Base URL: \`${report.config.baseUrl}\``);
@@ -1595,7 +1595,7 @@ async function run(): Promise<void> {
   const config = buildConfig();
   const previousReport = loadPreviousReport(config.compareJsonPath);
 
-  console.log("=== QwenProxy Real Benchmark ===");
+  console.log("=== QwenBridge Real Benchmark ===");
   console.log(
     JSON.stringify(
       {

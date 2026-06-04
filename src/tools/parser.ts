@@ -1,10 +1,3 @@
-/*
- * File: parser.ts
- * Project: qwenproxy
- * Streaming parser for <tool_call> tags - OpenAI Compatible
- * Supports both JSON and Hermes-style XML <parameter> formats.
- */
-
 import { v4 as uuidv4 } from "uuid";
 import { robustParseJSON } from "../utils/json.ts";
 import { logger, isToolcallDebugEnabled } from "../core/logger.js";

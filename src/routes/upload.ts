@@ -1,9 +1,3 @@
-/*
- * File: upload.ts
- * Project: qwenproxy
- * File upload handler - forwards files to Qwen's OSS storage
- */
-
 import { Context } from "hono";
 import { getBasicHeaders } from "../services/playwright.ts";
 import { v4 as uuidv4 } from "uuid";

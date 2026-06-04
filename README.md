@@ -1,6 +1,6 @@
-# QwenProxy
+# QwenBridge
 
-Proxy local compatível com OpenAI para usar o **Qwen (`chat.qwen.ai`)** por meio de automação com Playwright. Esta branch inclui suporte a múltiplas contas, rotação com cooldown, variantes `-no-thinking`, uploads multimodais, detecção de mudança de tópico, sumarização de contexto, cache comprimido e observabilidade básica.
+API compatível com OpenAI que conecta clientes ao **Qwen (`chat.qwen.ai`)** por meio de automação com Playwright, com suporte a múltiplas contas, tool calling robusto, uploads multimodais e sessões persistentes. Esta branch também inclui rotação com cooldown, variantes `-no-thinking`, detecção de mudança de tópico, sumarização de contexto, cache comprimido e observabilidade básica.
 
 [![CI](https://github.com/pedrofariasx/qwenproxy/actions/workflows/ci.yml/badge.svg)](https://github.com/pedrofariasx/qwenproxy/actions/workflows/ci.yml)
 [![TypeScript](https://img.shields.io/badge/TypeScript-6.0-blue)](https://www.typescriptlang.org/)
@@ -31,7 +31,7 @@ Proxy local compatível com OpenAI para usar o **Qwen (`chat.qwen.ai`)** por mei
 
 ```mermaid
 flowchart TD
-    Client["Cliente OpenAI/SDK"] -->|HTTP| Proxy["QwenProxy - Hono"]
+    Client["Cliente OpenAI/SDK"] -->|HTTP| Proxy["QwenBridge - Hono"]
     Proxy --> Chat["/v1/chat/completions"]
     Proxy --> Models["/v1/models"]
     Proxy --> Upload["/v1/upload"]
@@ -479,7 +479,7 @@ npm run benchmark:proxy
 ## Estrutura do projeto
 
 ```text
-qwenproxy/
+qwenbridge/
 ├── src/
 │   ├── api/            # Servidor Hono e endpoints /models
 │   ├── benchmarks/     # Benchmark de proxy
