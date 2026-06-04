@@ -1,13 +1,18 @@
 import crypto from "crypto";
+import { v4 as uuidv4 } from "uuid";
 import { Hono } from "hono";
 import { serve } from "@hono/node-server";
 import { config } from "../core/config.js";
 import { metrics } from "../core/metrics.js";
+import { logger } from "../core/logger.js";
 import { MemoryCache } from "../cache/memory-cache.js";
 import { Watchdog } from "../core/watchdog.js";
 import { app as modelsApp } from "./models.js";
 import { chatCompletions, chatCompletionsStop } from "../routes/chat.js";
 import { uploadFile } from "../routes/upload.js";
+import { sendOpenAIError } from "./error-helpers.js";
+import { AuthError, NotFoundError, UpstreamRateLimit } from "../core/errors.js";
+import type { CacheKey } from "../cache/memory-cache.js";
 
 // Module-level state (initialized in startServer)
 let cache: MemoryCache | undefined;
@@ -27,6 +32,9 @@ export function setCacheForTesting(nextCache: MemoryCache | undefined): void {
 
 // Middleware must be registered BEFORE routes
 app.use("*", async (c, next) => {
+  const requestId = c.req.header("X-Request-Id") || uuidv4();
+  c.header("X-Request-Id", requestId);
+
   metrics.increment("requests.total");
   const start = Date.now();
   await next();
@@ -40,7 +48,7 @@ app.use("/v1/*", async (c, next) => {
   if (apiKey) {
     const auth = c.req.header("Authorization");
     if (!auth?.startsWith("Bearer ")) {
-      return c.json({ error: "Missing or invalid Authorization header" }, 401);
+      return sendOpenAIError(c, new AuthError("Missing or invalid Authorization header"));
     }
     const token = auth.slice(7);
     const tokenBuf = Buffer.from(token);
@@ -49,10 +57,44 @@ app.use("/v1/*", async (c, next) => {
       tokenBuf.length !== keyBuf.length ||
       !crypto.timingSafeEqual(tokenBuf, keyBuf)
     ) {
-      return c.json({ error: "Invalid API key" }, 401);
+      return sendOpenAIError(c, new AuthError("Invalid API key"));
     }
   }
   await next();
+});
+
+app.use("/v1/*", async (c, next) => {
+  if (!cache) {
+    await next();
+    return;
+  }
+
+  const auth = c.req.header("Authorization");
+  const apiKey = auth?.startsWith("Bearer ") ? auth.slice(7) : "anonymous";
+  const clientIp = c.req.header("x-forwarded-for")?.split(",")[0].trim() || c.req.header("x-real-ip") || "unknown";
+  
+  const identifier = apiKey !== "anonymous" ? `key:${apiKey}` : `ip:${clientIp}`;
+
+  const concurrencyKey = `rate:concurrency:${identifier}` as CacheKey;
+  const currentConcurrency = await cache.increment(concurrencyKey, 1, 60);
+  
+  if (currentConcurrency > config.rateLimit.concurrency) {
+    await cache.increment(concurrencyKey, -1);
+    return sendOpenAIError(c, new UpstreamRateLimit("Too many concurrent requests"));
+  }
+
+  try {
+    const rpmKey = `rate:rpm:${identifier}` as CacheKey;
+    const currentRpm = await cache.increment(rpmKey, 1, 60);
+    
+    if (currentRpm > config.rateLimit.rpm) {
+      return sendOpenAIError(c, new UpstreamRateLimit("Rate limit exceeded (RPM)"));
+    }
+
+    await next();
+  } finally {
+    await cache.increment(concurrencyKey, -1);
+  }
 });
 
 // Routes
@@ -79,12 +121,17 @@ app.get("/metrics", (c) => {
 });
 
 app.onError((err, c) => {
+  const requestId = c.req.header("X-Request-Id") || "unknown";
   metrics.increment("requests.errors");
-  console.error("API Error:", err);
-  return c.json({ error: err.message }, 500);
+  logger.error("API Error", {
+    requestId,
+    error: err instanceof Error ? err.message : String(err),
+    stack: err instanceof Error ? err.stack : undefined
+  });
+  return sendOpenAIError(c, err);
 });
 
-app.notFound((c) => c.json({ error: "Not found" }, 404));
+app.notFound((c) => sendOpenAIError(c, new NotFoundError("Not found")));
 
 export async function startServer(): Promise<void> {
   cache = new MemoryCache();

@@ -42,7 +42,7 @@ interface ActiveIncrementalToolCall {
 
 // ─── XML Helpers ───────────────────────────────────────────────────────────────
 
-const TOOL_END = "</tool_call>";
+const TOOL_END = "</" + "tool_call>";
 
 function advanceMarkdownCodeState(
   text: string,
@@ -420,7 +420,7 @@ function parseRecoverableXmlToolCall(
 
 // ─── Partial Tag Detection ─────────────────────────────────────────────────────
 
-const TOOL_START_LITERAL = "<tool_call>";
+const TOOL_START_LITERAL = "<" + "tool_call>";
 
 function skipJsonWhitespace(str: string, index: number): number {
   while (index < str.length && /\s/.test(str[index])) {

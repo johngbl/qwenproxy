@@ -1,6 +1,9 @@
 import { Context } from "hono";
 import { getBasicHeaders } from "../services/playwright.ts";
 import { v4 as uuidv4 } from "uuid";
+import { ValidationError, ServiceUnavailable } from "../core/errors.js";
+import { sendOpenAIError } from "../api/error-helpers.js";
+import { buildQwenRequestHeaders } from "../services/qwen-headers.ts";
 
 interface STSResponse {
   success: boolean;
@@ -255,18 +258,13 @@ async function getSTSToken(
     "https://chat.qwen.ai/api/v2/files/getstsToken",
     {
       method: "POST",
-      headers: {
-        Accept: "application/json, text/plain, */*",
-        "Content-Type": "application/json",
-        Cookie: headers.cookie,
-        Origin: "https://chat.qwen.ai",
-        Referer: "https://chat.qwen.ai/",
-        "User-Agent": headers["user-agent"],
-        "X-Request-Id": uuidv4(),
-        "bx-ua": headers["bx-ua"],
-        "bx-umidtoken": headers["bx-umidtoken"],
-        "bx-v": headers["bx-v"],
-      },
+      headers: buildQwenRequestHeaders({
+        cookie: headers.cookie,
+        userAgent: headers["user-agent"],
+        bxUa: headers["bx-ua"],
+        bxUmidtoken: headers["bx-umidtoken"],
+        bxV: headers["bx-v"],
+      }),
       body: JSON.stringify({ filename, filesize: String(filesize), filetype }),
     },
   );
@@ -346,7 +344,7 @@ export async function uploadFile(c: Context) {
     const file = formData.get("file") as File | null;
 
     if (!file) {
-      return c.json({ error: "No file provided" }, 400);
+      return sendOpenAIError(c, new ValidationError("No file provided"));
     }
 
     // Detect MIME from filename if browser sends generic type
@@ -357,11 +355,11 @@ export async function uploadFile(c: Context) {
 
     // Validate file type is supported by Qwen
     if (!SUPPORTED_MIME_TYPES.has(fileType)) {
-      return c.json(
-        {
-          error: `Unsupported file type: ${file.type || "unknown"}. Supported: images, videos, audio, documents (PDF, DOC, XLS, PPT, TXT, MD, CSV, JSON, XML, HTML, ZIP)`,
-        },
-        400,
+      return sendOpenAIError(
+        c,
+        new ValidationError(
+          `Unsupported file type: ${file.type || "unknown"}. Supported: images, videos, audio, documents (PDF, DOC, XLS, PPT, TXT, MD, CSV, JSON, XML, HTML, ZIP)`,
+        ),
       );
     }
 
@@ -376,7 +374,10 @@ export async function uploadFile(c: Context) {
         : isAudio
           ? "50MB (audio)"
           : "20MB (image/doc)";
-      return c.json({ error: `File too large. Max size: ${sizeLabel}` }, 400);
+      return sendOpenAIError(
+        c,
+        new ValidationError(`File too large. Max size: ${sizeLabel}`),
+      );
     }
 
     // Wait for Playwright headers (max 60s)
@@ -400,9 +401,9 @@ export async function uploadFile(c: Context) {
     }
 
     if (!headers) {
-      return c.json(
-        { error: "Authentication not ready. Send a chat message first." },
-        503,
+      return sendOpenAIError(
+        c,
+        new ServiceUnavailable("Authentication not ready. Send a chat message first."),
       );
     }
 
@@ -424,9 +425,9 @@ export async function uploadFile(c: Context) {
       filename: file.name,
       type: qwenFileType,
     });
-  } catch (error: any) {
-    console.error("[Upload] Error:", error.message);
-    return c.json({ error: error.message }, 500);
+  } catch (error) {
+    console.error("[Upload] Error:", error instanceof Error ? error.message : String(error));
+    return sendOpenAIError(c, error);
   }
 }
 

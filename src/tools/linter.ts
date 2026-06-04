@@ -1,4 +1,5 @@
 import type { JsonSchema } from "./types.js";
+import { ValidationError } from "../core/errors.js";
 
 const VALID_TYPES = new Set([
   "string",
@@ -22,20 +23,21 @@ const NAME_PATTERN = /^[a-zA-Z0-9_-]+$/;
 const MAX_NAME_LENGTH = 64;
 const MAX_DESC_LENGTH = 500;
 
-export class ToolLinterError extends Error {
-  public readonly field: "name" | "description" | "parameters";
-  public readonly path?: string;
+export class ToolLinterError extends ValidationError {
+    public readonly field: "name" | "description" | "parameters";
+    public readonly path?: string;
 
-  constructor(
-    message: string,
-    field: "name" | "description" | "parameters",
-    path?: string,
-  ) {
-    super(message);
-    this.name = "ToolLinterError";
-    this.field = field;
-    this.path = path;
-  }
+    constructor(
+        message: string,
+        field: "name" | "description" | "parameters",
+        path?: string,
+    ) {
+        super(message);
+        this.name = "ToolLinterError";
+        this.field = field;
+        this.path = path;
+        this.param = path || field;
+    }
 }
 
 /**

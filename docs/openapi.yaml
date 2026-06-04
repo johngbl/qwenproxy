@@ -1,0 +1,789 @@
+openapi: 3.1.0
+info:
+  title: Qproxy API
+  description: |
+    OpenAI-compatible reverse proxy for Qwen models with account rotation,
+    tool calling, multimodal upload, and streaming support.
+  version: 1.0.0
+  contact:
+    name: QwenBridge
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:3000
+    description: Local development server
+
+security:
+  - bearerAuth: []
+
+paths:
+  /v1/chat/completions:
+    post:
+      operationId: createChatCompletion
+      summary: Creates a model response for the given chat conversation
+      tags:
+        - Chat
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateChatCompletionRequest'
+            examples:
+              simple:
+                summary: Simple text completion
+                value:
+                  model: qwen3-max
+                  messages:
+                    - role: user
+                      content: Hello
+              streaming:
+                summary: Streaming response
+                value:
+                  model: qwen3-max
+                  messages:
+                    - role: user
+                      content: Explain quantum computing
+                  stream: true
+              multimodal:
+                summary: Image input
+                value:
+                  model: qwen3-vl-max
+                  messages:
+                    - role: user
+                      content:
+                        - type: text
+                          text: Describe this image
+                        - type: image_url
+                          image_url:
+                            url: https://example.com/image.jpg
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateChatCompletionResponse'
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/ChatCompletionStreamResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '502':
+          $ref: '#/components/responses/UpstreamError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          $ref: '#/components/responses/UpstreamTimeout'
+
+  /v1/chat/completions/stop:
+    post:
+      operationId: stopChatCompletion
+      summary: Abort an in-flight streaming chat completion
+      tags:
+        - Chat
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StopChatCompletionRequest'
+      responses:
+        '200':
+          description: Stream stopped successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StopChatCompletionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '502':
+          $ref: '#/components/responses/UpstreamError'
+
+  /v1/upload:
+    post:
+      operationId: uploadFile
+      summary: Upload a file to Alibaba Cloud OSS for multimodal prompts
+      tags:
+        - Files
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - file
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: |
+                    The file to upload. Supported types: images (png, jpg, gif, webp),
+                    video (mp4, mov, avi, webm, mkv), audio (mp3, wav, ogg, flac, m4a, aac),
+                    documents (pdf, doc, docx, xls, xlsx, ppt, pptx, txt, md, csv, json, xml, html, zip).
+                    Max size: 100MB video, 50MB audio, 20MB other.
+      responses:
+        '200':
+          description: File uploaded successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /v1/models:
+    get:
+      operationId: listModels
+      summary: Lists the currently available models
+      tags:
+        - Models
+      security: []
+      parameters:
+        - name: If-None-Match
+          in: header
+          schema:
+            type: string
+          description: ETag value for conditional GET. Returns 304 if unchanged.
+      responses:
+        '200':
+          description: List of models
+          headers:
+            ETag:
+              schema:
+                type: string
+              description: MD5-based entity tag
+            Cache-Control:
+              schema:
+                type: string
+              description: Cache policy (public, max-age=3600)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelList'
+        '304':
+          description: Not modified (ETag match)
+
+  /v1/models/{model}:
+    get:
+      operationId: retrieveModel
+      summary: Retrieves a model instance by ID
+      tags:
+        - Models
+      security: []
+      parameters:
+        - name: model
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The ID of the model to retrieve
+      responses:
+        '200':
+          description: The model object
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Model'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /health:
+    get:
+      operationId: healthCheck
+      summary: Returns service health status
+      tags:
+        - Operations
+      security: []
+      responses:
+        '200':
+          description: Health status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  /metrics:
+    get:
+      operationId: getMetrics
+      summary: Returns Prometheus-format metrics
+      tags:
+        - Operations
+      security: []
+      responses:
+        '200':
+          description: Prometheus metrics
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: |
+                # HELP requests_total Total number of requests
+                # TYPE requests_total counter
+                requests_total 1234
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: API key passed as `Authorization: Bearer <key>`
+
+  schemas:
+    CreateChatCompletionRequest:
+      type: object
+      required:
+        - model
+        - messages
+      properties:
+        model:
+          type: string
+          description: |
+            ID of the model to use. Append `-no-thinking` to disable reasoning output
+            for thinking-capable models.
+          example: qwen3-max
+        messages:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/Message'
+          description: A list of messages comprising the conversation so far
+        stream:
+          type: boolean
+          default: false
+          description: If true, stream partial message deltas via SSE
+        temperature:
+          type: number
+          minimum: 0
+          maximum: 2
+          description: Sampling temperature
+        top_p:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Nucleus sampling parameter
+        max_tokens:
+          type: integer
+          minimum: 1
+          description: Maximum number of tokens to generate
+        tools:
+          type: array
+          items:
+            $ref: '#/components/schemas/Tool'
+          description: A list of tools the model may call
+        tool_choice:
+          oneOf:
+            - type: string
+              enum: [auto, none, required]
+            - $ref: '#/components/schemas/ToolChoice'
+          description: Controls which tool is called
+        session_id:
+          type: string
+          description: Optional session identifier for upstream conversation continuity
+        conversation_id:
+          type: string
+          description: Alias for session_id (deprecated, use session_id)
+
+    Message:
+      oneOf:
+        - $ref: '#/components/schemas/SystemMessage'
+        - $ref: '#/components/schemas/UserMessage'
+        - $ref: '#/components/schemas/AssistantMessage'
+        - $ref: '#/components/schemas/ToolMessage'
+      discriminator:
+        propertyName: role
+
+    SystemMessage:
+      type: object
+      required:
+        - role
+        - content
+      properties:
+        role:
+          type: string
+          enum: [system]
+        content:
+          type: string
+
+    UserMessage:
+      type: object
+      required:
+        - role
+        - content
+      properties:
+        role:
+          type: string
+          enum: [user]
+        content:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                $ref: '#/components/schemas/ContentPart'
+
+    AssistantMessage:
+      type: object
+      required:
+        - role
+      properties:
+        role:
+          type: string
+          enum: [assistant]
+        content:
+          type: [string, 'null']
+        reasoning_content:
+          type: string
+          description: Chain-of-thought reasoning (thinking models only)
+        tool_calls:
+          type: array
+          items:
+            $ref: '#/components/schemas/ToolCall'
+
+    ToolMessage:
+      type: object
+      required:
+        - role
+        - content
+        - tool_call_id
+      properties:
+        role:
+          type: string
+          enum: [tool]
+        content:
+          type: string
+        tool_call_id:
+          type: string
+
+    ContentPart:
+      oneOf:
+        - type: object
+          required: [type, text]
+          properties:
+            type:
+              type: string
+              enum: [text]
+            text:
+              type: string
+        - type: object
+          required: [type, image_url]
+          properties:
+            type:
+              type: string
+              enum: [image_url]
+            image_url:
+              type: object
+              required: [url]
+              properties:
+                url:
+                  type: string
+                  description: HTTP(S) URL or base64 data URI
+        - type: object
+          required: [type, video_url]
+          properties:
+            type:
+              type: string
+              enum: [video_url]
+            video_url:
+              type: object
+              required: [url]
+              properties:
+                url:
+                  type: string
+        - type: object
+          required: [type, audio_url]
+          properties:
+            type:
+              type: string
+              enum: [audio_url]
+            audio_url:
+              type: object
+              required: [url]
+              properties:
+                url:
+                  type: string
+        - type: object
+          required: [type, file_url]
+          properties:
+            type:
+              type: string
+              enum: [file_url]
+            file_url:
+              type: object
+              required: [url]
+              properties:
+                url:
+                  type: string
+
+    Tool:
+      type: object
+      required:
+        - type
+        - function
+      properties:
+        type:
+          type: string
+          enum: [function]
+        function:
+          type: object
+          required:
+            - name
+          properties:
+            name:
+              type: string
+            description:
+              type: string
+            parameters:
+              type: object
+              description: JSON Schema describing the function parameters
+
+    ToolChoice:
+      type: object
+      required:
+        - type
+        - function
+      properties:
+        type:
+          type: string
+          enum: [function]
+        function:
+          type: object
+          required: [name]
+          properties:
+            name:
+              type: string
+
+    ToolCall:
+      type: object
+      required:
+        - id
+        - type
+        - function
+      properties:
+        id:
+          type: string
+          description: Unique identifier of the tool call
+        type:
+          type: string
+          enum: [function]
+        function:
+          type: object
+          required:
+            - name
+            - arguments
+          properties:
+            name:
+              type: string
+            arguments:
+              type: string
+              description: JSON-encoded arguments
+
+    CreateChatCompletionResponse:
+      type: object
+      required:
+        - id
+        - object
+        - created
+        - model
+        - choices
+      properties:
+        id:
+          type: string
+          example: chatcmpl-abc123
+        object:
+          type: string
+          enum: [chat.completion]
+        created:
+          type: integer
+          format: int64
+          description: Unix timestamp (seconds)
+        model:
+          type: string
+        choices:
+          type: array
+          items:
+            $ref: '#/components/schemas/Choice'
+        usage:
+          $ref: '#/components/schemas/Usage'
+
+    Choice:
+      type: object
+      required:
+        - index
+        - message
+        - finish_reason
+      properties:
+        index:
+          type: integer
+        message:
+          $ref: '#/components/schemas/AssistantMessage'
+        finish_reason:
+          type: [string, 'null']
+          enum: [stop, length, tool_calls, content_filter, null]
+
+    Usage:
+      type: object
+      properties:
+        prompt_tokens:
+          type: integer
+        completion_tokens:
+          type: integer
+        total_tokens:
+          type: integer
+
+    ChatCompletionStreamResponse:
+      type: string
+      description: |
+        Server-Sent Events stream. Each event is formatted as:
+        `data: {json}\n\n`
+        The stream terminates with `data: [DONE]\n\n`.
+      example: |
+        data: {"id":"chatcmpl-abc","object":"chat.completion.chunk","created":1234567890,"model":"qwen3-max","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello"},"finish_reason":null}]}
+
+        data: {"id":"chatcmpl-abc","object":"chat.completion.chunk","created":1234567890,"model":"qwen3-max","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}
+
+        data: [DONE]
+
+    StopChatCompletionRequest:
+      type: object
+      required:
+        - chat_id
+        - response_id
+      properties:
+        chat_id:
+          type: string
+          description: Session identifier of the active stream
+        response_id:
+          type: string
+          description: Response identifier to disambiguate concurrent streams
+
+    StopChatCompletionResponse:
+      type: object
+      required:
+        - success
+      properties:
+        success:
+          type: boolean
+          enum: [true]
+
+    UploadResponse:
+      type: object
+      required:
+        - url
+        - file_id
+        - filename
+        - type
+      properties:
+        url:
+          type: string
+          format: uri
+          description: Public URL of the uploaded file
+        file_id:
+          type: string
+          description: Qwen file identifier
+        filename:
+          type: string
+          description: Original filename
+        type:
+          type: string
+          enum: [image, video, audio, file]
+          description: Media category detected by Qproxy
+
+    ModelList:
+      type: object
+      required:
+        - object
+        - data
+      properties:
+        object:
+          type: string
+          enum: [list]
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Model'
+
+    Model:
+      type: object
+      required:
+        - id
+        - object
+      properties:
+        id:
+          type: string
+          example: qwen3-max
+        object:
+          type: string
+          enum: [model]
+        created:
+          type: integer
+          format: int64
+        owned_by:
+          type: string
+          example: qwen
+
+    HealthResponse:
+      type: object
+      required:
+        - status
+        - timestamp
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded, unhealthy, unknown]
+        timestamp:
+          type: integer
+          format: int64
+          description: Unix timestamp (milliseconds)
+        metrics:
+          type: object
+          properties:
+            cache:
+              type: object
+              description: Memory cache statistics
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          required:
+            - message
+            - type
+            - code
+          properties:
+            message:
+              type: string
+              description: Human-readable error description
+            type:
+              type: string
+              description: Error category
+              enum:
+                - invalid_request_error
+                - authentication_error
+                - permission_error
+                - not_found_error
+                - rate_limit_error
+                - upstream_error
+                - upstream_timeout_error
+                - service_unavailable_error
+                - internal_error
+            code:
+              type: [string, 'null']
+              description: Machine-readable error code
+            param:
+              type: [string, 'null']
+              description: Request parameter associated with the error, if any
+
+  responses:
+    BadRequest:
+      description: Invalid request parameters
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              message: "messages is required and must be a non-empty array"
+              type: invalid_request_error
+              code: invalid_request
+              param: messages
+    Unauthorized:
+      description: Missing or invalid API key
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              message: "Invalid API key"
+              type: authentication_error
+              code: invalid_api_key
+              param: null
+    NotFound:
+      description: Requested resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              message: "Not found"
+              type: not_found_error
+              code: not_found
+              param: null
+    RateLimited:
+      description: Rate limit exceeded (concurrency or RPM)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              message: "Rate limit exceeded (RPM)"
+              type: rate_limit_error
+              code: rate_limit_exceeded
+              param: null
+    UpstreamError:
+      description: Upstream Qwen service returned an error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              message: "Upstream request failed"
+              type: upstream_error
+              code: upstream_error
+              param: null
+    ServiceUnavailable:
+      description: Service temporarily unavailable (e.g., accounts not ready)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              message: "Authentication not ready. Send a chat message first."
+              type: service_unavailable_error
+              code: service_unavailable
+              param: null
+    UpstreamTimeout:
+      description: Upstream request timed out
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              message: "Upstream request timed out"
+              type: upstream_timeout_error
+              code: upstream_timeout
+              param: null
+
+tags:
+  - name: Chat
+    description: Chat completion operations (OpenAI-compatible)
+  - name: Models
+    description: Model listing and retrieval
+  - name: Files
+    description: Multimodal file upload
+  - name: Operations
+    description: Health and metrics endpoints

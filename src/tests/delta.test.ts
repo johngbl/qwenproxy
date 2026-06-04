@@ -5,7 +5,7 @@ import {
   getIncrementalDelta,
   isAbortError,
   shouldSuppressStreamAbort,
-} from "../routes/chat.ts";
+} from "../routes/chat/helpers.ts";
 
 test("getIncrementalDelta: handles strictly cumulative stream correctly", () => {
   let accumulated = "";
