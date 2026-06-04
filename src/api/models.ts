@@ -1,12 +1,22 @@
+import { createHash } from "crypto";
 import { Hono } from "hono";
 import { fetchQwenModels } from "../services/qwen.js";
 import { NotFoundError } from "../core/errors.js";
 import { sendOpenAIError } from "./error-helpers.js";
 
 const app = new Hono();
+
 app.get("/v1/models", async (c) => {
   try {
     const models = await fetchQwenModels();
+    const etag = `"${createHash("md5").update(JSON.stringify(models)).digest("hex")}"`;
+
+    if (c.req.header("if-none-match") === etag) {
+      return c.body(null, 304);
+    }
+
+    c.header("Cache-Control", "public, max-age=3600");
+    c.header("ETag", etag);
 
     return c.json({
       object: "list",

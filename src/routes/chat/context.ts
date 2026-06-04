@@ -32,6 +32,7 @@ export interface BuildContextParams {
     systemPrompt: string;
     prompt: string;
     modelId: string;
+    enableThinking: boolean;
     conversationKey: string | null;
     isInternalSummarizationRequest: boolean;
 }
@@ -44,6 +45,7 @@ export async function buildFinalContext(
         systemPrompt,
         prompt,
         modelId,
+        enableThinking,
         conversationKey,
         isInternalSummarizationRequest,
     } = params;
@@ -85,7 +87,7 @@ export async function buildFinalContext(
         finalPrompt = systemPrompt ? `${systemPrompt}\n${prompt}` : prompt;
     }
 
-    const isThinkingModel = !modelId.includes("no-thinking");
+    const isThinkingModel = enableThinking;
     const isNewSession = !messages.some((m) => m.role === "assistant");
     const shouldResetUpstreamThread =
         isNewSession || topicAnalysis?.hasChanged === true;

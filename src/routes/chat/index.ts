@@ -28,6 +28,7 @@ export async function chatCompletions(c: Context) {
             systemPrompt,
             prompt,
             modelId,
+            enableThinking,
             allFiles,
             shouldParseToolCalls,
             conversationKey,
@@ -44,6 +45,7 @@ export async function chatCompletions(c: Context) {
             systemPrompt,
             prompt,
             modelId,
+            enableThinking,
             conversationKey,
             isInternalSummarizationRequest,
         });

@@ -9,6 +9,7 @@ import { OpenAIRequest, Message } from "../../utils/types.ts";
 import { QwenFileEntry, processImagesForQwen } from "../upload.ts";
 import { logger, isToolcallDebugEnabled } from "../../core/logger.js";
 import { getBasicHeaders } from "../../services/playwright.ts";
+import { buildToolInstructions } from "../../tools/instructions.ts";
 
 // Tag literals split to avoid proxy parser misinterpretation
 const TOOL_CALL_OPEN = "<" + "tool_call>";
@@ -268,56 +269,18 @@ function injectToolInstructions(
   });
   const toolsJson = JSON.stringify(formattedTools, null, 2);
 
-  // Build instructions block using constants to keep tags out of literal source
-  const instructions =
-    "\n\n# TOOLS AVAILABLE\n" +
-    "You have access to the following tools:\n" +
-    toolsJson +
-    "\n\n# TOOL CALLING FORMAT (MANDATORY)\n" +
-    "To use a tool, you MUST output a JSON object wrapped EXACTLY in these tags:\n" +
-    TOOL_CALL_OPEN +
-    "\n" +
-    '{"name": "tool_name", "arguments": {"param_name": "value"}}' +
-    "\n" +
-    TOOL_CALL_CLOSE +
-    "\n\nEXAMPLE OF MULTIPLE TOOL CALLS:\n" +
-    TOOL_CALL_OPEN +
-    "\n" +
-    '{"name": "read_file", "arguments": {"path": "file1.txt"}}' +
-    "\n" +
-    TOOL_CALL_CLOSE +
-    "\n" +
-    TOOL_CALL_OPEN +
-    "\n" +
-    '{"name": "read_file", "arguments": {"path": "file2.txt"}}' +
-    "\n" +
-    TOOL_CALL_CLOSE +
-    "\n\nCRITICAL RULES:\n" +
-    "1. ONLY use the tags above for tool calling. NEVER output raw JSON without tags.\n" +
-    "2. You can call multiple tools by outputting multiple " +
-    TOOL_CALL_OPEN +
-    " blocks consecutively.\n" +
-    "3. Do NOT output any other text (explanations, chat, etc.) after your " +
-    TOOL_CALL_OPEN +
-    " blocks. Wait for the user to provide the tool response.\n" +
-    '4. The JSON inside the tags MUST be valid and include ALL required braces and the "arguments" field.\n' +
-    "5. If you need to use a tool, do it IMMEDIATELY without preamble.\n\n";
-
+  const instructions = buildToolInstructions(toolsJson, bodyAny.tool_choice);
   systemPromptParts.push(instructions);
 
   if (
+    isToolcallDebugEnabled() &&
     bodyAny.tool_choice &&
     typeof bodyAny.tool_choice === "object" &&
     bodyAny.tool_choice.function
   ) {
-    const forcedTool = bodyAny.tool_choice.function.name;
-    systemPromptParts.push(
-      `CRITICAL: You MUST call the tool "${forcedTool}" in this response.\n\n`,
-    );
-
-    if (isToolcallDebugEnabled()) {
-      logger.debug("[chat] forced tool_choice", { forcedTool });
-    }
+    logger.debug("[chat] forced tool_choice", {
+      forcedTool: bodyAny.tool_choice.function.name,
+    });
   }
 
   return true;

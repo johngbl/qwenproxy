@@ -304,7 +304,6 @@ async function tryCreateStreamWithRetry(
                 });
             }
 
-            releaseLock();
             return { success: true, ...result };
         } catch (err: any) {
             attemptError = err;

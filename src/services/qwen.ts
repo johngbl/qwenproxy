@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from "uuid";
 import { UpstreamRateLimit, UpstreamError, AuthError } from "../core/errors.js";
 import { buildQwenRequestHeaders } from "./qwen-headers.ts";
 import { config } from "../core/config.js";
+import { logger } from "../core/logger.js";
 
 export class RetryableQwenStreamError extends UpstreamRateLimit {
   readonly retryAfterMs: number;
@@ -487,6 +488,8 @@ export async function createQwenStream(
         ) {
           throw parseOrRetryError;
         }
+        // Log unexpected parsing or retry errors to prevent silent failures
+        logger.warn("Unexpected error during stream error parsing", { error: parseOrRetryError });
       }
     }
     throw new Error(

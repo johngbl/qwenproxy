@@ -77,7 +77,11 @@ export async function processNonStreamingResponse(
         const toolParser = shouldParseToolCalls
             ? new StreamingToolParser(declaredTools)
             : null;
-        const reasoningTagSanitizer = new StreamingReasoningTagSanitizer();
+        // Skip sanitizer allocation for no-thinking model variants
+        const enableThinking = !body.model.endsWith("-no-thinking");
+        const reasoningTagSanitizer = enableThinking
+            ? new StreamingReasoningTagSanitizer()
+            : null;
         const toolCallsOut: any[] = [];
         let loggedThinkTagLeak = false;
         let buffer = "";
@@ -125,6 +129,10 @@ export async function processNonStreamingResponse(
         };
 
         const consumeSanitizedAnswerChunk = (textChunk: string) => {
+            if (!reasoningTagSanitizer) {
+                consumeAnswerText(textChunk);
+                return;
+            }
             const sanitized = reasoningTagSanitizer.feed(textChunk);
             if (sanitized.detectedThinkTag && !loggedThinkTagLeak) {
                 logger.warn(
@@ -258,25 +266,27 @@ export async function processNonStreamingResponse(
             );
         }
 
-        const remainingSanitized = reasoningTagSanitizer.flush();
-        if (remainingSanitized.detectedThinkTag && !loggedThinkTagLeak) {
-            logger.warn(
-                "[chat] Detected <think> tags in answer content; sanitizing output",
-                {
-                    completionId,
-                    mode: "non-stream",
-                    model: body.model,
-                    hadMalformedTag: remainingSanitized.hadMalformedTag,
-                    hadUnclosedTag: remainingSanitized.hadUnclosedTag,
-                },
-            );
-            loggedThinkTagLeak = true;
-        }
-        if (remainingSanitized.reasoning) {
-            reasoningBuffer += remainingSanitized.reasoning;
-        }
-        if (remainingSanitized.text) {
-            consumeAnswerText(remainingSanitized.text);
+        if (reasoningTagSanitizer) {
+            const remainingSanitized = reasoningTagSanitizer.flush();
+            if (remainingSanitized.detectedThinkTag && !loggedThinkTagLeak) {
+                logger.warn(
+                    "[chat] Detected <think> tags in answer content; sanitizing output",
+                    {
+                        completionId,
+                        mode: "non-stream",
+                        model: body.model,
+                        hadMalformedTag: remainingSanitized.hadMalformedTag,
+                        hadUnclosedTag: remainingSanitized.hadUnclosedTag,
+                    },
+                );
+                loggedThinkTagLeak = true;
+            }
+            if (remainingSanitized.reasoning) {
+                reasoningBuffer += remainingSanitized.reasoning;
+            }
+            if (remainingSanitized.text) {
+                consumeAnswerText(remainingSanitized.text);
+            }
         }
 
         const remainingParsed = toolParser
@@ -516,8 +526,16 @@ export async function processStreamingResponse(
 
             scheduleHeartbeat();
 
+            // Batch buffer: when non-null, writeEvent accumulates instead of flushing
+            let flushBuffer: string[] | null = null;
+
             const writeEvent = async (data: any) => {
-                await streamWriter.write(`data: ${JSON.stringify(data)}\n\n`);
+                const serialized = `data: ${JSON.stringify(data)}\n\n`;
+                if (Array.isArray(flushBuffer)) {
+                    flushBuffer.push(serialized);
+                    return;
+                }
+                await streamWriter.write(serialized);
             };
 
             const makeChoice = (
@@ -550,7 +568,11 @@ export async function processStreamingResponse(
                     incrementalToolCalls: true,
                 })
                 : null;
-            const reasoningTagSanitizer = new StreamingReasoningTagSanitizer();
+            // Skip sanitizer allocation for no-thinking model variants
+            const enableThinking = !body.model.endsWith("-no-thinking");
+            const reasoningTagSanitizer = enableThinking
+                ? new StreamingReasoningTagSanitizer()
+                : null;
             let loggedThinkTagLeak = false;
 
             let buffer = initialStreamBuffer;
@@ -677,6 +699,10 @@ export async function processStreamingResponse(
             };
 
             const emitSanitizedAnswerChunk = async (textChunk: string) => {
+                if (!reasoningTagSanitizer) {
+                    await emitAnswerText(textChunk);
+                    return;
+                }
                 const sanitized = reasoningTagSanitizer.feed(textChunk);
                 if (sanitized.detectedThinkTag && !loggedThinkTagLeak) {
                     logger.warn(
@@ -880,33 +906,38 @@ export async function processStreamingResponse(
                 return;
             }
 
-            const remainingSanitized = reasoningTagSanitizer.flush();
-            if (remainingSanitized.detectedThinkTag && !loggedThinkTagLeak) {
-                logger.warn(
-                    "[chat] Detected <think> tags in answer content; sanitizing output",
-                    {
-                        completionId,
-                        mode: "stream",
+            // Activate batch mode — all writeEvent calls accumulate until flushed
+            flushBuffer = [];
+
+            if (reasoningTagSanitizer) {
+                const remainingSanitized = reasoningTagSanitizer.flush();
+                if (remainingSanitized.detectedThinkTag && !loggedThinkTagLeak) {
+                    logger.warn(
+                        "[chat] Detected <think> tags in answer content; sanitizing output",
+                        {
+                            completionId,
+                            mode: "stream",
+                            model: body.model,
+                            hadMalformedTag: remainingSanitized.hadMalformedTag,
+                            hadUnclosedTag: remainingSanitized.hadUnclosedTag,
+                        },
+                    );
+                    loggedThinkTagLeak = true;
+                }
+                if (remainingSanitized.reasoning) {
+                    await writeEvent({
+                        id: completionId,
+                        object: "chat.completion.chunk",
+                        created: Math.floor(Date.now() / 1000),
                         model: body.model,
-                        hadMalformedTag: remainingSanitized.hadMalformedTag,
-                        hadUnclosedTag: remainingSanitized.hadUnclosedTag,
-                    },
-                );
-                loggedThinkTagLeak = true;
-            }
-            if (remainingSanitized.reasoning) {
-                await writeEvent({
-                    id: completionId,
-                    object: "chat.completion.chunk",
-                    created: Math.floor(Date.now() / 1000),
-                    model: body.model,
-                    choices: [
-                        makeChoice({ reasoning_content: remainingSanitized.reasoning }),
-                    ],
-                });
-            }
-            if (remainingSanitized.text) {
-                await emitAnswerText(remainingSanitized.text);
+                        choices: [
+                            makeChoice({ reasoning_content: remainingSanitized.reasoning }),
+                        ],
+                    });
+                }
+                if (remainingSanitized.text) {
+                    await emitAnswerText(remainingSanitized.text);
+                }
             }
 
             const remainingParsed = toolParser
@@ -1057,10 +1088,21 @@ export async function processStreamingResponse(
             }
 
             if (!clientDisconnected) {
+                // Single write: flush all accumulated events + [DONE] sentinel
+                const donePayload = "data: [DONE]\n\n";
+                const payload =
+                    flushBuffer && flushBuffer.length > 0
+                        ? flushBuffer.join("") + donePayload
+                        : donePayload;
+
                 if (isToolcallDebugEnabled()) {
-                    logger.debug("[chat] stream: sending [DONE]");
+                    logger.debug("[chat] stream: sending [DONE]", {
+                        batchedEvents: flushBuffer?.length ?? 0,
+                    });
                 }
-                await streamWriter.write("data: [DONE]\n\n");
+
+                await streamWriter.write(payload);
+                flushBuffer = null;
 
                 if (isToolcallDebugEnabled()) {
                     logger.debug("[chat] stream: completed successfully", {

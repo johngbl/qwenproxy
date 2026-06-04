@@ -273,16 +273,21 @@ export async function truncateMessages(
     result.push(summaryMessage);
   }
 
-  for (const priority of priorityOrder) {
-    const msgs = allocated.get(priority) || [];
-    for (const msg of msgs) {
-      result.push({
-        role: msg.role,
-        content: msg.content,
-        priority: msg.priority,
-        tokens: msg.tokens,
-      });
-    }
+  // Collect all allocated messages into flat array
+  const allAllocated: typeof scoredMessages[number][] = [];
+  for (const msgs of allocated.values()) {
+    allAllocated.push(...msgs);
+  }
+  // Sort by originalIndex (chronological order)
+  allAllocated.sort((a, b) => a.originalIndex - b.originalIndex);
+  // Build final result
+  for (const msg of allAllocated) {
+    result.push({
+      role: msg.role,
+      content: msg.content,
+      priority: msg.priority,
+      tokens: msg.tokens,
+    });
   }
 
   // Fallback: ensure at least one message if result is empty
