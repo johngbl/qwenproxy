@@ -1,6 +1,6 @@
 openapi: 3.1.0
 info:
-  title: Qproxy API
+  title: QwenBridge API
   description: |
     OpenAI-compatible reverse proxy for Qwen models with account rotation,
     tool calling, multimodal upload, and streaming support.
@@ -602,7 +602,7 @@ components:
         type:
           type: string
           enum: [image, video, audio, file]
-          description: Media category detected by Qproxy
+          description: Media category detected by QwenBridge
 
     ModelList:
       type: object

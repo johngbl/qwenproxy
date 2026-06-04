@@ -32,7 +32,7 @@ export class MemoryCache {
   private compressionCount: number = 0;
 
   constructor(options?: { prefix?: string; defaultTTL?: number }) {
-    this.prefix = options?.prefix || "qwenproxy:";
+    this.prefix = options?.prefix || "qwenbridge:";
     this.defaultTTL = options?.defaultTTL || config.cache.defaultTTL;
     this.store = new Map();
     this.cleanupInterval = null;

@@ -4,10 +4,13 @@ import fs from "fs";
 
 const DATA_DIR = path.resolve("data");
 const DB_DIR = path.join(DATA_DIR, "db");
-const DB_PATH = path.join(DB_DIR, "qwenproxy.db");
+const DB_PATH = path.join(DB_DIR, "qwenbridge.db");
 const LEGACY_DB_PATH = path.join(DATA_DIR, "qwenproxy.db");
+const LEGACY_DB_IN_DIR_PATH = path.join(DB_DIR, "qwenproxy.db");
 const LEGACY_DB_WAL_PATH = `${LEGACY_DB_PATH}-wal`;
 const LEGACY_DB_SHM_PATH = `${LEGACY_DB_PATH}-shm`;
+const LEGACY_DB_IN_DIR_WAL_PATH = `${LEGACY_DB_IN_DIR_PATH}-wal`;
+const LEGACY_DB_IN_DIR_SHM_PATH = `${LEGACY_DB_IN_DIR_PATH}-shm`;
 const DB_WAL_PATH = `${DB_PATH}-wal`;
 const DB_SHM_PATH = `${DB_PATH}-shm`;
 const LEGACY_JSON_PATH = path.resolve("accounts.json");
@@ -24,16 +27,33 @@ export function getDatabase(): Database.Database {
     if (!fs.existsSync(DB_DIR)) {
       fs.mkdirSync(DB_DIR, { recursive: true, mode: 0o755 });
     }
-    if (fs.existsSync(LEGACY_DB_PATH) && !fs.existsSync(DB_PATH)) {
-      fs.renameSync(LEGACY_DB_PATH, DB_PATH);
-      if (fs.existsSync(LEGACY_DB_WAL_PATH) && !fs.existsSync(DB_WAL_PATH)) {
-        fs.renameSync(LEGACY_DB_WAL_PATH, DB_WAL_PATH);
+    const migrateLegacyDatabase = (
+      legacyPath: string,
+      legacyWalPath: string,
+      legacyShmPath: string,
+    ) => {
+      if (fs.existsSync(legacyPath) && !fs.existsSync(DB_PATH)) {
+        fs.renameSync(legacyPath, DB_PATH);
+        if (fs.existsSync(legacyWalPath) && !fs.existsSync(DB_WAL_PATH)) {
+          fs.renameSync(legacyWalPath, DB_WAL_PATH);
+        }
+        if (fs.existsSync(legacyShmPath) && !fs.existsSync(DB_SHM_PATH)) {
+          fs.renameSync(legacyShmPath, DB_SHM_PATH);
+        }
+        console.log(`[Database] Migrated legacy database to ${DB_PATH}`);
       }
-      if (fs.existsSync(LEGACY_DB_SHM_PATH) && !fs.existsSync(DB_SHM_PATH)) {
-        fs.renameSync(LEGACY_DB_SHM_PATH, DB_SHM_PATH);
-      }
-      console.log(`[Database] Migrated legacy database to ${DB_PATH}`);
-    }
+    };
+
+    migrateLegacyDatabase(
+      LEGACY_DB_PATH,
+      LEGACY_DB_WAL_PATH,
+      LEGACY_DB_SHM_PATH,
+    );
+    migrateLegacyDatabase(
+      LEGACY_DB_IN_DIR_PATH,
+      LEGACY_DB_IN_DIR_WAL_PATH,
+      LEGACY_DB_IN_DIR_SHM_PATH,
+    );
     if (
       fs.existsSync(LEGACY_JSON_BAK_PATH) &&
       !fs.existsSync(DB_JSON_BAK_PATH)

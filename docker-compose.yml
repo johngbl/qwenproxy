@@ -1,7 +1,7 @@
 services:
-  qwenproxy:
+  qwenbridge:
     build: .
-    container_name: qwenproxy
+    container_name: qwenbridge
     user: "root"
     ports:
       - "${PORT:-3000}:3000"

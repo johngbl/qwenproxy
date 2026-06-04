@@ -1,6 +1,6 @@
 /*
  * File: validation.ts
- * Project: qproxy
+ * Project: QwenBridge
  * Description: Request parsing and validation for chat completions
  */
 
@@ -37,7 +37,7 @@ export async function parseRequestBody(c: Context): Promise<ParsedRequest> {
     typeof body.session_id === "string" && body.session_id.trim().length > 0
       ? body.session_id.trim()
       : typeof body.conversation_id === "string" &&
-        body.conversation_id.trim().length > 0
+          body.conversation_id.trim().length > 0
         ? body.conversation_id.trim()
         : null;
 
@@ -84,7 +84,11 @@ async function buildPromptFromMessages(
 
   // Pre-build tool_call_id -> name mapping in O(n)
   for (const msg of messages) {
-    if (msg.role === "assistant" && msg.tool_calls && Array.isArray(msg.tool_calls)) {
+    if (
+      msg.role === "assistant" &&
+      msg.tool_calls &&
+      Array.isArray(msg.tool_calls)
+    ) {
       for (const tc of msg.tool_calls) {
         if (tc.id && tc.function?.name) {
           toolCallNamesById.set(tc.id, tc.function.name);
@@ -197,9 +201,7 @@ async function buildPromptFromMessages(
             "\n" +
             TOOL_CALL_CLOSE;
           assistantContentParts.push(
-            assistantContentParts.length > 0
-              ? toolCallStr
-              : toolCallStr.trim(),
+            assistantContentParts.length > 0 ? toolCallStr : toolCallStr.trim(),
           );
 
           if (isToolcallDebugEnabled()) {

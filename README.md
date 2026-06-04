@@ -2,7 +2,7 @@
 
 API compatível com OpenAI que conecta clientes ao **Qwen (`chat.qwen.ai`)** por meio de automação com Playwright, com suporte a múltiplas contas, tool calling robusto, uploads multimodais e sessões persistentes. Esta branch também inclui rotação com cooldown, variantes `-no-thinking`, detecção de mudança de tópico, sumarização de contexto, cache comprimido e observabilidade básica.
 
-[![CI](https://github.com/pedrofariasx/qwenproxy/actions/workflows/ci.yml/badge.svg)](https://github.com/pedrofariasx/qwenproxy/actions/workflows/ci.yml)
+[![CI](https://github.com/johngbl/QwenBridge/actions/workflows/ci.yml/badge.svg)](https://github.com/johngbl/QwenBridge/actions/workflows/ci.yml)
 [![TypeScript](https://img.shields.io/badge/TypeScript-6.0-blue)](https://www.typescriptlang.org/)
 [![Hono](https://img.shields.io/badge/Hono-4.12-green)](https://hono.dev/)
 [![Playwright](https://img.shields.io/badge/Playwright-1.60-blueviolet)](https://playwright.dev/)
@@ -88,8 +88,8 @@ Essas variantes usam o mesmo modelo base, mas desativam o modo de thinking no pa
 ### Via npm
 
 ```bash
-git clone https://github.com/pedrofariasx/qwenproxy.git
-cd qwenproxy
+git clone https://github.com/johngbl/QwenBridge.git
+cd QwenBridge
 npm install
 npx playwright install
 ```
@@ -273,7 +273,7 @@ Ela também entende frases explícitas como:
 
 ## Gerenciamento de contas
 
-As contas ficam em SQLite, em `data/db/qwenproxy.db`.
+As contas ficam em SQLite, em `data/db/qwenbridge.db`.
 
 ### CLI interativo
 
@@ -552,9 +552,9 @@ Exemplo de `docker-compose.yml`:
 
 ```yaml
 services:
-  qwenproxy:
+  qwenbridge:
     build: .
-    container_name: qwenproxy
+    container_name: qwenbridge
     ports:
       - "${PORT:-3000}:3000"
     env_file:

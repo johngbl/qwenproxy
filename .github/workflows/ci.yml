@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [main]
   pull_request:
-    branches: [main, master]
+    branches: [main]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -29,15 +29,10 @@ jobs:
       - run: npm ci
 
       - name: Typecheck
-        run: npx tsc --noEmit
+        run: npm run typecheck
 
-      - name: Unit tests
-        run: npx tsx --test src/tests/parser.test.ts src/tests/delta.test.ts src/tests/jsonFix.test.ts
-        env:
-          CI: true
-
-      - name: Integration tests (mocked)
-        run: npx tsx --test src/tests/advanced.test.ts src/tests/parallel.test.ts src/tests/concurrency.test.ts src/tests/rotation.test.ts
+      - name: Mock tests
+        run: npm run test:mock
         env:
           CI: true
           TEST_MOCK_PLAYWRIGHT: true
@@ -70,8 +65,8 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: |
-            pedrofariasx/qwenproxy:latest
-            pedrofariasx/qwenproxy:${{ github.sha }}
+            pedrofariasx/qwenbridge:latest
+            pedrofariasx/qwenbridge:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
