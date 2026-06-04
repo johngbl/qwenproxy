@@ -157,8 +157,11 @@ interface PublicQwenModel {
   capabilities?: any;
 }
 
-let cachedModels: PublicQwenModel[] | null = null;
-let lastModelsFetch = 0;
+const MODEL_CACHE_TTL_MS = 60 * 60 * 1000;
+const modelsCache = new Map<
+  string,
+  { models: PublicQwenModel[]; fetchedAt: number }
+>();
 
 const nativeToolsDisabled = new Set<string>();
 const disablingNativeToolsInProgress = new Set<string>();
@@ -191,7 +194,10 @@ export async function disableNativeTools(accountId?: string): Promise<void> {
     };
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), config.timeouts.http);
+    const timeoutId = setTimeout(
+      () => controller.abort(),
+      config.timeouts.http,
+    );
     const response = await fetch(
       "https://chat.qwen.ai/api/v2/users/user/settings/update",
       {
@@ -245,10 +251,11 @@ function formatPublicQwenModel(
 export async function fetchQwenModels(
   accountId?: string,
 ): Promise<PublicQwenModel[]> {
+  const cacheKey = accountId || "global";
   const now = Date.now();
-  if (cachedModels && now - lastModelsFetch < 3600000) {
-    // 1 hour cache
-    return cachedModels;
+  const cached = modelsCache.get(cacheKey);
+  if (cached && now - cached.fetchedAt < MODEL_CACHE_TTL_MS) {
+    return cached.models;
   }
 
   const { cookie, userAgent, bxV } = await getBasicHeaders(accountId);
@@ -278,8 +285,7 @@ export async function fetchQwenModels(
       formatPublicQwenModel(model, true),
     ]);
 
-    cachedModels = models;
-    lastModelsFetch = now;
+    modelsCache.set(cacheKey, { models, fetchedAt: now });
     return models;
   }
 
@@ -381,9 +387,10 @@ export async function createQwenStream(
     : "https://chat.qwen.ai/api/v2/chat/completions";
 
   const controller = new AbortController();
-  const timeoutMs = enableThinking || modelId.includes('thinking')
-    ? config.timeouts.reasoningModelTimeout
-    : config.timeouts.totalRequestTimeout;
+  const timeoutMs =
+    enableThinking || modelId.includes("thinking")
+      ? config.timeouts.reasoningModelTimeout
+      : config.timeouts.totalRequestTimeout;
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   let response: Response;
   try {
@@ -489,7 +496,9 @@ export async function createQwenStream(
           throw parseOrRetryError;
         }
         // Log unexpected parsing or retry errors to prevent silent failures
-        logger.warn("Unexpected error during stream error parsing", { error: parseOrRetryError });
+        logger.warn("Unexpected error during stream error parsing", {
+          error: parseOrRetryError,
+        });
       }
     }
     throw new Error(

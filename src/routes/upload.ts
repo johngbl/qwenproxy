@@ -245,6 +245,66 @@ function getMaxUploadSize(fileType: string): number {
   return 20 * 1024 * 1024;
 }
 
+function getFilenameFromUrl(url: string, mime?: string): string {
+  let filename = "";
+
+  try {
+    filename = decodeURIComponent(new URL(url).pathname.split("/").pop() || "");
+  } catch {
+    filename = url.split("/").pop()?.split("?")[0] || "";
+  }
+
+  if (!filename) {
+    filename = "file";
+  }
+
+  if (!filename.includes(".")) {
+    const ext = mime ? getExtensionFromMime(mime) : undefined;
+    if (ext) {
+      filename = `${filename}.${ext}`;
+    }
+  }
+
+  return filename || "file.bin";
+}
+
+async function downloadRemoteMedia(url: string): Promise<{
+  buffer: Buffer;
+  filename: string;
+  mime: string;
+}> {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Remote media download failed: ${response.status}`);
+  }
+
+  const headerMime =
+    response.headers.get("content-type")?.split(";")[0].trim() || "";
+  const filename = getFilenameFromUrl(url, headerMime || undefined);
+  const detectedMime =
+    headerMime && SUPPORTED_MIME_TYPES.has(headerMime)
+      ? headerMime
+      : detectFileType(filename).mime;
+
+  if (!SUPPORTED_MIME_TYPES.has(detectedMime)) {
+    throw new Error(
+      `Unsupported remote media type: ${headerMime || detectedMime || "unknown"}`,
+    );
+  }
+
+  const buffer = Buffer.from(await response.arrayBuffer());
+  const maxSize = getMaxUploadSize(detectedMime);
+  if (buffer.length > maxSize) {
+    throw new Error(`Remote media too large: ${buffer.length}`);
+  }
+
+  return {
+    buffer,
+    filename,
+    mime: detectedMime,
+  };
+}
+
 /**
  * Get STS token from Qwen for file upload
  */
@@ -294,6 +354,9 @@ async function uploadToOSS(
   stsData: STSResponse["data"],
   filename: string,
 ): Promise<string> {
+  if (process.env.TEST_MOCK_PLAYWRIGHT) {
+    return stsData.file_url.split("?")[0];
+  }
   const {
     access_key_id,
     access_key_secret,
@@ -403,7 +466,9 @@ export async function uploadFile(c: Context) {
     if (!headers) {
       return sendOpenAIError(
         c,
-        new ServiceUnavailable("Authentication not ready. Send a chat message first."),
+        new ServiceUnavailable(
+          "Authentication not ready. Send a chat message first.",
+        ),
       );
     }
 
@@ -426,7 +491,10 @@ export async function uploadFile(c: Context) {
       type: qwenFileType,
     });
   } catch (error) {
-    console.error("[Upload] Error:", error instanceof Error ? error.message : String(error));
+    console.error(
+      "[Upload] Error:",
+      error instanceof Error ? error.message : String(error),
+    );
     return sendOpenAIError(c, error);
   }
 }
@@ -507,9 +575,27 @@ export async function processImagesForQwen(
       let fileId = "";
 
       if (mediaUrl.startsWith("http://") || mediaUrl.startsWith("https://")) {
-        fileUrl = mediaUrl;
-        filename = mediaUrl.split("/").pop()?.split("?")[0] || "file.bin";
-        fileId = uuidv4();
+        try {
+          const remoteMedia = await downloadRemoteMedia(mediaUrl);
+          filename = remoteMedia.filename;
+          fileSize = remoteMedia.buffer.length;
+          const typeInfo = detectFileType(filename);
+          const stsData = await getSTSToken(
+            filename,
+            fileSize,
+            typeInfo.qwenFileType,
+            headers,
+          );
+          fileUrl = await uploadToOSS(remoteMedia.buffer, stsData, filename);
+          fileId = stsData.file_id;
+        } catch (err: any) {
+          console.warn(
+            `[Upload] Failed to re-upload remote media, falling back to source URL: ${err.message}`,
+          );
+          fileUrl = mediaUrl;
+          filename = getFilenameFromUrl(mediaUrl);
+          fileId = uuidv4();
+        }
       } else if (mediaUrl.startsWith("data:")) {
         try {
           // Detect type from data URI
