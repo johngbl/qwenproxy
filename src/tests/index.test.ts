@@ -1,12 +1,12 @@
 import test from "node:test";
 import assert from "node:assert";
 
-process.env.TEST_MOCK_PLAYWRIGHT = "true";
+process.env.TEST_MOCK_QWEN_AUTH = "true";
 // Ensure API_KEY is empty by default for existing tests
 process.env.API_KEY = "";
 
 import { app } from "../api/server.js";
-import { initPlaywright, closePlaywright } from "../services/playwright.ts";
+import { initHttpAuth, closeHttpAuth } from "../services/auth-http.ts";
 
 test("Health check endpoint returns 200", async () => {
   const req = new Request("http://localhost/health");
@@ -80,8 +80,8 @@ test("Chat Completions endpoint with qwen3.6-plus (thinking enabled)", async () 
     return originalFetch(input);
   };
 
-  // Initialize playwright for this test
-  await initPlaywright(false);
+  // Initialize HTTP auth for this test
+  await initHttpAuth(false);
 
   try {
     const payload = {
@@ -154,7 +154,7 @@ test("Chat Completions endpoint with qwen3.6-plus (thinking enabled)", async () 
     assert.ok(hasContent, "Should have received streamed chunks with content");
   } finally {
     globalThis.fetch = originalFetch;
-    await closePlaywright();
+    await closeHttpAuth();
   }
 });
 
@@ -195,7 +195,7 @@ test("Chat Completions stream preserves thinking titles inside reasoning_content
     return originalFetch(input);
   };
 
-  await initPlaywright(false);
+  await initHttpAuth(false);
 
   try {
     const req = new Request("http://localhost/v1/chat/completions", {
@@ -242,7 +242,7 @@ test("Chat Completions stream preserves thinking titles inside reasoning_content
     );
   } finally {
     globalThis.fetch = originalFetch;
-    await closePlaywright();
+    await closeHttpAuth();
   }
 });
 
@@ -283,7 +283,7 @@ test("Chat Completions non-stream preserves thinking titles inside reasoning_con
     return originalFetch(input);
   };
 
-  await initPlaywright(false);
+  await initHttpAuth(false);
 
   try {
     const req = new Request("http://localhost/v1/chat/completions", {
@@ -307,7 +307,7 @@ test("Chat Completions non-stream preserves thinking titles inside reasoning_con
     assert.strictEqual(body.choices[0].message.content, "Hello non-stream");
   } finally {
     globalThis.fetch = originalFetch;
-    await closePlaywright();
+    await closeHttpAuth();
   }
 });
 
@@ -331,7 +331,7 @@ test("Chat Completions returns explicit error for non-SSE upstream JSON errors",
     return originalFetch(input);
   };
 
-  await initPlaywright(false);
+  await initHttpAuth(false);
 
   try {
     const req = new Request("http://localhost/v1/chat/completions", {
@@ -352,7 +352,7 @@ test("Chat Completions returns explicit error for non-SSE upstream JSON errors",
     assert.match(body.error.message, /upper limit/);
   } finally {
     globalThis.fetch = originalFetch;
-    await closePlaywright();
+    await closeHttpAuth();
   }
 });
 
@@ -376,7 +376,7 @@ test("Chat Completions returns explicit error for stream=true upstream JSON erro
     return originalFetch(input);
   };
 
-  await initPlaywright(false);
+  await initHttpAuth(false);
 
   try {
     const req = new Request("http://localhost/v1/chat/completions", {
@@ -401,7 +401,7 @@ test("Chat Completions returns explicit error for stream=true upstream JSON erro
     assert.match(body.error.message, /upper limit/);
   } finally {
     globalThis.fetch = originalFetch;
-    await closePlaywright();
+    await closeHttpAuth();
   }
 });
 
@@ -426,7 +426,7 @@ test("Chat Completions returns a JSON chat.completion object for non-streaming r
     return originalFetch(input);
   };
 
-  await initPlaywright(false);
+  await initHttpAuth(false);
 
   try {
     const req = new Request("http://localhost/v1/chat/completions", {
@@ -448,7 +448,7 @@ test("Chat Completions returns a JSON chat.completion object for non-streaming r
     assert.strictEqual(body.choices[0].message.content, "Hello");
   } finally {
     globalThis.fetch = originalFetch;
-    await closePlaywright();
+    await closeHttpAuth();
   }
 });
 
@@ -535,8 +535,8 @@ test("Chat Completions endpoint - Non-streaming (stream: false)", async () => {
     return originalFetch(input);
   };
 
-  // Initialize playwright for this test
-  await initPlaywright(false);
+  // Initialize HTTP auth for this test
+  await initHttpAuth(false);
 
   try {
     const payload = {
@@ -583,6 +583,6 @@ test("Chat Completions endpoint - Non-streaming (stream: false)", async () => {
     assert.strictEqual(body.usage.completion_tokens_details.text_tokens, 60);
   } finally {
     globalThis.fetch = originalFetch;
-    await closePlaywright();
+    await closeHttpAuth();
   }
 });

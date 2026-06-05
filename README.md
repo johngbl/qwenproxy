@@ -1,11 +1,11 @@
 # QwenBridge
 
-API compatível com OpenAI que conecta clientes ao **Qwen (`chat.qwen.ai`)** por meio de automação com Playwright, com suporte a múltiplas contas, tool calling robusto, uploads multimodais e sessões persistentes. Esta branch também inclui rotação com cooldown, variantes `-no-thinking`, detecção de mudança de tópico, sumarização de contexto, cache comprimido e observabilidade básica.
+API compatível com OpenAI que conecta clientes ao **Qwen (`chat.qwen.ai`)** por HTTP direto, sem automação de navegador, com suporte a múltiplas contas, tool calling robusto, uploads multimodais e sessões persistentes. Esta branch também inclui rotação com cooldown, variantes `-no-thinking`, detecção de mudança de tópico, sumarização de contexto, cache comprimido e observabilidade básica.
 
 [![CI](https://github.com/johngbl/QwenBridge/actions/workflows/ci.yml/badge.svg)](https://github.com/johngbl/QwenBridge/actions/workflows/ci.yml)
 [![TypeScript](https://img.shields.io/badge/TypeScript-6.0-blue)](https://www.typescriptlang.org/)
 [![Hono](https://img.shields.io/badge/Hono-4.12-green)](https://hono.dev/)
-[![Playwright](https://img.shields.io/badge/Playwright-1.60-blueviolet)](https://playwright.dev/)
+[![HTTP only](https://img.shields.io/badge/Auth-HTTP--only-brightgreen)](#)
 [![License: ISC](https://img.shields.io/badge/License-ISC-yellow.svg)](LICENSE)
 
 ---
@@ -15,7 +15,7 @@ API compatível com OpenAI que conecta clientes ao **Qwen (`chat.qwen.ai`)** por
 - **Compatibilidade OpenAI** — Endpoints `/v1/chat/completions`, `/v1/models`, `/v1/chat/completions/stop` e `/v1/upload`.
 - **Modelos Qwen atuais** — Funciona com a família `qwen3.x` e expõe variantes sintéticas `-no-thinking` para respostas sem reasoning.
 - **Múltiplas contas** — Rotação round-robin, cooldown automático por rate limit e inicialização paralela das contas configuradas.
-- **Persistência de sessão** — Perfis de navegador por conta em `data/profiles/`.
+- **Persistência de sessão** — Cookies/JWT do Qwen persistidos por conta no SQLite.
 - **Login automático** — Pode usar `QWEN_EMAIL`/`QWEN_PASSWORD`, contas persistidas em SQLite ou sincronização via `QWEN_ACCOUNTS`.
 - **Uploads multimodais** — Imagens, vídeo, áudio e documentos enviados ao OSS do Qwen e reutilizados no chat.
 - **Tool calling robusto** — Parser tolerante a stream fragmentado, JSON malformado e também blocos XML/Hermes-style.
@@ -40,8 +40,8 @@ flowchart TD
     Context --> Summary["Context summarizer"]
     Chat --> Accounts["Account manager"]
     Accounts --> DB[("SQLite")]
-    Accounts --> PW["Playwright service"]
-    PW --> Profiles["data/profiles/"]
+    Accounts --> Auth["HTTP auth service"]
+    Auth --> Qwen
     Chat --> Parser["Tool-call parser"]
     Chat --> Qwen["chat.qwen.ai"]
     Upload --> OSS["Qwen OSS upload"]
@@ -78,7 +78,6 @@ Essas variantes usam o mesmo modelo base, mas desativam o modo de thinking no pa
 |---|---:|---|
 | Node.js | 20+ | Recomendado usar LTS |
 | npm | 9+ | Incluído com Node |
-| Playwright | atual | Instale os browsers com `npx playwright install` |
 | Docker | opcional | Para deploy em container |
 
 ---
@@ -91,7 +90,6 @@ Essas variantes usam o mesmo modelo base, mas desativam o modo de thinking no pa
 git clone https://github.com/johngbl/QwenBridge.git
 cd QwenBridge
 npm install
-npx playwright install
 ```
 
 ### Via Docker
@@ -112,7 +110,6 @@ Crie um `.env` na raiz. O `.env.example` contém apenas as opções mais comuns;
 PORT=3000
 HOST=127.0.0.1
 API_KEY=troque-por-uma-chave-forte
-HEADLESS=true
 
 QWEN_EMAIL=seu-email@exemplo.com
 QWEN_PASSWORD=sua-senha
@@ -124,7 +121,6 @@ QWEN_PASSWORD=sua-senha
 PORT=3000
 HOST=127.0.0.1
 API_KEY=troque-por-uma-chave-forte
-HEADLESS=true
 
 QWEN_ACCOUNTS=user1@example.com:senha1,user2@example.com:senha2
 ```
@@ -135,7 +131,7 @@ QWEN_ACCOUNTS=user1@example.com:senha1,user2@example.com:senha2
 npm start
 ```
 
-Existem scripts `start:chrome`, `start:firefox` e `start:edge` no `package.json`, mas o bootstrap atual do servidor ainda não consome `--browser` no `src/index.ts`. Hoje, a seleção explícita de browser funciona de forma confiável no **CLI de login** (`npm run login:*`).
+O servidor autentica no Qwen por HTTP puro usando `QWEN_EMAIL`/`QWEN_PASSWORD` ou contas salvas/sincronizadas no SQLite.
 
 ## Testes
 
@@ -164,26 +160,23 @@ Comandos úteis:
 | `HOST` | `0.0.0.0` | Host de bind do servidor. Para uso local, prefira `127.0.0.1`. |
 | `API_KEY` | vazio | Protege todas as rotas `/v1/*` com `Authorization: Bearer ...`. |
 
-## Navegador e sessão
+## Autenticação e sessão Qwen
 
 | Variável | Default | Descrição |
 |---|---|---|
-| `HEADLESS` | `true` | Liga o Playwright em modo headless quando não for `false`. |
-| `LOG_CONSOLE` | `false` | Liga logs de console do browser quando suportado pelo fluxo atual. |
-| `QWEN_EMAIL` | vazio | Credencial de login automático para o modo single-account/global. |
+| `QWEN_EMAIL` | vazio | Credencial de login HTTP para o modo single-account/global. |
 | `QWEN_PASSWORD` | vazio | Senha usada junto com `QWEN_EMAIL`. |
 | `QWEN_ACCOUNTS` | vazio | Lista de múltiplas contas no formato `email1:senha1,email2:senha2`. Essas contas são sincronizadas para o SQLite. |
-| `BROWSER` | vazio | Usado principalmente pelos CLIs (`src/login.ts` e `src/delete-chats.ts`) para escolher o browser (`chromium`, `chrome`, `firefox`, `edge`, `webkit`). |
-| `USER_DATA_DIR` | `./data/profiles` | Diretório raiz dos perfis persistidos do browser por conta. |
 | `DELETE_ALL_CHATS_ON_SHUTDOWN` | `false` | Quando `true`, envia `DELETE /api/v2/chats/` no shutdown do proxy para limpar todos os chats do Qwen de todas as contas carregadas (ou da sessão global, se não houver contas). |
-| `USER_AGENT` | valor padrão de browser | Config avançada/reservada; o fluxo principal usa user agents próprios no Playwright. |
+| `USER_AGENT` | Edge 148 no Windows | User-Agent usado nas chamadas HTTP diretas ao Qwen. |
+| `QWEN_BX_UA` | vazio | Header anti-bot opcional, caso o Qwen volte a exigi-lo. |
+| `QWEN_BX_UMIDTOKEN` | vazio | Header anti-bot opcional, caso o Qwen volte a exigi-lo. |
+| `QWEN_BX_V` | `2.5.36` | Versão `bx-v` enviada nas chamadas HTTP. |
 
 ## Timeouts
 
 | Variável | Default | Descrição |
 |---|---|---|
-| `NAVIGATION_TIMEOUT` | `30000` | Timeout de navegação do Playwright. |
-| `PAGE_TIMEOUT` | `15000` | Timeout para operações de página/seletores. |
 | `HTTP_TIMEOUT` | `10000` | Timeout HTTP genérico. |
 | `CHAT_TIMEOUT` | `120000` | Timeout máximo de uma geração upstream do Qwen. |
 
@@ -227,7 +220,7 @@ Comandos úteis:
 |---|---|---|
 | `QWEN_BASE_URL` | `https://chat.qwen.ai` | Valor reservado/compatibilidade para integrações futuras. |
 | `QWEN_HTTP_ENDPOINT` | `https://api.qwen.ai/v1/chat` | Valor reservado/compatibilidade. |
-| `QWEN_API_KEY` | vazio | Reservado para cenários alternativos; o fluxo principal da branch usa sessão autenticada do Qwen via browser. |
+| `QWEN_API_KEY` | vazio | Reservado para cenários alternativos; o fluxo principal usa sessão autenticada do Qwen via HTTP direto. |
 
 ---
 
@@ -243,7 +236,7 @@ Essa estimativa é boa o suficiente para operar, mas pode divergir em casos com 
 
 ### Quando a sumarização entra em ação
 
-No modo padrão `CONTEXT_MODE=thread-native`, o proxy não reenvia o histórico completo: ele reutiliza `chat_id`/`parent_id` do Qwen para a conversa do agente. Ao trocar de chat na ferramenta, ele reaproveita os headers autenticados em cache e cria uma nova sessão Qwen via `POST /api/v2/chats/new`, sem recapturar headers via Playwright. O system prompt e as instruções de tools são enviados apenas no primeiro turno daquele chat lógico; nos turnos seguintes, o proxy envia só a mensagem/delta atual.
+No modo padrão `CONTEXT_MODE=thread-native`, o proxy não reenvia o histórico completo: ele reutiliza `chat_id`/`parent_id` do Qwen para a conversa do agente. Ao trocar de chat na ferramenta, ele reaproveita a sessão HTTP autenticada em cache e cria uma nova sessão Qwen via `POST /api/v2/chats/new`. O system prompt e as instruções de tools são enviados apenas no primeiro turno daquele chat lógico; nos turnos seguintes, o proxy envia só a mensagem/delta atual.
 
 No modo `CONTEXT_MODE=full-history`, quando habilitada, a sumarização começa a ser considerada em torno de **90% da janela de contexto do modelo**.
 
@@ -281,17 +274,13 @@ As contas ficam em SQLite, em `data/db/qwenbridge.db`.
 
 ```bash
 npm run login
-npm run login:chrome
-npm run login:firefox
-npm run login:edge
 ```
 
 O menu permite:
 
-- **[A]** adicionar conta com credenciais
-- **[M]** adicionar conta por login manual no navegador
+- **[A]** adicionar conta com credenciais e validar login HTTP
 - **[R]** remover conta
-- **[L]** inicializar/login em todas as contas
+- **[L]** renovar login HTTP em todas as contas
 
 ### Modos suportados
 
@@ -306,8 +295,6 @@ Para apagar todos os chats do Qwen das contas configuradas, use:
 ```bash
 npm run delete-chats
 ```
-
-Há também variantes `delete-chats:chrome`, `delete-chats:firefox` e `delete-chats:edge`.
 
 Se você quiser limpar automaticamente todos os chats ao encerrar o proxy, configure:
 
@@ -360,9 +347,9 @@ A rota `/v1/upload` aceita `multipart/form-data` com um campo `file`.
 
 Se a autenticação do Qwen ainda não estiver pronta, o upload pode responder:
 
-- `503 Authentication not ready. Send a chat message first.`
+- `503 Authentication unavailable: ...`
 
-Ou seja: na prática, é recomendado iniciar a sessão do browser primeiro com pelo menos uma requisição de chat.
+Ou seja: na prática, basta manter credenciais HTTP válidas (`QWEN_EMAIL`/`QWEN_PASSWORD` ou `QWEN_ACCOUNTS`) para que o proxy obtenha a sessão automaticamente.
 
 ---
 
@@ -383,7 +370,7 @@ const completion = await client.chat.completions.create({
   conversation_id: "demo-conv-1",
   messages: [
     { role: "system", content: "Você é um assistente técnico." },
-    { role: "user", content: "Explique como funciona o Playwright." },
+    { role: "user", content: "Explique como funciona HTTP streaming." },
   ],
 });
 
@@ -498,14 +485,7 @@ Monitora:
 npm start
 
 npm run login
-npm run login:chrome
-npm run login:firefox
-npm run login:edge
-
 npm run delete-chats
-npm run delete-chats:chrome
-npm run delete-chats:firefox
-npm run delete-chats:edge
 
 npm run typecheck
 npm test
@@ -539,13 +519,13 @@ qwenbridge/
 │   ├── cache/          # Cache em memória
 │   ├── core/           # Config, contas, DB, métricas, watchdog
 │   ├── routes/         # Chat e upload
-│   ├── services/       # Playwright e integração Qwen
+│   ├── services/       # Autenticação HTTP e integração Qwen
 │   ├── tools/          # Parser, executor, linter e tipos de tools
 │   ├── utils/          # Contexto, sumarização, JSON robusto, topic detector
 │   ├── tests/          # Suite de testes
 │   ├── index.ts        # Entry point do servidor
 │   └── login.ts        # CLI de gerenciamento de contas
-├── data/               # DB, perfis, benchmarks e diagnósticos (gitignored)
+├── data/               # DB, benchmarks e diagnósticos (gitignored)
 ├── docker-compose.yml
 ├── Dockerfile
 ├── package.json
@@ -560,10 +540,9 @@ qwenbridge/
 |---|---|---|
 | `401 Missing or invalid Authorization header` | `API_KEY` configurada sem header Bearer | Envie `Authorization: Bearer ...` |
 | `401 Invalid API key` | Chave errada | Verifique `API_KEY` no servidor e no cliente |
-| Upload retorna `503 Authentication not ready` | Sessão do Qwen ainda não capturada | Envie uma requisição de chat primeiro |
+| Upload retorna `503 Authentication unavailable` | Credenciais Qwen ausentes/inválidas ou sessão expirada | Configure `QWEN_EMAIL`/`QWEN_PASSWORD` ou rode `npm run login` |
 | Sessão expirada | Cookies inválidos ou conta deslogada | Rode `npm run login` e reautentique |
 | Todas as contas em cooldown | Rate limit ou erro upstream em cascata | Aguarde cooldown ou adicione mais contas |
-| Navegador não abre | Playwright/browsers não instalados | Rode `npx playwright install` |
 | Conversa misturando assuntos | `conversation_id`/`session_id` ausentes | Envie um identificador explícito se quiser topic detection confiável |
 | Sumarização parece cedo/tarde demais | Estimativa heurística de tokens | Ajuste `CONTEXT_*` e lembre que não há tokenizer oficial no cálculo atual |
 
@@ -591,7 +570,7 @@ Volumes persistentes:
 
 | Volume | Conteúdo |
 |---|---|
-| `./data` | Banco SQLite, perfis persistidos do browser, benchmarks e diagnósticos |
+| `./data` | Banco SQLite, sessões HTTP, benchmarks e diagnósticos |
 
 ---
 

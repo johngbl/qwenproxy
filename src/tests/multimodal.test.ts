@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert";
 
-process.env.TEST_MOCK_PLAYWRIGHT = "true";
+process.env.TEST_MOCK_QWEN_AUTH = "true";
 
 import { processImagesForQwen } from "../routes/upload.ts";
 import { fetchQwenModels } from "../services/qwen.ts";

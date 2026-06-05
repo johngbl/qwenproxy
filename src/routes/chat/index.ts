@@ -22,6 +22,7 @@ import {
 import { config } from "../../core/config.ts";
 import { logger } from "../../core/logger.ts";
 import { deleteQwenChat } from "../../services/qwen.ts";
+import { isAuthMockEnabled } from "../../services/auth-http.ts";
 import { enqueueThreadContextSummary } from "../../services/thread-context-jobs.ts";
 import {
   finalizeThreadContextRolloverSuccess,
@@ -74,7 +75,7 @@ export async function chatCompletions(c: Context) {
       !ctx.isAuxiliaryRequest &&
       !!ctx.sessionId &&
       config.context.threadNative.persistenceEnabled &&
-      process.env.TEST_MOCK_PLAYWRIGHT !== "true";
+      !isAuthMockEnabled();
 
     let finalPrompt = ctx.finalPrompt;
     let activeRolloverPlan: ThreadContextRolloverPlan | null = null;

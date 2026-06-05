@@ -1,7 +1,7 @@
 import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 
-process.env.TEST_MOCK_PLAYWRIGHT = "true";
+process.env.TEST_MOCK_QWEN_AUTH = "true";
 
 delete process.env.API_KEY;
 

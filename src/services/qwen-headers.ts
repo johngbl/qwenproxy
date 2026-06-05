@@ -1,42 +1,51 @@
 import { v4 as uuidv4 } from "uuid";
 
+export const QWEN_WEB_VERSION = "0.2.63";
+export const DEFAULT_QWEN_USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36 Edg/148.0.0.0";
+
 export interface BuildQwenHeadersOptions {
-    cookie: string;
-    userAgent: string;
-    bxUa?: string;
-    bxUmidtoken?: string;
-    bxV?: string;
-    chatSessionId?: string | null;
-    extra?: Record<string, string>;
+  cookie: string;
+  userAgent?: string;
+  bxUa?: string;
+  bxUmidtoken?: string;
+  bxV?: string;
+  chatSessionId?: string | null;
+  extra?: Record<string, string>;
 }
 
-/**
- * Centralized builder for Qwen API request headers.
- * Prevents configuration drift and ensures consistent header propagation.
- */
-export function buildQwenRequestHeaders(opts: BuildQwenHeadersOptions): Record<string, string> {
-    const headers: Record<string, string> = {
-        Accept: "application/json, text/plain, */*",
-        "Accept-Language": "pt-BR,pt;q=0.9",
-        "Content-Type": "application/json",
-        Cookie: opts.cookie,
-        Origin: "https://chat.qwen.ai",
-        Referer: opts.chatSessionId
-            ? `https://chat.qwen.ai/c/${opts.chatSessionId}`
-            : "https://chat.qwen.ai/",
-        "Sec-Fetch-Dest": "empty",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Site": "same-origin",
-        "User-Agent": opts.userAgent,
-        "X-Request-Id": uuidv4(),
-        "bx-ua": opts.bxUa || "",
-        "bx-umidtoken": opts.bxUmidtoken || "",
-        "bx-v": opts.bxV || "",
-    };
+export function buildQwenRequestHeaders(
+  opts: BuildQwenHeadersOptions,
+): Record<string, string> {
+  const headers: Record<string, string> = {
+    Accept: "application/json, text/plain, */*",
+    "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
+    "Accept-Encoding": "gzip, deflate, br, zstd",
+    "Content-Type": "application/json",
+    Cookie: opts.cookie,
+    Origin: "https://chat.qwen.ai",
+    Referer: opts.chatSessionId
+      ? `https://chat.qwen.ai/c/${opts.chatSessionId}`
+      : "https://chat.qwen.ai/c/new-chat",
+    "sec-ch-ua":
+      '"Chromium";v="148", "Microsoft Edge";v="148", "Not=A?Brand";v="99"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-origin",
+    Connection: "keep-alive",
+    "User-Agent": opts.userAgent || DEFAULT_QWEN_USER_AGENT,
+    "X-Request-Id": uuidv4(),
+    "bx-v": opts.bxV || "2.5.36",
+    source: "web",
+    version: QWEN_WEB_VERSION,
+    timezone: new Date().toString().split(" (")[0],
+  };
 
-    if (opts.extra) {
-        Object.assign(headers, opts.extra);
-    }
+  if (opts.bxUa) headers["bx-ua"] = opts.bxUa;
+  if (opts.bxUmidtoken) headers["bx-umidtoken"] = opts.bxUmidtoken;
+  if (opts.extra) Object.assign(headers, opts.extra);
 
-    return headers;
+  return headers;
 }

@@ -3,7 +3,7 @@ import assert from 'node:assert';
 import net from 'node:net';
 import { serve } from '@hono/node-server';
 import { app } from '../api/server.js';
-import { initPlaywright, closePlaywright } from '../services/playwright.ts';
+import { initHttpAuth, closeHttpAuth } from '../services/auth-http.ts';
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -30,7 +30,7 @@ test('Concurrent chat requests check for "chat is in progress"', { skip: process
   const server = serve({ fetch: app.fetch, port });
   console.log(`[ConcurrentTest] Server started on port ${port}`);
 
-  await initPlaywright(true);
+  await initHttpAuth(true);
 
   try {
     const requestPayload = {
@@ -65,7 +65,7 @@ test('Concurrent chat requests check for "chat is in progress"', { skip: process
     assert.strictEqual(res2.status, 200, `Request 2 failed: ${JSON.stringify(data2)}`);
 
   } finally {
-    await closePlaywright();
+    await closeHttpAuth();
     server.close();
   }
 });

@@ -194,8 +194,8 @@ async function cleanupServerResources(): Promise<void> {
     }
   }
 
-  const { closePlaywright } = await import("../services/playwright.ts");
-  await closePlaywright();
+  const { closeHttpAuth } = await import("../services/auth-http.ts");
+  await closeHttpAuth();
 
   const { closeDatabase } = await import("../core/database.ts");
   closeDatabase();
@@ -272,20 +272,19 @@ export async function startServer(options?: {
     const { loadAccounts } = await import("../core/accounts.ts");
     const accounts = loadAccounts();
 
-    if (accounts.length > 0) {
-      const { initPlaywrightForAccount, getQwenHeaders } =
-        await import("../services/playwright.ts");
-      const { disableNativeTools } = await import("../services/qwen.ts");
+    const { disableNativeTools } = await import("../services/qwen.ts");
+    const { initHttpAuth, initHttpAuthForAccount, hasGlobalCredentials } =
+      await import("../services/auth-http.ts");
 
+    if (accounts.length > 0) {
       console.log(
-        `[Server] Preparing ${accounts.length} configured account(s) in parallel...`,
+        `[Server] Preparing ${accounts.length} configured account(s) with HTTP auth in parallel...`,
       );
 
       await Promise.all(
         accounts.map(async (account) => {
           try {
-            await initPlaywrightForAccount(account, config.browser.headless);
-            await getQwenHeaders(false, account.id);
+            await initHttpAuthForAccount(account);
             await disableNativeTools(account.id).catch(() => {});
             console.log(`[Server] Account ready: ${account.email}`);
           } catch (err: any) {
@@ -296,9 +295,21 @@ export async function startServer(options?: {
           }
         }),
       );
+    } else if (hasGlobalCredentials()) {
+      try {
+        await initHttpAuth();
+        await disableNativeTools().catch(() => {});
+        console.log("[Server] Global Qwen HTTP auth ready.");
+      } catch (err: any) {
+        console.error(
+          "[Server] Failed to initialize global Qwen auth:",
+          err.message,
+        );
+      }
     } else {
-      const { initPlaywright } = await import("../services/playwright.ts");
-      await initPlaywright(config.browser.headless);
+      console.warn(
+        "[Server] No Qwen credentials configured. Requests will fail until QWEN_EMAIL/QWEN_PASSWORD or QWEN_ACCOUNTS are provided.",
+      );
     }
 
     watchdog = new Watchdog();

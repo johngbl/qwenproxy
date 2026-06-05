@@ -1,14 +1,14 @@
 import test from "node:test";
 import assert from "node:assert";
 
-process.env.TEST_MOCK_PLAYWRIGHT = "true";
+process.env.TEST_MOCK_QWEN_AUTH = "true";
 process.env.API_KEY = "";
 
 import { app } from "../api/server.js";
 import { getDatabase } from "../core/database.ts";
 import { invalidateAccountsCache } from "../core/accounts.ts";
 
-test("Chat Completions works with the global Playwright session when no accounts are configured", async () => {
+test("Chat Completions works with the global HTTP auth session when no accounts are configured", async () => {
   const originalFetch = globalThis.fetch;
   const db = getDatabase();
   const existing = db.prepare("SELECT id, email, password FROM accounts").all();

@@ -9,7 +9,7 @@ import { OpenAIRequest, Message } from "../../utils/types.ts";
 import { QwenFileEntry, processImagesForQwen } from "../upload.ts";
 import { logger, isToolcallDebugEnabled } from "../../core/logger.js";
 import { config } from "../../core/config.ts";
-import { getBasicHeaders } from "../../services/playwright.ts";
+import { getBasicHeaders } from "../../services/auth-http.ts";
 import { buildToolInstructions } from "../../tools/instructions.ts";
 
 // Tag literals split to avoid proxy parser misinterpretation

@@ -112,6 +112,21 @@ function runMigrations(db: Database.Database): void {
 
     CREATE INDEX IF NOT EXISTS idx_accounts_email ON accounts(email);
 
+    CREATE TABLE IF NOT EXISTS qwen_auth_sessions (
+      account_id TEXT PRIMARY KEY,
+      cookie TEXT NOT NULL,
+      user_agent TEXT NOT NULL,
+      bx_v TEXT,
+      bx_ua TEXT,
+      bx_umidtoken TEXT,
+      user_id TEXT,
+      token_expires_at INTEGER,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_qwen_auth_sessions_expires
+      ON qwen_auth_sessions(token_expires_at);
+
     CREATE TABLE IF NOT EXISTS logical_thread_states (
       session_id TEXT PRIMARY KEY,
       account_id TEXT NOT NULL,

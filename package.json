@@ -1,26 +1,18 @@
 {
   "name": "qwenbridge",
   "version": "1.0.0",
-  "description": "API compatível com OpenAI que conecta clientes ao Qwen via automação com Playwright, com suporte a múltiplas contas, tool calling e sessões persistentes.",
+  "description": "API compatível com OpenAI que conecta clientes ao Qwen via HTTP direto, com suporte a múltiplas contas, tool calling e sessões persistentes.",
   "main": "index.js",
   "scripts": {
     "start": "npx tsx src/index.ts",
-    "start:firefox": "npx tsx src/index.ts --browser=firefox",
-    "start:chrome": "npx tsx src/index.ts --browser=chrome",
-    "start:edge": "npx tsx src/index.ts --browser=edge",
     "login": "npx tsx src/login.ts",
-    "login:firefox": "npx tsx src/login.ts --browser=firefox",
-    "login:chrome": "npx tsx src/login.ts --browser=chrome",
-    "login:edge": "npx tsx src/login.ts --browser=edge",
     "delete-chats": "npx tsx src/delete-chats.ts",
-    "delete-chats:firefox": "npx tsx src/delete-chats.ts --browser=firefox",
-    "delete-chats:chrome": "npx tsx src/delete-chats.ts --browser=chrome",
-    "delete-chats:edge": "npx tsx src/delete-chats.ts --browser=edge",
     "test": "npm run test:mock && npm run test:live",
     "test:mock": "tsx --test src/tests/advanced.test.ts src/tests/chat-cleanup.test.ts src/tests/concurrency.test.ts src/tests/context-integration.test.ts src/tests/context-summarizer.test.ts src/tests/delta.test.ts src/tests/index.test.ts src/tests/jsonFix.test.ts src/tests/linter.test.ts src/tests/memory-cache.test.ts src/tests/multimodal.test.ts src/tests/parallel.test.ts src/tests/parser.test.ts src/tests/reasoning-tags.test.ts src/tests/rotation.test.ts src/tests/session-state.test.ts src/tests/single-account-mode.test.ts src/tests/thread-context.test.ts src/tests/tool-calls-endpoint.test.ts src/tests/topic-detector.test.ts",
     "test:live": "tsx --test src/tests/concurrentChat.test.ts src/tests/agenticStress.test.ts",
     "benchmark:proxy": "npx tsx src/benchmarks/proxy-baseline.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:direct": "npx tsx src/test-direct-api.ts"
   },
   "keywords": [],
   "author": "Pedro Farias",
@@ -31,7 +23,6 @@
     "better-sqlite3": "^12.10.0",
     "dotenv": "^17.4.2",
     "hono": "^4.12.23",
-    "playwright": "^1.60.0",
     "tsx": "^4.22.4",
     "uuid": "^14.0.0",
     "zod": "^4.4.3"

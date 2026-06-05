@@ -9,14 +9,18 @@ import {
   RetryableQwenStreamError,
   type LogicalThreadEntry,
 } from "../../services/qwen.ts";
-import { Mutex, initPlaywrightForAccount } from "../../services/playwright.ts";
+import {
+  reauthenticateAccount,
+  isAuthMockEnabled,
+} from "../../services/auth-http.ts";
+import { Mutex } from "../../core/mutex.ts";
 import {
   getNextAccount,
   getNextAvailableAccount,
   markAccountRateLimited,
   getAccountCooldownInfo,
 } from "../../core/account-manager.ts";
-import { loadAccounts, getAccountCredentials } from "../../core/accounts.ts";
+import { loadAccounts } from "../../core/accounts.ts";
 import { registerStream, removeStream } from "../../core/stream-registry.ts";
 import { logger, isToolcallDebugEnabled } from "../../core/logger.ts";
 import { config } from "../../core/config.ts";
@@ -73,7 +77,7 @@ function resolveInitialAccount(preferredAccountId?: string): {
   account: SelectedAccount;
   configuredAccounts: SelectedAccount[];
 } {
-  if (process.env.TEST_MOCK_PLAYWRIGHT) {
+  if (isAuthMockEnabled()) {
     return {
       account: { id: "mock-account", email: "mock@test.com", password: "" },
       configuredAccounts: [],
@@ -97,7 +101,7 @@ function resolveInitialAccount(preferredAccountId?: string): {
     return { account, configuredAccounts };
   }
 
-  // Fallback: global Playwright session.
+  // Fallback: global HTTP-authenticated session.
   if (preferredAccountId && preferredAccountId !== "global") {
     console.warn(
       `[Chat] Sticky account ${preferredAccountId} not found; falling back to global session.`,
@@ -118,14 +122,11 @@ async function attemptRelogin(
   accountEmail: string,
 ): Promise<boolean> {
   try {
-    const creds = getAccountCredentials(accountId);
-    if (creds) {
-      await initPlaywrightForAccount(creds, true);
-      console.log(
-        `[Chat] Re-login successful for ${accountEmail}. Retrying...`,
-      );
-      return true;
-    }
+    await reauthenticateAccount(accountId === "global" ? undefined : accountId);
+    console.log(
+      `[Chat] HTTP re-login successful for ${accountEmail}. Retrying...`,
+    );
+    return true;
   } catch (reLoginErr: unknown) {
     logger.error("[Chat] Re-login failed", {
       accountEmail,

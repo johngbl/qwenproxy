@@ -1,10 +1,10 @@
 import test from "node:test";
 import assert from "node:assert";
 
-process.env.TEST_MOCK_PLAYWRIGHT = "true";
+process.env.TEST_MOCK_QWEN_AUTH = "true";
 
 import { app } from "../api/server.js";
-import { initPlaywright, closePlaywright } from "../services/playwright.ts";
+import { initHttpAuth, closeHttpAuth } from "../services/auth-http.ts";
 
 test("Concurrent new sessions can overlap after startup lock", async () => {
   const originalFetch = globalThis.fetch;
@@ -50,7 +50,7 @@ test("Concurrent new sessions can overlap after startup lock", async () => {
     return originalFetch(input);
   };
 
-  await initPlaywright(false);
+  await initHttpAuth(false);
 
   try {
     const promises = Array.from({ length: 3 }, (_, i) =>
@@ -82,7 +82,7 @@ test("Concurrent new sessions can overlap after startup lock", async () => {
     );
   } finally {
     globalThis.fetch = originalFetch;
-    await closePlaywright();
+    await closeHttpAuth();
   }
 });
 
@@ -117,7 +117,7 @@ test("No-thinking model variant is accepted", async () => {
     return originalFetch(input);
   };
 
-  await initPlaywright(false);
+  await initHttpAuth(false);
 
   try {
     // Test no-thinking model is accepted without error
@@ -139,6 +139,6 @@ test("No-thinking model variant is accepted", async () => {
     );
   } finally {
     globalThis.fetch = originalFetch;
-    await closePlaywright();
+    await closeHttpAuth();
   }
 });

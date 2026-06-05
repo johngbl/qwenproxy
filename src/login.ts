@@ -3,15 +3,9 @@ import {
   removeAccount,
   listAccounts,
   getAccountCredentials,
-  QwenAccount,
+  type QwenAccount,
 } from "./core/accounts.ts";
-import {
-  initPlaywrightForAccount,
-  closePlaywrightForAccount,
-  BrowserType,
-  launchManualLoginAccount,
-  extractAccountInfoFromContext,
-} from "./services/playwright.ts";
+import { initHttpAuthForAccount, loginViaHttp } from "./services/auth-http.ts";
 import * as readline from "readline";
 import * as dotenv from "dotenv";
 
@@ -35,18 +29,11 @@ function clear() {
 }
 
 async function showMenu() {
-  let browserType: BrowserType = "chromium";
-  const browserArg = process.argv.find((arg) => arg.startsWith("--browser="));
-  if (browserArg) {
-    browserType = browserArg.split("=")[1] as BrowserType;
-  } else if (process.env.BROWSER) {
-    browserType = process.env.BROWSER as BrowserType;
-  }
-
   while (true) {
     const accounts = listAccounts();
     clear();
     console.log("=== QwenBridge Account Manager ===\n");
+    console.log("Auth mode: HTTP-only (sem navegador)\n");
 
     if (accounts.length > 0) {
       console.log(`Configured accounts (${accounts.length}):\n`);
@@ -60,11 +47,10 @@ async function showMenu() {
     }
 
     console.log("\nOptions:");
-    console.log("  [A] Add account (with credentials)");
-    console.log("  [M] Add account (manual browser login)");
+    console.log("  [A] Add account and validate HTTP login");
     if (accounts.length > 0) {
       console.log("  [R] Remove an account");
-      console.log("  [L] Login all accounts");
+      console.log("  [L] Refresh login for all accounts");
     }
     console.log("  [Q] Quit\n");
 
@@ -80,20 +66,14 @@ async function showMenu() {
       continue;
     }
 
-    if (choice === "M") {
-      await addAccountManualFlow(browserType);
-      continue;
-    }
-
     if (choice === "R" && accounts.length > 0) {
       await removeAccountFlow();
       continue;
     }
 
     if (choice === "L" && accounts.length > 0) {
-      await loginAllAccounts(browserType);
-      rl.close();
-      return;
+      await loginAllAccounts();
+      await askQuestion("Press Enter to continue...");
     }
   }
 }
@@ -107,6 +87,7 @@ async function addAccountFlow() {
     await askQuestion("Press Enter to continue...");
     return;
   }
+
   const password = await askQuestion("Password: ");
   if (!password) {
     console.log("Password is required.");
@@ -114,10 +95,19 @@ async function addAccountFlow() {
     return;
   }
 
+  let account: QwenAccount | null = null;
   try {
-    const account = addAccount(email, password);
-    console.log(`\nAccount added: ${account.email} (${account.id})`);
+    account = addAccount(email, password);
+    console.log("\nValidating credentials with Qwen HTTP login...");
+    const result = await loginViaHttp(account, { persist: true });
+    console.log(`Account added: ${account.email} (${account.id})`);
+    if (result.expiresAt) {
+      console.log(
+        `Session expires at: ${new Date(result.expiresAt).toISOString()}`,
+      );
+    }
   } catch (err: any) {
+    if (account) removeAccount(account.id);
     console.log(`\nError: ${err.message}`);
   }
 
@@ -161,92 +151,30 @@ async function removeAccountFlow() {
   await askQuestion("Press Enter to continue...");
 }
 
-async function loginAllAccounts(browserType: BrowserType) {
+async function loginAllAccounts() {
   const accounts = listAccounts();
   if (accounts.length === 0) return;
 
   clear();
-  console.log(
-    `Logging in ${accounts.length} account(s) using ${browserType}...\n`,
-  );
+  console.log(`Refreshing HTTP login for ${accounts.length} account(s)...\n`);
 
-  for (let i = 0; i < accounts.length; i++) {
-    const account = accounts[i];
+  for (const account of accounts) {
     const creds = getAccountCredentials(account.id);
-    if (!creds || creds.password === "***") {
-      console.log(
-        `[Login] Skipping ${account.email} - no credentials available`,
-      );
+    if (!creds || creds.password === "***" || !creds.password) {
+      console.log(`[Login] Skipping ${account.email} - no password available`);
       continue;
     }
+
     console.log(`[Login] Processing account: ${account.email}`);
     try {
-      const fullAccount: QwenAccount = {
-        id: creds.id,
-        email: creds.email,
-        password: creds.password,
-      };
-      await initPlaywrightForAccount(fullAccount, true, browserType);
+      await initHttpAuthForAccount(creds, true);
       console.log(`[Login] Account ${account.email} session saved.`);
-      await closePlaywrightForAccount(account.id);
     } catch (err: any) {
       console.error(`[Login] Failed to login ${account.email}: ${err.message}`);
     }
   }
 
   console.log("\n[Login] All accounts processed.");
-  await askQuestion("Press Enter to continue...");
-}
-
-async function addAccountManualFlow(browserType: BrowserType) {
-  clear();
-  console.log("=== Add Account (Manual Login) ===\n");
-  console.log("A browser window will open. Please login to Qwen manually.");
-  console.log(
-    "Once logged in, close the browser window or press Ctrl+C here.\n",
-  );
-  await askQuestion("Press Enter to open the browser...");
-
-  const crypto = await import("crypto");
-  const accountId = crypto.randomUUID();
-
-  const { context, page } = await launchManualLoginAccount(
-    accountId,
-    browserType,
-  );
-
-  console.log("\nBrowser opened. Waiting for you to login...");
-
-  let loggedIn = false;
-  while (!loggedIn) {
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-    const { hasSession } = await extractAccountInfoFromContext(page);
-    if (hasSession) {
-      loggedIn = true;
-    }
-  }
-
-  console.log("\nLogin detected! Extracting account info...");
-
-  const extractedEmail = await askQuestion(
-    "Enter the email for this account: ",
-  );
-  if (!extractedEmail) {
-    console.log("Email is required.");
-    await context.close();
-    await askQuestion("Press Enter to continue...");
-    return;
-  }
-
-  try {
-    const account = addAccount(extractedEmail, "", accountId);
-    console.log(`\nAccount added: ${account.email} (${account.id})`);
-  } catch (err: any) {
-    console.log(`\nError: ${err.message}`);
-  }
-
-  await context.close();
-  await askQuestion("Press Enter to continue...");
 }
 
 showMenu().catch((err) => {

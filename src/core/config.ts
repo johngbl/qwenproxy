@@ -3,17 +3,15 @@ import { z } from "zod";
 const envSchema = z.object({
   PORT: z.string().default("3000"),
   HOST: z.string().default("0.0.0.0"),
-  HEADLESS: z.string().default("true"),
-  USER_DATA_DIR: z.string().default("./data/profiles"),
   USER_AGENT: z
     .string()
     .default(
-      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36 Edg/148.0.0.0",
     ),
-  LOG_CONSOLE: z.string().default("false"),
+  QWEN_BX_UA: z.string().default(""),
+  QWEN_BX_UMIDTOKEN: z.string().default(""),
+  QWEN_BX_V: z.string().default("2.5.36"),
   CHAT_REQUEST_LOG: z.string().default("false"),
-  NAVIGATION_TIMEOUT: z.string().default("30000"),
-  PAGE_TIMEOUT: z.string().default("15000"),
   HTTP_TIMEOUT: z.string().default("10000"),
   CHAT_TIMEOUT: z.string().default("120000"),
   TIME_TO_FIRST_BYTE: z.string().default("30000"),
@@ -82,29 +80,13 @@ export const config = {
   logging: {
     chatRequests: env.CHAT_REQUEST_LOG === "true",
   },
-  browser: {
-    headless: env.HEADLESS !== "false",
-    userDataDir: env.USER_DATA_DIR,
+  auth: {
     userAgent: env.USER_AGENT,
-    args: [
-      "--disable-gpu",
-      "--disable-dev-shm-usage",
-      "--disable-accelerated-2d-canvas",
-      "--no-first-run",
-      "--no-zygote",
-      "--disable-features=IsolateOrigins,site-per-process",
-    ],
-    launchTimeout: 30000,
-    healthCheckInterval: 30000,
-    headers: {
-      accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-      "accept-language": "en-US,en;q=0.9",
-    },
-    logConsole: env.LOG_CONSOLE === "true",
+    bxUa: env.QWEN_BX_UA,
+    bxUmidtoken: env.QWEN_BX_UMIDTOKEN,
+    bxV: env.QWEN_BX_V,
   },
   timeouts: {
-    navigation: parseInt(env.NAVIGATION_TIMEOUT),
-    page: parseInt(env.PAGE_TIMEOUT),
     http: parseInt(env.HTTP_TIMEOUT),
     chat: parseInt(env.CHAT_TIMEOUT),
     timeToFirstByte: parseInt(env.TIME_TO_FIRST_BYTE),

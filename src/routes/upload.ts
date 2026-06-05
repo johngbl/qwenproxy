@@ -1,5 +1,5 @@
 import { Context } from "hono";
-import { getBasicHeaders } from "../services/playwright.ts";
+import { getBasicHeaders, isAuthMockEnabled } from "../services/auth-http.ts";
 import { v4 as uuidv4 } from "uuid";
 import { ValidationError, ServiceUnavailable } from "../core/errors.js";
 import { sendOpenAIError } from "../api/error-helpers.js";
@@ -354,7 +354,7 @@ async function uploadToOSS(
   stsData: STSResponse["data"],
   filename: string,
 ): Promise<string> {
-  if (process.env.TEST_MOCK_PLAYWRIGHT) {
+  if (isAuthMockEnabled()) {
     return stsData.file_url.split("?")[0];
   }
   const {
@@ -410,7 +410,7 @@ export async function uploadFile(c: Context) {
       return sendOpenAIError(c, new ValidationError("No file provided"));
     }
 
-    // Detect MIME from filename if browser sends generic type
+    // Detect MIME from filename if the client sends a generic type
     let fileType = file.type;
     if (fileType === "application/octet-stream" || !fileType) {
       fileType = detectFileType(file.name).mime;
@@ -443,31 +443,22 @@ export async function uploadFile(c: Context) {
       );
     }
 
-    // Wait for Playwright headers (max 60s)
-    let headers: Record<string, string> | null = null;
-    for (let i = 0; i < 60; i++) {
-      try {
-        const { cookie, userAgent, bxV, bxUa, bxUmidtoken } =
-          await getBasicHeaders();
-        if (cookie && cookie.length > 50 && bxUa) {
-          headers = {
-            cookie,
-            "user-agent": userAgent,
-            "bx-ua": bxUa,
-            "bx-umidtoken": bxUmidtoken,
-            "bx-v": bxV,
-          };
-          break;
-        }
-      } catch {}
-      await new Promise((r) => setTimeout(r, 1000));
-    }
-
-    if (!headers) {
+    let headers: Record<string, string>;
+    try {
+      const { cookie, userAgent, bxV, bxUa, bxUmidtoken } =
+        await getBasicHeaders();
+      headers = {
+        cookie,
+        "user-agent": userAgent,
+        "bx-v": bxV,
+      };
+      if (bxUa) headers["bx-ua"] = bxUa;
+      if (bxUmidtoken) headers["bx-umidtoken"] = bxUmidtoken;
+    } catch (error) {
       return sendOpenAIError(
         c,
         new ServiceUnavailable(
-          "Authentication not ready. Send a chat message first.",
+          `Authentication unavailable: ${error instanceof Error ? error.message : String(error)}`,
         ),
       );
     }

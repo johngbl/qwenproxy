@@ -35,7 +35,7 @@ jobs:
         run: npm run test:mock
         env:
           CI: true
-          TEST_MOCK_PLAYWRIGHT: true
+          TEST_MOCK_QWEN_AUTH: true
 
   docker:
     name: Docker Build

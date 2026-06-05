@@ -1,7 +1,11 @@
-import { getQwenHeaders, getBasicHeaders } from "./playwright.ts";
+import {
+  getQwenHeaders,
+  getBasicHeaders,
+  isAuthMockEnabled,
+} from "./auth-http.ts";
 import { v4 as uuidv4 } from "uuid";
 import { UpstreamRateLimit, UpstreamError, AuthError } from "../core/errors.js";
-import { buildQwenRequestHeaders } from "./qwen-headers.ts";
+import { buildQwenRequestHeaders, QWEN_WEB_VERSION } from "./qwen-headers.ts";
 import { config } from "../core/config.js";
 import { logger } from "../core/logger.js";
 import { getDatabase } from "../core/database.js";
@@ -99,7 +103,7 @@ export function getLogicalThreadState(
     logicalThreadStates.delete(logicalSessionId);
   }
 
-  if (process.env.TEST_MOCK_PLAYWRIGHT) return null;
+  if (isAuthMockEnabled()) return null;
 
   // Fallback to SQLite
   try {
@@ -173,7 +177,7 @@ export function updateLogicalThreadState(
   // Update in-memory cache
   logicalThreadStates.set(logicalSessionId, merged);
 
-  if (process.env.TEST_MOCK_PLAYWRIGHT) return;
+  if (isAuthMockEnabled()) return;
 
   // Persist to SQLite
   try {
@@ -340,7 +344,6 @@ const modelsCache = new Map<
 
 const nativeToolsDisabled = new Set<string>();
 const disablingNativeToolsInProgress = new Set<string>();
-const QWEN_WEB_VERSION = "0.2.63";
 
 export async function disableNativeTools(accountId?: string): Promise<void> {
   const cacheKey = accountId || "global";
@@ -375,7 +378,7 @@ export async function disableNativeTools(accountId?: string): Promise<void> {
       config.timeouts.http,
     );
     const response = await fetch(
-      "https://chat.qwen.ai/api/v2/users/user/settings/update",
+      `${config.qwen.baseUrl}/api/v2/users/user/settings/update`,
       {
         method: "POST",
         headers: buildQwenRequestHeaders({
@@ -552,13 +555,16 @@ export async function fetchQwenModels(
     return cached.models;
   }
 
-  const { cookie, userAgent, bxV } = await getBasicHeaders(accountId);
+  const { cookie, userAgent, bxV, bxUa, bxUmidtoken } =
+    await getBasicHeaders(accountId);
 
-  const response = await fetch("https://chat.qwen.ai/api/models", {
+  const response = await fetch(`${config.qwen.baseUrl}/api/models`, {
     headers: buildQwenRequestHeaders({
       cookie,
       userAgent,
       bxV,
+      bxUa,
+      bxUmidtoken,
       extra: {
         timezone: new Date().toString(),
         source: "web",
@@ -599,7 +605,7 @@ async function createQwenChatSession(
   headers: Record<string, string>,
   model: string,
 ): Promise<string> {
-  if (process.env.TEST_MOCK_PLAYWRIGHT) {
+  if (isAuthMockEnabled()) {
     return process.env.TEST_SESSION_ID || "mock-session";
   }
 
@@ -777,8 +783,8 @@ export async function createQwenStream(
   };
 
   const url = chatSessionId
-    ? `https://chat.qwen.ai/api/v2/chat/completions?chat_id=${chatSessionId}`
-    : "https://chat.qwen.ai/api/v2/chat/completions";
+    ? `${config.qwen.baseUrl}/api/v2/chat/completions?chat_id=${chatSessionId}`
+    : `${config.qwen.baseUrl}/api/v2/chat/completions`;
 
   const controller = new AbortController();
   const timeoutMs =
