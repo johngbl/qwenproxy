@@ -99,6 +99,8 @@ export function getLogicalThreadState(
     logicalThreadStates.delete(logicalSessionId);
   }
 
+  if (process.env.TEST_MOCK_PLAYWRIGHT) return null;
+
   // Fallback to SQLite
   try {
     const db = getDatabase();
@@ -153,7 +155,12 @@ export function updateLogicalThreadState(
     instructionsSent?: boolean;
   },
 ): void {
-  if (!logicalSessionId || !entry.chatSessionId) return;
+  if (
+    !logicalSessionId ||
+    entry.chatSessionId === undefined ||
+    entry.chatSessionId === null
+  )
+    return;
   if (logicalThreadStates.size > 10000) cleanupStaleSessions();
   const existing = logicalThreadStates.get(logicalSessionId);
   const merged = {
@@ -165,6 +172,8 @@ export function updateLogicalThreadState(
 
   // Update in-memory cache
   logicalThreadStates.set(logicalSessionId, merged);
+
+  if (process.env.TEST_MOCK_PLAYWRIGHT) return;
 
   // Persist to SQLite
   try {
@@ -453,6 +462,86 @@ export async function deleteAllQwenChats(accountId?: string): Promise<boolean> {
   return true;
 }
 
+export async function deleteQwenChat(
+  chatId: string,
+  accountId?: string,
+): Promise<boolean> {
+  if (!chatId) return false;
+  const { headers } = await getQwenHeaders(false, accountId);
+  const response = await fetch(
+    `${config.qwen.baseUrl}/api/v2/chats/${encodeURIComponent(chatId)}`,
+    {
+      method: "DELETE",
+      headers: buildQwenRequestHeaders({
+        cookie: headers["cookie"],
+        userAgent: headers["user-agent"],
+        bxUa: headers["bx-ua"],
+        bxUmidtoken: headers["bx-umidtoken"],
+        bxV: headers["bx-v"],
+        extra: {
+          Referer: `${config.qwen.baseUrl}/settings/chats`,
+          source: "web",
+          timezone: new Date().toString().split(" (")[0],
+          version: QWEN_WEB_VERSION,
+        },
+      }),
+    },
+  );
+
+  const raw = await response.text();
+  if (!response.ok) {
+    throw new Error(
+      `Failed to delete Qwen chat ${chatId}: ${response.status} ${raw.substring(0, 200)}`,
+    );
+  }
+
+  const parsed = raw ? JSON.parse(raw) : null;
+  const success = parsed?.success === true && parsed?.data?.status === true;
+  if (!success) {
+    throw new Error(
+      `Qwen delete chat returned unexpected payload: ${raw.substring(0, 200)}`,
+    );
+  }
+
+  return true;
+}
+
+export async function fetchQwenChatHistory(
+  chatId: string,
+  accountId?: string,
+): Promise<any> {
+  if (!chatId) return null;
+  const { headers } = await getQwenHeaders(false, accountId);
+  const response = await fetch(
+    `${config.qwen.baseUrl}/api/v2/chats/${encodeURIComponent(chatId)}`,
+    {
+      method: "GET",
+      headers: buildQwenRequestHeaders({
+        cookie: headers["cookie"],
+        userAgent: headers["user-agent"],
+        bxUa: headers["bx-ua"],
+        bxUmidtoken: headers["bx-umidtoken"],
+        bxV: headers["bx-v"],
+        chatSessionId: chatId,
+        extra: {
+          Referer: `${config.qwen.baseUrl}/c/${chatId}`,
+          source: "web",
+          timezone: new Date().toString().split(" (")[0],
+          version: QWEN_WEB_VERSION,
+        },
+      }),
+    },
+  );
+
+  const raw = await response.text();
+  if (!response.ok) {
+    throw new Error(
+      `Failed to fetch Qwen chat ${chatId}: ${response.status} ${raw.substring(0, 200)}`,
+    );
+  }
+  return raw ? JSON.parse(raw) : null;
+}
+
 export async function fetchQwenModels(
   accountId?: string,
 ): Promise<PublicQwenModel[]> {
@@ -592,6 +681,7 @@ export async function createQwenStream(
   uiSessionId: string;
   controller: AbortController;
   accountId: string;
+  createdNewChat: boolean;
 }> {
   // A new logical chat session should reuse the warmed header cache when available.
   // Header recapture is much more expensive and should be reserved for real refresh/login cases,
@@ -602,12 +692,31 @@ export async function createQwenStream(
   );
   const { headers, parentMessageId } = captured;
   const model = modelId.replace("-no-thinking", "");
-  const chatSessionId =
-    options && "chatSessionId" in options
-      ? options.chatSessionId === null || options.chatSessionId === ""
-        ? await createQwenChatSession(headers, model)
-        : options.chatSessionId
-      : captured.chatSessionId;
+  let createdNewChat = false;
+  let chatSessionId: string | null | undefined;
+  if (options && "chatSessionId" in options) {
+    if (options.chatSessionId === null || options.chatSessionId === "") {
+      chatSessionId = await createQwenChatSession(headers, model);
+      createdNewChat = true;
+    } else {
+      chatSessionId = options.chatSessionId;
+    }
+  } else {
+    chatSessionId = captured.chatSessionId;
+    if (!chatSessionId) {
+      chatSessionId = await createQwenChatSession(headers, model);
+      createdNewChat = true;
+    }
+  }
+
+  const withCreatedChatMetadata = <T extends Error>(error: T): T => {
+    if (createdNewChat && chatSessionId) {
+      (error as any).createdNewChat = true;
+      (error as any).chatSessionId = chatSessionId;
+      (error as any).accountId = accountId ?? "global";
+    }
+    return error;
+  };
 
   let actualParentId: string | null = parentMessageId;
 
@@ -697,6 +806,10 @@ export async function createQwenStream(
       body: JSON.stringify(payload),
       signal: controller.signal,
     });
+  } catch (error) {
+    throw withCreatedChatMetadata(
+      error instanceof Error ? error : new Error(String(error)),
+    );
   } finally {
     clearTimeout(timeoutId);
   }
@@ -719,9 +832,11 @@ export async function createQwenStream(
           const jitter = cappedDelay * 0.2 * Math.random();
           const retryAfterMs = Math.floor(cappedDelay + jitter);
 
-          throw new RetryableQwenStreamError(
-            `Qwen: ${errorJson.data.details}`,
-            retryAfterMs,
+          throw withCreatedChatMetadata(
+            new RetryableQwenStreamError(
+              `Qwen: ${errorJson.data.details}`,
+              retryAfterMs,
+            ),
           );
         }
         if (errorJson?.success === false) {
@@ -738,9 +853,11 @@ export async function createQwenStream(
             details.includes("login") ||
             details.includes("session")
           ) {
-            throw new QwenSessionExpiredError(
-              `Session expired: ${details}`,
-              accountId || "global",
+            throw withCreatedChatMetadata(
+              new QwenSessionExpiredError(
+                `Session expired: ${details}`,
+                accountId || "global",
+              ),
             );
           }
 
@@ -753,10 +870,12 @@ export async function createQwenStream(
           else if (code === "Not_Found") status = 404;
           else if (code === "UpstreamError") status = 502;
           else status = 502;
-          throw new QwenUpstreamError(
-            `Qwen upstream error: ${code}: ${details}.${wait}`,
-            code,
-            status,
+          throw withCreatedChatMetadata(
+            new QwenUpstreamError(
+              `Qwen upstream error: ${code}: ${details}.${wait}`,
+              code,
+              status,
+            ),
           );
         }
         if (
@@ -767,9 +886,11 @@ export async function createQwenStream(
           const attempt = errorJson.data?.retryCount ?? 1;
           const retryAfterMs = Math.min(1000 * Math.pow(2, attempt - 1), 10000);
 
-          throw new RetryableQwenStreamError(
-            `Qwen: ${errorJson.data.details}`,
-            retryAfterMs,
+          throw withCreatedChatMetadata(
+            new RetryableQwenStreamError(
+              `Qwen: ${errorJson.data.details}`,
+              retryAfterMs,
+            ),
           );
         }
       } catch (parseOrRetryError) {
@@ -778,7 +899,7 @@ export async function createQwenStream(
           parseOrRetryError instanceof QwenUpstreamError ||
           parseOrRetryError instanceof QwenSessionExpiredError
         ) {
-          throw parseOrRetryError;
+          throw withCreatedChatMetadata(parseOrRetryError);
         }
         // Log unexpected parsing or retry errors to prevent silent failures
         logger.warn("Unexpected error during stream error parsing", {
@@ -786,8 +907,10 @@ export async function createQwenStream(
         });
       }
     }
-    throw new Error(
-      `Failed to fetch from Qwen: ${response.status} ${response.statusText} - ${errText}`,
+    throw withCreatedChatMetadata(
+      new Error(
+        `Failed to fetch from Qwen: ${response.status} ${response.statusText} - ${errText}`,
+      ),
     );
   }
 
@@ -797,5 +920,6 @@ export async function createQwenStream(
     uiSessionId: chatSessionId || "",
     controller,
     accountId: accountId ?? "global",
+    createdNewChat,
   };
 }

@@ -8,6 +8,7 @@ export interface SummarizationResult {
   summaryTokens: number;
   compressionRatio: number;
   latencyMs: number;
+  error?: string;
 }
 
 const SUMMARIZATION_PROMPT = `Summarize the following conversation, preserving:
@@ -27,12 +28,15 @@ export async function summarizeMessages(
     model?: string;
     maxSummaryTokens?: number;
     timeout?: number;
+    systemPromptOverride?: string;
+    purpose?: "rollover" | "truncation";
   },
 ): Promise<SummarizationResult> {
   const startTime = Date.now();
   const model = options?.model || config.context.summarization.model;
   const maxTokens = options?.maxSummaryTokens || 200;
   const timeout = options?.timeout || config.context.summarization.timeout;
+  const systemPrompt = options?.systemPromptOverride || SUMMARIZATION_PROMPT;
 
   // Build conversation text
   const conversationText = messages
@@ -72,7 +76,7 @@ export async function summarizeMessages(
           messages: [
             {
               role: "system",
-              content: SUMMARIZATION_PROMPT,
+              content: systemPrompt,
             },
             {
               role: "user",
@@ -89,7 +93,10 @@ export async function summarizeMessages(
     clearTimeout(timeoutId);
 
     if (!response.ok) {
-      throw new Error(`Summarization API error: ${response.status}`);
+      const errorBody = await response.text().catch(() => "");
+      throw new Error(
+        `Summarization API error: ${response.status} ${errorBody.substring(0, 300)}`,
+      );
     }
 
     const result = await response.json();
@@ -109,6 +116,7 @@ export async function summarizeMessages(
   } catch (error: any) {
     clearTimeout(timeoutId);
     const latencyMs = Date.now() - startTime;
+    const errorMessage = error instanceof Error ? error.message : String(error);
 
     // Fallback: return error summary
     return {
@@ -117,6 +125,7 @@ export async function summarizeMessages(
       summaryTokens: estimateTokenCount("[Summary unavailable - truncated]"),
       compressionRatio: 0,
       latencyMs,
+      error: errorMessage,
     };
   }
 }

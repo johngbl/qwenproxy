@@ -4,6 +4,7 @@ import {
   clearAllSessionsForAccount,
   getLogicalThreadState,
   updateLogicalThreadState,
+  deleteQwenChat,
   QwenSessionExpiredError,
   RetryableQwenStreamError,
   type LogicalThreadEntry,
@@ -18,6 +19,7 @@ import {
 import { loadAccounts, getAccountCredentials } from "../../core/accounts.ts";
 import { registerStream, removeStream } from "../../core/stream-registry.ts";
 import { logger, isToolcallDebugEnabled } from "../../core/logger.ts";
+import { config } from "../../core/config.ts";
 import { QwenFileEntry } from "../upload.ts";
 
 export interface SelectedAccount {
@@ -32,6 +34,7 @@ export interface StreamCreationResult {
   activeAccountId: string;
   completionId: string;
   logicalSessionId: string | null;
+  createdNewChat: boolean;
 }
 
 export interface StreamCreationFailure {
@@ -51,6 +54,8 @@ export interface AcquireParams {
   sessionId: string | null;
   useThreadNative: boolean;
   updateLogicalThread: boolean;
+  forceNewChat?: boolean;
+  preferredAccountId?: string | null;
 }
 
 // Module-level mutex registry, one per account to prevent concurrent startups.
@@ -148,17 +153,22 @@ export async function acquireUpstreamStream(
     sessionId,
     useThreadNative,
     updateLogicalThread,
+    forceNewChat = false,
+    preferredAccountId,
   } = params;
 
   const completionId = "chatcmpl-" + uuidv4();
-  const existingThread = useThreadNative
-    ? getLogicalThreadState(sessionId)
-    : null;
-  const resolved = resolveInitialAccount(existingThread?.accountId);
+  const existingThread =
+    useThreadNative && !forceNewChat ? getLogicalThreadState(sessionId) : null;
+  const resolved = resolveInitialAccount(
+    preferredAccountId ?? existingThread?.accountId,
+  );
 
   let account: SelectedAccount | null = resolved.account;
   const configuredAccounts = resolved.configuredAccounts;
-  const stickyThreadAccountId = existingThread?.accountId ?? null;
+  const stickyThreadAccountId = forceNewChat
+    ? null
+    : (existingThread?.accountId ?? null);
   const triedAccountIds = new Set<string>();
   let lastError: any = null;
 
@@ -227,6 +237,7 @@ export async function acquireUpstreamStream(
           sessionId,
           useThreadNative,
           updateLogicalThread,
+          forceNewChat,
           existingThread:
             existingThread && existingThread.accountId === accountId
               ? existingThread
@@ -252,6 +263,7 @@ export async function acquireUpstreamStream(
           completionId,
           logicalSessionId:
             useThreadNative && updateLogicalThread ? sessionId : null,
+          createdNewChat: result.createdNewChat,
         };
       }
 
@@ -320,6 +332,7 @@ interface CreateStreamSuccess {
   accountId: string;
   controller: AbortController;
   headers: Record<string, string>;
+  createdNewChat: boolean;
 }
 
 interface CreateStreamFailure {
@@ -337,6 +350,7 @@ async function tryCreateStreamWithRetry(
     sessionId: string | null;
     useThreadNative: boolean;
     updateLogicalThread: boolean;
+    forceNewChat: boolean;
     existingThread: LogicalThreadEntry | null;
   },
   accountId: string,
@@ -359,7 +373,9 @@ async function tryCreateStreamWithRetry(
 
     try {
       const threadParentId = params.useThreadNative
-        ? (params.existingThread?.parentId ?? null)
+        ? params.forceNewChat
+          ? null
+          : (params.existingThread?.parentId ?? null)
         : params.shouldResetUpstreamThread
           ? null
           : undefined;
@@ -370,9 +386,11 @@ async function tryCreateStreamWithRetry(
         threadParentId,
         accountId === "global" ? undefined : accountId,
         params.allFiles.length > 0 ? params.allFiles : undefined,
-        params.useThreadNative
+        params.forceNewChat || params.useThreadNative
           ? {
-              chatSessionId: params.existingThread?.chatSessionId ?? null,
+              chatSessionId: params.forceNewChat
+                ? null
+                : (params.existingThread?.chatSessionId ?? null),
               forceNewChat: false,
             }
           : undefined,
@@ -419,6 +437,35 @@ async function tryCreateStreamWithRetry(
 
     retries--;
     const err = attemptError;
+    if (
+      err?.createdNewChat === true &&
+      typeof err.chatSessionId === "string" &&
+      err.chatSessionId &&
+      config.context.threadNative.deleteFailedNewChats
+    ) {
+      try {
+        await deleteQwenChat(
+          err.chatSessionId,
+          err.accountId && err.accountId !== "global"
+            ? err.accountId
+            : accountId === "global"
+              ? undefined
+              : accountId,
+        );
+        logger.info("[thread-context] deleted failed new Qwen chat", {
+          accountId,
+          chatSessionId: err.chatSessionId,
+        });
+      } catch (deleteErr) {
+        logger.warn("[thread-context] failed to delete failed new Qwen chat", {
+          accountId,
+          chatSessionId: err.chatSessionId,
+          error:
+            deleteErr instanceof Error ? deleteErr.message : String(deleteErr),
+        });
+      }
+    }
+
     if (!err) {
       return {
         success: false,

@@ -14,7 +14,7 @@ import {
   updateLogicalThreadParent,
   updateSessionParent,
 } from "../../services/qwen.ts";
-import type { OpenAIRequest } from "../../utils/types.ts";
+import type { OpenAIRequest, Usage } from "../../utils/types.ts";
 import { StreamingToolParser } from "../../tools/parser.ts";
 import { StreamingReasoningTagSanitizer } from "../../utils/reasoning-tags.ts";
 import {
@@ -64,6 +64,24 @@ function extractChatSessionId(chunk: any): string | null {
   );
 }
 
+export interface AssistantCompleteEvent {
+  sessionId: string | null;
+  accountId: string;
+  chatSessionId: string;
+  parentId: string | null;
+  responseId: string | null;
+  userPrompt: string;
+  finalPrompt: string;
+  assistantContent: string;
+  reasoningContent?: string;
+  usage: Usage;
+  finishReason: string;
+}
+
+export type AssistantCompleteHandler = (
+  event: AssistantCompleteEvent,
+) => Promise<void> | void;
+
 export interface StreamProcessingParams {
   c: Context;
   completionId: string;
@@ -73,8 +91,27 @@ export interface StreamProcessingParams {
   logicalSessionId: string | null;
   body: OpenAIRequest & { stream_options?: { include_usage?: boolean } };
   finalPrompt: string;
+  userPrompt: string;
   shouldParseToolCalls: boolean;
   declaredTools: any[];
+  onAssistantComplete?: AssistantCompleteHandler;
+}
+
+async function notifyAssistantComplete(
+  handler: AssistantCompleteHandler | undefined,
+  event: AssistantCompleteEvent,
+): Promise<void> {
+  if (!handler) return;
+  try {
+    await handler(event);
+  } catch (error) {
+    logger.warn("[chat] assistant completion callback failed", {
+      sessionId: event.sessionId,
+      chatSessionId: event.chatSessionId,
+      responseId: event.responseId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 // ─── Non-streaming (JSON response) ─────────────────────────────────────────────
@@ -91,8 +128,10 @@ export async function processNonStreamingResponse(
     logicalSessionId,
     body,
     finalPrompt,
+    userPrompt,
     shouldParseToolCalls,
     declaredTools,
+    onAssistantComplete,
   } = params;
 
   try {
@@ -390,6 +429,20 @@ export async function processNonStreamingResponse(
       });
     }
 
+    await notifyAssistantComplete(onAssistantComplete, {
+      sessionId: logicalSessionId,
+      accountId: activeAccountId,
+      chatSessionId: currentUiSessionId,
+      parentId: null,
+      responseId: targetResponseId,
+      userPrompt,
+      finalPrompt,
+      assistantContent: finalContent,
+      reasoningContent: reasoningBuffer || undefined,
+      usage,
+      finishReason,
+    });
+
     return c.json({
       id: completionId,
       object: "chat.completion",
@@ -427,8 +480,10 @@ export async function processStreamingResponse(
     logicalSessionId,
     body,
     finalPrompt,
+    userPrompt,
     shouldParseToolCalls,
     declaredTools,
+    onAssistantComplete,
   } = params;
 
   // Pre-read initial bytes to detect upstream error before committing to SSE
@@ -595,6 +650,8 @@ export async function processStreamingResponse(
 
       let lastThinkingSummary = "";
       let lastRawContent = "";
+      let finalContent = "";
+      let reasoningBuffer = "";
       let targetResponseId: string | null = null;
       const toolParser = shouldParseToolCalls
         ? new StreamingToolParser(declaredTools, {
@@ -631,6 +688,7 @@ export async function processStreamingResponse(
 
       const emitAnswerText = async (textChunk: string) => {
         if (!toolParser) {
+          finalContent += textChunk;
           await writeEvent({
             id: completionId,
             object: "chat.completion.chunk",
@@ -657,6 +715,7 @@ export async function processStreamingResponse(
         }
 
         if (text) {
+          finalContent += text;
           await writeEvent({
             id: completionId,
             object: "chat.completion.chunk",
@@ -767,6 +826,7 @@ export async function processStreamingResponse(
         }
 
         if (sanitized.reasoning) {
+          reasoningBuffer += sanitized.reasoning;
           await writeEvent({
             id: completionId,
             object: "chat.completion.chunk",
@@ -906,6 +966,7 @@ export async function processStreamingResponse(
               if (vStr === "FINISHED") continue;
 
               if (isThinkingChunk) {
+                reasoningBuffer += vStr;
                 await writeEvent({
                   id: completionId,
                   object: "chat.completion.chunk",
@@ -963,6 +1024,7 @@ export async function processStreamingResponse(
           loggedThinkTagLeak = true;
         }
         if (remainingSanitized.reasoning) {
+          reasoningBuffer += remainingSanitized.reasoning;
           await writeEvent({
             id: completionId,
             object: "chat.completion.chunk",
@@ -998,6 +1060,7 @@ export async function processStreamingResponse(
       }
 
       if (remainingText) {
+        finalContent += remainingText;
         await writeEvent({
           id: completionId,
           object: "chat.completion.chunk",
@@ -1141,6 +1204,20 @@ export async function processStreamingResponse(
 
         await streamWriter.write(payload);
         flushBuffer = null;
+
+        await notifyAssistantComplete(onAssistantComplete, {
+          sessionId: logicalSessionId,
+          accountId: activeAccountId,
+          chatSessionId: currentUiSessionId,
+          parentId: null,
+          responseId: targetResponseId,
+          userPrompt,
+          finalPrompt,
+          assistantContent: finalContent,
+          reasoningContent: reasoningBuffer || undefined,
+          usage,
+          finishReason: finalFinishReason,
+        });
 
         if (isToolcallDebugEnabled()) {
           logger.debug("[chat] stream: completed successfully", {

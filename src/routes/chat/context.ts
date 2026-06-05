@@ -1,17 +1,16 @@
-import { Context } from "hono";
 import { config } from "../../core/config.ts";
 import { getModelContextWindow } from "../../core/model-registry.ts";
 import { getCache } from "../../api/server.ts";
-import { Message } from "../../utils/types.ts";
+import type { Message } from "../../utils/types.ts";
 import {
   estimateTokenCount,
   truncateMessages,
-  PrioritizedMessage,
+  type PrioritizedMessage,
 } from "../../utils/context-truncation.ts";
 import {
   deriveSessionId,
   detectTopicChange,
-  TopicAnalysis,
+  type TopicAnalysis,
 } from "../../utils/topic-detector.ts";
 import { getLogicalThreadState } from "../../services/qwen.ts";
 
@@ -33,6 +32,8 @@ export interface FinalContext {
   isThinkingModel: boolean;
   estimatedTokens: number;
   modelContextWindow: number;
+  isAuxiliaryRequest: boolean;
+  isTitleGenerationRequest: boolean;
 }
 
 export interface BuildContextParams {
@@ -79,13 +80,18 @@ export async function buildFinalContext(
     ? getLogicalThreadState(sessionId)
     : null;
 
-  // Thread-native: send full history when Qwen has no context yet, delta only on follow-ups
+  const hasTrailingToolResult = detectTrailingToolResult(messages);
+  // Thread-native: send full history when Qwen has no context yet, but preserve
+  // tool-result deltas because the upstream parent chain already owns the call.
   const activePrompt = useThreadNative
-    ? (!existingThread ? prompt : currentPrompt) || prompt
+    ? (!existingThread && !hasTrailingToolResult ? prompt : currentPrompt) ||
+      prompt
     : prompt;
   const estimatedTokens = estimateTokenCount(systemPrompt + activePrompt);
   const isTitleGenerationRequest = detectTitleGenerationRequest(messages);
-  const updateLogicalThread = !(isTitleGenerationRequest && !!existingThread);
+  const isAuxiliaryRequest =
+    isInternalSummarizationRequest || isTitleGenerationRequest;
+  const updateLogicalThread = !isTitleGenerationRequest;
   const shouldSendInstructions =
     !useThreadNative || !existingThread?.instructionsSent;
 
@@ -136,6 +142,8 @@ export async function buildFinalContext(
     isThinkingModel,
     estimatedTokens,
     modelContextWindow,
+    isAuxiliaryRequest,
+    isTitleGenerationRequest,
   };
 }
 
@@ -152,10 +160,19 @@ function extractMessageText(message: Message | undefined): string {
   return "";
 }
 
+function detectTrailingToolResult(messages: Message[]): boolean {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const role = messages[i].role;
+    if (role === "system") continue;
+    return role === "tool" || role === "function";
+  }
+  return false;
+}
+
 function detectTitleGenerationRequest(messages: Message[]): boolean {
   if (messages.length < 2) return false;
   const last = messages[messages.length - 1];
-  if (!last || last.role !== "user") return false;
+  if (last?.role !== "user") return false;
 
   const text = extractMessageText(last).toLowerCase();
   if (!text) return false;

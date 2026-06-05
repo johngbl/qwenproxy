@@ -122,6 +122,103 @@ function runMigrations(db: Database.Database): void {
     );
 
     CREATE INDEX IF NOT EXISTS idx_thread_updated ON logical_thread_states(updated_at);
+
+    CREATE TABLE IF NOT EXISTS thread_context_sessions (
+      session_id TEXT PRIMARY KEY,
+      client_name TEXT,
+      account_id TEXT,
+      active_chat_session_id TEXT,
+      active_parent_id TEXT,
+      previous_chat_session_id TEXT,
+      model TEXT NOT NULL,
+      model_context_window INTEGER NOT NULL DEFAULT 0,
+      system_prompt TEXT,
+      tool_instructions_hash TEXT,
+      estimated_thread_tokens INTEGER NOT NULL DEFAULT 0,
+      estimated_recent_tokens INTEGER NOT NULL DEFAULT 0,
+      estimated_summary_tokens INTEGER NOT NULL DEFAULT 0,
+      latest_summary_id INTEGER,
+      summary_sequence INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'normal',
+      rollover_count INTEGER NOT NULL DEFAULT 0,
+      last_summary_at TEXT,
+      last_rollover_at TEXT,
+      last_activity_at TEXT NOT NULL DEFAULT (datetime('now')),
+      last_error TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      expires_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_thread_context_sessions_status
+      ON thread_context_sessions(status, updated_at);
+    CREATE INDEX IF NOT EXISTS idx_thread_context_sessions_activity
+      ON thread_context_sessions(last_activity_at);
+
+    CREATE TABLE IF NOT EXISTS thread_context_turns (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL,
+      role TEXT NOT NULL,
+      content TEXT NOT NULL,
+      content_tokens INTEGER NOT NULL DEFAULT 0,
+      qwen_account_id TEXT,
+      qwen_chat_id TEXT,
+      qwen_parent_id TEXT,
+      qwen_response_id TEXT,
+      is_auxiliary INTEGER NOT NULL DEFAULT 0,
+      is_summarized INTEGER NOT NULL DEFAULT 0,
+      is_recent_anchor INTEGER NOT NULL DEFAULT 0,
+      usage_json TEXT,
+      metadata_json TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY(session_id) REFERENCES thread_context_sessions(session_id)
+        ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_thread_context_turns_session_id
+      ON thread_context_turns(session_id, id);
+    CREATE INDEX IF NOT EXISTS idx_thread_context_turns_unsummarized
+      ON thread_context_turns(session_id, is_auxiliary, is_summarized, id);
+
+    CREATE TABLE IF NOT EXISTS thread_context_summaries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL,
+      sequence INTEGER NOT NULL,
+      summary TEXT NOT NULL,
+      summary_tokens INTEGER NOT NULL DEFAULT 0,
+      source_turn_start INTEGER,
+      source_turn_end INTEGER,
+      model TEXT,
+      account_id TEXT,
+      summary_chat_id TEXT,
+      compression_ratio REAL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY(session_id) REFERENCES thread_context_sessions(session_id)
+        ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_thread_context_summaries_session_sequence
+      ON thread_context_summaries(session_id, sequence DESC);
+
+    CREATE TABLE IF NOT EXISTS thread_context_rollovers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL,
+      from_account_id TEXT,
+      from_chat_id TEXT,
+      to_account_id TEXT,
+      to_chat_id TEXT,
+      summary_id INTEGER,
+      reason TEXT NOT NULL,
+      old_estimated_tokens INTEGER,
+      new_initial_tokens INTEGER,
+      old_chat_deleted INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY(session_id) REFERENCES thread_context_sessions(session_id)
+        ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_thread_context_rollovers_session
+      ON thread_context_rollovers(session_id, id);
   `);
 }
 

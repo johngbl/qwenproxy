@@ -17,7 +17,7 @@
     "delete-chats:chrome": "npx tsx src/delete-chats.ts --browser=chrome",
     "delete-chats:edge": "npx tsx src/delete-chats.ts --browser=edge",
     "test": "npm run test:mock && npm run test:live",
-    "test:mock": "tsx --test src/tests/advanced.test.ts src/tests/chat-cleanup.test.ts src/tests/concurrency.test.ts src/tests/context-integration.test.ts src/tests/context-summarizer.test.ts src/tests/delta.test.ts src/tests/index.test.ts src/tests/jsonFix.test.ts src/tests/linter.test.ts src/tests/memory-cache.test.ts src/tests/multimodal.test.ts src/tests/parallel.test.ts src/tests/parser.test.ts src/tests/reasoning-tags.test.ts src/tests/rotation.test.ts src/tests/session-state.test.ts src/tests/single-account-mode.test.ts src/tests/tool-calls-endpoint.test.ts src/tests/topic-detector.test.ts",
+    "test:mock": "tsx --test src/tests/advanced.test.ts src/tests/chat-cleanup.test.ts src/tests/concurrency.test.ts src/tests/context-integration.test.ts src/tests/context-summarizer.test.ts src/tests/delta.test.ts src/tests/index.test.ts src/tests/jsonFix.test.ts src/tests/linter.test.ts src/tests/memory-cache.test.ts src/tests/multimodal.test.ts src/tests/parallel.test.ts src/tests/parser.test.ts src/tests/reasoning-tags.test.ts src/tests/rotation.test.ts src/tests/session-state.test.ts src/tests/single-account-mode.test.ts src/tests/thread-context.test.ts src/tests/tool-calls-endpoint.test.ts src/tests/topic-detector.test.ts",
     "test:live": "tsx --test src/tests/concurrentChat.test.ts src/tests/agenticStress.test.ts",
     "benchmark:proxy": "npx tsx src/benchmarks/proxy-baseline.ts",
     "typecheck": "tsc --noEmit"
