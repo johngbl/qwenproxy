@@ -447,6 +447,27 @@ async function tryCreateStreamWithRetry(
       return { success: false, error: err };
     }
 
+    // Detect "chat not exist" error and force new chat creation on retry
+    const isChatNotExistError =
+      err.message?.includes("is not exist") ||
+      err.message?.includes("not exist") ||
+      err.message?.includes("does not exist");
+
+    if (isChatNotExistError && params.useThreadNative && params.sessionId) {
+      console.warn(
+        `[Chat] Chat session deleted externally for ${accountEmail} (${accountId}). Forcing new chat creation.`,
+      );
+      // Clear the stale chat session ID from logical thread state
+      // so the next attempt creates a fresh chat
+      params.existingThread = null;
+      updateLogicalThreadState(params.sessionId, {
+        accountId,
+        chatSessionId: "", // Empty forces new chat creation
+        parentId: null,
+        instructionsSent: false,
+      });
+    }
+
     if (retries === 0) {
       if (err.upstreamStatus && err.upstreamStatus >= 500) {
         markAccountRateLimited(accountId, undefined, "ServerError");
@@ -484,7 +505,7 @@ async function tryCreateStreamWithRetry(
     }
 
     console.warn(
-      `[Chat] Qwen request failed for ${accountEmail}, retrying in ${useDelay}ms... (${retries} left)`,
+      `[Chat] Qwen request failed for ${accountEmail}, retrying in ${useDelay}ms... (${retries} left). Error: ${err.message?.slice(0, 200) || err}`,
     );
     await new Promise((r) => setTimeout(r, useDelay));
     retryDelay = Math.min(retryDelay * 2, 5000);

@@ -21,6 +21,9 @@ accounts.json.bak
 *.log
 log*.txt
 
+# Local network captures may contain cookies/tokens
+network/
+
 # Coverage & cache
 coverage/
 .cache/

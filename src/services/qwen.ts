@@ -4,6 +4,7 @@ import { UpstreamRateLimit, UpstreamError, AuthError } from "../core/errors.js";
 import { buildQwenRequestHeaders } from "./qwen-headers.ts";
 import { config } from "../core/config.js";
 import { logger } from "../core/logger.js";
+import { getDatabase } from "../core/database.js";
 
 export class RetryableQwenStreamError extends UpstreamRateLimit {
   readonly retryAfterMs: number;
@@ -55,6 +56,7 @@ const sessionStates: Map<string, SessionEntry> =
   (globalThis as any)._sessionStates || new Map();
 (globalThis as any)._sessionStates = sessionStates;
 
+// In-memory cache for logical thread states (backed by SQLite)
 const logicalThreadStates: Map<string, LogicalThreadEntry> =
   (globalThis as any)._logicalThreadStates || new Map();
 (globalThis as any)._logicalThreadStates = logicalThreadStates;
@@ -68,6 +70,14 @@ function cleanupStaleSessions() {
       sessionStates.delete(key);
     }
   }
+  // Cleanup stale entries from SQLite
+  try {
+    const db = getDatabase();
+    const cutoff = new Date(now - SESSION_TTL_MS).toISOString();
+    db.prepare("DELETE FROM logical_thread_states WHERE updated_at < ?").run(
+      cutoff,
+    );
+  } catch {}
   for (const [key, entry] of logicalThreadStates.entries()) {
     if (now - entry.timestamp > SESSION_TTL_MS) {
       logicalThreadStates.delete(key);
@@ -79,13 +89,62 @@ export function getLogicalThreadState(
   logicalSessionId: string | null | undefined,
 ): LogicalThreadEntry | null {
   if (!logicalSessionId) return null;
-  const entry = logicalThreadStates.get(logicalSessionId);
-  if (!entry) return null;
-  if (Date.now() - entry.timestamp > SESSION_TTL_MS) {
+
+  // Check in-memory cache first
+  const cached = logicalThreadStates.get(logicalSessionId);
+  if (cached && Date.now() - cached.timestamp <= SESSION_TTL_MS) {
+    return cached;
+  }
+  if (cached) {
     logicalThreadStates.delete(logicalSessionId);
+  }
+
+  // Fallback to SQLite
+  try {
+    const db = getDatabase();
+    const row = db
+      .prepare(
+        "SELECT session_id, account_id, chat_session_id, parent_id, instructions_sent, updated_at FROM logical_thread_states WHERE session_id = ?",
+      )
+      .get(logicalSessionId) as
+      | {
+          session_id: string;
+          account_id: string;
+          chat_session_id: string;
+          parent_id: string | null;
+          instructions_sent: number;
+          updated_at: string;
+        }
+      | undefined;
+
+    if (!row) return null;
+
+    const timestamp = new Date(row.updated_at).getTime();
+    if (Date.now() - timestamp > SESSION_TTL_MS) {
+      db.prepare("DELETE FROM logical_thread_states WHERE session_id = ?").run(
+        logicalSessionId,
+      );
+      return null;
+    }
+
+    const entry: LogicalThreadEntry = {
+      accountId: row.account_id,
+      chatSessionId: row.chat_session_id,
+      parentId: row.parent_id,
+      instructionsSent: row.instructions_sent === 1,
+      timestamp,
+    };
+
+    // Populate in-memory cache
+    logicalThreadStates.set(logicalSessionId, entry);
+    return entry;
+  } catch (err) {
+    logger.warn("[Qwen] Failed to read logical thread from SQLite", {
+      sessionId: logicalSessionId,
+      error: err instanceof Error ? err.message : String(err),
+    });
     return null;
   }
-  return entry;
 }
 
 export function updateLogicalThreadState(
@@ -97,12 +156,41 @@ export function updateLogicalThreadState(
   if (!logicalSessionId || !entry.chatSessionId) return;
   if (logicalThreadStates.size > 10000) cleanupStaleSessions();
   const existing = logicalThreadStates.get(logicalSessionId);
-  logicalThreadStates.set(logicalSessionId, {
+  const merged = {
     ...entry,
     instructionsSent:
       entry.instructionsSent ?? existing?.instructionsSent ?? false,
     timestamp: Date.now(),
-  });
+  };
+
+  // Update in-memory cache
+  logicalThreadStates.set(logicalSessionId, merged);
+
+  // Persist to SQLite
+  try {
+    const db = getDatabase();
+    db.prepare(
+      `INSERT INTO logical_thread_states (session_id, account_id, chat_session_id, parent_id, instructions_sent, updated_at)
+       VALUES (?, ?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(session_id) DO UPDATE SET
+         account_id = excluded.account_id,
+         chat_session_id = excluded.chat_session_id,
+         parent_id = excluded.parent_id,
+         instructions_sent = excluded.instructions_sent,
+         updated_at = datetime('now')`,
+    ).run(
+      logicalSessionId,
+      entry.accountId,
+      entry.chatSessionId,
+      entry.parentId ?? null,
+      merged.instructionsSent ? 1 : 0,
+    );
+  } catch (err) {
+    logger.warn("[Qwen] Failed to persist logical thread to SQLite", {
+      sessionId: logicalSessionId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 export function updateLogicalThreadParent(
@@ -155,6 +243,15 @@ export function clearAllSessionsForAccount(accountId: string): void {
       removed++;
     }
   }
+
+  // Also clear from SQLite
+  try {
+    const db = getDatabase();
+    const result = db
+      .prepare("DELETE FROM logical_thread_states WHERE account_id = ?")
+      .run(accountId);
+    removed += result.changes;
+  } catch {}
 
   console.log(`[Qwen] Cleared ${removed} session(s) for account ${accountId}`);
 }
@@ -507,7 +604,7 @@ export async function createQwenStream(
   const model = modelId.replace("-no-thinking", "");
   const chatSessionId =
     options && "chatSessionId" in options
-      ? options.chatSessionId === null
+      ? options.chatSessionId === null || options.chatSessionId === ""
         ? await createQwenChatSession(headers, model)
         : options.chatSessionId
       : captured.chatSessionId;

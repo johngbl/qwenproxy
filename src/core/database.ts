@@ -111,6 +111,17 @@ function runMigrations(db: Database.Database): void {
     );
 
     CREATE INDEX IF NOT EXISTS idx_accounts_email ON accounts(email);
+
+    CREATE TABLE IF NOT EXISTS logical_thread_states (
+      session_id TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL,
+      chat_session_id TEXT NOT NULL,
+      parent_id TEXT,
+      instructions_sent INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_thread_updated ON logical_thread_states(updated_at);
   `);
 }
 

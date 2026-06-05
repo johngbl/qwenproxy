@@ -63,9 +63,9 @@ export async function buildFinalContext(
   const modelContextWindow = getModelContextWindow(modelId);
   const useThreadNative =
     !isInternalSummarizationRequest && config.context.mode === "thread-native";
-  const activePrompt = useThreadNative ? currentPrompt || prompt : prompt;
-  const estimatedTokens = estimateTokenCount(systemPrompt + activePrompt);
+  const isNewSession = !messages.some((m) => m.role === "assistant");
 
+  // Compute sessionId and existingThread before activePrompt
   const sessionId =
     !isInternalSummarizationRequest && (conversationKey || useThreadNative)
       ? deriveSessionId(
@@ -78,6 +78,12 @@ export async function buildFinalContext(
   const existingThread = useThreadNative
     ? getLogicalThreadState(sessionId)
     : null;
+
+  // Thread-native: send full history when Qwen has no context yet, delta only on follow-ups
+  const activePrompt = useThreadNative
+    ? (!existingThread ? prompt : currentPrompt) || prompt
+    : prompt;
+  const estimatedTokens = estimateTokenCount(systemPrompt + activePrompt);
   const isTitleGenerationRequest = detectTitleGenerationRequest(messages);
   const updateLogicalThread = !(isTitleGenerationRequest && !!existingThread);
   const shouldSendInstructions =
@@ -115,7 +121,6 @@ export async function buildFinalContext(
   }
 
   const isThinkingModel = enableThinking;
-  const isNewSession = !messages.some((m) => m.role === "assistant");
   const shouldResetUpstreamThread = useThreadNative
     ? false
     : isNewSession || topicAnalysis?.hasChanged === true;
