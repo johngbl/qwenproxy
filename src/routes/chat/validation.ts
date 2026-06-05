@@ -296,24 +296,38 @@ function contentLength(value: unknown): number {
 }
 
 function logIncomingChatRequest(c: Context, body: OpenAIRequest): void {
-  if (!config.logging.chatRequests) return;
-
   const messages = Array.isArray(body.messages) ? body.messages : [];
   const tools = Array.isArray((body as any).tools) ? (body as any).tools : [];
+  const requestId = c.req.header("x-request-id") || null;
+  const toolChoice = (body as any).tool_choice || null;
+
+  logger.info("[chat] request received", {
+    requestId,
+    model: body.model,
+    stream: body.stream ?? false,
+    conversationId: body.conversation_id || null,
+    sessionId: body.session_id || null,
+    messagesCount: messages.length,
+    toolsCount: tools.length,
+    toolChoice,
+  });
+
+  if (!config.logging.chatRequests) return;
+
   const last = messages[messages.length - 1];
   const firstUser = messages.find((msg) => msg.role === "user");
 
-  logger.info("[chat] incoming request", {
-    requestId: c.req.header("x-request-id") || null,
+  logger.debug("[chat] request details", {
+    requestId,
     userAgent: c.req.header("user-agent") || null,
     model: body.model,
     stream: body.stream ?? false,
-    conversation_id: body.conversation_id || null,
-    session_id: body.session_id || null,
+    conversationId: body.conversation_id || null,
+    sessionId: body.session_id || null,
     user: body.user || null,
     messagesCount: messages.length,
     toolsCount: tools.length,
-    toolChoice: (body as any).tool_choice || null,
+    toolChoice,
     roles: messages.map((msg) => msg.role),
     firstUserPreview: firstUser ? previewText(firstUser.content) : null,
     lastRole: last?.role || null,

@@ -128,6 +128,13 @@ const DEFAULT_SAMPLES = 10;
 const DEFAULT_TIMEOUT_MS = 120000;
 const DEFAULT_MAX_TOKENS = 32;
 const DEFAULT_TEMPERATURE = 0;
+const BENCH_RUN_ID = new Date().toISOString().replace(/[:.]/g, "-");
+let benchRequestSequence = 0;
+
+function nextBenchmarkConversationId(): string {
+  benchRequestSequence++;
+  return `bench-${BENCH_RUN_ID}-${benchRequestSequence}`;
+}
 
 function parseArg(name: string): string | undefined {
   const prefix = `--${name}=`;
@@ -404,6 +411,7 @@ function buildChatBody(
     stream,
     temperature: config.temperature,
     max_tokens: config.maxTokens,
+    conversation_id: nextBenchmarkConversationId(),
     stream_options: stream ? { include_usage: true } : undefined,
     messages: [
       {
@@ -891,6 +899,10 @@ async function run(): Promise<void> {
   const effectiveBaseUrl = serverTarget.baseUrl;
   let startedManagedServer = false;
 
+  // Keep benchmark samples isolated from background summarization noise.
+  // This must be set before importing modules that read core/config.ts.
+  process.env.CONTEXT_SUMMARIZATION_ENABLED = "false";
+
   const { loadAccounts } = await import("../core/accounts.ts");
   const configuredAccounts = loadAccounts().length;
   const runtimeConfig: BenchmarkConfig = {
@@ -912,6 +924,8 @@ async function run(): Promise<void> {
         timeoutMs: config.timeoutMs,
         maxTokens: config.maxTokens,
         temperature: config.temperature,
+        contextSummarization: "disabled",
+        isolatedConversations: true,
         apiKeyConfigured: !!config.apiKey,
       },
       null,

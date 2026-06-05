@@ -222,11 +222,7 @@ export async function runThreadContextSummary(
       sessionId,
       summaryId: summary.id,
       sequence: summary.sequence,
-      sourceTurnStart,
-      sourceTurnEnd,
       summaryTokens: summary.summaryTokens,
-      originalTokens: result.originalTokens,
-      compressionRatio: result.compressionRatio,
     });
 
     return summary;

@@ -40,7 +40,8 @@ function shouldRunSummary(sessionId: string, force: boolean): boolean {
   }
 
   const lastStarted = lastStartedAt.get(sessionId) ?? 0;
-  const cooldownMs = config.context.threadNative.summaryMinIntervalSeconds * 1000;
+  const cooldownMs =
+    config.context.threadNative.summaryMinIntervalSeconds * 1000;
   return force || Date.now() - lastStarted >= cooldownMs;
 }
 
@@ -78,7 +79,6 @@ export function enqueueThreadContextSummary(
   logger.info("[thread-context] summary queued", {
     sessionId,
     reason,
-    priority,
     queueDepth: queue.length,
   });
 
@@ -105,10 +105,9 @@ async function processSummaryQueue(): Promise<void> {
 
     void (async () => {
       try {
-        logger.info("[thread-context] summary job started", {
+        logger.info("[thread-context] summary started", {
           sessionId: job.sessionId,
           reason: job.reason,
-          waitMs: Date.now() - job.queuedAt,
         });
         await runThreadContextSummary(job.sessionId);
       } catch (error) {

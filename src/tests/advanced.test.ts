@@ -315,7 +315,7 @@ test("session-parent-tracking: sends only current delta using response message_i
   }
 });
 
-test("thread-native: sends system and tool instructions only on first turn", async () => {
+test("thread-native: resends system and tool instructions without replaying history", async () => {
   const capturedPayloads: any[] = [];
 
   const restore = setupFetchMock((url, init) => {
@@ -395,9 +395,11 @@ test("thread-native: sends system and tool instructions only on first turn", asy
     assert.strictEqual(capturedPayloads[1].chat_id, "qwen-chat-first-only");
     assert.ok(firstContent.includes("FIRST_ONLY_SYSTEM_MARKER"));
     assert.ok(firstContent.includes("first_only_tool_marker"));
-    assert.strictEqual(secondContent, "User: Turn 2\n\n");
-    assert.ok(!secondContent.includes("FIRST_ONLY_SYSTEM_MARKER"));
-    assert.ok(!secondContent.includes("first_only_tool_marker"));
+    assert.ok(secondContent.includes("FIRST_ONLY_SYSTEM_MARKER"));
+    assert.ok(secondContent.includes("first_only_tool_marker"));
+    assert.ok(secondContent.includes("User: Turn 2\n\n"));
+    assert.ok(!secondContent.includes("User: Turn 1"));
+    assert.ok(!secondContent.includes("Assistant: Response 1"));
     assert.strictEqual(capturedPayloads[1].parent_id, "qwen-first-only-1");
   } finally {
     restore();

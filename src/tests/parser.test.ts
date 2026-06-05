@@ -231,6 +231,17 @@ test("StreamingToolParser: preserves literal tool_call block when tool name is u
   assert.strictEqual(result.toolCalls.length, 0);
 });
 
+test("StreamingToolParser: drops recovered tool call with undeclared name", () => {
+  const parser = new StreamingToolParser(TOOLS);
+
+  const result = parser.feed(
+    'Lead <tool_call>name": "invented_tool", "arguments": {"path": "a.txt"}}</tool_call>',
+  );
+
+  assert.strictEqual(result.text, "Lead ");
+  assert.strictEqual(result.toolCalls.length, 0);
+});
+
 test("StreamingToolParser: accepts declared tool names from flat tool definitions", () => {
   const parser = new StreamingToolParser(FLAT_TOOLS as any);
 

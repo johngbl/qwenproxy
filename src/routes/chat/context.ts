@@ -92,8 +92,11 @@ export async function buildFinalContext(
   const isAuxiliaryRequest =
     isInternalSummarizationRequest || isTitleGenerationRequest;
   const updateLogicalThread = !isTitleGenerationRequest;
-  const shouldSendInstructions =
-    !useThreadNative || !existingThread?.instructionsSent;
+  // Always resend the current request's system/tool instructions. In
+  // thread-native mode, activePrompt is already limited to the current turn
+  // after the first upstream message, so this avoids replaying history while
+  // keeping the exact tool contract fresh on every request.
+  const shouldSendInstructions = true;
 
   const cache = getCache();
   const topicAnalysis =

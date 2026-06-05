@@ -177,18 +177,10 @@ export async function chatCompletions(c: Context) {
             await finalizeThreadContextRolloverSuccess(activeRolloverPlan);
           }
 
-          const queued = enqueueThreadContextSummary(
+          enqueueThreadContextSummary(
             savedSession.sessionId,
             "assistant_complete",
           );
-          if (queued && process.env.CHAT_REQUEST_LOG === "true") {
-            logger.info("[thread-context] summary queued after completion", {
-              sessionId: savedSession.sessionId,
-              status: savedSession.status,
-              estimatedThreadTokens: savedSession.estimatedThreadTokens,
-              estimatedRecentTokens: savedSession.estimatedRecentTokens,
-            });
-          }
         }
       : isInternalSummarizationRequest
         ? async (event: AssistantCompleteEvent) => {
