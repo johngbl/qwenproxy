@@ -43,9 +43,21 @@ interface SessionEntry {
   timestamp: number;
 }
 
+export interface LogicalThreadEntry {
+  accountId: string;
+  chatSessionId: string;
+  parentId: string | null;
+  instructionsSent: boolean;
+  timestamp: number;
+}
+
 const sessionStates: Map<string, SessionEntry> =
   (globalThis as any)._sessionStates || new Map();
 (globalThis as any)._sessionStates = sessionStates;
+
+const logicalThreadStates: Map<string, LogicalThreadEntry> =
+  (globalThis as any)._logicalThreadStates || new Map();
+(globalThis as any)._logicalThreadStates = logicalThreadStates;
 
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -56,6 +68,56 @@ function cleanupStaleSessions() {
       sessionStates.delete(key);
     }
   }
+  for (const [key, entry] of logicalThreadStates.entries()) {
+    if (now - entry.timestamp > SESSION_TTL_MS) {
+      logicalThreadStates.delete(key);
+    }
+  }
+}
+
+export function getLogicalThreadState(
+  logicalSessionId: string | null | undefined,
+): LogicalThreadEntry | null {
+  if (!logicalSessionId) return null;
+  const entry = logicalThreadStates.get(logicalSessionId);
+  if (!entry) return null;
+  if (Date.now() - entry.timestamp > SESSION_TTL_MS) {
+    logicalThreadStates.delete(logicalSessionId);
+    return null;
+  }
+  return entry;
+}
+
+export function updateLogicalThreadState(
+  logicalSessionId: string,
+  entry: Omit<LogicalThreadEntry, "timestamp" | "instructionsSent"> & {
+    instructionsSent?: boolean;
+  },
+): void {
+  if (!logicalSessionId || !entry.chatSessionId) return;
+  if (logicalThreadStates.size > 10000) cleanupStaleSessions();
+  const existing = logicalThreadStates.get(logicalSessionId);
+  logicalThreadStates.set(logicalSessionId, {
+    ...entry,
+    instructionsSent:
+      entry.instructionsSent ?? existing?.instructionsSent ?? false,
+    timestamp: Date.now(),
+  });
+}
+
+export function updateLogicalThreadParent(
+  logicalSessionId: string | null | undefined,
+  parentId: string | null,
+  accountId: string,
+  chatSessionId: string,
+): void {
+  if (!logicalSessionId || !chatSessionId) return;
+  updateLogicalThreadState(logicalSessionId, {
+    accountId,
+    chatSessionId,
+    parentId,
+    instructionsSent: true,
+  });
 }
 
 export function updateSessionParent(
@@ -83,6 +145,13 @@ export function clearAllSessionsForAccount(accountId: string): void {
   for (const [key, entry] of sessionStates.entries()) {
     if (entry.accountId === accountId) {
       sessionStates.delete(key);
+      removed++;
+    }
+  }
+
+  for (const [key, entry] of logicalThreadStates.entries()) {
+    if (entry.accountId === accountId) {
+      logicalThreadStates.delete(key);
       removed++;
     }
   }
@@ -340,6 +409,75 @@ export interface QwenFileEntry {
   [key: string]: any;
 }
 
+async function createQwenChatSession(
+  headers: Record<string, string>,
+  model: string,
+): Promise<string> {
+  if (process.env.TEST_MOCK_PLAYWRIGHT) {
+    return process.env.TEST_SESSION_ID || "mock-session";
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), config.timeouts.http);
+
+  try {
+    const response = await fetch(`${config.qwen.baseUrl}/api/v2/chats/new`, {
+      method: "POST",
+      headers: buildQwenRequestHeaders({
+        cookie: headers["cookie"],
+        userAgent: headers["user-agent"],
+        bxUa: headers["bx-ua"],
+        bxUmidtoken: headers["bx-umidtoken"],
+        bxV: headers["bx-v"],
+        extra: {
+          Referer: `${config.qwen.baseUrl}/c/new-chat`,
+          timezone: new Date().toString().split(" (")[0],
+          source: "web",
+          version: QWEN_WEB_VERSION,
+        },
+      }),
+      body: JSON.stringify({
+        title: "Nova Conversa",
+        models: [model],
+        chat_mode: "normal",
+        chat_type: "t2t",
+        timestamp: Date.now(),
+        project_id: "",
+      }),
+      signal: controller.signal,
+    });
+
+    const raw = await response.text();
+    if (!response.ok) {
+      throw new QwenUpstreamError(
+        `Qwen create chat failed: ${response.status} ${response.statusText} - ${raw.substring(0, 300)}`,
+        "CreateChatFailed",
+        response.status >= 500 ? 502 : response.status,
+      );
+    }
+
+    const json = raw ? JSON.parse(raw) : null;
+    const chatId =
+      json?.chat_id ||
+      json?.id ||
+      json?.data?.chat_id ||
+      json?.data?.id ||
+      json?.data?.chat?.id;
+
+    if (!chatId || typeof chatId !== "string") {
+      throw new QwenUpstreamError(
+        `Qwen create chat returned unexpected payload: ${raw.substring(0, 300)}`,
+        "CreateChatInvalidResponse",
+        502,
+      );
+    }
+
+    return chatId;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 export async function createQwenStream(
   prompt: string,
   enableThinking: boolean,
@@ -347,6 +485,10 @@ export async function createQwenStream(
   forcedParentId?: string | null,
   accountId?: string,
   files?: QwenFileEntry[],
+  options?: {
+    chatSessionId?: string | null;
+    forceNewChat?: boolean;
+  },
 ): Promise<{
   stream: ReadableStream;
   headers: Record<string, string>;
@@ -357,10 +499,18 @@ export async function createQwenStream(
   // A new logical chat session should reuse the warmed header cache when available.
   // Header recapture is much more expensive and should be reserved for real refresh/login cases,
   // not for ordinary first prompts that simply need parent_id reset.
-  const { headers, chatSessionId, parentMessageId } = await getQwenHeaders(
-    false,
+  const captured = await getQwenHeaders(
+    options?.forceNewChat === true,
     accountId,
   );
+  const { headers, parentMessageId } = captured;
+  const model = modelId.replace("-no-thinking", "");
+  const chatSessionId =
+    options && "chatSessionId" in options
+      ? options.chatSessionId === null
+        ? await createQwenChatSession(headers, model)
+        : options.chatSessionId
+      : captured.chatSessionId;
 
   let actualParentId: string | null = parentMessageId;
 
@@ -378,7 +528,6 @@ export async function createQwenStream(
 
   const timestamp = Math.floor(Date.now() / 1000);
   const fid = uuidv4();
-  const model = modelId.replace("-no-thinking", "");
 
   const payload: QwenPayload = {
     stream: true,
@@ -548,7 +697,7 @@ export async function createQwenStream(
   return {
     stream: response.body,
     headers,
-    uiSessionId: chatSessionId,
+    uiSessionId: chatSessionId || "",
     controller,
     accountId: accountId ?? "global",
   };

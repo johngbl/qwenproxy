@@ -10,13 +10,17 @@
 import { Context } from "hono";
 import { stream as honoStream } from "hono/streaming";
 import { buildQwenRequestHeaders } from "../../services/qwen-headers.ts";
-import { updateSessionParent } from "../../services/qwen.ts";
+import {
+  updateLogicalThreadParent,
+  updateSessionParent,
+} from "../../services/qwen.ts";
 import type { OpenAIRequest } from "../../utils/types.ts";
 import { StreamingToolParser } from "../../tools/parser.ts";
 import { StreamingReasoningTagSanitizer } from "../../utils/reasoning-tags.ts";
 import {
   getStream,
   removeStream,
+  updateStreamSessionId,
   updateStreamTargetResponseId,
 } from "../../core/stream-registry.ts";
 import { metrics } from "../../core/metrics.js";
@@ -34,12 +38,39 @@ import {
   buildUsage,
 } from "./helpers.ts";
 
+function firstString(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return null;
+}
+
+function extractChatSessionId(chunk: any): string | null {
+  const created = chunk?.["response.created"];
+  return firstString(
+    chunk?.chat_id,
+    chunk?.chatId,
+    chunk?.session_id,
+    chunk?.conversation_id,
+    chunk?.conversationId,
+    created?.chat_id,
+    created?.chatId,
+    created?.session_id,
+    created?.conversation_id,
+    created?.conversationId,
+    created?.chat?.id,
+    created?.response?.chat_id,
+    created?.response?.chat?.id,
+  );
+}
+
 export interface StreamProcessingParams {
   c: Context;
   completionId: string;
   stream: ReadableStream;
   uiSessionId: string;
   activeAccountId: string;
+  logicalSessionId: string | null;
   body: OpenAIRequest & { stream_options?: { include_usage?: boolean } };
   finalPrompt: string;
   shouldParseToolCalls: boolean;
@@ -57,6 +88,7 @@ export async function processNonStreamingResponse(
     stream,
     uiSessionId,
     activeAccountId,
+    logicalSessionId,
     body,
     finalPrompt,
     shouldParseToolCalls,
@@ -72,6 +104,7 @@ export async function processNonStreamingResponse(
     let lastRawContent = "";
     let finalContent = "";
     let targetResponseId: string | null = null;
+    let currentUiSessionId = uiSessionId;
     const toolParser = shouldParseToolCalls
       ? new StreamingToolParser(declaredTools)
       : null;
@@ -86,6 +119,23 @@ export async function processNonStreamingResponse(
     const usageAccumulator = createUsageAccumulator(
       Math.ceil(finalPrompt.length / 3.5),
     );
+
+    const rememberSession = (sessionId: string | null) => {
+      if (!sessionId || sessionId === currentUiSessionId) return;
+      currentUiSessionId = sessionId;
+      updateStreamSessionId(completionId, sessionId);
+    };
+
+    const rememberParent = (parentId: string) => {
+      if (!currentUiSessionId) return;
+      updateSessionParent(currentUiSessionId, parentId, activeAccountId);
+      updateLogicalThreadParent(
+        logicalSessionId,
+        parentId,
+        activeAccountId,
+        currentUiSessionId,
+      );
+    };
 
     const consumeAnswerText = (textChunk: string) => {
       if (!toolParser) {
@@ -170,6 +220,7 @@ export async function processNonStreamingResponse(
 
         try {
           const chunk = JSON.parse(dataStr);
+          rememberSession(extractChatSessionId(chunk));
 
           if (
             chunk["response.created"] &&
@@ -178,18 +229,10 @@ export async function processNonStreamingResponse(
             if (!targetResponseId) {
               targetResponseId = chunk["response.created"].response_id;
             }
-            updateSessionParent(
-              uiSessionId,
-              chunk["response.created"].response_id,
-              activeAccountId,
-            );
+            rememberParent(chunk["response.created"].response_id);
           } else if (chunk.response_id && !targetResponseId) {
             targetResponseId = chunk.response_id;
-            updateSessionParent(
-              uiSessionId,
-              chunk.response_id,
-              activeAccountId,
-            );
+            rememberParent(chunk.response_id);
           }
 
           applyUpstreamUsage(usageAccumulator, chunk.usage);
@@ -381,6 +424,7 @@ export async function processStreamingResponse(
     stream,
     uiSessionId,
     activeAccountId,
+    logicalSessionId,
     body,
     finalPrompt,
     shouldParseToolCalls,
@@ -428,6 +472,7 @@ export async function processStreamingResponse(
   return honoStream(c, async (streamWriter: any) => {
     let heartbeatTimeout: NodeJS.Timeout | undefined;
     let clientDisconnected = false;
+    let currentUiSessionId = uiSessionId;
 
     const abortHandler = async () => {
       if (clientDisconnected) return;
@@ -440,20 +485,20 @@ export async function processStreamingResponse(
       if (isToolcallDebugEnabled()) {
         logger.debug("[chat] stream: client disconnected", {
           completionId,
-          uiSessionId,
+          uiSessionId: currentUiSessionId,
         });
       }
 
       try {
         const streamData = getStream(completionId);
-        if (streamData && uiSessionId) {
+        if (streamData && currentUiSessionId) {
           const targetResponseId = streamData.targetResponseId;
           if (targetResponseId) {
             console.log(
-              `[Chat] Calling Qwen stop for session=${uiSessionId}, response=${targetResponseId}`,
+              `[Chat] Calling Qwen stop for session=${currentUiSessionId}, response=${targetResponseId}`,
             );
             await fetch(
-              `https://chat.qwen.ai/api/v2/chat/completions/stop?chat_id=${uiSessionId}`,
+              `https://chat.qwen.ai/api/v2/chat/completions/stop?chat_id=${currentUiSessionId}`,
               {
                 method: "POST",
                 headers: buildQwenRequestHeaders({
@@ -462,10 +507,10 @@ export async function processStreamingResponse(
                   bxUa: streamData.headers["bx-ua"],
                   bxUmidtoken: streamData.headers["bx-umidtoken"],
                   bxV: streamData.headers["bx-v"],
-                  chatSessionId: uiSessionId,
+                  chatSessionId: currentUiSessionId,
                 }),
                 body: JSON.stringify({
-                  chat_id: uiSessionId,
+                  chat_id: currentUiSessionId,
                   response_id: targetResponseId,
                 }),
               },
@@ -567,6 +612,22 @@ export async function processStreamingResponse(
       const usageAccumulator = createUsageAccumulator(
         Math.ceil(finalPrompt.length / 3.5),
       );
+      const rememberSession = (sessionId: string | null) => {
+        if (!sessionId || sessionId === currentUiSessionId) return;
+        currentUiSessionId = sessionId;
+        updateStreamSessionId(completionId, sessionId);
+      };
+
+      const rememberParent = (parentId: string) => {
+        if (!currentUiSessionId) return;
+        updateSessionParent(currentUiSessionId, parentId, activeAccountId);
+        updateLogicalThreadParent(
+          logicalSessionId,
+          parentId,
+          activeAccountId,
+          currentUiSessionId,
+        );
+      };
 
       const emitAnswerText = async (textChunk: string) => {
         if (!toolParser) {
@@ -774,6 +835,7 @@ export async function processStreamingResponse(
 
           try {
             const chunk = JSON.parse(dataStr);
+            rememberSession(extractChatSessionId(chunk));
 
             if (
               chunk["response.created"] &&
@@ -785,21 +847,13 @@ export async function processStreamingResponse(
                   updateStreamTargetResponseId(completionId, targetResponseId);
                 }
               }
-              updateSessionParent(
-                uiSessionId,
-                chunk["response.created"].response_id,
-                activeAccountId,
-              );
+              rememberParent(chunk["response.created"].response_id);
             } else if (chunk.response_id && !targetResponseId) {
               targetResponseId = chunk.response_id;
               if (targetResponseId) {
                 updateStreamTargetResponseId(completionId, targetResponseId);
               }
-              updateSessionParent(
-                uiSessionId,
-                chunk.response_id,
-                activeAccountId,
-              );
+              rememberParent(chunk.response_id);
             }
 
             applyUpstreamUsage(usageAccumulator, chunk.usage);

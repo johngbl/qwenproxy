@@ -28,6 +28,12 @@ function setupFetchMock(
           { status: 200 },
         );
       }
+      if (urlStr.includes("/api/v2/chats/new")) {
+        return new Response(JSON.stringify({ chat_id: "mock-created-chat" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
       return handler(urlStr, init);
     }
     return originalFetch(input, init);
@@ -79,25 +85,24 @@ test("multiturn-thinking-tools: maintains reasoning_content history", async () =
     const res = await app.fetch(req);
     assert.strictEqual(res.status, 200);
 
-    // The proxy transforms messages into a Qwen-compatible prompt.
-    // Verify the prompt (in the request body) contains context from all messages.
+    // In thread-native mode, previous user/assistant/tool-call history stays in
+    // Qwen's parent chain. The new prompt only carries the current tool result.
     assert.ok(
-      capturedBody.includes("hello") || capturedBody.includes("User: hello"),
-      "Must include user message",
+      !capturedBody.includes("User: hello"),
+      "Must not replay previous user message",
     );
     assert.ok(
-      capturedBody.includes("thinking about hello"),
-      "Must include reasoning content",
+      !capturedBody.includes("thinking about hello"),
+      "Must not replay previous reasoning content",
     );
     assert.ok(
-      capturedBody.includes("tool_call") ||
-        capturedBody.includes('"name": "test"'),
-      "Must include tool call info",
+      !capturedBody.includes("tool_call"),
+      "Must not replay previous assistant tool call",
     );
     assert.ok(
       capturedBody.includes("Tool Response (test): success") ||
         capturedBody.includes("success"),
-      "Must include tool response",
+      "Must include current tool response",
     );
   } finally {
     restore();
@@ -221,21 +226,24 @@ test("caching-streaming and cache-control: returns prompt_tokens_details", async
     assert.strictEqual(usageBlock.total_tokens, 33);
     assert.strictEqual(usageBlock.prompt_tokens_details.cached_tokens, 2);
     assert.strictEqual(usageBlock.prompt_tokens_details.text_tokens, 23);
-    assert.strictEqual(usageBlock.completion_tokens_details.reasoning_tokens, 9);
+    assert.strictEqual(
+      usageBlock.completion_tokens_details.reasoning_tokens,
+      9,
+    );
     assert.strictEqual(usageBlock.completion_tokens_details.text_tokens, 10);
   } finally {
     restore();
   }
 });
 
-test("session-parent-tracking: appends messages using response message_id as parent", async () => {
+test("session-parent-tracking: sends only current delta using response message_id as parent", async () => {
   let capturedPayloads: any[] = [];
 
   const restore = setupFetchMock((url, init) => {
     const bodyObj = JSON.parse((init?.body as string) || "{}");
     capturedPayloads.push(bodyObj);
 
-    // Simulate Qwen returning a response_id
+    // Simulate Qwen returning a response_id and the chat_id created for this agent chat.
     const mockMessageId =
       capturedPayloads.length === 1 ? "qwen-1001" : "qwen-1002";
 
@@ -243,7 +251,7 @@ test("session-parent-tracking: appends messages using response message_id as par
       start(c) {
         c.enqueue(
           new TextEncoder().encode(
-            `data: {"response.created":{"response_id":"${mockMessageId}"}}\n\n`,
+            `data: {"response.created":{"chat_id":"qwen-chat-parent-tracking","response_id":"${mockMessageId}"}}\n\n`,
           ),
         );
         c.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
@@ -299,15 +307,104 @@ test("session-parent-tracking: appends messages using response message_id as par
     );
     assert.strictEqual(
       capturedPayloads[1].messages[0].content,
-      "User: Turn 1\n\nAssistant: Response 1\n\nUser: Turn 2\n\n",
-      "Should send the full OpenAI message history",
+      "User: Turn 2\n\n",
+      "Should send only the current user delta in thread-native mode",
     );
   } finally {
     restore();
   }
 });
 
-test("topic-change reset: same conversation_id starts a fresh upstream thread after a topic shift", async () => {
+test("thread-native: sends system and tool instructions only on first turn", async () => {
+  const capturedPayloads: any[] = [];
+
+  const restore = setupFetchMock((url, init) => {
+    const bodyObj = JSON.parse((init?.body as string) || "{}");
+    capturedPayloads.push(bodyObj);
+
+    const mockMessageId =
+      capturedPayloads.length === 1 ? "qwen-first-only-1" : "qwen-first-only-2";
+    const stream = new ReadableStream({
+      start(c) {
+        c.enqueue(
+          new TextEncoder().encode(
+            `data: {"response.created":{"chat_id":"qwen-chat-first-only","response_id":"${mockMessageId}"}}\n\n`,
+          ),
+        );
+        c.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
+        c.close();
+      },
+    });
+    return new Response(stream, { status: 200 });
+  });
+
+  try {
+    const common = {
+      model: "qwen3.6-plus",
+      conversation_id: "conv-first-instructions-only",
+      tools: [
+        {
+          type: "function",
+          function: {
+            name: "first_only_tool_marker",
+            description: "marker tool",
+            parameters: { type: "object", properties: {} },
+          },
+        },
+      ],
+    };
+
+    const req1 = new Request("http://localhost/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...common,
+        messages: [
+          { role: "system", content: "FIRST_ONLY_SYSTEM_MARKER" },
+          { role: "user", content: "Turn 1" },
+        ],
+      }),
+    });
+    const res1 = await app.fetch(req1);
+    assert.strictEqual(res1.status, 200);
+    await res1.text();
+
+    const req2 = new Request("http://localhost/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...common,
+        messages: [
+          { role: "system", content: "FIRST_ONLY_SYSTEM_MARKER" },
+          { role: "user", content: "Turn 1" },
+          { role: "assistant", content: "Response 1" },
+          { role: "user", content: "Turn 2" },
+        ],
+      }),
+    });
+    const res2 = await app.fetch(req2);
+    assert.strictEqual(res2.status, 200);
+    await res2.text();
+
+    assert.strictEqual(capturedPayloads.length, 2);
+    const firstContent = capturedPayloads[0].messages[0].content;
+    const secondContent = capturedPayloads[1].messages[0].content;
+
+    assert.equal(typeof capturedPayloads[0].chat_id, "string");
+    assert.ok(capturedPayloads[0].chat_id.length > 0);
+    assert.strictEqual(capturedPayloads[1].chat_id, "qwen-chat-first-only");
+    assert.ok(firstContent.includes("FIRST_ONLY_SYSTEM_MARKER"));
+    assert.ok(firstContent.includes("first_only_tool_marker"));
+    assert.strictEqual(secondContent, "User: Turn 2\n\n");
+    assert.ok(!secondContent.includes("FIRST_ONLY_SYSTEM_MARKER"));
+    assert.ok(!secondContent.includes("first_only_tool_marker"));
+    assert.strictEqual(capturedPayloads[1].parent_id, "qwen-first-only-1");
+  } finally {
+    restore();
+  }
+});
+
+test("topic-change: same agent conversation keeps the upstream parent chain", async () => {
   let capturedPayloads: any[] = [];
   const cache = new MemoryCache({ prefix: "topic-reset-test:" });
   await cache.connect();
@@ -324,7 +421,7 @@ test("topic-change reset: same conversation_id starts a fresh upstream thread af
       start(c) {
         c.enqueue(
           new TextEncoder().encode(
-            `data: {"response.created":{"response_id":"${mockMessageId}"}}\n\n`,
+            `data: {"response.created":{"chat_id":"qwen-chat-topic-reset","response_id":"${mockMessageId}"}}\n\n`,
           ),
         );
         c.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
@@ -376,8 +473,8 @@ test("topic-change reset: same conversation_id starts a fresh upstream thread af
     assert.strictEqual(capturedPayloads[0].parent_id, null);
     assert.strictEqual(
       capturedPayloads[1].parent_id,
-      null,
-      "Topic change should reset the upstream parent chain for the same conversation_id",
+      "qwen-topic-1",
+      "Topic changes inside the same agent chat should keep the Qwen thread-native parent chain",
     );
   } finally {
     restore();

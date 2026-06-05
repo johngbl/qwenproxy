@@ -203,7 +203,8 @@ Comandos úteis:
 |---|---|---|
 | `TOPIC_DETECTION_ENABLED` | `true` | Liga a detecção de mudança de tópico. |
 | `TOPIC_DETECTION_CONFIDENCE` | `0.7` | Limiar da confiança de mudança de tópico. Quanto maior, mais conservador. |
-| `CONTEXT_SUMMARIZATION_ENABLED` | `true` | Liga a sumarização de mensagens antigas quando o contexto cresce. |
+| `CONTEXT_MODE` | `thread-native` | `thread-native` reutiliza a thread do Qwen e envia só a mensagem/delta atual; `full-history` reenvia o histórico OpenAI completo. |
+| `CONTEXT_SUMMARIZATION_ENABLED` | `true` | Liga a sumarização de mensagens antigas quando o contexto cresce no modo `full-history`. |
 | `CONTEXT_SUMMARIZATION_MODEL` | `qwen3.5-flash` | Modelo usado na auto-sumarização. |
 | `CONTEXT_SUMMARIZATION_TIMEOUT` | `15000` | Timeout da chamada interna de sumarização, em ms. |
 | `CONTEXT_MIN_MESSAGES_TO_KEEP` | `4` | Quantidade mínima de mensagens recentes preservadas integralmente antes de resumir o histórico mais antigo. |
@@ -242,9 +243,11 @@ Essa estimativa é boa o suficiente para operar, mas pode divergir em casos com 
 
 ### Quando a sumarização entra em ação
 
-Quando habilitada, a sumarização começa a ser considerada em torno de **90% da janela de contexto do modelo**.
+No modo padrão `CONTEXT_MODE=thread-native`, o proxy não reenvia o histórico completo: ele reutiliza `chat_id`/`parent_id` do Qwen para a conversa do agente. Ao trocar de chat na ferramenta, ele reaproveita os headers autenticados em cache e cria uma nova sessão Qwen via `POST /api/v2/chats/new`, sem recapturar headers via Playwright. O system prompt e as instruções de tools são enviados apenas no primeiro turno daquele chat lógico; nos turnos seguintes, o proxy envia só a mensagem/delta atual.
 
-Fluxo resumido:
+No modo `CONTEXT_MODE=full-history`, quando habilitada, a sumarização começa a ser considerada em torno de **90% da janela de contexto do modelo**.
+
+Fluxo resumido do `full-history`:
 
 1. o proxy estima o tamanho do prompt;
 2. se passar de ~`90%` do contexto do modelo, ativa o truncamento inteligente;
@@ -257,11 +260,9 @@ A sumarização é feita por uma chamada interna ao próprio endpoint `/v1/chat/
 
 A detecção de mudança de tópico só é útil quando o cliente envia **`conversation_id`** ou **`session_id`**. Isso evita poluição entre conversas diferentes.
 
-Quando a mudança é forte o bastante, a branch atual:
+No modo `full-history`, quando a mudança é forte o bastante, a branch atual pode zerar a cadeia de `parent_id` upstream.
 
-- marca a troca de tópico,
-- zera a cadeia de `parent_id` upstream para aquela conversa,
-- e começa um novo fio lógico no Qwen sem misturar contexto antigo.
+No modo padrão `thread-native`, mudança de tópico **não** abre um novo chat no Qwen: a thread só muda quando o cliente/agente usa outro `conversation_id`/`session_id` ou quando a sessão implícita muda.
 
 Ela também entende frases explícitas como:
 

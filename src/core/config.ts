@@ -11,6 +11,7 @@ const envSchema = z.object({
       "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     ),
   LOG_CONSOLE: z.string().default("false"),
+  CHAT_REQUEST_LOG: z.string().default("false"),
   NAVIGATION_TIMEOUT: z.string().default("30000"),
   PAGE_TIMEOUT: z.string().default("15000"),
   HTTP_TIMEOUT: z.string().default("10000"),
@@ -26,6 +27,9 @@ const envSchema = z.object({
   CACHE_COMPRESSION_LEVEL: z.string().default("6"),
   TOPIC_DETECTION_ENABLED: z.string().default("true"),
   TOPIC_DETECTION_CONFIDENCE: z.string().default("0.7"),
+  CONTEXT_MODE: z
+    .enum(["thread-native", "full-history"])
+    .default("thread-native"),
   CONTEXT_SUMMARIZATION_ENABLED: z.string().default("true"),
   CONTEXT_SUMMARIZATION_MODEL: z.string().default("qwen3.5-flash"),
   CONTEXT_SUMMARIZATION_TIMEOUT: z.string().default("15000"),
@@ -52,6 +56,9 @@ export const config = {
   server: {
     port: parseInt(env.PORT),
     host: env.HOST,
+  },
+  logging: {
+    chatRequests: env.CHAT_REQUEST_LOG === "true",
   },
   browser: {
     headless: env.HEADLESS !== "false",
@@ -97,6 +104,7 @@ export const config = {
     confidence: parseFloat(env.TOPIC_DETECTION_CONFIDENCE),
   },
   context: {
+    mode: env.CONTEXT_MODE,
     summarization: {
       enabled: env.CONTEXT_SUMMARIZATION_ENABLED !== "false",
       model: env.CONTEXT_SUMMARIZATION_MODEL,

@@ -8,6 +8,7 @@ import { Context } from "hono";
 import { OpenAIRequest, Message } from "../../utils/types.ts";
 import { QwenFileEntry, processImagesForQwen } from "../upload.ts";
 import { logger, isToolcallDebugEnabled } from "../../core/logger.js";
+import { config } from "../../core/config.ts";
 import { getBasicHeaders } from "../../services/playwright.ts";
 import { buildToolInstructions } from "../../tools/instructions.ts";
 
@@ -22,7 +23,9 @@ export interface ParsedRequest {
   conversationKey: string | null;
   systemPrompt: string;
   prompt: string;
+  currentPrompt: string;
   allFiles: QwenFileEntry[];
+  currentFiles: QwenFileEntry[];
   shouldParseToolCalls: boolean;
   modelId: string;
   enableThinking: boolean;
@@ -30,6 +33,7 @@ export interface ParsedRequest {
 
 export async function parseRequestBody(c: Context): Promise<ParsedRequest> {
   const body: OpenAIRequest = await c.req.json();
+  logIncomingChatRequest(c, body);
   const isStream = body.stream ?? false;
   const isInternalSummarizationRequest =
     c.req.header("X-Internal-Summarization") === "true";
@@ -44,13 +48,19 @@ export async function parseRequestBody(c: Context): Promise<ParsedRequest> {
   const messages = body.messages || [];
   let uploadHeaders: Record<string, string> | null = null;
 
-  const { systemPromptParts, promptParts, allFiles } =
-    await buildPromptFromMessages(messages, uploadHeaders);
+  const {
+    systemPromptParts,
+    promptParts,
+    currentPromptParts,
+    allFiles,
+    currentFiles,
+  } = await buildPromptFromMessages(messages, uploadHeaders);
 
   const shouldParseToolCalls = injectToolInstructions(systemPromptParts, body);
 
   const systemPrompt = systemPromptParts.join("");
   const prompt = promptParts.join("");
+  const currentPrompt = currentPromptParts.join("");
 
   const modelId = body.model.replace("-no-thinking", "");
   const enableThinking = !body.model.endsWith("-no-thinking");
@@ -62,7 +72,9 @@ export async function parseRequestBody(c: Context): Promise<ParsedRequest> {
     conversationKey,
     systemPrompt,
     prompt,
+    currentPrompt,
     allFiles,
+    currentFiles,
     shouldParseToolCalls,
     modelId,
     enableThinking,
@@ -75,12 +87,17 @@ async function buildPromptFromMessages(
 ): Promise<{
   systemPromptParts: string[];
   promptParts: string[];
+  currentPromptParts: string[];
   allFiles: QwenFileEntry[];
+  currentFiles: QwenFileEntry[];
 }> {
   const promptParts: string[] = [];
+  const currentPromptParts: string[] = [];
   const systemPromptParts: string[] = [];
   const toolCallNamesById = new Map<string, string>();
   const allFiles: QwenFileEntry[] = [];
+  const currentFiles: QwenFileEntry[] = [];
+  const currentStartIndex = getCurrentPromptStartIndex(messages);
 
   // Pre-build tool_call_id -> name mapping in O(n)
   for (const msg of messages) {
@@ -129,6 +146,7 @@ async function buildPromptFromMessages(
           );
           contentStr = text;
           allFiles.push(...files);
+          if (i >= currentStartIndex) currentFiles.push(...files);
         } catch (err: unknown) {
           const errMsg = err instanceof Error ? err.message : "Unknown error";
           console.error("[Chat] Failed to process images:", errMsg);
@@ -152,7 +170,9 @@ async function buildPromptFromMessages(
     if (msg.role === "system") {
       systemPromptParts.push((contentStr || "") + "\n\n");
     } else if (msg.role === "user") {
-      promptParts.push(`User: ${contentStr || ""}\n\n`);
+      const segment = `User: ${contentStr || ""}\n\n`;
+      promptParts.push(segment);
+      if (i >= currentStartIndex) currentPromptParts.push(segment);
     } else if (msg.role === "assistant") {
       const assistantContentParts: string[] = [];
       const reasoning = (msg as any).reasoning_content;
@@ -214,7 +234,9 @@ async function buildPromptFromMessages(
         }
       }
       const assistantContent = assistantContentParts.join("");
-      promptParts.push(`Assistant: ${assistantContent.trim()}\n\n`);
+      const segment = `Assistant: ${assistantContent.trim()}\n\n`;
+      promptParts.push(segment);
+      if (i >= currentStartIndex) currentPromptParts.push(segment);
     } else if (msg.role === "tool" || msg.role === "function") {
       let toolName =
         msg.name ||
@@ -230,13 +252,109 @@ async function buildPromptFromMessages(
           contentPreview: contentStr.substring(0, 200),
         });
       }
-      promptParts.push(
-        `Tool Response (${toolName || "tool"}): ${contentStr || ""}\n\n`,
-      );
+      const segment = `Tool Response (${toolName || "tool"}): ${contentStr || ""}\n\n`;
+      promptParts.push(segment);
+      if (i >= currentStartIndex) currentPromptParts.push(segment);
     }
   }
 
-  return { systemPromptParts, promptParts, allFiles };
+  return {
+    systemPromptParts,
+    promptParts,
+    currentPromptParts,
+    allFiles,
+    currentFiles,
+  };
+}
+
+function previewText(value: unknown, max = 220): string {
+  let text = "";
+  if (typeof value === "string") {
+    text = value;
+  } else if (Array.isArray(value)) {
+    text = value
+      .map((part: any) => {
+        if (part?.type === "text") return part.text || "";
+        if (part?.type) return `[${part.type}]`;
+        return JSON.stringify(part);
+      })
+      .join(" ");
+  } else if (value !== null && value !== undefined) {
+    text = JSON.stringify(value);
+  }
+
+  text = text.replace(/\s+/g, " ").trim();
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
+function contentLength(value: unknown): number {
+  if (typeof value === "string") return value.length;
+  if (Array.isArray(value)) return value.length;
+  if (value !== null && value !== undefined)
+    return JSON.stringify(value).length;
+  return 0;
+}
+
+function logIncomingChatRequest(c: Context, body: OpenAIRequest): void {
+  if (!config.logging.chatRequests) return;
+
+  const messages = Array.isArray(body.messages) ? body.messages : [];
+  const tools = Array.isArray((body as any).tools) ? (body as any).tools : [];
+  const last = messages[messages.length - 1];
+  const firstUser = messages.find((msg) => msg.role === "user");
+
+  logger.info("[chat] incoming request", {
+    requestId: c.req.header("x-request-id") || null,
+    userAgent: c.req.header("user-agent") || null,
+    model: body.model,
+    stream: body.stream ?? false,
+    conversation_id: body.conversation_id || null,
+    session_id: body.session_id || null,
+    user: body.user || null,
+    messagesCount: messages.length,
+    toolsCount: tools.length,
+    toolChoice: (body as any).tool_choice || null,
+    roles: messages.map((msg) => msg.role),
+    firstUserPreview: firstUser ? previewText(firstUser.content) : null,
+    lastRole: last?.role || null,
+    lastPreview: last ? previewText(last.content) : null,
+    messageShape: messages.map((msg, index) => ({
+      index,
+      role: msg.role,
+      contentType: Array.isArray(msg.content) ? "array" : typeof msg.content,
+      contentLength: contentLength(msg.content),
+      hasToolCalls: Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0,
+      toolCallCount: Array.isArray(msg.tool_calls) ? msg.tool_calls.length : 0,
+      toolCallId: msg.tool_call_id || null,
+      name: msg.name || null,
+      preview: previewText(msg.content, 140),
+    })),
+  });
+}
+
+function getCurrentPromptStartIndex(messages: Message[]): number {
+  if (messages.length === 0) return 0;
+
+  let last = messages.length - 1;
+  while (last >= 0 && messages[last].role === "system") last--;
+  if (last < 0) return messages.length;
+
+  const lastRole = messages[last].role;
+  if (lastRole === "user") return last;
+
+  if (lastRole === "tool" || lastRole === "function") {
+    let firstTrailingTool = last;
+    while (
+      firstTrailingTool - 1 >= 0 &&
+      (messages[firstTrailingTool - 1].role === "tool" ||
+        messages[firstTrailingTool - 1].role === "function")
+    ) {
+      firstTrailingTool--;
+    }
+    return firstTrailingTool;
+  }
+
+  return last;
 }
 
 function injectToolInstructions(

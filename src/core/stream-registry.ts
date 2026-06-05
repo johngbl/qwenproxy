@@ -72,3 +72,10 @@ export function updateStreamTargetResponseId(
     entry.targetResponseId = targetResponseId;
   }
 }
+
+export function updateStreamSessionId(key: string, uiSessionId: string): void {
+  const entry = activeStreams.get(key);
+  if (entry) {
+    entry.uiSessionId = uiSessionId;
+  }
+}

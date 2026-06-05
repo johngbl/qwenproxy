@@ -559,7 +559,8 @@ async function _getQwenHeadersInternal(
       throw new Error(`Playwright not initialized for account: ${cacheKey}`);
     }
 
-    const currentUrl = page.url();
+    const capturePage = page;
+    const currentUrl = capturePage.url();
     const isOnQwen = currentUrl.includes("chat.qwen.ai");
     const isOnSpecificChat = isOnQwen && /\/c\//.test(currentUrl);
     const hasCachedHeaders =
@@ -639,7 +640,9 @@ async function _getQwenHeadersInternal(
     });
 
     return await new Promise((resolve, reject) => {
-      const routePattern = "**/api/v2/chat/completions*";
+      const completionRoutePattern = "**/api/v2/chat/completions*";
+      const newChatRoutePattern = "**/api/v2/chats/new*";
+      const captureNewChatHeaders = config.context.mode === "thread-native";
       let requestIntercepted = false;
       let captureMethod: "direct-click" | "enter-fallback" = "direct-click";
       let resolveRequestIntercepted!: () => void;
@@ -683,7 +686,7 @@ async function _getQwenHeadersInternal(
             err.message,
           );
         }
-        await page.unroute(routePattern).catch(() => {});
+        await unrouteCaptureRoutes();
         cache.refreshInProgress = false;
         reject(new Error(`Timeout waiting for Qwen headers for ${cacheKey}`));
       }, 60000);
@@ -767,12 +770,24 @@ async function _getQwenHeadersInternal(
         return false;
       };
 
+      async function unrouteCaptureRoutes(): Promise<void> {
+        await capturePage
+          .unroute(completionRoutePattern, routeHandler)
+          .catch(() => {});
+        if (captureNewChatHeaders) {
+          await capturePage
+            .unroute(newChatRoutePattern, routeHandler)
+            .catch(() => {});
+        }
+      }
+
       const routeHandler = async (route: any, request: any) => {
         requestIntercepted = true;
         resolveRequestIntercepted();
         clearTimeout(timeout);
 
         const reqHeaders = request.headers();
+        const isNewChatRequest = request.url().includes("/api/v2/chats/new");
         let uiSessionId = "";
         let uiParentMessageId: string | null = null;
 
@@ -827,7 +842,7 @@ async function _getQwenHeadersInternal(
                     `[Playwright] Re-login successful for ${cacheKey}, retrying...`,
                   );
                   await route.abort("aborted");
-                  await page.unroute(routePattern, routeHandler);
+                  await unrouteCaptureRoutes();
                   resolve(await getQwenHeaders(true, accountId, true));
                   return;
                 }
@@ -839,7 +854,11 @@ async function _getQwenHeadersInternal(
             `[Playwright] Failed to get headers for ${cacheKey}. Delete ${getProfilePath(accountId || "default")} and restart.`,
           );
           cache.refreshInProgress = false;
-          await route.continue();
+          if (isNewChatRequest && captureNewChatHeaders) {
+            await route.abort("aborted");
+          } else {
+            await route.continue();
+          }
           reject(
             new Error(
               `Failed to get headers for ${cacheKey}: missing critical headers and re-login failed`,
@@ -849,7 +868,9 @@ async function _getQwenHeadersInternal(
         }
 
         console.log(
-          `[Playwright] Successfully intercepted headers for ${cacheKey} via ${captureMethod}.`,
+          `[Playwright] Successfully intercepted headers for ${cacheKey} via ${captureMethod}${
+            isNewChatRequest ? " before chat creation" : ""
+          }.`,
         );
         cache.currentHeaders = extractedHeaders;
         cache.cachedQwenHeaders = {
@@ -867,13 +888,17 @@ async function _getQwenHeadersInternal(
 
         await route.abort("aborted");
 
-        await page.unroute(routePattern, routeHandler);
+        await unrouteCaptureRoutes();
 
         resolve(cache.cachedQwenHeaders);
       };
 
-      page
-        .route(routePattern, routeHandler)
+      Promise.all([
+        page.route(completionRoutePattern, routeHandler),
+        ...(captureNewChatHeaders
+          ? [page.route(newChatRoutePattern, routeHandler)]
+          : []),
+      ])
         .then(async () => {
           const inputSelector =
             'textarea:visible, [contenteditable="true"]:visible';

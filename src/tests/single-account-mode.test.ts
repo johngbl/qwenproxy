@@ -17,7 +17,19 @@ test("Chat Completions works with the global Playwright session when no accounts
   invalidateAccountsCache();
 
   globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = typeof input === "string" ? input : "url" in input ? input.url : String(input);
+    const url =
+      typeof input === "string"
+        ? input
+        : "url" in input
+          ? input.url
+          : String(input);
+
+    if (url.includes("/api/v2/chats/new")) {
+      return new Response(JSON.stringify({ chat_id: "mock-session" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
 
     if (url.includes("/api/v2/chat/completions")) {
       const payload = JSON.parse((init?.body as string) || "{}");
@@ -27,7 +39,7 @@ test("Chat Completions works with the global Playwright session when no accounts
         start(controller) {
           controller.enqueue(
             new TextEncoder().encode(
-              'data: {"choices": [{"delta": {"phase": "answer", "content": "Hello from global"}}]}\n\ndata: [DONE]\n\n',
+              'data: {"response.created":{"chat_id":"mock-session","response_id":"mock-response"}}\n\ndata: {"response_id":"mock-response","choices": [{"delta": {"phase": "answer", "content": "Hello from global"}}]}\n\ndata: [DONE]\n\n',
             ),
           );
           controller.close();
