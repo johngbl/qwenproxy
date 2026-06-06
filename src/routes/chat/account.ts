@@ -7,6 +7,7 @@ import {
   deleteQwenChat,
   QwenSessionExpiredError,
   RetryableQwenStreamError,
+  syncQwenRequestPersonalization,
   type LogicalThreadEntry,
 } from "../../services/qwen.ts";
 import {
@@ -29,6 +30,9 @@ import { QwenFileEntry } from "../upload.ts";
 
 // Per-chat lock: serializes requests to the same Qwen chat session
 const chatLocks = new Map<string, Mutex>();
+// Account-level personalization is global mutable Qwen state; keep update+stream
+// creation serialized per account when the experimental request-sync mode is used.
+const personalizationLocks = new Map<string, Mutex>();
 
 export async function acquireChatLock(chatId: string): Promise<() => void> {
   let mutex = chatLocks.get(chatId);
@@ -38,6 +42,17 @@ export async function acquireChatLock(chatId: string): Promise<() => void> {
   }
   const release = await mutex.acquire();
   return release;
+}
+
+async function acquirePersonalizationLock(
+  accountId: string,
+): Promise<() => void> {
+  let mutex = personalizationLocks.get(accountId);
+  if (!mutex) {
+    mutex = new Mutex();
+    personalizationLocks.set(accountId, mutex);
+  }
+  return mutex.acquire();
 }
 
 export interface SelectedAccount {
@@ -78,6 +93,7 @@ export interface AcquireParams {
   messageCount?: number;
   fullMessageCount?: number;
   toolsCount?: number;
+  requestPersonalizationInstruction?: string | null;
 }
 
 function resolveInitialAccount(preferredAccountId?: string): {
@@ -122,6 +138,21 @@ function resolveInitialAccount(preferredAccountId?: string): {
     },
     configuredAccounts: [],
   };
+}
+
+function isAccountUnavailableError(err: any): boolean {
+  const message = String(err?.message || err || "").toLowerCase();
+  return (
+    (err instanceof UpstreamRateLimit &&
+      !(err instanceof RetryableQwenStreamError)) ||
+    err?.upstreamCode === "RateLimited" ||
+    err?.upstreamStatus === 429 ||
+    message.includes("allocated quota exceeded") ||
+    message.includes("quota exceeded") ||
+    message.includes("increase your quota") ||
+    message.includes("token-limit") ||
+    message.includes("insufficient quota")
+  );
 }
 
 async function attemptRelogin(
@@ -196,17 +227,9 @@ export async function acquireUpstreamStream(
         `[Chat] Skipping account ${accountEmail} (${accountId}) — on cooldown for ${Math.round(cooldownInfo.remainingMs / 1000)}s (${cooldownInfo.reason})`,
       );
       if (stickyThreadAccountId === accountId) {
-        const cooldownError: any = new Error(
-          `Sticky Qwen account for this conversation is on cooldown. Retry in about ${Math.max(1, Math.ceil(cooldownInfo.remainingMs / 1000))}s.`,
+        console.warn(
+          `[Chat] Sticky account is on cooldown; recreating upstream chat on another account with full context.`,
         );
-        cooldownError.upstreamStatus = 429;
-        cooldownError.retryAfterMs = cooldownInfo.remainingMs;
-        return {
-          error: cooldownError,
-          completionId,
-          allOnCooldown: true,
-          retryAfterMs: cooldownInfo.remainingMs,
-        };
       }
       account = getNextAvailableAccount(accountId);
       continue;
@@ -235,9 +258,14 @@ export async function acquireUpstreamStream(
     }
 
     try {
+      const recreatingOnNewAccount =
+        !!stickyThreadAccountId && accountId !== stickyThreadAccountId;
+      const attemptFinalPrompt = recreatingOnNewAccount
+        ? params.fullPrompt
+        : finalPrompt;
       const result = await tryCreateStreamWithRetry(
         {
-          finalPrompt,
+          finalPrompt: attemptFinalPrompt,
           isThinkingModel,
           model,
           shouldResetUpstreamThread,
@@ -247,12 +275,18 @@ export async function acquireUpstreamStream(
           updateLogicalThread,
           forceNewChat,
           existingThread:
-            existingThread && existingThread.accountId === accountId
+            !recreatingOnNewAccount &&
+            existingThread &&
+            existingThread.accountId === accountId
               ? existingThread
               : null,
-          messageCount: params.messageCount,
+          messageCount: recreatingOnNewAccount
+            ? (params.fullMessageCount ?? params.messageCount)
+            : params.messageCount,
           fullMessageCount: params.fullMessageCount,
           toolsCount: params.toolsCount,
+          requestPersonalizationInstruction:
+            params.requestPersonalizationInstruction,
           fullPrompt: params.fullPrompt,
         },
         accountId,
@@ -285,7 +319,13 @@ export async function acquireUpstreamStream(
     }
 
     if (stickyThreadAccountId === accountId) {
-      break;
+      if (isAccountUnavailableError(lastError)) {
+        console.warn(
+          `[Chat] Sticky account unavailable; trying another account with full context.`,
+        );
+      } else {
+        break;
+      }
     }
 
     if (isToolcallDebugEnabled()) {
@@ -368,6 +408,7 @@ async function tryCreateStreamWithRetry(
     messageCount?: number;
     fullMessageCount?: number;
     toolsCount?: number;
+    requestPersonalizationInstruction?: string | null;
   },
   accountId: string,
   accountEmail: string,
@@ -393,22 +434,43 @@ async function tryCreateStreamWithRetry(
         : params.shouldResetUpstreamThread
           ? null
           : undefined;
-      const result = await createQwenStream(
-        params.finalPrompt,
-        params.isThinkingModel,
-        params.model,
-        threadParentId,
-        accountId === "global" ? undefined : accountId,
-        params.allFiles.length > 0 ? params.allFiles : undefined,
-        params.forceNewChat || params.useThreadNative
-          ? {
-              chatSessionId: params.forceNewChat
-                ? null
-                : (params.existingThread?.chatSessionId ?? null),
-              forceNewChat: false,
-            }
-          : undefined,
-      );
+      const releasePersonalization = params.requestPersonalizationInstruction
+        ? await acquirePersonalizationLock(accountId)
+        : null;
+      let result: Awaited<ReturnType<typeof createQwenStream>>;
+      try {
+        if (params.requestPersonalizationInstruction) {
+          await syncQwenRequestPersonalization(
+            params.requestPersonalizationInstruction,
+            accountId === "global" ? undefined : accountId,
+            {
+              model: params.model,
+              toolsCount: params.toolsCount ?? 0,
+              sessionId: params.sessionId,
+              promptChars: params.finalPrompt.length,
+            },
+          );
+        }
+
+        result = await createQwenStream(
+          params.finalPrompt,
+          params.isThinkingModel,
+          params.model,
+          threadParentId,
+          accountId === "global" ? undefined : accountId,
+          params.allFiles.length > 0 ? params.allFiles : undefined,
+          params.forceNewChat || params.useThreadNative
+            ? {
+                chatSessionId: params.forceNewChat
+                  ? null
+                  : (params.existingThread?.chatSessionId ?? null),
+                forceNewChat: false,
+              }
+            : undefined,
+        );
+      } finally {
+        releasePersonalization?.();
+      }
 
       if (
         params.useThreadNative &&
@@ -494,12 +556,7 @@ async function tryCreateStreamWithRetry(
       return { success: false, error: err };
     }
 
-    if (
-      (err instanceof UpstreamRateLimit &&
-        !(err instanceof RetryableQwenStreamError)) ||
-      err.upstreamCode === "RateLimited" ||
-      err.upstreamStatus === 429
-    ) {
+    if (isAccountUnavailableError(err)) {
       const hourHint = err.message?.match(/Wait about (\d+) hour/);
       const cooldownMs = hourHint
         ? parseInt(hourHint[1]) * 60 * 60 * 1000

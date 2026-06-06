@@ -136,14 +136,29 @@ export async function chatCompletions(c: Context) {
         ? parsed.currentMessageCount
         : parsed.messageCount;
 
+    const personalizationChars =
+      ctx.requestPersonalizationInstruction?.length ?? 0;
     console.log(
-      `[Chat] Request received | ${body.model} | ${msgCount} msg(s) | ${finalPrompt.length} chars${declaredTools.length ? ` | ${declaredTools.length} tool(s)` : ""}${files.length ? ` | ${files.length} file(s)` : ""}`,
+      `[Chat] Request | ${body.model} | ${msgCount} msg(s) | ${finalPrompt.length} chars${declaredTools.length ? ` | ${declaredTools.length} tool(s)` : ""}${files.length ? ` | ${files.length} file(s)` : ""}`,
     );
+    logger.debug("[chat] request routing details", {
+      model: body.model,
+      messages: msgCount,
+      promptChars: finalPrompt.length,
+      tools: declaredTools.length,
+      files: files.length,
+      personalizationChars,
+      sessionId: ctx.sessionId,
+      useThreadNative: ctx.useThreadNative,
+      isNewSession: ctx.isNewSession,
+    });
 
     stepStartedAt = Date.now();
     const streamResult = await acquireUpstreamStream({
       finalPrompt,
-      fullPrompt: parsed.systemPrompt + parsed.prompt,
+      fullPrompt: ctx.requestPersonalizationInstruction
+        ? parsed.prompt
+        : parsed.systemPrompt + parsed.prompt,
       isThinkingModel: ctx.isThinkingModel,
       model: body.model,
       shouldResetUpstreamThread: ctx.shouldResetUpstreamThread,
@@ -158,6 +173,7 @@ export async function chatCompletions(c: Context) {
       messageCount: msgCount,
       fullMessageCount: parsed.messageCount,
       toolsCount: declaredTools.length || undefined,
+      requestPersonalizationInstruction: ctx.requestPersonalizationInstruction,
     });
     mark("upstream", stepStartedAt);
     timings.preResponse = Date.now() - startedAt;

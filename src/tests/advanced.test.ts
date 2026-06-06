@@ -315,7 +315,7 @@ test("session-parent-tracking: sends only current delta using response message_i
   }
 });
 
-test("thread-native: resends system and tool instructions without replaying history", async () => {
+test("thread-native: keeps system and tools out of chat content without replaying history", async () => {
   const capturedPayloads: any[] = [];
 
   const restore = setupFetchMock((url, init) => {
@@ -393,11 +393,12 @@ test("thread-native: resends system and tool instructions without replaying hist
     assert.equal(typeof capturedPayloads[0].chat_id, "string");
     assert.ok(capturedPayloads[0].chat_id.length > 0);
     assert.strictEqual(capturedPayloads[1].chat_id, "qwen-chat-first-only");
-    assert.ok(firstContent.includes("FIRST_ONLY_SYSTEM_MARKER"));
-    assert.ok(firstContent.includes("first_only_tool_marker"));
-    assert.ok(secondContent.includes("FIRST_ONLY_SYSTEM_MARKER"));
-    assert.ok(secondContent.includes("first_only_tool_marker"));
-    assert.ok(secondContent.includes("User: Turn 2\n\n"));
+    assert.strictEqual(firstContent, "User: Turn 1\n\n");
+    assert.strictEqual(secondContent, "User: Turn 2\n\n");
+    assert.ok(!firstContent.includes("FIRST_ONLY_SYSTEM_MARKER"));
+    assert.ok(!firstContent.includes("first_only_tool_marker"));
+    assert.ok(!secondContent.includes("FIRST_ONLY_SYSTEM_MARKER"));
+    assert.ok(!secondContent.includes("first_only_tool_marker"));
     assert.ok(!secondContent.includes("User: Turn 1"));
     assert.ok(!secondContent.includes("Assistant: Response 1"));
     assert.strictEqual(capturedPayloads[1].parent_id, "qwen-first-only-1");

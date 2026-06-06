@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import {
   getQwenHeaders,
   getBasicHeaders,
@@ -344,6 +345,198 @@ const modelsCache = new Map<
 
 const nativeToolsDisabled = new Set<string>();
 const disablingNativeToolsInProgress = new Set<string>();
+const lastSyncedPersonalizationHashes = new Map<string, string>();
+
+function shortContentHash(value: string): string {
+  return crypto.createHash("sha256").update(value).digest("hex").slice(0, 12);
+}
+
+function textSize(value: unknown): {
+  chars: number | null;
+  bytes: number | null;
+  hash: string | null;
+} {
+  if (typeof value !== "string") {
+    return { chars: null, bytes: null, hash: null };
+  }
+  return {
+    chars: value.length,
+    bytes: Buffer.byteLength(value, "utf8"),
+    hash: shortContentHash(value),
+  };
+}
+
+export async function syncQwenRequestPersonalization(
+  instruction: string,
+  accountId?: string,
+  metadata: {
+    model?: string;
+    toolsCount?: number;
+    sessionId?: string | null;
+    promptChars?: number;
+  } = {},
+): Promise<void> {
+  if (isAuthMockEnabled()) return;
+  if (!instruction.trim()) return;
+
+  const cacheKey = accountId || "global";
+  const { headers } = await getQwenHeaders(false, accountId);
+  const requestHeaders = buildQwenRequestHeaders({
+    cookie: headers["cookie"],
+    userAgent: headers["user-agent"],
+    bxUa: headers["bx-ua"],
+    bxUmidtoken: headers["bx-umidtoken"],
+    bxV: headers["bx-v"],
+    extra: {
+      Referer: `${config.qwen.baseUrl}/settings/personalization`,
+    },
+  });
+
+  const payload = {
+    personalization: {
+      name: "",
+      description:
+        "Always follow the active personalized instructions. Always think in English, and always answer in the language of the user's question.",
+      style: null,
+      instruction,
+      enable_for_new_chat: true,
+    },
+  };
+
+  const sent = textSize(instruction);
+  const cachedHash = lastSyncedPersonalizationHashes.get(cacheKey);
+  if (sent.hash && cachedHash === sent.hash) {
+    console.log(
+      `[Qwen] Personalization unchanged | ${metadata.model || "?"} | ${metadata.toolsCount ?? 0} tool(s) | ${sent.chars} chars`,
+    );
+    logger.debug("[Qwen] personalization sync skipped from cache", {
+      accountId: cacheKey,
+      model: metadata.model || null,
+      tools: metadata.toolsCount ?? 0,
+      promptChars: metadata.promptChars ?? null,
+      sessionId: metadata.sessionId ?? null,
+      sent,
+    });
+    return;
+  }
+
+  let existing = { chars: null, bytes: null, hash: null } as ReturnType<
+    typeof textSize
+  >;
+  if (sent.hash && !cachedHash && config.qwen.personalizationVerifyGet) {
+    try {
+      const existingResponse = await fetch(
+        `${config.qwen.baseUrl}/api/v2/users/user/settings`,
+        {
+          method: "GET",
+          headers: requestHeaders,
+        },
+      );
+      const existingRaw = await existingResponse.text();
+      let existingJson: any = null;
+      try {
+        existingJson = existingRaw ? JSON.parse(existingRaw) : null;
+      } catch {
+        existingJson = null;
+      }
+      existing = textSize(existingJson?.data?.personalization?.instruction);
+      if (existing.hash === sent.hash) {
+        lastSyncedPersonalizationHashes.set(cacheKey, sent.hash);
+        console.log(
+          `[Qwen] Personalization unchanged | ${metadata.model || "?"} | ${metadata.toolsCount ?? 0} tool(s) | ${sent.chars} chars | verified=true`,
+        );
+        logger.debug("[Qwen] personalization sync skipped after GET", {
+          accountId: cacheKey,
+          model: metadata.model || null,
+          tools: metadata.toolsCount ?? 0,
+          promptChars: metadata.promptChars ?? null,
+          sessionId: metadata.sessionId ?? null,
+          sent,
+          existing,
+        });
+        return;
+      }
+    } catch (err) {
+      logger.debug("[Qwen] personalization pre-check failed; updating anyway", {
+        accountId: cacheKey,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  const response = await fetch(
+    `${config.qwen.baseUrl}/api/v2/users/user/settings/update`,
+    {
+      method: "POST",
+      headers: requestHeaders,
+      body: JSON.stringify(payload),
+    },
+  );
+  const raw = await response.text();
+  let json: any = null;
+  try {
+    json = raw ? JSON.parse(raw) : null;
+  } catch {
+    json = null;
+  }
+
+  if (!response.ok || json?.success === false) {
+    console.warn(
+      `[Qwen] Personalization sync failed | account=${cacheKey} | status=${response.status} | sent=${sent.chars} chars/${sent.bytes} bytes | response=${raw.slice(0, 240)}`,
+    );
+    throw new QwenUpstreamError(
+      `Qwen personalization update failed: ${response.status} ${raw.slice(0, 300)}`,
+      "PersonalizationUpdateFailed",
+      response.status >= 500 ? 502 : response.status,
+    );
+  }
+
+  const returnedInstruction = json?.data?.personalization?.instruction;
+  const returned = textSize(returnedInstruction);
+  let stored = { chars: null, bytes: null, hash: null } as ReturnType<
+    typeof textSize
+  >;
+
+  if (config.qwen.personalizationVerifyGet) {
+    const verifyResponse = await fetch(
+      `${config.qwen.baseUrl}/api/v2/users/user/settings`,
+      {
+        method: "GET",
+        headers: requestHeaders,
+      },
+    );
+    const verifyRaw = await verifyResponse.text();
+    let verifyJson: any = null;
+    try {
+      verifyJson = verifyRaw ? JSON.parse(verifyRaw) : null;
+    } catch {
+      verifyJson = null;
+    }
+    stored = textSize(verifyJson?.data?.personalization?.instruction);
+  }
+
+  const matchReturned = returned.hash !== null && returned.hash === sent.hash;
+  const matchStored = stored.hash === null ? null : stored.hash === sent.hash;
+  if (sent.hash && (matchReturned || matchStored === true)) {
+    lastSyncedPersonalizationHashes.set(cacheKey, sent.hash);
+  }
+  console.log(
+    `[Qwen] Personalization synced | ${metadata.model || "?"} | ${metadata.toolsCount ?? 0} tool(s) | ${sent.chars} chars${matchStored === null ? "" : ` | verified=${matchStored}`}`,
+  );
+  logger.debug("[Qwen] personalization sync details", {
+    accountId: cacheKey,
+    model: metadata.model || null,
+    tools: metadata.toolsCount ?? 0,
+    promptChars: metadata.promptChars ?? null,
+    sessionId: metadata.sessionId ?? null,
+    sent,
+    returned,
+    existing,
+    stored,
+    matchReturned,
+    matchStored,
+  });
+}
 
 export async function disableNativeTools(accountId?: string): Promise<void> {
   const cacheKey = accountId || "global";
@@ -677,22 +870,44 @@ function chatPoolKey(accountId: string | undefined, model: string): string {
   return `${accountId || "global"}:${model}`;
 }
 
+function isQwenChatPoolEnabled(): boolean {
+  return (
+    config.qwen.chatPoolSize > 0 &&
+    !isAuthMockEnabled() &&
+    !config.qwen.personalizationFromRequest
+  );
+}
+
 async function acquireNewQwenChatSession(
   headers: Record<string, string>,
   model: string,
   accountId?: string,
 ): Promise<string> {
-  const key = chatPoolKey(accountId, model);
-  const pooled = precreatedChatSessions.get(key);
-  const chatId = pooled?.shift();
+  if (isQwenChatPoolEnabled()) {
+    const key = chatPoolKey(accountId, model);
+    const pooled = precreatedChatSessions.get(key);
+    const chatId = pooled?.shift();
 
-  if (chatId) {
-    void scheduleQwenChatPoolRefill(headers, model, accountId);
-    return chatId;
+    if (chatId) {
+      logger.debug("[Qwen] using pooled chat", {
+        accountId: accountId || "global",
+        model,
+        chatId,
+      });
+      void scheduleQwenChatPoolRefill(headers, model, accountId);
+      return chatId;
+    }
   }
 
   const created = await createQwenChatSession(headers, model);
-  void scheduleQwenChatPoolRefill(headers, model, accountId);
+  logger.debug("[Qwen] created fresh chat", {
+    accountId: accountId || "global",
+    model,
+    chatId: created,
+  });
+  if (isQwenChatPoolEnabled()) {
+    void scheduleQwenChatPoolRefill(headers, model, accountId);
+  }
   return created;
 }
 
@@ -701,8 +916,8 @@ async function refillQwenChatPool(
   model: string,
   accountId?: string,
 ): Promise<void> {
+  if (!isQwenChatPoolEnabled()) return;
   const targetSize = config.qwen.chatPoolSize;
-  if (targetSize <= 0 || isAuthMockEnabled()) return;
 
   const key = chatPoolKey(accountId, model);
   const pooled = precreatedChatSessions.get(key) ?? [];
@@ -743,7 +958,7 @@ export async function warmQwenChatPool(
   accountId: string | undefined,
   modelId: string,
 ): Promise<void> {
-  if (config.qwen.chatPoolSize <= 0 || isAuthMockEnabled()) return;
+  if (!isQwenChatPoolEnabled()) return;
   const { headers } = await getQwenHeaders(false, accountId);
   await refillQwenChatPool(
     headers,
@@ -757,6 +972,19 @@ function isQwenChatNotExistMessage(details: string): boolean {
     details.includes("is not exist") ||
     details.includes("not exist") ||
     details.includes("does not exist")
+  );
+}
+
+function isQwenQuotaLimitMessage(details: string): boolean {
+  const normalized = details.toLowerCase();
+  return (
+    normalized.includes("allocated quota exceeded") ||
+    normalized.includes("quota exceeded") ||
+    normalized.includes("increase your quota") ||
+    normalized.includes("token-limit") ||
+    normalized.includes("insufficient quota") ||
+    normalized.includes("rate limit") ||
+    normalized.includes("ratelimited")
   );
 }
 
@@ -813,7 +1041,11 @@ function parseQwenJsonError(
         : "";
     const message = `Qwen upstream error: ${code}: ${details}.${wait}`;
 
-    if (code === "RateLimited") {
+    if (
+      code === "RateLimited" ||
+      status === 429 ||
+      (typeof details === "string" && isQwenQuotaLimitMessage(details))
+    ) {
       return new UpstreamRateLimit(message);
     }
 
@@ -826,6 +1058,10 @@ function parseQwenJsonError(
       typeof errorJson.error === "string"
         ? errorJson.error
         : errorJson.error.message || JSON.stringify(errorJson.error);
+    if (isQwenQuotaLimitMessage(message)) {
+      return new UpstreamRateLimit(`Qwen upstream error: ${message}`);
+    }
+
     return new QwenUpstreamError(
       `Qwen upstream error: ${message}`,
       "UpstreamError",
@@ -955,6 +1191,17 @@ export async function createQwenStream(
     ],
     timestamp: timestamp + 1,
   };
+
+  const contentSize = textSize(prompt);
+  const contentPreview = prompt.replace(/\s+/g, " ").trim().slice(0, 160);
+  logger.debug("[Qwen] chat payload", {
+    accountId: accountId ?? "global",
+    model,
+    chatId: chatSessionId || "new",
+    parentId: actualParentId || null,
+    content: contentSize,
+    preview: contentPreview,
+  });
 
   const url = chatSessionId
     ? `${config.qwen.baseUrl}/api/v2/chat/completions?chat_id=${chatSessionId}`

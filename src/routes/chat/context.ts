@@ -34,6 +34,7 @@ export interface FinalContext {
   modelContextWindow: number;
   isAuxiliaryRequest: boolean;
   isTitleGenerationRequest: boolean;
+  requestPersonalizationInstruction: string | null;
 }
 
 export interface BuildContextParams {
@@ -87,16 +88,19 @@ export async function buildFinalContext(
     ? (!existingThread && !hasTrailingToolResult ? prompt : currentPrompt) ||
       prompt
     : prompt;
-  const estimatedTokens = estimateTokenCount(systemPrompt + activePrompt);
   const isTitleGenerationRequest = detectTitleGenerationRequest(messages);
   const isAuxiliaryRequest =
     isInternalSummarizationRequest || isTitleGenerationRequest;
+  const useRequestPersonalization =
+    config.qwen.personalizationFromRequest &&
+    !isAuxiliaryRequest &&
+    systemPrompt.trim().length > 0;
+  const estimatedTokens = estimateTokenCount(systemPrompt + activePrompt);
   const updateLogicalThread = !isTitleGenerationRequest;
-  // Always resend the current request's system/tool instructions. In
-  // thread-native mode, activePrompt is already limited to the current turn
-  // after the first upstream message, so this avoids replaying history while
-  // keeping the exact tool contract fresh on every request.
-  const shouldSendInstructions = true;
+  // Normally, system/tool instructions are prepended to the chat prompt. In the
+  // experimental Qwen personalization mode, they are synced to the account-level
+  // personalization.instruction instead, so they do not appear as chat content.
+  const shouldSendInstructions = !useRequestPersonalization;
 
   const cache = getCache();
   const topicAnalysis =
@@ -108,9 +112,12 @@ export async function buildFinalContext(
 
   let finalPrompt: string;
   if (!useThreadNative && estimatedTokens > summarizationTriggerTokens) {
-    const truncated = await truncateMessages(messages, {
+    const truncationMessages = useRequestPersonalization
+      ? messages.filter((message) => message.role !== "system")
+      : messages;
+    const truncated = await truncateMessages(truncationMessages, {
       maxContextLength: modelContextWindow,
-      systemPrompt,
+      systemPrompt: useRequestPersonalization ? "" : systemPrompt,
       enableSummarization:
         !isInternalSummarizationRequest && config.context.summarization.enabled,
       summarizationModel: config.context.summarization.model,
@@ -147,6 +154,9 @@ export async function buildFinalContext(
     modelContextWindow,
     isAuxiliaryRequest,
     isTitleGenerationRequest,
+    requestPersonalizationInstruction: useRequestPersonalization
+      ? systemPrompt
+      : null,
   };
 }
 

@@ -69,6 +69,8 @@ const envSchema = z.object({
   QWEN_API_KEY: z.string().default(""),
   QWEN_CHAT_POOL_SIZE: z.string().default("1"),
   QWEN_CHAT_POOL_MODELS: z.string().default("qwen3.7-plus"),
+  QWEN_PERSONALIZATION_FROM_REQUEST: z.string().default("true"),
+  QWEN_PERSONALIZATION_VERIFY_GET: z.string().default("true"),
   DELETE_ALL_CHATS_ON_SHUTDOWN: z.string().default("false"),
   API_KEY: z.string().default(""),
 });
@@ -180,6 +182,9 @@ export const config = {
     chatPoolModels: env.QWEN_CHAT_POOL_MODELS.split(",")
       .map((model) => model.trim())
       .filter(Boolean),
+    personalizationFromRequest:
+      env.QWEN_PERSONALIZATION_FROM_REQUEST === "true",
+    personalizationVerifyGet: env.QWEN_PERSONALIZATION_VERIFY_GET !== "false",
     deleteAllChatsOnShutdown: env.DELETE_ALL_CHATS_ON_SHUTDOWN === "true",
   },
 };
