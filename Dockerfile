@@ -1,7 +1,7 @@
 FROM node:20-bookworm-slim
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends dumb-init \
+  && apt-get install -y --no-install-recommends python3 make g++ \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -19,5 +19,4 @@ VOLUME ["/app/data"]
 EXPOSE 3000
 ENV NODE_ENV=production PORT=3000
 
-ENTRYPOINT ["/usr/bin/dumb-init", "--"]
 CMD ["npx", "tsx", "src/index.ts"]
