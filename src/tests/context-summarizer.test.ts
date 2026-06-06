@@ -122,7 +122,7 @@ test("summarizeMessages: calls the self-loop endpoint with correct payload", asy
   assert.equal(calls[0].body.messages[0].role, "system");
   assert.equal(calls[0].body.messages[1].role, "user");
   assert.equal(calls[0].body.stream, false);
-  assert.equal(calls[0].body.max_tokens, 200);
+  assert.equal(calls[0].body.max_tokens, undefined); // no limit by default
 });
 
 test("summarizeMessages: includes Authorization header when API key is configured", async () => {

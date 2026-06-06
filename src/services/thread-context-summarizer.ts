@@ -50,15 +50,10 @@ function turnToConversationLine(turn: ThreadContextTurn): string {
 
 function compactTurnToConversationLine(
   turn: ThreadContextTurn,
-  maxContentCharacters: number,
+  _maxContentCharacters: number,
 ): string {
   const content = turn.content || "";
-  if (content.length <= maxContentCharacters) {
-    return `${roleLabel(turn.role)}: ${content}`;
-  }
-
-  const omittedCharacters = content.length - maxContentCharacters;
-  return `${roleLabel(turn.role)}: ${content.slice(0, maxContentCharacters)}\n\n[QwenBridge summary input compacted this turn; omitted ${omittedCharacters} character(s).]`;
+  return `${roleLabel(turn.role)}: ${content}`;
 }
 
 function dedupeTurns(turns: ThreadContextTurn[]): ThreadContextTurn[] {
@@ -150,10 +145,7 @@ export async function runThreadContextSummary(
     sessionId,
     config.context.threadNative.recentTurnsToKeep,
   );
-  const maxInputTokens = Math.max(
-    4000,
-    Math.min(60000, Math.floor(session.modelContextWindow * 0.45)),
-  );
+  const maxInputTokens = Math.floor(session.modelContextWindow * 0.45);
   const messages = buildSummaryInputMessages({
     previousSummary: latestSummary,
     newTurns: unsummarizedTurns,
@@ -165,7 +157,7 @@ export async function runThreadContextSummary(
     const summarizeWithModel = (model: string) =>
       summarizeMessages(messages, {
         model,
-        maxSummaryTokens: config.context.threadNative.summaryMaxTokens,
+        maxSummaryTokens: 0, // no limit - let model generate as much as needed
         timeout: config.context.threadNative.summaryTimeout,
         systemPromptOverride: CONTINUATION_SUMMARY_PROMPT,
         purpose: "rollover",

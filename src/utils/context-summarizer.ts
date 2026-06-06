@@ -34,7 +34,7 @@ export async function summarizeMessages(
 ): Promise<SummarizationResult> {
   const startTime = Date.now();
   const model = options?.model || config.context.summarization.model;
-  const maxTokens = options?.maxSummaryTokens || 200;
+  const maxTokens = options?.maxSummaryTokens ?? 0; // 0 = no limit
   const timeout = options?.timeout || config.context.summarization.timeout;
   const systemPrompt = options?.systemPromptOverride || SUMMARIZATION_PROMPT;
 
@@ -83,7 +83,7 @@ export async function summarizeMessages(
               content: conversationText,
             },
           ],
-          max_tokens: maxTokens,
+          ...(maxTokens > 0 ? { max_tokens: maxTokens } : {}),
           stream: false,
         }),
         signal: controller.signal,
