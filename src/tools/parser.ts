@@ -1154,13 +1154,19 @@ export class StreamingToolParser {
           }
           this.finalizeSuccessfulToolCall(recovered, result);
         } else {
-          // Recovery failed. Restore lead-in text if no tools were emitted.
+          // Recovery failed. Emit warning text so the client knows content was lost.
+          const toolName = this.extractToolNameFromTruncated(trimmed);
+          const warningMsg = toolName
+            ? `\n\n[WARNING: Tool call "${toolName}" was truncated by the model's token limit and could not be recovered. The response was cut off before the tool call completed. You may need to retry with a smaller request or split the operation.]\n\n`
+            : `\n\n[WARNING: A tool call was truncated by the model's token limit and could not be recovered. The response was cut off before the tool call completed.]\n\n`;
           logger.warn(
             "[parser] Dropping unrecoverable unclosed tool call at end of stream",
             {
               bufferPreview: trimmed.substring(0, 500),
+              toolName,
             },
           );
+          result.text += warningMsg;
           if (
             this.emittedToolCallCount === 0 &&
             this.pendingLeadIn.trim().length > 0
@@ -1544,6 +1550,20 @@ export class StreamingToolParser {
     if (isToolcallDebugEnabled()) {
       logger.debug("[parser] tryRecoverToolCall: all recovery attempts failed");
     }
+    return null;
+  }
+
+  /**
+   * Extract tool name from a truncated JSON buffer.
+   * Used to provide a more informative warning when a tool call is dropped.
+   */
+  private extractToolNameFromTruncated(buffer: string): string | null {
+    // Try JSON format: {"name": "tool_name", ...}
+    const jsonMatch = buffer.match(/"name"\s*:\s*"([^"]+)"/);
+    if (jsonMatch) return jsonMatch[1];
+    // Try XML format: <tool_call name="tool_name">
+    const xmlMatch = buffer.match(/name="([^"]+)"/);
+    if (xmlMatch) return xmlMatch[1];
     return null;
   }
 

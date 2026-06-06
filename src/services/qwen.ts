@@ -396,7 +396,7 @@ export async function syncQwenRequestPersonalization(
     personalization: {
       name: "",
       description:
-        "Always follow the active personalized instructions. Always think in English, and always answer in the language of the user's question.",
+        "Always follow the active personalized instructions. Always think in English, and always answer in the language of the user's question. Always remember and consider the full conversation history and context when responding.",
       style: null,
       instruction,
       enable_for_new_chat: true,

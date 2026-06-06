@@ -27,13 +27,13 @@ export function buildToolInstructions(
     "\n\nEXAMPLE OF MULTIPLE TOOL CALLS:\n" +
     toolOpen +
     "\n" +
-    '{"name": "read_file", "arguments": {"path": "file1.txt"}}' +
+    '{"name": "tool_name", "arguments": {"param": "value1"}}' +
     "\n" +
     toolClose +
     "\n" +
     toolOpen +
     "\n" +
-    '{"name": "read_file", "arguments": {"path": "file2.txt"}}' +
+    '{"name": "tool_name", "arguments": {"param": "value2"}}' +
     "\n" +
     toolClose +
     "\n\nCRITICAL RULES:\n" +
@@ -47,7 +47,8 @@ export function buildToolInstructions(
     '4. The JSON inside the tags MUST be valid and include ALL required braces and the "arguments" field.\n' +
     "5. If you need to use a tool, do it IMMEDIATELY without preamble.\n" +
     "6. After outputting tool call blocks, you MUST STOP and wait for tool responses. NEVER continue generating on your own.\n" +
-    "7. Maximum 5 tool calls per response. After 5 calls, STOP immediately and wait for the user to process them.\n\n";
+    "7. ONLY use tool names that are explicitly defined in the instructions. NEVER invent or guess tool names. If a tool is not listed, it does not exist.\n" +
+    "8. Maximum 5 tool calls per response. After 5 calls, STOP immediately and wait for the user to process them.\n\n";
 
   if (
     toolChoice &&
