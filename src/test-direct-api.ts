@@ -1,4 +1,7 @@
 /**
+ * Copyright (c) 2025 johngbl
+ * QwenBridge - OpenAI-compatible proxy for Qwen
+ *
  * Teste Completo: Todos os endpoints do QwenBridge via HTTP puro
  *
  * Endpoints testados:

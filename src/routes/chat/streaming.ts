@@ -95,6 +95,7 @@ export interface StreamProcessingParams {
   shouldParseToolCalls: boolean;
   declaredTools: any[];
   onAssistantComplete?: AssistantCompleteHandler;
+  onStreamComplete?: () => void;
 }
 
 async function notifyAssistantComplete(
@@ -132,6 +133,7 @@ export async function processNonStreamingResponse(
     shouldParseToolCalls,
     declaredTools,
     onAssistantComplete,
+    onStreamComplete,
   } = params;
 
   try {
@@ -429,6 +431,10 @@ export async function processNonStreamingResponse(
       });
     }
 
+    console.log(
+      `[Chat] Response sent | ${usage.prompt_tokens} prompt / ${usage.completion_tokens} completion / ${usage.total_tokens} total tokens`,
+    );
+
     await notifyAssistantComplete(onAssistantComplete, {
       sessionId: logicalSessionId,
       accountId: activeAccountId,
@@ -463,6 +469,7 @@ export async function processNonStreamingResponse(
       logger.debug("[chat] non-stream: cleanup", { completionId });
     }
     removeStream(completionId);
+    if (onStreamComplete) onStreamComplete();
   }
 }
 
@@ -484,6 +491,7 @@ export async function processStreamingResponse(
     shouldParseToolCalls,
     declaredTools,
     onAssistantComplete,
+    onStreamComplete,
   } = params;
 
   // Pre-read initial bytes to detect upstream error before committing to SSE
@@ -1228,6 +1236,10 @@ export async function processStreamingResponse(
             finishReason: finalFinishReason,
           });
         }
+
+        console.log(
+          `[Chat] Response sent | ${usage.prompt_tokens} prompt / ${usage.completion_tokens} completion / ${usage.total_tokens} total tokens`,
+        );
       } else {
         if (isToolcallDebugEnabled()) {
           logger.debug(
@@ -1277,6 +1289,9 @@ export async function processStreamingResponse(
           completionId,
         });
       }
+
+      // Release locks now that the stream is fully done
+      if (onStreamComplete) onStreamComplete();
     }
   });
 }

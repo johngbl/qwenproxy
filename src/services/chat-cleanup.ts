@@ -1,3 +1,8 @@
+/**
+ * Copyright (c) 2025 johngbl
+ * QwenBridge - OpenAI-compatible proxy for Qwen
+ */
+
 import { loadAccounts, type QwenAccount } from "../core/accounts.ts";
 import { initHttpAuth, initHttpAuthForAccount } from "./auth-http.ts";
 import { deleteAllQwenChats } from "./qwen.ts";

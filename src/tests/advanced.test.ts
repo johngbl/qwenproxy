@@ -406,6 +406,107 @@ test("thread-native: resends system and tool instructions without replaying hist
   }
 });
 
+test("thread-native: recreates Qwen chat when upstream chat is missing", async () => {
+  const originalTestSessionId = process.env.TEST_SESSION_ID;
+  process.env.TEST_SESSION_ID = "stale-chat";
+  const capturedPayloads: any[] = [];
+  let staleChatFailures = 0;
+
+  const restore = setupFetchMock((url, init) => {
+    capturedPayloads.push({
+      url,
+      body: JSON.parse((init?.body as string) || "{}"),
+    });
+
+    if (
+      url.includes("chat_id=stale-chat") &&
+      staleChatFailures === 0 &&
+      capturedPayloads.length > 1
+    ) {
+      staleChatFailures++;
+      process.env.TEST_SESSION_ID = "fresh-chat";
+      return new Response(
+        JSON.stringify({
+          success: false,
+          data: {
+            code: "Bad_Request",
+            details: "Invalid input the chat stale-chat is not exist.",
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+
+    const chatId = url.includes("chat_id=fresh-chat")
+      ? "fresh-chat"
+      : "stale-chat";
+    const responseId = `response-${capturedPayloads.length}`;
+    const stream = new ReadableStream({
+      start(c) {
+        c.enqueue(
+          new TextEncoder().encode(
+            `data: {"response.created":{"chat_id":"${chatId}","response_id":"${responseId}"}}\n\n`,
+          ),
+        );
+        c.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
+        c.close();
+      },
+    });
+    return new Response(stream, { status: 200 });
+  });
+
+  try {
+    const common = {
+      model: "qwen3.6-plus",
+      conversation_id: "conv-chat-not-exist-recovery",
+    };
+
+    const res1 = await app.fetch(
+      new Request("http://localhost/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...common,
+          messages: [{ role: "user", content: "Turn 1" }],
+        }),
+      }),
+    );
+    assert.strictEqual(res1.status, 200);
+    await res1.text();
+
+    const res2 = await app.fetch(
+      new Request("http://localhost/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...common,
+          messages: [
+            { role: "user", content: "Turn 1" },
+            { role: "assistant", content: "Response 1" },
+            { role: "user", content: "Turn 2" },
+          ],
+        }),
+      }),
+    );
+
+    assert.strictEqual(res2.status, 200);
+    await res2.text();
+    assert.strictEqual(staleChatFailures, 1);
+    assert.ok(
+      capturedPayloads.some((entry) =>
+        entry.url.includes("chat_id=fresh-chat"),
+      ),
+    );
+  } finally {
+    restore();
+    if (originalTestSessionId === undefined) {
+      delete process.env.TEST_SESSION_ID;
+    } else {
+      process.env.TEST_SESSION_ID = originalTestSessionId;
+    }
+  }
+});
+
 test("topic-change: same agent conversation keeps the upstream parent chain", async () => {
   let capturedPayloads: any[] = [];
   const cache = new MemoryCache({ prefix: "topic-reset-test:" });

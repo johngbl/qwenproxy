@@ -1,3 +1,8 @@
+/**
+ * Copyright (c) 2025 johngbl
+ * QwenBridge - OpenAI-compatible proxy for Qwen
+ */
+
 import { config } from "../core/config.ts";
 import { logger } from "../core/logger.ts";
 import { decideThreadContextThresholds } from "./thread-context-estimator.ts";
@@ -76,11 +81,9 @@ export function enqueueThreadContextSummary(
   queuedSessions.add(sessionId);
   setThreadContextStatus(sessionId, "summary_pending");
 
-  logger.info("[thread-context] summary queued", {
-    sessionId,
-    reason,
-    queueDepth: queue.length,
-  });
+  console.log(
+    `[ThreadContext] Summary queued | ${sessionId} | ${reason} | queue ${queue.length}`,
+  );
 
   void processSummaryQueue();
   return true;
@@ -105,10 +108,7 @@ async function processSummaryQueue(): Promise<void> {
 
     void (async () => {
       try {
-        logger.info("[thread-context] summary started", {
-          sessionId: job.sessionId,
-          reason: job.reason,
-        });
+        console.log(`[ThreadContext] Summary started | ${job.sessionId}`);
         await runThreadContextSummary(job.sessionId);
       } catch (error) {
         logger.warn("[thread-context] summary job failed", {

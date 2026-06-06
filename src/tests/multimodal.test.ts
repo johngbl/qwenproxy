@@ -1,3 +1,8 @@
+/**
+ * Copyright (c) 2025 johngbl
+ * QwenBridge - OpenAI-compatible proxy for Qwen
+ */
+
 import test from "node:test";
 import assert from "node:assert";
 
@@ -108,7 +113,10 @@ test("processImagesForQwen re-uploads remote HTTP files to Qwen OSS", async () =
     assert.strictEqual(result.files[0].url, "https://oss.example/report.pdf");
     assert.strictEqual(result.files[0].id, "file-123");
     assert.strictEqual(result.files[0].name, "report.pdf");
-    assert.strictEqual(result.files[0].file.meta.content_type, "application/pdf");
+    assert.strictEqual(
+      result.files[0].file.meta.content_type,
+      "application/pdf",
+    );
     assert.strictEqual(result.files[0].size, remoteBuffer.length);
   } finally {
     globalThis.fetch = originalFetch;

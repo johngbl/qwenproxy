@@ -1,3 +1,8 @@
+/**
+ * Copyright (c) 2025 johngbl
+ * QwenBridge - OpenAI-compatible proxy for Qwen
+ */
+
 export interface ReasoningTagParseResult {
   text: string;
   reasoning: string;

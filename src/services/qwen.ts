@@ -670,6 +670,90 @@ async function createQwenChatSession(
   }
 }
 
+function isQwenChatNotExistMessage(details: string): boolean {
+  return (
+    details.includes("is not exist") ||
+    details.includes("not exist") ||
+    details.includes("does not exist")
+  );
+}
+
+function parseQwenJsonError(
+  raw: string,
+  status: number,
+  accountId?: string,
+): Error | null {
+  const errorJson = JSON.parse(raw);
+  const details =
+    errorJson?.data?.details ||
+    errorJson?.message ||
+    errorJson?.error?.message ||
+    "Qwen returned an error";
+
+  if (typeof details === "string" && isQwenChatNotExistMessage(details)) {
+    const attempt = errorJson?.data?.retryCount ?? 1;
+    const retryAfterMs = Math.min(1000 * Math.pow(2, attempt - 1), 10000);
+    return new RetryableQwenStreamError(`Qwen: ${details}`, retryAfterMs);
+  }
+
+  if (
+    typeof details === "string" &&
+    (details.includes("chat is in progress") ||
+      details.includes("The chat is in progress"))
+  ) {
+    const attempt = errorJson?.data?.retryCount ?? 1;
+    const baseDelay = 2000;
+    const exponentialDelay = baseDelay * Math.pow(2, attempt - 1);
+    const cappedDelay = Math.min(exponentialDelay, 30000);
+    const jitter = cappedDelay * 0.2 * Math.random();
+    const retryAfterMs = Math.floor(cappedDelay + jitter);
+    return new RetryableQwenStreamError(`Qwen: ${details}`, retryAfterMs);
+  }
+
+  if (errorJson?.success === false) {
+    const code = errorJson.data?.code || errorJson.code || "UpstreamError";
+
+    if (
+      status === 401 ||
+      code === "Unauthorized" ||
+      (typeof details === "string" &&
+        (details.includes("login") || details.includes("session")))
+    ) {
+      return new QwenSessionExpiredError(
+        `Session expired: ${details}`,
+        accountId || "global",
+      );
+    }
+
+    const wait =
+      errorJson.data?.num !== undefined
+        ? ` Wait about ${errorJson.data.num} hour(s) before trying again.`
+        : "";
+    const message = `Qwen upstream error: ${code}: ${details}.${wait}`;
+
+    if (code === "RateLimited") {
+      return new UpstreamRateLimit(message);
+    }
+
+    const upstreamStatus = code === "Not_Found" ? 404 : 502;
+    return new QwenUpstreamError(message, code, upstreamStatus);
+  }
+
+  if (errorJson?.error) {
+    const message =
+      typeof errorJson.error === "string"
+        ? errorJson.error
+        : errorJson.error.message || JSON.stringify(errorJson.error);
+    return new QwenUpstreamError(
+      `Qwen upstream error: ${message}`,
+      "UpstreamError",
+      502,
+    );
+  }
+
+  return null;
+}
+
 export async function createQwenStream(
   prompt: string,
   enableThinking: boolean,
@@ -820,84 +904,32 @@ export async function createQwenStream(
     clearTimeout(timeoutId);
   }
 
+  const responseContentType = response.headers.get("content-type") || "";
+  if (response.ok && responseContentType.includes("application/json")) {
+    const errText = await response.text().catch(() => "");
+    throw withCreatedChatMetadata(
+      parseQwenJsonError(errText, response.status, accountId) ??
+        new QwenUpstreamError(
+          `Qwen returned non-stream JSON response: ${errText.substring(0, 300)}`,
+          "NonStreamJsonResponse",
+          502,
+        ),
+    );
+  }
+
   if (!response.ok || !response.body) {
     const errText = await response.text().catch(() => "");
     const contentType = response.headers.get("content-type") || "";
 
     if (contentType.includes("application/json")) {
       try {
-        const errorJson = JSON.parse(errText);
-        if (
-          errorJson?.data?.details?.includes("chat is in progress") ||
-          errorJson?.data?.details?.includes("The chat is in progress")
-        ) {
-          const attempt = errorJson.data?.retryCount ?? 1;
-          const baseDelay = 2000;
-          const exponentialDelay = baseDelay * Math.pow(2, attempt - 1);
-          const cappedDelay = Math.min(exponentialDelay, 30000);
-          const jitter = cappedDelay * 0.2 * Math.random();
-          const retryAfterMs = Math.floor(cappedDelay + jitter);
-
-          throw withCreatedChatMetadata(
-            new RetryableQwenStreamError(
-              `Qwen: ${errorJson.data.details}`,
-              retryAfterMs,
-            ),
-          );
-        }
-        if (errorJson?.success === false) {
-          const code =
-            errorJson.data?.code || errorJson.code || "UpstreamError";
-          const details =
-            errorJson.data?.details ||
-            errorJson.message ||
-            "Qwen returned an error";
-
-          if (
-            response.status === 401 ||
-            code === "Unauthorized" ||
-            details.includes("login") ||
-            details.includes("session")
-          ) {
-            throw withCreatedChatMetadata(
-              new QwenSessionExpiredError(
-                `Session expired: ${details}`,
-                accountId || "global",
-              ),
-            );
-          }
-
-          const wait =
-            errorJson.data?.num !== undefined
-              ? ` Wait about ${errorJson.data.num} hour(s) before trying again.`
-              : "";
-          let status: number;
-          if (code === "RateLimited") status = 429;
-          else if (code === "Not_Found") status = 404;
-          else if (code === "UpstreamError") status = 502;
-          else status = 502;
-          throw withCreatedChatMetadata(
-            new QwenUpstreamError(
-              `Qwen upstream error: ${code}: ${details}.${wait}`,
-              code,
-              status,
-            ),
-          );
-        }
-        if (
-          errorJson?.data?.details?.includes("is not exist") ||
-          errorJson?.data?.details?.includes("not exist") ||
-          errorJson?.data?.details?.includes("does not exist")
-        ) {
-          const attempt = errorJson.data?.retryCount ?? 1;
-          const retryAfterMs = Math.min(1000 * Math.pow(2, attempt - 1), 10000);
-
-          throw withCreatedChatMetadata(
-            new RetryableQwenStreamError(
-              `Qwen: ${errorJson.data.details}`,
-              retryAfterMs,
-            ),
-          );
+        const parsedError = parseQwenJsonError(
+          errText,
+          response.status,
+          accountId,
+        );
+        if (parsedError) {
+          throw withCreatedChatMetadata(parsedError);
         }
       } catch (parseOrRetryError) {
         if (

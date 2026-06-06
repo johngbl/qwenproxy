@@ -12,7 +12,7 @@
 import { Context } from "hono";
 import { parseRequestBody } from "./validation.ts";
 import { buildFinalContext } from "./context.ts";
-import { acquireUpstreamStream } from "./account.ts";
+import { acquireUpstreamStream, acquireChatLock } from "./account.ts";
 import {
   processNonStreamingResponse,
   processStreamingResponse,
@@ -21,7 +21,7 @@ import {
 } from "./streaming.ts";
 import { config } from "../../core/config.ts";
 import { logger } from "../../core/logger.ts";
-import { deleteQwenChat } from "../../services/qwen.ts";
+import { deleteQwenChat, getLogicalThreadState } from "../../services/qwen.ts";
 import { isAuthMockEnabled } from "../../services/auth-http.ts";
 import { enqueueThreadContextSummary } from "../../services/thread-context-jobs.ts";
 import {
@@ -37,6 +37,7 @@ import {
 } from "../../services/thread-context-store.ts";
 
 export async function chatCompletions(c: Context) {
+  let releaseChatLock: (() => void) | null = null;
   try {
     const parsed = await parseRequestBody(c);
     const {
@@ -70,6 +71,15 @@ export async function chatCompletions(c: Context) {
       isInternalSummarizationRequest,
     });
 
+    // Acquire per-chat lock to prevent concurrent requests to the same Qwen chat
+    if (ctx.sessionId && ctx.useThreadNative) {
+      const existingThread = getLogicalThreadState(ctx.sessionId);
+      const chatId = existingThread?.chatSessionId;
+      if (chatId) {
+        releaseChatLock = await acquireChatLock(chatId);
+      }
+    }
+
     const shouldManageThreadContext =
       ctx.useThreadNative &&
       !ctx.isAuxiliaryRequest &&
@@ -99,12 +109,24 @@ export async function chatCompletions(c: Context) {
       activeRolloverPlan = prepared.rollover;
     }
 
+    const files = ctx.useThreadNative ? currentFiles : allFiles;
+
+    const msgCount =
+      ctx.useThreadNative && !ctx.isNewSession
+        ? parsed.currentMessageCount
+        : parsed.messageCount;
+
+    console.log(
+      `[Chat] Request received | ${body.model} | ${msgCount} msg(s) | ${finalPrompt.length} chars${declaredTools.length ? ` | ${declaredTools.length} tool(s)` : ""}${files.length ? ` | ${files.length} file(s)` : ""}`,
+    );
+
     const streamResult = await acquireUpstreamStream({
       finalPrompt,
+      fullPrompt: parsed.systemPrompt + parsed.prompt,
       isThinkingModel: ctx.isThinkingModel,
       model: body.model,
       shouldResetUpstreamThread: ctx.shouldResetUpstreamThread,
-      allFiles: ctx.useThreadNative ? currentFiles : allFiles,
+      allFiles: files,
       isNewSession: ctx.isNewSession,
       sessionId: ctx.sessionId,
       useThreadNative: ctx.useThreadNative,
@@ -112,9 +134,17 @@ export async function chatCompletions(c: Context) {
       forceNewChat:
         activeRolloverPlan !== null || isInternalSummarizationRequest,
       preferredAccountId: activeRolloverPlan?.preferredAccountId ?? null,
+      messageCount: msgCount,
+      fullMessageCount: parsed.messageCount,
+      toolsCount: declaredTools.length || undefined,
     });
 
     if ("error" in streamResult) {
+      // Release per-chat lock on error (no stream to complete)
+      if (releaseChatLock) {
+        releaseChatLock();
+        releaseChatLock = null;
+      }
       if (streamResult.allOnCooldown) {
         const err: any = new Error(
           `All configured accounts are on cooldown. Retry in about ${Math.max(
@@ -192,10 +222,9 @@ export async function chatCompletions(c: Context) {
                   ? event.accountId
                   : undefined,
               );
-              logger.info("[thread-context] deleted auxiliary summary chat", {
-                chatSessionId: event.chatSessionId,
-                accountId: event.accountId,
-              });
+              console.log(
+                `[ThreadContext] Summary chat deleted | ${event.chatSessionId}`,
+              );
             } catch (error) {
               logger.warn(
                 "[thread-context] failed to delete auxiliary summary chat",
@@ -222,13 +251,25 @@ export async function chatCompletions(c: Context) {
       shouldParseToolCalls,
       declaredTools,
       onAssistantComplete,
+      onStreamComplete: () => {
+        if (releaseChatLock) {
+          releaseChatLock();
+          releaseChatLock = null;
+        }
+      },
     };
 
     return isStream
       ? await processStreamingResponse(params)
       : await processNonStreamingResponse(params);
   } catch (err) {
+    if (releaseChatLock) {
+      releaseChatLock();
+      releaseChatLock = null;
+    }
     return handleChatCompletionsError(c, err);
+  } finally {
+    // Lock released via onStreamComplete when stream finishes
   }
 }
 

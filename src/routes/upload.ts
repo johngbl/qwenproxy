@@ -1,3 +1,8 @@
+/**
+ * Copyright (c) 2025 johngbl
+ * QwenBridge - OpenAI-compatible proxy for Qwen
+ */
+
 import { Context } from "hono";
 import { getBasicHeaders, isAuthMockEnabled } from "../services/auth-http.ts";
 import { v4 as uuidv4 } from "uuid";

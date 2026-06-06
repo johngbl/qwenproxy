@@ -26,6 +26,19 @@ import { logger, isToolcallDebugEnabled } from "../../core/logger.ts";
 import { config } from "../../core/config.ts";
 import { QwenFileEntry } from "../upload.ts";
 
+// Per-chat lock: serializes requests to the same Qwen chat session
+const chatLocks = new Map<string, Mutex>();
+
+export async function acquireChatLock(chatId: string): Promise<() => void> {
+  let mutex = chatLocks.get(chatId);
+  if (!mutex) {
+    mutex = new Mutex();
+    chatLocks.set(chatId, mutex);
+  }
+  const release = await mutex.acquire();
+  return release;
+}
+
 export interface SelectedAccount {
   id: string;
   email: string;
@@ -50,6 +63,7 @@ export interface StreamCreationFailure {
 
 export interface AcquireParams {
   finalPrompt: string;
+  fullPrompt: string;
   isThinkingModel: boolean;
   model: string;
   shouldResetUpstreamThread: boolean;
@@ -60,17 +74,9 @@ export interface AcquireParams {
   updateLogicalThread: boolean;
   forceNewChat?: boolean;
   preferredAccountId?: string | null;
-}
-
-// Module-level mutex registry, one per account to prevent concurrent startups.
-const accountMutexes = new Map<string, Mutex>();
-function getAccountMutex(accountId: string): Mutex {
-  let mutex = accountMutexes.get(accountId);
-  if (!mutex) {
-    mutex = new Mutex();
-    accountMutexes.set(accountId, mutex);
-  }
-  return mutex;
+  messageCount?: number;
+  fullMessageCount?: number;
+  toolsCount?: number;
 }
 
 function resolveInitialAccount(preferredAccountId?: string): {
@@ -243,6 +249,10 @@ export async function acquireUpstreamStream(
             existingThread && existingThread.accountId === accountId
               ? existingThread
               : null,
+          messageCount: params.messageCount,
+          fullMessageCount: params.fullMessageCount,
+          toolsCount: params.toolsCount,
+          fullPrompt: params.fullPrompt,
         },
         accountId,
         accountEmail,
@@ -344,6 +354,7 @@ interface CreateStreamFailure {
 async function tryCreateStreamWithRetry(
   params: {
     finalPrompt: string;
+    fullPrompt: string;
     isThinkingModel: boolean;
     model: string;
     shouldResetUpstreamThread: boolean;
@@ -353,24 +364,25 @@ async function tryCreateStreamWithRetry(
     updateLogicalThread: boolean;
     forceNewChat: boolean;
     existingThread: LogicalThreadEntry | null;
+    messageCount?: number;
+    fullMessageCount?: number;
+    toolsCount?: number;
   },
   accountId: string,
   accountEmail: string,
 ): Promise<CreateStreamSuccess | CreateStreamFailure> {
   let retries = 3;
   let retryDelay = 500;
+  let attempt = 0;
 
   while (retries > 0) {
-    let attemptError: any = null;
-    const accountMutex = getAccountMutex(accountId);
-    const releaseLock = await accountMutex.acquire();
-
-    if (isToolcallDebugEnabled()) {
-      logger.debug("[chat] account startup lock acquired", {
-        accountId,
-        accountEmail,
-      });
+    attempt++;
+    if (attempt > 1) {
+      console.log(
+        `[Chat] Retrying request | ${params.model} | ${params.messageCount ?? "?"} msg(s) | ${params.finalPrompt.length} chars${params.toolsCount ? ` | ${params.toolsCount} tool(s)` : ""} | attempt ${attempt}`,
+      );
     }
+    let attemptError: any = null;
 
     try {
       const threadParentId = params.useThreadNative
@@ -432,8 +444,6 @@ async function tryCreateStreamWithRetry(
       return { success: true, ...result };
     } catch (err: any) {
       attemptError = err;
-    } finally {
-      releaseLock();
     }
 
     retries--;
@@ -502,18 +512,20 @@ async function tryCreateStreamWithRetry(
       err.message?.includes("does not exist");
 
     if (isChatNotExistError && params.useThreadNative && params.sessionId) {
-      console.warn(
-        `[Chat] Chat session deleted externally for ${accountEmail} (${accountId}). Forcing new chat creation.`,
-      );
+      console.warn(`[Chat] Session expired | forcing new chat`);
       // Clear the stale chat session ID from logical thread state
       // so the next attempt creates a fresh chat
       params.existingThread = null;
+      params.finalPrompt = params.fullPrompt;
+      params.messageCount = params.fullMessageCount ?? params.messageCount;
       updateLogicalThreadState(params.sessionId, {
         accountId,
         chatSessionId: "", // Empty forces new chat creation
         parentId: null,
         instructionsSent: false,
       });
+      // Retry immediately without delay — the session just needs to be recreated
+      continue;
     }
 
     if (retries === 0) {

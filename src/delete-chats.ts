@@ -1,3 +1,8 @@
+/**
+ * Copyright (c) 2025 johngbl
+ * QwenBridge - OpenAI-compatible proxy for Qwen
+ */
+
 import "dotenv/config";
 import { deleteChatsForConfiguredAccounts } from "./services/chat-cleanup.ts";
 

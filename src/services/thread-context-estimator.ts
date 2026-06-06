@@ -1,3 +1,8 @@
+/**
+ * Copyright (c) 2025 johngbl
+ * QwenBridge - OpenAI-compatible proxy for Qwen
+ */
+
 import { config } from "../core/config.ts";
 import { estimateTokenCount } from "../utils/context-truncation.ts";
 
@@ -35,7 +40,9 @@ export function estimateThreadTextTokens(text: string): number {
   return estimateTokenCount(text || "");
 }
 
-export function calculateContextSafetyMargin(modelContextWindow: number): number {
+export function calculateContextSafetyMargin(
+  modelContextWindow: number,
+): number {
   if (!Number.isFinite(modelContextWindow) || modelContextWindow <= 0) {
     return 4096;
   }

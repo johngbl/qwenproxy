@@ -1,3 +1,8 @@
+/**
+ * Copyright (c) 2025 johngbl
+ * QwenBridge - OpenAI-compatible proxy for Qwen
+ */
+
 import { logger } from "../core/logger.ts";
 import { fetchQwenChatHistory } from "./qwen.ts";
 import {
@@ -20,9 +25,17 @@ function extractTextFromContent(value: unknown): string {
   if (typeof value === "string") return value;
   if (Array.isArray(value)) {
     return value
-      .map((part: any) =>
-        firstString(part?.text, part?.content, part?.value, part?.data?.text) ||
-        (part && typeof part === "object" ? JSON.stringify(part) : String(part)),
+      .map(
+        (part: any) =>
+          firstString(
+            part?.text,
+            part?.content,
+            part?.value,
+            part?.data?.text,
+          ) ||
+          (part && typeof part === "object"
+            ? JSON.stringify(part)
+            : String(part)),
       )
       .join("\n");
   }
@@ -76,7 +89,10 @@ export async function recoverThreadContextFromQwenHistory(params: {
   force?: boolean;
 }): Promise<number> {
   if (!params.chatId) return 0;
-  if (!params.force && getRecentThreadContextTurns(params.sessionId, 1).length > 0) {
+  if (
+    !params.force &&
+    getRecentThreadContextTurns(params.sessionId, 1).length > 0
+  ) {
     return 0;
   }
 
@@ -91,7 +107,9 @@ export async function recoverThreadContextFromQwenHistory(params: {
     let recovered = 0;
 
     for (const message of messages) {
-      const role = normalizeRole(message?.role ?? message?.author ?? message?.type);
+      const role = normalizeRole(
+        message?.role ?? message?.author ?? message?.type,
+      );
       if (!role) continue;
       const content = extractMessageContent(message);
       if (!content) continue;

@@ -1,3 +1,8 @@
+/**
+ * Copyright (c) 2025 johngbl
+ * QwenBridge - OpenAI-compatible proxy for Qwen
+ */
+
 import crypto from "crypto";
 import { config } from "../core/config.ts";
 import { getDatabase } from "../core/database.ts";

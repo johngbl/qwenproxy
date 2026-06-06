@@ -1,3 +1,8 @@
+/**
+ * Copyright (c) 2025 johngbl
+ * QwenBridge - OpenAI-compatible proxy for Qwen
+ */
+
 import { config } from "../core/config.ts";
 import { logger } from "../core/logger.ts";
 import { summarizeMessages } from "../utils/context-summarizer.ts";
@@ -218,12 +223,9 @@ export async function runThreadContextSummary(
       compressionRatio: result.compressionRatio,
     });
 
-    logger.info("[thread-context] summary completed", {
-      sessionId,
-      summaryId: summary.id,
-      sequence: summary.sequence,
-      summaryTokens: summary.summaryTokens,
-    });
+    console.log(
+      `[ThreadContext] Summary completed | ${sessionId} | ${summary.summaryTokens} tokens`,
+    );
 
     return summary;
   } catch (error) {

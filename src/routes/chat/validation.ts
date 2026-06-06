@@ -29,6 +29,8 @@ export interface ParsedRequest {
   shouldParseToolCalls: boolean;
   modelId: string;
   enableThinking: boolean;
+  messageCount: number;
+  currentMessageCount: number;
 }
 
 export async function parseRequestBody(c: Context): Promise<ParsedRequest> {
@@ -78,6 +80,8 @@ export async function parseRequestBody(c: Context): Promise<ParsedRequest> {
     shouldParseToolCalls,
     modelId,
     enableThinking,
+    messageCount: promptParts.length,
+    currentMessageCount: currentPromptParts.length,
   };
 }
 
@@ -300,17 +304,6 @@ function logIncomingChatRequest(c: Context, body: OpenAIRequest): void {
   const tools = Array.isArray((body as any).tools) ? (body as any).tools : [];
   const requestId = c.req.header("x-request-id") || null;
   const toolChoice = (body as any).tool_choice || null;
-
-  logger.info("[chat] request received", {
-    requestId,
-    model: body.model,
-    stream: body.stream ?? false,
-    conversationId: body.conversation_id || null,
-    sessionId: body.session_id || null,
-    messagesCount: messages.length,
-    toolsCount: tools.length,
-    toolChoice,
-  });
 
   if (!config.logging.chatRequests) return;
 
