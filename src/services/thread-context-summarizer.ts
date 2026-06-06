@@ -175,17 +175,17 @@ export async function runThreadContextSummary(
     let result = await summarizeWithModel(primaryModel);
 
     if (!isUsableSummary(result.summary) && primaryModel !== session.model) {
-      logger.warn(
-        "[thread-context] summary unusable, retrying with session model",
-        {
-          sessionId,
-          primaryModel,
-          fallbackModel: session.model,
-          originalTokens: result.originalTokens,
-          latencyMs: result.latencyMs,
-          error: result.error ?? null,
-        },
+      console.warn(
+        `[ThreadContext] Summary retry | ${primaryModel} -> ${session.model}`,
       );
+      logger.debug("[thread-context] summary unusable, retrying", {
+        sessionId,
+        primaryModel,
+        fallbackModel: session.model,
+        originalTokens: result.originalTokens,
+        latencyMs: result.latencyMs,
+        error: result.error ?? null,
+      });
       result = await summarizeWithModel(session.model);
     }
 
@@ -200,7 +200,8 @@ export async function runThreadContextSummary(
           : "summary_stale",
         errorMessage,
       );
-      logger.warn("[thread-context] summary unavailable", {
+      console.warn(`[ThreadContext] Summary unavailable | ${errorMessage}`);
+      logger.debug("[thread-context] summary unavailable", {
         sessionId,
         model: primaryModel,
         fallbackModelTried: primaryModel !== session.model,
@@ -224,14 +225,25 @@ export async function runThreadContextSummary(
     });
 
     console.log(
-      `[ThreadContext] Summary completed | ${sessionId} | ${summary.summaryTokens} tokens`,
+      `[ThreadContext] Summary completed | ${summary.summaryTokens} tokens`,
     );
+    logger.debug("[thread-context] summary completed", {
+      sessionId,
+      summaryId: summary.id,
+      sequence: summary.sequence,
+      sourceTurnStart,
+      sourceTurnEnd,
+      summaryTokens: summary.summaryTokens,
+      originalTokens: result.originalTokens,
+      compressionRatio: result.compressionRatio,
+    });
 
     return summary;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     setThreadContextStatus(sessionId, "summary_stale", message);
-    logger.warn("[thread-context] summary failed", {
+    console.warn(`[ThreadContext] Summary failed | ${message}`);
+    logger.debug("[thread-context] summary failed", {
       sessionId,
       error: message,
     });

@@ -39,6 +39,10 @@ interface EndpointSample {
   error?: string;
 }
 
+type InternalTimings = Record<string, number>;
+
+type InternalTimingSummary = Record<string, NumericSummary>;
+
 interface UsageSnapshot {
   promptTokens: number;
   completionTokens: number;
@@ -55,6 +59,7 @@ interface NonStreamSample {
   usage: UsageSnapshot | null;
   tokensPerSecond: number | null;
   finishReason: string | null;
+  internalTimings: InternalTimings | null;
   error?: string;
 }
 
@@ -71,6 +76,7 @@ interface StreamSample {
   usage: UsageSnapshot | null;
   tokensPerSecond: number | null;
   finishReason: string | null;
+  internalTimings: InternalTimings | null;
   error?: string;
 }
 
@@ -85,6 +91,7 @@ interface NonStreamBenchmark extends SampleAggregate<NonStreamSample> {
   proxyMs: NumericSummary | null;
   tokensPerSecond: NumericSummary | null;
   proxySharePct: number | null;
+  internalTimings: InternalTimingSummary;
 }
 
 interface StreamBenchmark extends SampleAggregate<StreamSample> {
@@ -93,6 +100,7 @@ interface StreamBenchmark extends SampleAggregate<StreamSample> {
   proxyMs: NumericSummary | null;
   tokensPerSecond: NumericSummary | null;
   proxySharePct: number | null;
+  internalTimings: InternalTimingSummary;
 }
 
 interface AccountBenchmarkContext {
@@ -319,6 +327,41 @@ function parseXResponseTime(headerValue: string | null): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function parseInternalTimings(
+  headerValue: string | null,
+): InternalTimings | null {
+  if (!headerValue) return null;
+  const timings: InternalTimings = {};
+  for (const part of headerValue.split(";")) {
+    const [rawKey, rawValue] = part.split("=");
+    const key = rawKey?.trim();
+    const value = Number.parseFloat(rawValue?.trim() ?? "");
+    if (key && Number.isFinite(value)) timings[key] = value;
+  }
+  return Object.keys(timings).length > 0 ? timings : null;
+}
+
+function summarizeInternalTimings(
+  samples: Array<{ internalTimings: InternalTimings | null }>,
+): InternalTimingSummary {
+  const valuesByKey = new Map<string, number[]>();
+  for (const sample of samples) {
+    if (!sample.internalTimings) continue;
+    for (const [key, value] of Object.entries(sample.internalTimings)) {
+      if (!Number.isFinite(value)) continue;
+      const values = valuesByKey.get(key) ?? [];
+      values.push(value);
+      valuesByKey.set(key, values);
+    }
+  }
+
+  const summary: InternalTimingSummary = {};
+  for (const [key, values] of valuesByKey.entries()) {
+    summary[key] = summarize(values);
+  }
+  return summary;
+}
+
 function calculateSuccessRate(samples: Array<{ ok: boolean }>): number {
   if (samples.length === 0) return 0;
   const successCount = samples.filter((sample) => sample.ok).length;
@@ -539,6 +582,9 @@ async function benchmarkNonStream(
     const text = await response.text();
     const totalMs = round(performance.now() - startedAt);
     const proxyMs = parseXResponseTime(response.headers.get("x-response-time"));
+    const internalTimings = parseInternalTimings(
+      response.headers.get("x-qwenbridge-timing"),
+    );
     let completionChars = 0;
     let usage: UsageSnapshot | null = null;
     let finishReason: string | null = null;
@@ -577,6 +623,7 @@ async function benchmarkNonStream(
       usage,
       tokensPerSecond: calculateTokensPerSecond(totalMs, usage),
       finishReason,
+      internalTimings,
       error: response.ok ? undefined : text.slice(0, 300),
     };
   } catch (error: unknown) {
@@ -591,6 +638,7 @@ async function benchmarkNonStream(
       usage: null,
       tokensPerSecond: null,
       finishReason: null,
+      internalTimings: null,
       error: message,
     };
   } finally {
@@ -611,6 +659,9 @@ async function benchmarkStream(config: BenchmarkConfig): Promise<StreamSample> {
     });
 
     const proxyMs = parseXResponseTime(response.headers.get("x-response-time"));
+    const internalTimings = parseInternalTimings(
+      response.headers.get("x-qwenbridge-timing"),
+    );
     if (!response.body) {
       const elapsedMs = round(performance.now() - startedAt);
       return {
@@ -626,6 +677,7 @@ async function benchmarkStream(config: BenchmarkConfig): Promise<StreamSample> {
         usage: null,
         tokensPerSecond: null,
         finishReason: null,
+        internalTimings,
         error: "Response body is empty",
       };
     }
@@ -735,6 +787,7 @@ async function benchmarkStream(config: BenchmarkConfig): Promise<StreamSample> {
       usage,
       tokensPerSecond: calculateTokensPerSecond(totalMs, usage),
       finishReason,
+      internalTimings,
       error: response.ok
         ? undefined
         : "Streaming request returned non-OK status",
@@ -754,6 +807,7 @@ async function benchmarkStream(config: BenchmarkConfig): Promise<StreamSample> {
       usage: null,
       tokensPerSecond: null,
       finishReason: null,
+      internalTimings: null,
       error: message,
     };
   } finally {
@@ -774,6 +828,7 @@ function buildNonStreamBenchmark(
       samples.map((sample) => sample.tokensPerSecond),
     ),
     proxySharePct: calculateProxySharePct(samples),
+    internalTimings: summarizeInternalTimings(samples),
   };
 }
 
@@ -791,6 +846,7 @@ function buildStreamBenchmark(samples: StreamSample[]): StreamBenchmark {
       samples.map((sample) => sample.tokensPerSecond),
     ),
     proxySharePct: calculateProxySharePct(samples),
+    internalTimings: summarizeInternalTimings(samples),
   };
 }
 
@@ -825,6 +881,21 @@ function buildAccountBenchmarkContext(
     configuredAccounts,
     accountMode: configuredAccounts > 0 ? "multi-account" : "global-session",
   };
+}
+
+function formatInternalTimingLine(timings: InternalTimingSummary): string {
+  const orderedKeys = [
+    "parse",
+    "context",
+    "lock",
+    "thread",
+    "upstream",
+    "preResponse",
+  ];
+  const parts = orderedKeys
+    .filter((key) => timings[key])
+    .map((key) => `${key} p50=${formatMs(timings[key].p50)}`);
+  return parts.length > 0 ? parts.join(" | ") : "-";
 }
 
 function printSummary(report: BenchmarkReport): void {
@@ -868,6 +939,9 @@ function printSummary(report: BenchmarkReport): void {
   console.log(
     `- proxy p50: ${formatMs(report.nonStream.proxyMs?.p50 ?? null)} | proxy/total: ${formatPct(report.nonStream.proxySharePct)} | tokens/s médio: ${formatRate(report.nonStream.tokensPerSecond?.avg ?? null, "tok/s")}`,
   );
+  console.log(
+    `- etapas internas: ${formatInternalTimingLine(report.nonStream.internalTimings)}`,
+  );
 
   console.log("\nLatência stream:");
   console.log(
@@ -875,6 +949,9 @@ function printSummary(report: BenchmarkReport): void {
   );
   console.log(
     `- p50 total: ${formatMs(report.stream.totalMs.p50)} | p95 total: ${formatMs(report.stream.totalMs.p95)} | proxy/total: ${formatPct(report.stream.proxySharePct)} | tokens/s médio: ${formatRate(report.stream.tokensPerSecond?.avg ?? null, "tok/s")}`,
+  );
+  console.log(
+    `- etapas internas: ${formatInternalTimingLine(report.stream.internalTimings)}`,
   );
 
   console.log("\nLeitura rápida:");

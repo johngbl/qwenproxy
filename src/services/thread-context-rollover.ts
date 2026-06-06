@@ -215,7 +215,10 @@ export async function prepareThreadContextRollover(
     startedAt: Date.now(),
   };
 
-  logger.info("[thread-context] rollover prepared", {
+  console.log(
+    `[ThreadContext] Rollover prepared | ${plan.reason} | ${plan.oldEstimatedTokens} -> ${newInitialTokens} tokens`,
+  );
+  logger.debug("[thread-context] rollover prepared", {
     event: "thread_context_rollover_prepared",
     sessionId: input.sessionId,
     fromAccount: plan.previousAccountId,
@@ -223,7 +226,7 @@ export async function prepareThreadContextRollover(
     summaryId: plan.summaryId,
     reason: plan.reason,
     oldEstimatedTokens: plan.oldEstimatedTokens,
-    newInitialTokens: plan.newInitialTokens,
+    newInitialTokens,
   });
 
   return { finalPrompt: rolloverPrompt, rollover: plan };
@@ -257,7 +260,8 @@ export function markThreadContextRolloverStarted(input: {
     status: "rollover_in_progress",
   });
 
-  logger.info("[thread-context] rollover started", {
+  console.log(`[ThreadContext] Rollover started | ${plan.reason}`);
+  logger.debug("[thread-context] rollover started", {
     event: "thread_context_rollover_started",
     sessionId: plan.sessionId,
     fromAccount: plan.previousAccountId,
@@ -290,7 +294,8 @@ async function deletePreviousChat(
       plan.sessionId,
       plan.previousChatSessionId,
     );
-    logger.info("[thread-context] old Qwen chat deleted after rollover", {
+    console.log(`[ThreadContext] Old chat deleted | rollover`);
+    logger.debug("[thread-context] old Qwen chat deleted after rollover", {
       event: "thread_context_old_chat_deleted",
       sessionId: plan.sessionId,
       fromAccount: plan.previousAccountId,
@@ -315,7 +320,8 @@ export async function finalizeThreadContextRolloverSuccess(
   if (delayMs > 0) {
     const timeout = setTimeout(() => {
       void deletePreviousChat(plan).catch((error) => {
-        logger.warn("[thread-context] scheduled old chat delete failed", {
+        console.warn(`[ThreadContext] Old chat delete failed | scheduled`);
+        logger.debug("[thread-context] scheduled old chat delete failed", {
           sessionId: plan.sessionId,
           fromChat: plan.previousChatSessionId,
           error: error instanceof Error ? error.message : String(error),
@@ -329,7 +335,8 @@ export async function finalizeThreadContextRolloverSuccess(
   try {
     await deletePreviousChat(plan);
   } catch (error) {
-    logger.warn("[thread-context] old chat delete failed", {
+    console.warn(`[ThreadContext] Old chat delete failed`);
+    logger.debug("[thread-context] old chat delete failed", {
       sessionId: plan.sessionId,
       fromChat: plan.previousChatSessionId,
       error: error instanceof Error ? error.message : String(error),

@@ -98,21 +98,21 @@ export interface StreamProcessingParams {
   onStreamComplete?: () => void;
 }
 
-async function notifyAssistantComplete(
+function scheduleAssistantComplete(
   handler: AssistantCompleteHandler | undefined,
   event: AssistantCompleteEvent,
-): Promise<void> {
+): void {
   if (!handler) return;
-  try {
-    await handler(event);
-  } catch (error) {
-    logger.warn("[chat] assistant completion callback failed", {
-      sessionId: event.sessionId,
-      chatSessionId: event.chatSessionId,
-      responseId: event.responseId,
-      error: error instanceof Error ? error.message : String(error),
+  void Promise.resolve()
+    .then(() => handler(event))
+    .catch((error) => {
+      logger.warn("[chat] assistant completion callback failed", {
+        sessionId: event.sessionId,
+        chatSessionId: event.chatSessionId,
+        responseId: event.responseId,
+        error: error instanceof Error ? error.message : String(error),
+      });
     });
-  }
 }
 
 // ─── Non-streaming (JSON response) ─────────────────────────────────────────────
@@ -435,7 +435,7 @@ export async function processNonStreamingResponse(
       `[Chat] Response sent | ${usage.prompt_tokens} prompt / ${usage.completion_tokens} completion / ${usage.total_tokens} total tokens`,
     );
 
-    await notifyAssistantComplete(onAssistantComplete, {
+    scheduleAssistantComplete(onAssistantComplete, {
       sessionId: logicalSessionId,
       accountId: activeAccountId,
       chatSessionId: currentUiSessionId,
@@ -519,6 +519,7 @@ export async function processStreamingResponse(
   const upstreamError = parseQwenErrorPayload(initialStreamBuffer);
   if (upstreamError) {
     removeStream(completionId);
+    if (onStreamComplete) onStreamComplete();
     return sendOpenAIError(
       c,
       createError(
@@ -1213,7 +1214,7 @@ export async function processStreamingResponse(
         await streamWriter.write(payload);
         flushBuffer = null;
 
-        await notifyAssistantComplete(onAssistantComplete, {
+        scheduleAssistantComplete(onAssistantComplete, {
           sessionId: logicalSessionId,
           accountId: activeAccountId,
           chatSessionId: currentUiSessionId,

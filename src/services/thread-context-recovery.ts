@@ -135,7 +135,8 @@ export async function recoverThreadContextFromQwenHistory(params: {
     }
 
     if (recovered > 0) {
-      logger.info("[thread-context] recovered turns from Qwen history", {
+      console.log(`[ThreadContext] History recovered | ${recovered} turn(s)`);
+      logger.debug("[thread-context] recovered turns from Qwen history", {
         sessionId: params.sessionId,
         chatId: params.chatId,
         recovered,
@@ -144,7 +145,8 @@ export async function recoverThreadContextFromQwenHistory(params: {
 
     return recovered;
   } catch (error) {
-    logger.warn("[thread-context] Qwen history recovery failed", {
+    console.warn(`[ThreadContext] History recovery failed`);
+    logger.debug("[thread-context] Qwen history recovery failed", {
       sessionId: params.sessionId,
       chatId: params.chatId,
       error: error instanceof Error ? error.message : String(error),

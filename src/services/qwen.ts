@@ -7,7 +7,7 @@ import { v4 as uuidv4 } from "uuid";
 import { UpstreamRateLimit, UpstreamError, AuthError } from "../core/errors.js";
 import { buildQwenRequestHeaders, QWEN_WEB_VERSION } from "./qwen-headers.ts";
 import { config } from "../core/config.js";
-import { logger } from "../core/logger.js";
+import { logger, isToolcallDebugEnabled } from "../core/logger.js";
 import { getDatabase } from "../core/database.js";
 
 export class RetryableQwenStreamError extends UpstreamRateLimit {
@@ -670,6 +670,88 @@ async function createQwenChatSession(
   }
 }
 
+const precreatedChatSessions = new Map<string, string[]>();
+const precreatingChatSessions = new Set<string>();
+
+function chatPoolKey(accountId: string | undefined, model: string): string {
+  return `${accountId || "global"}:${model}`;
+}
+
+async function acquireNewQwenChatSession(
+  headers: Record<string, string>,
+  model: string,
+  accountId?: string,
+): Promise<string> {
+  const key = chatPoolKey(accountId, model);
+  const pooled = precreatedChatSessions.get(key);
+  const chatId = pooled?.shift();
+
+  if (chatId) {
+    void scheduleQwenChatPoolRefill(headers, model, accountId);
+    return chatId;
+  }
+
+  const created = await createQwenChatSession(headers, model);
+  void scheduleQwenChatPoolRefill(headers, model, accountId);
+  return created;
+}
+
+async function refillQwenChatPool(
+  headers: Record<string, string>,
+  model: string,
+  accountId?: string,
+): Promise<void> {
+  const targetSize = config.qwen.chatPoolSize;
+  if (targetSize <= 0 || isAuthMockEnabled()) return;
+
+  const key = chatPoolKey(accountId, model);
+  const pooled = precreatedChatSessions.get(key) ?? [];
+  if (pooled.length >= targetSize || precreatingChatSessions.has(key)) return;
+
+  precreatingChatSessions.add(key);
+  try {
+    while ((precreatedChatSessions.get(key)?.length ?? 0) < targetSize) {
+      const chatId = await createQwenChatSession(headers, model);
+      const current = precreatedChatSessions.get(key) ?? [];
+      current.push(chatId);
+      precreatedChatSessions.set(key, current);
+    }
+  } catch (err) {
+    if (isToolcallDebugEnabled()) {
+      logger.debug("[Qwen] Failed to refill chat pool", {
+        accountId: accountId || "global",
+        model,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  } finally {
+    precreatingChatSessions.delete(key);
+  }
+}
+
+function scheduleQwenChatPoolRefill(
+  headers: Record<string, string>,
+  model: string,
+  accountId?: string,
+): void {
+  setTimeout(() => {
+    void refillQwenChatPool(headers, model, accountId);
+  }, 250);
+}
+
+export async function warmQwenChatPool(
+  accountId: string | undefined,
+  modelId: string,
+): Promise<void> {
+  if (config.qwen.chatPoolSize <= 0 || isAuthMockEnabled()) return;
+  const { headers } = await getQwenHeaders(false, accountId);
+  await refillQwenChatPool(
+    headers,
+    modelId.replace("-no-thinking", ""),
+    accountId,
+  );
+}
+
 function isQwenChatNotExistMessage(details: string): boolean {
   return (
     details.includes("is not exist") ||
@@ -786,7 +868,11 @@ export async function createQwenStream(
   let chatSessionId: string | null | undefined;
   if (options && "chatSessionId" in options) {
     if (options.chatSessionId === null || options.chatSessionId === "") {
-      chatSessionId = await createQwenChatSession(headers, model);
+      chatSessionId = await acquireNewQwenChatSession(
+        headers,
+        model,
+        accountId,
+      );
       createdNewChat = true;
     } else {
       chatSessionId = options.chatSessionId;
@@ -794,7 +880,11 @@ export async function createQwenStream(
   } else {
     chatSessionId = captured.chatSessionId;
     if (!chatSessionId) {
-      chatSessionId = await createQwenChatSession(headers, model);
+      chatSessionId = await acquireNewQwenChatSession(
+        headers,
+        model,
+        accountId,
+      );
       createdNewChat = true;
     }
   }

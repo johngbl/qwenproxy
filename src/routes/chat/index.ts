@@ -36,10 +36,24 @@ import {
   upsertThreadContextSession,
 } from "../../services/thread-context-store.ts";
 
+function formatTimingHeader(timings: Record<string, number>): string {
+  return Object.entries(timings)
+    .map(([key, value]) => `${key}=${Math.max(0, Math.round(value))}`)
+    .join(";");
+}
+
 export async function chatCompletions(c: Context) {
   let releaseChatLock: (() => void) | null = null;
+  const startedAt = Date.now();
+  const timings: Record<string, number> = {};
+  const mark = (name: string, since: number) => {
+    timings[name] = Date.now() - since;
+  };
+
   try {
+    let stepStartedAt = Date.now();
     const parsed = await parseRequestBody(c);
+    mark("parse", stepStartedAt);
     const {
       body,
       isStream,
@@ -60,6 +74,7 @@ export async function chatCompletions(c: Context) {
       ? (body as any).tools
       : [];
 
+    stepStartedAt = Date.now();
     const ctx = await buildFinalContext({
       messages,
       systemPrompt,
@@ -70,8 +85,10 @@ export async function chatCompletions(c: Context) {
       conversationKey,
       isInternalSummarizationRequest,
     });
+    mark("context", stepStartedAt);
 
     // Acquire per-chat lock to prevent concurrent requests to the same Qwen chat
+    stepStartedAt = Date.now();
     if (ctx.sessionId && ctx.useThreadNative) {
       const existingThread = getLogicalThreadState(ctx.sessionId);
       const chatId = existingThread?.chatSessionId;
@@ -79,6 +96,7 @@ export async function chatCompletions(c: Context) {
         releaseChatLock = await acquireChatLock(chatId);
       }
     }
+    mark("lock", stepStartedAt);
 
     const shouldManageThreadContext =
       ctx.useThreadNative &&
@@ -90,6 +108,7 @@ export async function chatCompletions(c: Context) {
     let finalPrompt = ctx.finalPrompt;
     let activeRolloverPlan: ThreadContextRolloverPlan | null = null;
 
+    stepStartedAt = Date.now();
     if (shouldManageThreadContext && ctx.sessionId) {
       upsertThreadContextSession({
         sessionId: ctx.sessionId,
@@ -108,6 +127,7 @@ export async function chatCompletions(c: Context) {
       finalPrompt = prepared.finalPrompt;
       activeRolloverPlan = prepared.rollover;
     }
+    mark("thread", stepStartedAt);
 
     const files = ctx.useThreadNative ? currentFiles : allFiles;
 
@@ -120,6 +140,7 @@ export async function chatCompletions(c: Context) {
       `[Chat] Request received | ${body.model} | ${msgCount} msg(s) | ${finalPrompt.length} chars${declaredTools.length ? ` | ${declaredTools.length} tool(s)` : ""}${files.length ? ` | ${files.length} file(s)` : ""}`,
     );
 
+    stepStartedAt = Date.now();
     const streamResult = await acquireUpstreamStream({
       finalPrompt,
       fullPrompt: parsed.systemPrompt + parsed.prompt,
@@ -138,6 +159,9 @@ export async function chatCompletions(c: Context) {
       fullMessageCount: parsed.messageCount,
       toolsCount: declaredTools.length || undefined,
     });
+    mark("upstream", stepStartedAt);
+    timings.preResponse = Date.now() - startedAt;
+    c.header("X-QwenBridge-Timing", formatTimingHeader(timings));
 
     if ("error" in streamResult) {
       // Release per-chat lock on error (no stream to complete)
@@ -263,6 +287,8 @@ export async function chatCompletions(c: Context) {
       ? await processStreamingResponse(params)
       : await processNonStreamingResponse(params);
   } catch (err) {
+    timings.preResponse = Date.now() - startedAt;
+    c.header("X-QwenBridge-Timing", formatTimingHeader(timings));
     if (releaseChatLock) {
       releaseChatLock();
       releaseChatLock = null;

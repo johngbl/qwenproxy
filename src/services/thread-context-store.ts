@@ -893,7 +893,8 @@ export function cleanupExpiredThreadContextSessions(): void {
       )
       .run();
   } catch (error) {
-    logger.warn("[thread-context] failed to cleanup expired sessions", {
+    console.warn(`[ThreadContext] Cleanup failed`);
+    logger.debug("[thread-context] failed to cleanup expired sessions", {
       error: error instanceof Error ? error.message : String(error),
     });
   }

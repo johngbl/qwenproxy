@@ -272,7 +272,8 @@ export async function startServer(options?: {
     const { loadAccounts } = await import("../core/accounts.ts");
     const accounts = loadAccounts();
 
-    const { disableNativeTools } = await import("../services/qwen.ts");
+    const { disableNativeTools, warmQwenChatPool } =
+      await import("../services/qwen.ts");
     const { initHttpAuth, initHttpAuthForAccount, hasGlobalCredentials } =
       await import("../services/auth-http.ts");
 
@@ -286,6 +287,11 @@ export async function startServer(options?: {
           try {
             await initHttpAuthForAccount(account);
             await disableNativeTools(account.id).catch(() => {});
+            await Promise.all(
+              config.qwen.chatPoolModels.map((model) =>
+                warmQwenChatPool(account.id, model).catch(() => {}),
+              ),
+            );
             console.log(`[Server] Account ready: ${account.email}`);
           } catch (err: any) {
             console.error(
@@ -299,6 +305,11 @@ export async function startServer(options?: {
       try {
         await initHttpAuth();
         await disableNativeTools().catch(() => {});
+        await Promise.all(
+          config.qwen.chatPoolModels.map((model) =>
+            warmQwenChatPool(undefined, model).catch(() => {}),
+          ),
+        );
         console.log("[Server] Global Qwen HTTP auth ready.");
       } catch (err: any) {
         console.error(

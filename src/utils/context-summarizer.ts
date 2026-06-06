@@ -67,7 +67,7 @@ export async function summarizeMessages(
 
   try {
     const response = await fetch(
-      `http://localhost:${config.server.port}/v1/chat/completions`,
+      `http://${config.server.internalHost}:${config.server.port}/v1/chat/completions`,
       {
         method: "POST",
         headers,

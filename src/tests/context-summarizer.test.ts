@@ -5,16 +5,18 @@ import { config } from "../core/config.ts";
 import type { Message } from "../utils/types.ts";
 
 const MOCK_PORT = 34567;
-const ENDPOINT = `http://localhost:${MOCK_PORT}/v1/chat/completions`;
+const ENDPOINT = `http://127.0.0.1:${MOCK_PORT}/v1/chat/completions`;
 
 const savedFetch = globalThis.fetch;
 const savedPort = config.server.port;
+const savedInternalHost = config.server.internalHost;
 const savedModel = process.env.CONTEXT_SUMMARIZATION_MODEL;
 const savedTimeout = process.env.CONTEXT_SUMMARIZATION_TIMEOUT;
 const savedApiKey = process.env.API_KEY;
 
 function setMockPort(port: number): void {
   config.server.port = port;
+  config.server.internalHost = "127.0.0.1";
 }
 
 function makeSuccessResponse(summary: string): Response {
@@ -72,6 +74,7 @@ function installFetchMock(
 afterEach(() => {
   globalThis.fetch = savedFetch;
   config.server.port = savedPort;
+  config.server.internalHost = savedInternalHost;
   if (savedModel === undefined) delete process.env.CONTEXT_SUMMARIZATION_MODEL;
   else process.env.CONTEXT_SUMMARIZATION_MODEL = savedModel;
   if (savedTimeout === undefined)

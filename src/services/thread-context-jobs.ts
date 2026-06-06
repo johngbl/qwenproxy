@@ -82,8 +82,14 @@ export function enqueueThreadContextSummary(
   setThreadContextStatus(sessionId, "summary_pending");
 
   console.log(
-    `[ThreadContext] Summary queued | ${sessionId} | ${reason} | queue ${queue.length}`,
+    `[ThreadContext] Summary queued | ${reason} | queue ${queue.length}`,
   );
+  logger.debug("[thread-context] summary queued", {
+    sessionId,
+    reason,
+    priority,
+    queueDepth: queue.length,
+  });
 
   void processSummaryQueue();
   return true;
@@ -108,10 +114,16 @@ async function processSummaryQueue(): Promise<void> {
 
     void (async () => {
       try {
-        console.log(`[ThreadContext] Summary started | ${job.sessionId}`);
+        console.log(`[ThreadContext] Summary started | ${job.reason}`);
+        logger.debug("[thread-context] summary job started", {
+          sessionId: job.sessionId,
+          reason: job.reason,
+          waitMs: Date.now() - job.queuedAt,
+        });
         await runThreadContextSummary(job.sessionId);
       } catch (error) {
-        logger.warn("[thread-context] summary job failed", {
+        console.warn(`[ThreadContext] Summary failed | ${job.reason}`);
+        logger.debug("[thread-context] summary job failed", {
           sessionId: job.sessionId,
           reason: job.reason,
           error: error instanceof Error ? error.message : String(error),

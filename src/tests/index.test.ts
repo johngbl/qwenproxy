@@ -7,6 +7,12 @@ process.env.API_KEY = "";
 
 import { app } from "../api/server.js";
 import { initHttpAuth, closeHttpAuth } from "../services/auth-http.ts";
+import { updateLogicalThreadState } from "../services/qwen.ts";
+import { deriveSessionId } from "../utils/topic-detector.ts";
+import {
+  clearAccountCooldown,
+  getAccountCooldownInfo,
+} from "../core/account-manager.ts";
 
 test("Health check endpoint returns 200", async () => {
   const req = new Request("http://localhost/health");
@@ -350,7 +356,12 @@ test("Chat Completions returns explicit error for non-SSE upstream JSON errors",
     const body = await res.json();
     assert.match(body.error.message, /Qwen upstream error: RateLimited/);
     assert.match(body.error.message, /upper limit/);
+    assert.strictEqual(
+      getAccountCooldownInfo("mock-account")?.reason,
+      "RateLimited",
+    );
   } finally {
+    clearAccountCooldown("mock-account");
     globalThis.fetch = originalFetch;
     await closeHttpAuth();
   }
@@ -399,6 +410,104 @@ test("Chat Completions returns explicit error for stream=true upstream JSON erro
     const body = await res.json();
     assert.match(body.error.message, /Qwen upstream error: RateLimited/);
     assert.match(body.error.message, /upper limit/);
+    assert.strictEqual(
+      getAccountCooldownInfo("mock-account")?.reason,
+      "RateLimited",
+    );
+  } finally {
+    clearAccountCooldown("mock-account");
+    globalThis.fetch = originalFetch;
+    await closeHttpAuth();
+  }
+});
+
+test("Chat Completions releases per-chat lock after initial stream body errors", async () => {
+  const originalFetch = globalThis.fetch;
+  const conversationId = `lock-release-${Date.now()}`;
+  const messages = [{ role: "user", content: "hello lock" }];
+  const sessionId = deriveSessionId(messages as any, "", conversationId);
+  updateLogicalThreadState(sessionId, {
+    accountId: "mock-account",
+    chatSessionId: `lock-error-chat-${Date.now()}`,
+    parentId: "parent-1",
+    instructionsSent: true,
+  });
+
+  let completionCalls = 0;
+  globalThis.fetch = async (input: any) => {
+    const url = typeof input === "string" ? input : input.url;
+    if (url.includes("/api/v2/chat/completions")) {
+      completionCalls++;
+      if (completionCalls === 1) {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            data: {
+              code: "UpstreamError",
+              details: "stream body error before SSE starts",
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "text/event-stream" } },
+        );
+      }
+
+      const stream = new ReadableStream({
+        start(c) {
+          c.enqueue(
+            new TextEncoder().encode(
+              'data: {"choices": [{"delta": {"phase": "answer", "content": "after lock"}}]}\n\n',
+            ),
+          );
+          c.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
+          c.close();
+        },
+      });
+      return new Response(stream, {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      });
+    }
+    return originalFetch(input);
+  };
+
+  try {
+    const firstReq = new Request("http://localhost/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "qwen3.6-plus",
+        conversation_id: conversationId,
+        messages,
+        stream: true,
+      }),
+    });
+
+    const firstRes = await app.fetch(firstReq);
+    assert.strictEqual(firstRes.status, 502);
+
+    const secondReq = new Request("http://localhost/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "qwen3.6-plus",
+        conversation_id: conversationId,
+        messages,
+        stream: true,
+      }),
+    });
+
+    const secondRes = await Promise.race([
+      app.fetch(secondReq),
+      new Promise<Response>((_, reject) => {
+        setTimeout(
+          () => reject(new Error("per-chat lock was not released")),
+          1000,
+        );
+      }),
+    ]);
+    assert.strictEqual(secondRes.status, 200);
+    assert.match(await secondRes.text(), /after lock/);
+    assert.strictEqual(completionCalls, 2);
   } finally {
     globalThis.fetch = originalFetch;
     await closeHttpAuth();

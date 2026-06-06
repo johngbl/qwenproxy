@@ -24,6 +24,7 @@ import { loadAccounts } from "../../core/accounts.ts";
 import { registerStream, removeStream } from "../../core/stream-registry.ts";
 import { logger, isToolcallDebugEnabled } from "../../core/logger.ts";
 import { config } from "../../core/config.ts";
+import { UpstreamRateLimit } from "../../core/errors.ts";
 import { QwenFileEntry } from "../upload.ts";
 
 // Per-chat lock: serializes requests to the same Qwen chat session
@@ -493,7 +494,12 @@ async function tryCreateStreamWithRetry(
       return { success: false, error: err };
     }
 
-    if (err.upstreamCode === "RateLimited" || err.upstreamStatus === 429) {
+    if (
+      (err instanceof UpstreamRateLimit &&
+        !(err instanceof RetryableQwenStreamError)) ||
+      err.upstreamCode === "RateLimited" ||
+      err.upstreamStatus === 429
+    ) {
       const hourHint = err.message?.match(/Wait about (\d+) hour/);
       const cooldownMs = hourHint
         ? parseInt(hourHint[1]) * 60 * 60 * 1000

@@ -3,6 +3,7 @@ import { z } from "zod";
 const envSchema = z.object({
   PORT: z.string().default("3000"),
   HOST: z.string().default("0.0.0.0"),
+  INTERNAL_HOST: z.string().default("127.0.0.1"),
   USER_AGENT: z
     .string()
     .default(
@@ -66,6 +67,8 @@ const envSchema = z.object({
   QWEN_BASE_URL: z.string().default("https://chat.qwen.ai"),
   QWEN_HTTP_ENDPOINT: z.string().default("https://api.qwen.ai/v1/chat"),
   QWEN_API_KEY: z.string().default(""),
+  QWEN_CHAT_POOL_SIZE: z.string().default("1"),
+  QWEN_CHAT_POOL_MODELS: z.string().default("qwen3.7-plus"),
   DELETE_ALL_CHATS_ON_SHUTDOWN: z.string().default("false"),
   API_KEY: z.string().default(""),
 });
@@ -76,6 +79,7 @@ export const config = {
   server: {
     port: parseInt(env.PORT),
     host: env.HOST,
+    internalHost: env.INTERNAL_HOST,
   },
   logging: {
     chatRequests: env.CHAT_REQUEST_LOG === "true",
@@ -172,6 +176,10 @@ export const config = {
     baseUrl: env.QWEN_BASE_URL,
     httpEndpoint: env.QWEN_HTTP_ENDPOINT,
     apiKey: env.QWEN_API_KEY,
+    chatPoolSize: Math.max(0, parseInt(env.QWEN_CHAT_POOL_SIZE)),
+    chatPoolModels: env.QWEN_CHAT_POOL_MODELS.split(",")
+      .map((model) => model.trim())
+      .filter(Boolean),
     deleteAllChatsOnShutdown: env.DELETE_ALL_CHATS_ON_SHUTDOWN === "true",
   },
 };

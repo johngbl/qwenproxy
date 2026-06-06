@@ -25,6 +25,10 @@ export function markAccountRateLimited(
   );
 }
 
+export function clearAccountCooldown(accountId: string): void {
+  cooldowns.delete(accountId);
+}
+
 export function getAccountCooldownInfo(
   accountId: string,
 ): { onCooldown: boolean; remainingMs: number; reason: string } | null {
