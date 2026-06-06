@@ -538,6 +538,10 @@ export async function syncQwenRequestPersonalization(
   });
 }
 
+const DISABLE_TOOLS_TIMEOUT_MS = 15000;
+const DISABLE_TOOLS_MAX_RETRIES = 3;
+const DISABLE_TOOLS_BACKOFF_MS = 2000;
+
 export async function disableNativeTools(accountId?: string): Promise<void> {
   const cacheKey = accountId || "global";
   if (
@@ -565,40 +569,63 @@ export async function disableNativeTools(accountId?: string): Promise<void> {
       },
     };
 
-    const controller = new AbortController();
-    const timeoutId = setTimeout(
-      () => controller.abort(),
-      config.timeouts.http,
-    );
-    const response = await fetch(
-      `${config.qwen.baseUrl}/api/v2/users/user/settings/update`,
-      {
-        method: "POST",
-        headers: buildQwenRequestHeaders({
-          cookie: headers["cookie"],
-          userAgent: headers["user-agent"],
-          bxUa: headers["bx-ua"],
-          bxUmidtoken: headers["bx-umidtoken"],
-          bxV: headers["bx-v"],
-        }),
-        body: JSON.stringify(payload),
-        signal: controller.signal,
-      },
-    );
-    clearTimeout(timeoutId);
+    const requestHeaders = buildQwenRequestHeaders({
+      cookie: headers["cookie"],
+      userAgent: headers["user-agent"],
+      bxUa: headers["bx-ua"],
+      bxUmidtoken: headers["bx-umidtoken"],
+      bxV: headers["bx-v"],
+    });
 
-    if (!response.ok) {
-      const text = await response.text();
-      console.error(
-        `[Qwen] Failed to disable native tools for ${cacheKey}: ${response.status} - ${text}`,
+    let lastError: string | null = null;
+    for (let attempt = 1; attempt <= DISABLE_TOOLS_MAX_RETRIES; attempt++) {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(
+        () => controller.abort(),
+        DISABLE_TOOLS_TIMEOUT_MS,
       );
-    } else {
-      console.log(`[Qwen] Native tools disabled successfully for ${cacheKey}.`);
-      nativeToolsDisabled.add(cacheKey);
+      try {
+        const response = await fetch(
+          `${config.qwen.baseUrl}/api/v2/users/user/settings/update`,
+          {
+            method: "POST",
+            headers: requestHeaders,
+            body: JSON.stringify(payload),
+            signal: controller.signal,
+          },
+        );
+        clearTimeout(timeoutId);
+
+        if (!response.ok) {
+          const text = await response.text();
+          lastError = `${response.status} - ${text}`;
+          console.warn(
+            `[Qwen] Failed to disable native tools for ${cacheKey} (attempt ${attempt}/${DISABLE_TOOLS_MAX_RETRIES}): ${lastError}`,
+          );
+        } else {
+          console.log(
+            `[Qwen] Native tools disabled successfully for ${cacheKey}.`,
+          );
+          nativeToolsDisabled.add(cacheKey);
+          return;
+        }
+      } catch (err: any) {
+        clearTimeout(timeoutId);
+        lastError = err.message;
+        console.warn(
+          `[Qwen] Error disabling native tools for ${cacheKey} (attempt ${attempt}/${DISABLE_TOOLS_MAX_RETRIES}): ${lastError}`,
+        );
+      }
+
+      if (attempt < DISABLE_TOOLS_MAX_RETRIES) {
+        const backoff = DISABLE_TOOLS_BACKOFF_MS * attempt;
+        console.log(`[Qwen] Retrying disable native tools in ${backoff}ms...`);
+        await new Promise((r) => setTimeout(r, backoff));
+      }
     }
-  } catch (err: any) {
+
     console.error(
-      `[Qwen] Error disabling native tools for ${cacheKey}: ${err.message}`,
+      `[Qwen] Failed to disable native tools for ${cacheKey} after ${DISABLE_TOOLS_MAX_RETRIES} attempts. Last error: ${lastError}`,
     );
   } finally {
     disablingNativeToolsInProgress.delete(cacheKey);
