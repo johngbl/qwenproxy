@@ -88,6 +88,7 @@ export interface AcquireParams {
   sessionId: string | null;
   useThreadNative: boolean;
   updateLogicalThread: boolean;
+  allowThreadReuse: boolean;
   forceNewChat?: boolean;
   preferredAccountId?: string | null;
   messageCount?: number;
@@ -192,13 +193,15 @@ export async function acquireUpstreamStream(
     sessionId,
     useThreadNative,
     updateLogicalThread,
+    allowThreadReuse,
     forceNewChat = false,
     preferredAccountId,
   } = params;
 
   const completionId = "chatcmpl-" + uuidv4();
+  // Only load existing thread when reuse is explicitly allowed
   const existingThread =
-    useThreadNative && !forceNewChat ? getLogicalThreadState(sessionId) : null;
+    allowThreadReuse && !forceNewChat ? getLogicalThreadState(sessionId) : null;
   const resolved = resolveInitialAccount(
     preferredAccountId ?? existingThread?.accountId,
   );
@@ -254,6 +257,8 @@ export async function acquireUpstreamStream(
         existingChatSessionId: existingThread?.chatSessionId || null,
         existingParentId: existingThread?.parentId || null,
         instructionsSent: existingThread?.instructionsSent || false,
+        allowThreadReuse,
+        hasExplicitConversationKey: params.allowThreadReuse,
       });
     }
 

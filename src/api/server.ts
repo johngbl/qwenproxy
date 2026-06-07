@@ -13,6 +13,7 @@ import { uploadFile } from "../routes/upload.js";
 import { sendOpenAIError } from "./error-helpers.js";
 import { AuthError, NotFoundError, UpstreamRateLimit } from "../core/errors.js";
 import type { CacheKey } from "../cache/memory-cache.js";
+import type { QwenAccount } from "../core/accounts.js";
 
 // Module-level state (initialized in startServer)
 let cache: MemoryCache | undefined;
@@ -165,6 +166,45 @@ function buildStartedServerInfo(): StartedServerInfo {
   };
 }
 
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function warmConfiguredChatPools(
+  warmQwenChatPool: (
+    accountId: string | undefined,
+    modelId: string,
+  ) => Promise<void>,
+  accountId?: string,
+): Promise<void> {
+  await Promise.all(
+    config.qwen.chatPoolModels.map((model) =>
+      warmQwenChatPool(accountId, model).catch(() => {}),
+    ),
+  );
+}
+
+async function prepareQwenRuntime(params: {
+  accountId?: string;
+  successMessage: string;
+  failureMessage: string;
+  initAuth: () => Promise<void>;
+  disableNativeTools: (accountId?: string) => Promise<void>;
+  warmQwenChatPool: (
+    accountId: string | undefined,
+    modelId: string,
+  ) => Promise<void>;
+}): Promise<void> {
+  try {
+    await params.initAuth();
+    await params.disableNativeTools(params.accountId).catch(() => {});
+    await warmConfiguredChatPools(params.warmQwenChatPool, params.accountId);
+    console.log(params.successMessage);
+  } catch (error) {
+    console.error(params.failureMessage, getErrorMessage(error));
+  }
+}
+
 async function cleanupServerResources(): Promise<void> {
   watchdog?.stop();
   watchdog = undefined;
@@ -283,40 +323,25 @@ export async function startServer(options?: {
       );
 
       await Promise.all(
-        accounts.map(async (account) => {
-          try {
-            await initHttpAuthForAccount(account);
-            await disableNativeTools(account.id).catch(() => {});
-            await Promise.all(
-              config.qwen.chatPoolModels.map((model) =>
-                warmQwenChatPool(account.id, model).catch(() => {}),
-              ),
-            );
-            console.log(`[Server] Account ready: ${account.email}`);
-          } catch (err: any) {
-            console.error(
-              `[Server] Failed to initialize account ${account.email}:`,
-              err.message,
-            );
-          }
-        }),
+        accounts.map((account: QwenAccount) =>
+          prepareQwenRuntime({
+            accountId: account.id,
+            successMessage: `[Server] Account ready: ${account.email}`,
+            failureMessage: `[Server] Failed to initialize account ${account.email}:`,
+            initAuth: () => initHttpAuthForAccount(account),
+            disableNativeTools,
+            warmQwenChatPool,
+          }),
+        ),
       );
     } else if (hasGlobalCredentials()) {
-      try {
-        await initHttpAuth();
-        await disableNativeTools().catch(() => {});
-        await Promise.all(
-          config.qwen.chatPoolModels.map((model) =>
-            warmQwenChatPool(undefined, model).catch(() => {}),
-          ),
-        );
-        console.log("[Server] Global Qwen HTTP auth ready.");
-      } catch (err: any) {
-        console.error(
-          "[Server] Failed to initialize global Qwen auth:",
-          err.message,
-        );
-      }
+      await prepareQwenRuntime({
+        successMessage: "[Server] Global Qwen HTTP auth ready.",
+        failureMessage: "[Server] Failed to initialize global Qwen auth:",
+        initAuth: () => initHttpAuth(),
+        disableNativeTools,
+        warmQwenChatPool,
+      });
     } else {
       console.warn(
         "[Server] No Qwen credentials configured. Requests will fail until QWEN_EMAIL/QWEN_PASSWORD or QWEN_ACCOUNTS are provided.",

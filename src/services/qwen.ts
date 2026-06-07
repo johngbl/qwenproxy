@@ -366,6 +366,47 @@ function textSize(value: unknown): {
   };
 }
 
+function buildCapturedQwenHeaders(
+  headers: Record<string, string>,
+  options: {
+    chatSessionId?: string | null;
+    referer?: string;
+    extra?: Record<string, string>;
+  } = {},
+): Record<string, string> {
+  return buildQwenRequestHeaders({
+    cookie: headers["cookie"],
+    userAgent: headers["user-agent"],
+    bxUa: headers["bx-ua"],
+    bxUmidtoken: headers["bx-umidtoken"],
+    bxV: headers["bx-v"],
+    chatSessionId: options.chatSessionId,
+    extra: {
+      ...(options.referer ? { Referer: options.referer } : {}),
+      ...(options.extra || {}),
+    },
+  });
+}
+
+async function readJsonTextResponse(
+  response: Response,
+  options: { strict?: boolean } = {},
+): Promise<{ raw: string; json: any }> {
+  const raw = await response.text();
+  if (!raw) {
+    return { raw, json: null };
+  }
+
+  try {
+    return { raw, json: JSON.parse(raw) };
+  } catch (error) {
+    if (options.strict) {
+      throw error;
+    }
+    return { raw, json: null };
+  }
+}
+
 export async function syncQwenRequestPersonalization(
   instruction: string,
   accountId?: string,
@@ -381,15 +422,8 @@ export async function syncQwenRequestPersonalization(
 
   const cacheKey = accountId || "global";
   const { headers } = await getQwenHeaders(false, accountId);
-  const requestHeaders = buildQwenRequestHeaders({
-    cookie: headers["cookie"],
-    userAgent: headers["user-agent"],
-    bxUa: headers["bx-ua"],
-    bxUmidtoken: headers["bx-umidtoken"],
-    bxV: headers["bx-v"],
-    extra: {
-      Referer: `${config.qwen.baseUrl}/settings/personalization`,
-    },
+  const requestHeaders = buildCapturedQwenHeaders(headers, {
+    referer: `${config.qwen.baseUrl}/settings/personalization`,
   });
 
   const payload = {
@@ -432,13 +466,7 @@ export async function syncQwenRequestPersonalization(
           headers: requestHeaders,
         },
       );
-      const existingRaw = await existingResponse.text();
-      let existingJson: any = null;
-      try {
-        existingJson = existingRaw ? JSON.parse(existingRaw) : null;
-      } catch {
-        existingJson = null;
-      }
+      const { json: existingJson } = await readJsonTextResponse(existingResponse);
       existing = textSize(existingJson?.data?.personalization?.instruction);
       if (existing.hash === sent.hash) {
         lastSyncedPersonalizationHashes.set(cacheKey, sent.hash);
@@ -472,13 +500,7 @@ export async function syncQwenRequestPersonalization(
       body: JSON.stringify(payload),
     },
   );
-  const raw = await response.text();
-  let json: any = null;
-  try {
-    json = raw ? JSON.parse(raw) : null;
-  } catch {
-    json = null;
-  }
+  const { raw, json } = await readJsonTextResponse(response);
 
   if (!response.ok || json?.success === false) {
     console.warn(
@@ -505,13 +527,7 @@ export async function syncQwenRequestPersonalization(
         headers: requestHeaders,
       },
     );
-    const verifyRaw = await verifyResponse.text();
-    let verifyJson: any = null;
-    try {
-      verifyJson = verifyRaw ? JSON.parse(verifyRaw) : null;
-    } catch {
-      verifyJson = null;
-    }
+    const { json: verifyJson } = await readJsonTextResponse(verifyResponse);
     stored = textSize(verifyJson?.data?.personalization?.instruction);
   }
 
@@ -569,13 +585,7 @@ export async function disableNativeTools(accountId?: string): Promise<void> {
       },
     };
 
-    const requestHeaders = buildQwenRequestHeaders({
-      cookie: headers["cookie"],
-      userAgent: headers["user-agent"],
-      bxUa: headers["bx-ua"],
-      bxUmidtoken: headers["bx-umidtoken"],
-      bxV: headers["bx-v"],
-    });
+    const requestHeaders = buildCapturedQwenHeaders(headers);
 
     let lastError: string | null = null;
     for (let attempt = 1; attempt <= DISABLE_TOOLS_MAX_RETRIES; attempt++) {
@@ -651,29 +661,20 @@ export async function deleteAllQwenChats(accountId?: string): Promise<boolean> {
   const { headers } = await getQwenHeaders(false, accountId);
   const response = await fetch(`${config.qwen.baseUrl}/api/v2/chats/`, {
     method: "DELETE",
-    headers: buildQwenRequestHeaders({
-      cookie: headers["cookie"],
-      userAgent: headers["user-agent"],
-      bxUa: headers["bx-ua"],
-      bxUmidtoken: headers["bx-umidtoken"],
-      bxV: headers["bx-v"],
-      extra: {
-        Referer: `${config.qwen.baseUrl}/settings/chats`,
-        source: "web",
-        timezone: new Date().toString().split(" (")[0],
-        version: QWEN_WEB_VERSION,
-      },
+    headers: buildCapturedQwenHeaders(headers, {
+      referer: `${config.qwen.baseUrl}/settings/chats`,
     }),
   });
 
-  const raw = await response.text();
+  const { raw, json: parsed } = await readJsonTextResponse(response, {
+    strict: true,
+  });
   if (!response.ok) {
     throw new Error(
       `Failed to delete chats from Qwen: ${response.status} ${raw.substring(0, 200)}`,
     );
   }
 
-  const parsed = raw ? JSON.parse(raw) : null;
   const success = parsed?.success === true && parsed?.data?.status === true;
   if (!success) {
     throw new Error(
@@ -695,30 +696,21 @@ export async function deleteQwenChat(
     `${config.qwen.baseUrl}/api/v2/chats/${encodeURIComponent(chatId)}`,
     {
       method: "DELETE",
-      headers: buildQwenRequestHeaders({
-        cookie: headers["cookie"],
-        userAgent: headers["user-agent"],
-        bxUa: headers["bx-ua"],
-        bxUmidtoken: headers["bx-umidtoken"],
-        bxV: headers["bx-v"],
-        extra: {
-          Referer: `${config.qwen.baseUrl}/settings/chats`,
-          source: "web",
-          timezone: new Date().toString().split(" (")[0],
-          version: QWEN_WEB_VERSION,
-        },
+      headers: buildCapturedQwenHeaders(headers, {
+        referer: `${config.qwen.baseUrl}/settings/chats`,
       }),
     },
   );
 
-  const raw = await response.text();
+  const { raw, json: parsed } = await readJsonTextResponse(response, {
+    strict: true,
+  });
   if (!response.ok) {
     throw new Error(
       `Failed to delete Qwen chat ${chatId}: ${response.status} ${raw.substring(0, 200)}`,
     );
   }
 
-  const parsed = raw ? JSON.parse(raw) : null;
   const success = parsed?.success === true && parsed?.data?.status === true;
   if (!success) {
     throw new Error(
@@ -739,30 +731,20 @@ export async function fetchQwenChatHistory(
     `${config.qwen.baseUrl}/api/v2/chats/${encodeURIComponent(chatId)}`,
     {
       method: "GET",
-      headers: buildQwenRequestHeaders({
-        cookie: headers["cookie"],
-        userAgent: headers["user-agent"],
-        bxUa: headers["bx-ua"],
-        bxUmidtoken: headers["bx-umidtoken"],
-        bxV: headers["bx-v"],
+      headers: buildCapturedQwenHeaders(headers, {
         chatSessionId: chatId,
-        extra: {
-          Referer: `${config.qwen.baseUrl}/c/${chatId}`,
-          source: "web",
-          timezone: new Date().toString().split(" (")[0],
-          version: QWEN_WEB_VERSION,
-        },
+        referer: `${config.qwen.baseUrl}/c/${chatId}`,
       }),
     },
   );
 
-  const raw = await response.text();
+  const { raw, json } = await readJsonTextResponse(response, { strict: true });
   if (!response.ok) {
     throw new Error(
       `Failed to fetch Qwen chat ${chatId}: ${response.status} ${raw.substring(0, 200)}`,
     );
   }
-  return raw ? JSON.parse(raw) : null;
+  return json;
 }
 
 export async function fetchQwenModels(
@@ -787,7 +769,6 @@ export async function fetchQwenModels(
       bxUmidtoken,
       extra: {
         timezone: new Date().toString(),
-        source: "web",
       },
     }),
   });
@@ -835,18 +816,8 @@ async function createQwenChatSession(
   try {
     const response = await fetch(`${config.qwen.baseUrl}/api/v2/chats/new`, {
       method: "POST",
-      headers: buildQwenRequestHeaders({
-        cookie: headers["cookie"],
-        userAgent: headers["user-agent"],
-        bxUa: headers["bx-ua"],
-        bxUmidtoken: headers["bx-umidtoken"],
-        bxV: headers["bx-v"],
-        extra: {
-          Referer: `${config.qwen.baseUrl}/c/new-chat`,
-          timezone: new Date().toString().split(" (")[0],
-          source: "web",
-          version: QWEN_WEB_VERSION,
-        },
+      headers: buildCapturedQwenHeaders(headers, {
+        referer: `${config.qwen.baseUrl}/c/new-chat`,
       }),
       body: JSON.stringify({
         title: "Nova Conversa",
@@ -859,7 +830,7 @@ async function createQwenChatSession(
       signal: controller.signal,
     });
 
-    const raw = await response.text();
+    const { raw, json } = await readJsonTextResponse(response, { strict: true });
     if (!response.ok) {
       throw new QwenUpstreamError(
         `Qwen create chat failed: ${response.status} ${response.statusText} - ${raw.substring(0, 300)}`,
@@ -868,7 +839,6 @@ async function createQwenChatSession(
       );
     }
 
-    const json = raw ? JSON.parse(raw) : null;
     const chatId =
       json?.chat_id ||
       json?.id ||
@@ -1244,16 +1214,9 @@ export async function createQwenStream(
   try {
     response = await fetch(url, {
       method: "POST",
-      headers: buildQwenRequestHeaders({
-        cookie: headers["cookie"],
-        userAgent: headers["user-agent"],
-        bxUa: headers["bx-ua"],
-        bxUmidtoken: headers["bx-umidtoken"],
-        bxV: headers["bx-v"],
+      headers: buildCapturedQwenHeaders(headers, {
         chatSessionId,
         extra: {
-          Accept: "application/json",
-          timezone: new Date().toString().split(" (")[0],
           "x-accel-buffering": "no",
         },
       }),

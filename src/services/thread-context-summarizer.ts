@@ -48,10 +48,7 @@ function turnToConversationLine(turn: ThreadContextTurn): string {
   return `${roleLabel(turn.role)}: ${turn.content}`;
 }
 
-function compactTurnToConversationLine(
-  turn: ThreadContextTurn,
-  _maxContentCharacters: number,
-): string {
+function compactTurnToConversationLine(turn: ThreadContextTurn): string {
   const content = turn.content || "";
   return `${roleLabel(turn.role)}: ${content}`;
 }
@@ -72,7 +69,6 @@ function buildSummaryInputMessages(params: {
   previousSummary: ThreadContextSummary | null;
   newTurns: ThreadContextTurn[];
   anchorTurns: ThreadContextTurn[];
-  maxInputTokens: number;
 }): Message[] {
   const parts: string[] = [];
 
@@ -87,20 +83,10 @@ function buildSummaryInputMessages(params: {
   }
 
   const turns = dedupeTurns([...params.newTurns, ...params.anchorTurns]);
-  const previousSummaryTokens = params.previousSummary?.summaryTokens ?? 0;
-  const availableTurnTokens = Math.max(
-    800,
-    params.maxInputTokens - previousSummaryTokens - 1200,
-  );
-  const perTurnTokenBudget = Math.max(
-    200,
-    Math.floor(availableTurnTokens / Math.max(turns.length, 1)),
-  );
-  const maxContentCharacters = Math.max(800, perTurnTokenBudget * 3);
 
   parts.push(
     `<conversation_turns_to_fold>\n${turns
-      .map((turn) => compactTurnToConversationLine(turn, maxContentCharacters))
+      .map((turn) => compactTurnToConversationLine(turn))
       .join("\n\n")}\n</conversation_turns_to_fold>`,
   );
 
@@ -150,7 +136,6 @@ export async function runThreadContextSummary(
     previousSummary: latestSummary,
     newTurns: unsummarizedTurns,
     anchorTurns,
-    maxInputTokens,
   });
 
   try {

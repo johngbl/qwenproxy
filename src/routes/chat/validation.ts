@@ -21,6 +21,7 @@ export interface ParsedRequest {
   isStream: boolean;
   isInternalSummarizationRequest: boolean;
   conversationKey: string | null;
+  hasExplicitConversationKey: boolean;
   systemPrompt: string;
   prompt: string;
   currentPrompt: string;
@@ -72,6 +73,7 @@ export async function parseRequestBody(c: Context): Promise<ParsedRequest> {
     isStream,
     isInternalSummarizationRequest,
     conversationKey,
+    hasExplicitConversationKey: conversationKey !== null,
     systemPrompt,
     prompt,
     currentPrompt,

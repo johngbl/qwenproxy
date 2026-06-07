@@ -83,13 +83,15 @@ export async function chatCompletions(c: Context) {
       modelId,
       enableThinking,
       conversationKey,
+      hasExplicitConversationKey: parsed.hasExplicitConversationKey,
       isInternalSummarizationRequest,
     });
     mark("context", stepStartedAt);
 
     // Acquire per-chat lock to prevent concurrent requests to the same Qwen chat
+    // Only lock when we have an explicit conversation key (allowThreadReuse)
     stepStartedAt = Date.now();
-    if (ctx.sessionId && ctx.useThreadNative) {
+    if (ctx.allowThreadReuse && ctx.sessionId) {
       const existingThread = getLogicalThreadState(ctx.sessionId);
       const chatId = existingThread?.chatSessionId;
       if (chatId) {
@@ -98,6 +100,8 @@ export async function chatCompletions(c: Context) {
     }
     mark("lock", stepStartedAt);
 
+    // Thread context management should run for ALL requests in thread-native mode
+    // This ensures the first turn is saved and thread context is properly managed
     const shouldManageThreadContext =
       ctx.useThreadNative &&
       !ctx.isAuxiliaryRequest &&
@@ -151,6 +155,16 @@ export async function chatCompletions(c: Context) {
       sessionId: ctx.sessionId,
       useThreadNative: ctx.useThreadNative,
       isNewSession: ctx.isNewSession,
+      hasExplicitConversationKey: ctx.hasExplicitConversationKey,
+      allowThreadReuse: ctx.allowThreadReuse,
+      sessionIdentitySource: parsed.hasExplicitConversationKey
+        ? typeof body.session_id === "string" &&
+          body.session_id.trim().length > 0
+          ? "session_id"
+          : "conversation_id"
+        : ctx.isNewSession
+          ? "none-new-chat"
+          : "implicit-continuation",
     });
 
     stepStartedAt = Date.now();
@@ -167,6 +181,7 @@ export async function chatCompletions(c: Context) {
       sessionId: ctx.sessionId,
       useThreadNative: ctx.useThreadNative,
       updateLogicalThread: ctx.updateLogicalThread,
+      allowThreadReuse: ctx.allowThreadReuse,
       forceNewChat:
         activeRolloverPlan !== null || isInternalSummarizationRequest,
       preferredAccountId: activeRolloverPlan?.preferredAccountId ?? null,

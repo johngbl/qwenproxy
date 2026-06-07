@@ -263,12 +263,13 @@ test("session-parent-tracking: sends only current delta using response message_i
 
   try {
     process.env.TEST_SESSION_ID = "test-session-parent-tracking";
-    // Turn 1
+    // Turn 1 - with explicit session_id to enable thread reuse
     const req1 = new Request("http://localhost/v1/chat/completions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: "qwen3.6-plus",
+        session_id: "test-session-parent-tracking",
         messages: [{ role: "user", content: "Turn 1" }],
       }),
     });
@@ -278,12 +279,13 @@ test("session-parent-tracking: sends only current delta using response message_i
     // Consume the stream to ensure the message_id is processed
     await res1.text();
 
-    // Turn 2
+    // Turn 2 - with same session_id to continue the thread
     const req2 = new Request("http://localhost/v1/chat/completions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: "qwen3.6-plus",
+        session_id: "test-session-parent-tracking",
         messages: [
           { role: "user", content: "Turn 1" },
           { role: "assistant", content: "Response 1" },
@@ -589,5 +591,144 @@ test("topic-change: same agent conversation keeps the upstream parent chain", as
     } else {
       process.env.TEST_SESSION_ID = originalTestSessionId;
     }
+  }
+});
+
+test("explicit-session-id: without session_id, creates new chat each time", async () => {
+  const createdChatIds: string[] = [];
+  let requestCount = 0;
+
+  const restore = setupFetchMock((url, init) => {
+    requestCount++;
+    const chatId = `new-chat-${requestCount}`;
+    createdChatIds.push(chatId);
+
+    const stream = new ReadableStream({
+      start(c) {
+        c.enqueue(
+          new TextEncoder().encode(
+            `data: {"response.created":{"chat_id":"${chatId}","response_id":"resp-${requestCount}"}}\n\n`,
+          ),
+        );
+        c.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
+        c.close();
+      },
+    });
+    return new Response(stream, { status: 200 });
+  });
+
+  try {
+    // Request 1 - no session_id
+    const res1 = await app.fetch(
+      new Request("http://localhost/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "qwen3.6-plus",
+          messages: [{ role: "user", content: "Hello" }],
+        }),
+      }),
+    );
+    assert.strictEqual(res1.status, 200);
+    await res1.text();
+
+    // Request 2 - same content, still no session_id
+    const res2 = await app.fetch(
+      new Request("http://localhost/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "qwen3.6-plus",
+          messages: [{ role: "user", content: "Hello" }],
+        }),
+      }),
+    );
+    assert.strictEqual(res2.status, 200);
+    await res2.text();
+
+    // Without session_id, each request should create a new chat
+    assert.strictEqual(createdChatIds.length, 2);
+    assert.notStrictEqual(
+      createdChatIds[0],
+      createdChatIds[1],
+      "Without session_id, each request should create a different chat",
+    );
+  } finally {
+    restore();
+  }
+});
+
+test("explicit-session-id: with session_id, reuses same chat", async () => {
+  const capturedPayloads: any[] = [];
+  let requestCount = 0;
+
+  const restore = setupFetchMock((url, init) => {
+    requestCount++;
+    const bodyObj = JSON.parse((init?.body as string) || "{}");
+    capturedPayloads.push(bodyObj);
+
+    const chatId = requestCount === 1 ? "reused-chat" : "reused-chat";
+    const responseId = `resp-${requestCount}`;
+
+    const stream = new ReadableStream({
+      start(c) {
+        c.enqueue(
+          new TextEncoder().encode(
+            `data: {"response.created":{"chat_id":"${chatId}","response_id":"${responseId}"}}\n\n`,
+          ),
+        );
+        c.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
+        c.close();
+      },
+    });
+    return new Response(stream, { status: 200 });
+  });
+
+  try {
+    const sessionId = "test-reuse-session";
+
+    // Request 1 - with session_id
+    const res1 = await app.fetch(
+      new Request("http://localhost/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "qwen3.6-plus",
+          session_id: sessionId,
+          messages: [{ role: "user", content: "Hello" }],
+        }),
+      }),
+    );
+    assert.strictEqual(res1.status, 200);
+    await res1.text();
+
+    // Request 2 - same session_id
+    const res2 = await app.fetch(
+      new Request("http://localhost/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "qwen3.6-plus",
+          session_id: sessionId,
+          messages: [
+            { role: "user", content: "Hello" },
+            { role: "assistant", content: "Hi!" },
+            { role: "user", content: "How are you?" },
+          ],
+        }),
+      }),
+    );
+    assert.strictEqual(res2.status, 200);
+    await res2.text();
+
+    // With session_id, parent tracking should work
+    assert.strictEqual(capturedPayloads[0].parent_id, null);
+    assert.strictEqual(
+      capturedPayloads[1].parent_id,
+      "resp-1",
+      "With session_id, Turn 2 should use response_id from Turn 1 as parent",
+    );
+  } finally {
+    restore();
   }
 });

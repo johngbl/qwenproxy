@@ -35,6 +35,8 @@ export interface FinalContext {
   isAuxiliaryRequest: boolean;
   isTitleGenerationRequest: boolean;
   requestPersonalizationInstruction: string | null;
+  hasExplicitConversationKey: boolean;
+  allowThreadReuse: boolean;
 }
 
 export interface BuildContextParams {
@@ -45,6 +47,7 @@ export interface BuildContextParams {
   modelId: string;
   enableThinking: boolean;
   conversationKey: string | null;
+  hasExplicitConversationKey: boolean;
   isInternalSummarizationRequest: boolean;
 }
 
@@ -59,6 +62,7 @@ export async function buildFinalContext(
     modelId,
     enableThinking,
     conversationKey,
+    hasExplicitConversationKey,
     isInternalSummarizationRequest,
   } = params;
 
@@ -67,7 +71,18 @@ export async function buildFinalContext(
     !isInternalSummarizationRequest && config.context.mode === "thread-native";
   const isNewSession = !messages.some((m) => m.role === "assistant");
 
-  // Compute sessionId and existingThread before activePrompt
+  // Thread reuse is allowed when:
+  // 1. Thread-native mode is active
+  // 2. Either: explicit session_id/conversation_id was provided
+  //    OR: this is a continuation (has assistant messages in history)
+  // This prevents new IDE chats from accidentally reusing old Qwen chats
+  // while still allowing continuations without explicit session_id
+  const allowThreadReuse =
+    useThreadNative && (hasExplicitConversationKey || !isNewSession); // has assistant messages = continuation of existing chat
+
+  // Compute sessionId: only generate a persistent session ID when we have
+  // an explicit conversation key. Otherwise, generate an ephemeral ID for
+  // logging/metrics only (not used for thread reuse).
   const sessionId =
     !isInternalSummarizationRequest && (conversationKey || useThreadNative)
       ? deriveSessionId(
@@ -77,7 +92,8 @@ export async function buildFinalContext(
         )
       : null;
 
-  const existingThread = useThreadNative
+  // Only load existing thread when reuse is allowed
+  const existingThread = allowThreadReuse
     ? getLogicalThreadState(sessionId)
     : null;
 
@@ -96,7 +112,6 @@ export async function buildFinalContext(
     !isAuxiliaryRequest &&
     systemPrompt.trim().length > 0;
   const estimatedTokens = estimateTokenCount(systemPrompt + activePrompt);
-  const updateLogicalThread = !isTitleGenerationRequest;
   // Normally, system/tool instructions are prepended to the chat prompt. In the
   // experimental Qwen personalization mode, they are synced to the account-level
   // personalization.instruction instead, so they do not appear as chat content.
@@ -148,7 +163,9 @@ export async function buildFinalContext(
     shouldResetUpstreamThread,
     isNewSession,
     useThreadNative,
-    updateLogicalThread,
+    // Always update logical thread in thread-native mode (except title generation)
+    // This ensures the thread state is saved even for new sessions
+    updateLogicalThread: useThreadNative && !isTitleGenerationRequest,
     isThinkingModel,
     estimatedTokens,
     modelContextWindow,
@@ -157,6 +174,8 @@ export async function buildFinalContext(
     requestPersonalizationInstruction: useRequestPersonalization
       ? systemPrompt
       : null,
+    hasExplicitConversationKey,
+    allowThreadReuse,
   };
 }
 

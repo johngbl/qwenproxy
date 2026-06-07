@@ -219,8 +219,6 @@ Comandos úteis:
 | Variável | Default | Descrição |
 |---|---|---|
 | `QWEN_BASE_URL` | `https://chat.qwen.ai` | Valor reservado/compatibilidade para integrações futuras. |
-| `QWEN_HTTP_ENDPOINT` | `https://api.qwen.ai/v1/chat` | Valor reservado/compatibilidade. |
-| `QWEN_API_KEY` | vazio | Reservado para cenários alternativos; o fluxo principal usa sessão autenticada do Qwen via HTTP direto. |
 
 ---
 

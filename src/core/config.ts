@@ -65,8 +65,6 @@ const envSchema = z.object({
   RATE_LIMIT_RPM: z.string().default("300"),
   RATE_LIMIT_CONCURRENCY: z.string().default("30"),
   QWEN_BASE_URL: z.string().default("https://chat.qwen.ai"),
-  QWEN_HTTP_ENDPOINT: z.string().default("https://api.qwen.ai/v1/chat"),
-  QWEN_API_KEY: z.string().default(""),
   QWEN_CHAT_POOL_SIZE: z.string().default("1"),
   QWEN_CHAT_POOL_MODELS: z.string().default("qwen3.7-plus"),
   QWEN_PERSONALIZATION_FROM_REQUEST: z.string().default("true"),
@@ -176,8 +174,6 @@ export const config = {
   apiKey: env.API_KEY,
   qwen: {
     baseUrl: env.QWEN_BASE_URL,
-    httpEndpoint: env.QWEN_HTTP_ENDPOINT,
-    apiKey: env.QWEN_API_KEY,
     chatPoolSize: Math.max(0, parseInt(env.QWEN_CHAT_POOL_SIZE)),
     chatPoolModels: env.QWEN_CHAT_POOL_MODELS.split(",")
       .map((model) => model.trim())
