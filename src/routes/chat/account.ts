@@ -421,6 +421,9 @@ async function tryCreateStreamWithRetry(
   let retries = 3;
   let retryDelay = 500;
   let attempt = 0;
+  let quotaRetried = false;
+  const accounts = loadAccounts();
+  const isSingleAccount = accounts.length <= 1;
 
   while (retries > 0) {
     attempt++;
@@ -560,14 +563,24 @@ async function tryCreateStreamWithRetry(
     }
 
     if (isAccountUnavailableError(err)) {
+      const quotaMsg = err.message || "Unknown quota error";
+      console.warn(
+        `[Chat] Quota exceeded | ${accountEmail} | ${quotaMsg.substring(0, 200)}`,
+      );
+
+      // Single account: retry once after delay before giving up
+      if (isSingleAccount && !quotaRetried && retries > 1) {
+        quotaRetried = true;
+        console.warn(`[Chat] Single account mode | Retrying in 2s...`);
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        continue;
+      }
+
       const hourHint = err.message?.match(/Wait about (\d+) hour/);
       const cooldownMs = hourHint
         ? parseInt(hourHint[1]) * 60 * 60 * 1000
         : undefined;
       markAccountRateLimited(accountId, cooldownMs, "RateLimited");
-      console.warn(
-        `[Chat] Account ${accountEmail} (${accountId}) rate-limited. Marked for cooldown.`,
-      );
       return { success: false, error: err };
     }
 

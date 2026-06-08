@@ -13,6 +13,7 @@ import { buildQwenRequestHeaders } from "../../services/qwen-headers.ts";
 import {
   updateLogicalThreadParent,
   updateSessionParent,
+  QwenUpstreamError,
 } from "../../services/qwen.ts";
 import type { OpenAIRequest, Usage } from "../../utils/types.ts";
 import { StreamingToolParser } from "../../tools/parser.ts";
@@ -24,7 +25,11 @@ import {
   updateStreamTargetResponseId,
 } from "../../core/stream-registry.ts";
 import { metrics } from "../../core/metrics.js";
-import { logger, isToolcallDebugEnabled } from "../../core/logger.js";
+import {
+  logger,
+  isToolcallDebugEnabled,
+  upstreamDebugEnabled,
+} from "../../core/logger.js";
 import { sendOpenAIError, createError } from "../../api/error-helpers.js";
 import { classifyError } from "../../api/error-classifier.js";
 import type { QwenBridgeStatusCode } from "../../core/errors.js";
@@ -259,9 +264,30 @@ export async function processNonStreamingResponse(
         const dataStr = trimmed.slice(6);
         if (dataStr === "[DONE]") continue;
 
+        if (upstreamDebugEnabled) {
+          console.log(`[Upstream] Chunk | ${dataStr.substring(0, 500)}`);
+        }
+
         try {
           const chunk = JSON.parse(dataStr);
           rememberSession(extractChatSessionId(chunk));
+
+          // Check for upstream error in chunk
+          if (chunk.error) {
+            const errDetails =
+              chunk.error.details ||
+              chunk.error.message ||
+              JSON.stringify(chunk.error);
+            const errCode = chunk.error.code || "upstream_error";
+            console.error(
+              `[Upstream] Error | ${errCode} | ${errDetails.substring(0, 200)}`,
+            );
+            throw new QwenUpstreamError(
+              `Qwen upstream error: ${errCode}: ${errDetails}`,
+              errCode,
+              502,
+            );
+          }
 
           if (
             chunk["response.created"] &&
@@ -880,6 +906,10 @@ export async function processStreamingResponse(
             continue;
           }
 
+          if (upstreamDebugEnabled) {
+            console.log(`[Upstream] Chunk | ${dataStr.substring(0, 500)}`);
+          }
+
           // Fast-path: simple text delta (avoids JSON.parse for ~90% of chunks)
           const fastMatch = dataStr.match(
             /^\{"response_id":"[^"]*","choices":\[\{"delta":\{"content":"((?:[^"\\]|\\.)*)"\}\}\]\}$/,
@@ -905,6 +935,23 @@ export async function processStreamingResponse(
           try {
             const chunk = JSON.parse(dataStr);
             rememberSession(extractChatSessionId(chunk));
+
+            // Check for upstream error in chunk
+            if (chunk.error) {
+              const errDetails =
+                chunk.error.details ||
+                chunk.error.message ||
+                JSON.stringify(chunk.error);
+              const errCode = chunk.error.code || "upstream_error";
+              console.error(
+                `[Upstream] Error | ${errCode} | ${errDetails.substring(0, 200)}`,
+              );
+              throw new QwenUpstreamError(
+                `Qwen upstream error: ${errCode}: ${errDetails}`,
+                errCode,
+                502,
+              );
+            }
 
             if (
               chunk["response.created"] &&

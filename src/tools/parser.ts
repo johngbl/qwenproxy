@@ -756,19 +756,10 @@ export class StreamingToolParser {
     result: ParserResult,
   ): void {
     if (!this.isDeclaredToolName(tc.name)) {
-      logger.warn("[parser] Dropping undeclared tool call", {
+      logger.warn("[parser] Undeclared tool call passed through", {
         toolName: tc.name,
         declaredTools: this.tools.map((tool) => this.getToolName(tool)),
       });
-      if (
-        this.emittedToolCallCount === 0 &&
-        this.pendingLeadIn.trim().length > 0
-      ) {
-        result.text += this.pendingLeadIn;
-      }
-      this.pendingLeadIn = "";
-      this.clearIncrementalToolCall();
-      return;
     }
 
     const incremental = this.activeIncrementalToolCall;

@@ -7,6 +7,9 @@ export type LogLevel = "debug" | "info" | "warn" | "error";
  *   "0" or undefined = disabled
  *   "1" = full debug (all toolcall logs)
  *   "errors" = only on errors (log toolcall details when parser/execution fails)
+ *
+ * UPSTREAM_DEBUG:
+ *   "true" = log raw SSE chunks received from Qwen
  */
 export type ToolcallDebugLevel = "0" | "1" | "errors";
 
@@ -139,6 +142,8 @@ export function isToolcallErrorDebugEnabled(): boolean {
   return toolcallDebugLevel === "1" || toolcallDebugLevel === "errors";
 }
 
+export const upstreamDebugEnabled = process.env.UPSTREAM_DEBUG === "true";
+
 // Confirm debug mode on startup (only log if explicitly set)
 if (process.env.TOOLCALL_DEBUG) {
   if (toolcallDebugLevel === "1") {
@@ -150,4 +155,10 @@ if (process.env.TOOLCALL_DEBUG) {
   } else {
     console.log("[Logger] TOOLCALL_DEBUG=0 - toolcall logs disabled");
   }
+}
+
+if (upstreamDebugEnabled) {
+  console.log(
+    "[Logger] UPSTREAM_DEBUG=true - raw upstream chunks logging active",
+  );
 }
