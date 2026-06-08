@@ -6,7 +6,11 @@
 import crypto from "crypto";
 import { config } from "../core/config.ts";
 import { getDatabase } from "../core/database.ts";
-import { getAccountCredentials, type QwenAccount } from "../core/accounts.ts";
+import {
+  getAccountCredentials,
+  loadAccounts,
+  type QwenAccount,
+} from "../core/accounts.ts";
 import { AuthError } from "../core/errors.js";
 import { Mutex } from "../core/mutex.ts";
 
@@ -249,15 +253,22 @@ function resolveCredentials(accountId?: string): QwenAccount {
     return account;
   }
 
+  // Try QWEN_EMAIL/QWEN_PASSWORD first (legacy single-account mode)
   const email = process.env.QWEN_EMAIL?.trim();
   const password = process.env.QWEN_PASSWORD?.trim();
-  if (!email || !password) {
-    throw new AuthError(
-      "Qwen credentials are not configured. Set QWEN_EMAIL/QWEN_PASSWORD or add accounts with npm run login.",
-    );
+  if (email && password) {
+    return { id: "global", email, password };
   }
 
-  return { id: "global", email, password };
+  // Fall back to first account from QWEN_ACCOUNTS
+  const accounts = loadAccounts();
+  if (accounts.length > 0) {
+    return accounts[0];
+  }
+
+  throw new AuthError(
+    "Qwen credentials are not configured. Set QWEN_EMAIL/QWEN_PASSWORD or add accounts with npm run login.",
+  );
 }
 
 export async function loginViaHttp(
@@ -342,6 +353,7 @@ async function getAuthSession(
   const key = accountKey(accountId);
   if (isAuthMockEnabled()) return defaultAuthResult(key);
 
+  // Check cache for specific account
   const cached = authCache.get(key);
   if (
     !options.forceRefresh &&
@@ -349,6 +361,18 @@ async function getAuthSession(
     isAuthResultFresh(cached.result, cached.cachedAt)
   ) {
     return cached.result;
+  }
+
+  // When no accountId, try any cached session first
+  if (!accountId && !options.forceRefresh) {
+    for (const [cachedKey, entry] of authCache) {
+      if (
+        cachedKey !== "global" &&
+        isAuthResultFresh(entry.result, entry.cachedAt)
+      ) {
+        return entry.result;
+      }
+    }
   }
 
   const release = await getAuthMutex(key).acquire();
@@ -360,6 +384,18 @@ async function getAuthSession(
       isAuthResultFresh(refreshed.result, refreshed.cachedAt)
     ) {
       return refreshed.result;
+    }
+
+    // When no accountId, try any refreshed session
+    if (!accountId && !options.forceRefresh) {
+      for (const [cachedKey, entry] of authCache) {
+        if (
+          cachedKey !== "global" &&
+          isAuthResultFresh(entry.result, entry.cachedAt)
+        ) {
+          return entry.result;
+        }
+      }
     }
 
     if (!options.forceRefresh) {
