@@ -608,7 +608,18 @@ async function tryCreateStreamWithRetry(
     }
 
     if (retries === 0) {
-      if (err.upstreamStatus && err.upstreamStatus >= 500) {
+      // Only mark account for cooldown on actual account-specific errors
+      // Qwen internal errors (Bad_Request, server issues) are not the account's fault
+      const isQwenInternalError =
+        err.message?.includes("Bad_Request") ||
+        err.message?.includes("internal_error") ||
+        err.message?.includes("Internal error");
+
+      if (
+        err.upstreamStatus &&
+        err.upstreamStatus >= 500 &&
+        !isQwenInternalError
+      ) {
         markAccountRateLimited(accountId, undefined, "ServerError");
         console.warn(
           `[Chat] Account ${accountEmail} (${accountId}) returned server error. Marked for cooldown.`,
