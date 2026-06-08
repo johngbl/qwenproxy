@@ -9,6 +9,7 @@ import { v4 as uuidv4 } from "uuid";
 import { ValidationError, ServiceUnavailable } from "../core/errors.js";
 import { sendOpenAIError } from "../api/error-helpers.js";
 import { buildQwenRequestHeaders } from "../services/qwen-headers.ts";
+import { config } from "../core/config.ts";
 
 interface STSResponse {
   success: boolean;
@@ -278,7 +279,12 @@ async function downloadRemoteMedia(url: string): Promise<{
   filename: string;
   mime: string;
 }> {
-  const response = await fetch(url);
+  const response = await fetch(url, {
+    headers: {
+      "User-Agent": config.auth.userAgent,
+      Accept: "image/*,*/*;q=0.8",
+    },
+  });
   if (!response.ok) {
     throw new Error(`Remote media download failed: ${response.status}`);
   }
