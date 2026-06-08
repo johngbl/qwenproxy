@@ -48,7 +48,7 @@ export function buildToolInstructions(
     "5. If you need to use a tool, do it IMMEDIATELY without preamble.\n" +
     "6. After outputting tool call blocks, you MUST STOP and wait for tool responses. NEVER continue generating on your own.\n" +
     "7. ONLY use tool names that are explicitly defined in the instructions. NEVER invent or guess tool names. If a tool is not listed, it does not exist.\n" +
-    "8. Maximum 5 tool calls per response. After 5 calls, STOP immediately and wait for the user to process them.\n\n";
+    "8. Maximum 3 tool calls per response. After 3 calls, STOP immediately and wait for the user to process them.\n\n";
 
   if (
     toolChoice &&

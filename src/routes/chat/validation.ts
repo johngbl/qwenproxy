@@ -307,6 +307,19 @@ function logIncomingChatRequest(c: Context, body: OpenAIRequest): void {
   const requestId = c.req.header("x-request-id") || null;
   const toolChoice = (body as any).tool_choice || null;
 
+  // Full request debug
+  if (process.env.REQUEST_DEBUG === "true") {
+    const bodyStr = JSON.stringify(body);
+    console.log(
+      `[Request] Full body | ${bodyStr.length} chars | ${bodyStr.substring(0, 2000)}`,
+    );
+    if (tools.length > 0) {
+      console.log(
+        `[Request] Tools | ${tools.length} definitions | ${JSON.stringify(tools).length} chars`,
+      );
+    }
+  }
+
   if (!config.logging.chatRequests) return;
 
   const last = messages[messages.length - 1];

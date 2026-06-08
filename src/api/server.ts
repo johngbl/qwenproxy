@@ -82,6 +82,12 @@ app.use("/v1/*", async (c, next) => {
     return;
   }
 
+  // Skip rate limiting if disabled (0)
+  if (config.rateLimit.rpm === 0 && config.rateLimit.concurrency === 0) {
+    await next();
+    return;
+  }
+
   const auth = c.req.header("Authorization");
   const apiKey = auth?.startsWith("Bearer ") ? auth.slice(7) : "anonymous";
   const clientIp =
@@ -95,7 +101,10 @@ app.use("/v1/*", async (c, next) => {
   const concurrencyKey = `rate:concurrency:${identifier}` as CacheKey;
   const currentConcurrency = await cache.increment(concurrencyKey, 1, 60);
 
-  if (currentConcurrency > config.rateLimit.concurrency) {
+  if (
+    config.rateLimit.concurrency > 0 &&
+    currentConcurrency > config.rateLimit.concurrency
+  ) {
     await cache.increment(concurrencyKey, -1);
     return sendOpenAIError(
       c,
@@ -107,7 +116,7 @@ app.use("/v1/*", async (c, next) => {
     const rpmKey = `rate:rpm:${identifier}` as CacheKey;
     const currentRpm = await cache.increment(rpmKey, 1, 60);
 
-    if (currentRpm > config.rateLimit.rpm) {
+    if (config.rateLimit.rpm > 0 && currentRpm > config.rateLimit.rpm) {
       return sendOpenAIError(
         c,
         new UpstreamRateLimit("Rate limit exceeded (RPM)"),
