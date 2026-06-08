@@ -1,6 +1,6 @@
 import crypto from "crypto";
 import { v4 as uuidv4 } from "uuid";
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { serve } from "@hono/node-server";
 import { config } from "../core/config.js";
 import { metrics } from "../core/metrics.js";
@@ -47,26 +47,32 @@ app.use("*", async (c, next) => {
   c.header("X-Response-Time", `${duration}ms`);
 });
 
-app.use("/v1/*", async (c, next) => {
+function verifyApiKey(c: Context): Response | null {
   const apiKey = process.env.API_KEY || config.apiKey;
-  if (apiKey) {
-    const auth = c.req.header("Authorization");
-    if (!auth?.startsWith("Bearer ")) {
-      return sendOpenAIError(
-        c,
-        new AuthError("Missing or invalid Authorization header"),
-      );
-    }
-    const token = auth.slice(7);
-    const tokenBuf = Buffer.from(token);
-    const keyBuf = Buffer.from(apiKey);
-    if (
-      tokenBuf.length !== keyBuf.length ||
-      !crypto.timingSafeEqual(tokenBuf, keyBuf)
-    ) {
-      return sendOpenAIError(c, new AuthError("Invalid API key"));
-    }
+  if (!apiKey) return null;
+
+  const auth = c.req.header("Authorization");
+  if (!auth?.startsWith("Bearer ")) {
+    return sendOpenAIError(
+      c,
+      new AuthError("Missing or invalid Authorization header"),
+    );
   }
+  const token = auth.slice(7);
+  const tokenBuf = Buffer.from(token);
+  const keyBuf = Buffer.from(apiKey);
+  if (
+    tokenBuf.length !== keyBuf.length ||
+    !crypto.timingSafeEqual(tokenBuf, keyBuf)
+  ) {
+    return sendOpenAIError(c, new AuthError("Invalid API key"));
+  }
+  return null;
+}
+
+app.use("/v1/*", async (c, next) => {
+  const error = verifyApiKey(c);
+  if (error) return error;
   await next();
 });
 
@@ -132,6 +138,8 @@ app.get("/health", async (c) => {
 });
 
 app.get("/metrics", (c) => {
+  const error = verifyApiKey(c);
+  if (error) return error;
   return c.text(metrics.formatPrometheus(), {
     headers: { "Content-Type": "text/plain; version=0.0.4" },
   });
@@ -259,7 +267,7 @@ async function cleanupServerResources(): Promise<void> {
 }
 
 async function handleSignal(signal: string): Promise<never> {
-  console.log(`Received ${signal}, shutting down gracefully...`);
+  console.log(`[Server] Shutdown | ${signal}`);
   await stopServer();
   process.exit(0);
 }

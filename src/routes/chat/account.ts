@@ -531,17 +531,15 @@ async function tryCreateStreamWithRetry(
               ? undefined
               : accountId,
         );
-        logger.info("[thread-context] deleted failed new Qwen chat", {
-          accountId,
-          chatSessionId: err.chatSessionId,
-        });
+        console.log(
+          `[ThreadContext] Deleted failed chat | ${err.chatSessionId} | account=${accountId}`,
+        );
       } catch (deleteErr) {
-        logger.warn("[thread-context] failed to delete failed new Qwen chat", {
-          accountId,
-          chatSessionId: err.chatSessionId,
-          error:
-            deleteErr instanceof Error ? deleteErr.message : String(deleteErr),
-        });
+        const msg =
+          deleteErr instanceof Error ? deleteErr.message : String(deleteErr);
+        console.error(
+          `[ThreadContext] Delete failed chat error | ${err.chatSessionId} | ${msg}`,
+        );
       }
     }
 

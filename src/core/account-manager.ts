@@ -21,7 +21,7 @@ export function markAccountRateLimited(
     reason: reason ?? "RateLimited",
   });
   console.log(
-    `[AccountManager] Account ${accountId} marked as rate-limited. Cooldown until ${new Date(Date.now() + (cooldownMs ?? DEFAULT_COOLDOWN_MS)).toISOString()}`,
+    `[AccountManager] Rate limited | ${accountId} | until=${new Date(Date.now() + (cooldownMs ?? DEFAULT_COOLDOWN_MS)).toISOString()}`,
   );
 }
 

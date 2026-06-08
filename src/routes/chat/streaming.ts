@@ -1300,10 +1300,15 @@ export async function processStreamingResponse(
 // ─── Top-level error wrapper ───────────────────────────────────────────────────
 
 export function handleChatCompletionsError(c: Context, err: unknown): Response {
-  console.error("Error in chatCompletions:", err);
   const classified = classifyError(err);
   if (classified.statusCode >= 500) {
     metrics.increment("requests.errors");
   }
+
+  const message = err instanceof Error ? err.message : String(err);
+  const code = classified.code || "unknown";
+  const status = classified.statusCode;
+  console.error(`[Chat] Error | ${status} ${code} | ${message}`);
+
   return sendOpenAIError(c, classified);
 }

@@ -94,7 +94,8 @@ export async function chatCompletionsStop(c: Context) {
     console.log(`[Stop] Generation stopped for chat_id=${chat_id}`);
     return c.json({ success: true });
   } catch (err: unknown) {
-    console.error("Error in chatCompletionsStop:", err);
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[Stop] Error | ${message}`);
     return sendOpenAIError(c, err, 500);
   }
 }
