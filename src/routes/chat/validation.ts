@@ -318,6 +318,17 @@ function logIncomingChatRequest(c: Context, body: OpenAIRequest): void {
         `[Request] Tools | ${tools.length} definitions | ${JSON.stringify(tools).length} chars`,
       );
     }
+    // Log each message role and content preview
+    messages.forEach((msg: any, i: number) => {
+      const content =
+        typeof msg.content === "string"
+          ? msg.content
+          : JSON.stringify(msg.content);
+      const hasToolCalls = msg.tool_calls && msg.tool_calls.length > 0;
+      console.log(
+        `[Request] Message ${i} | role=${msg.role} | ${content.length} chars${hasToolCalls ? " | tool_calls=" + msg.tool_calls.length : ""}${msg.tool_call_id ? " | tool_call_id=" + msg.tool_call_id : ""} | preview=${content.substring(0, 100)}`,
+      );
+    });
   }
 
   if (!config.logging.chatRequests) return;
@@ -362,7 +373,33 @@ function getCurrentPromptStartIndex(messages: Message[]): number {
   if (last < 0) return messages.length;
 
   const lastRole = messages[last].role;
-  if (lastRole === "user") return last;
+  if (lastRole === "user") {
+    // Check if there's a tool response right before this user message
+    // If so, include it in the current prompt
+    let toolStart = last - 1;
+    while (
+      toolStart >= 0 &&
+      (messages[toolStart].role === "tool" ||
+        messages[toolStart].role === "function")
+    ) {
+      toolStart--;
+    }
+    // If we found tool messages, also include the assistant message that made the tool calls
+    if (toolStart < last - 1) {
+      // toolStart points to the message before the first tool message
+      // Check if it's an assistant message with tool_calls
+      if (
+        toolStart >= 0 &&
+        messages[toolStart].role === "assistant" &&
+        messages[toolStart].tool_calls &&
+        messages[toolStart].tool_calls!.length > 0
+      ) {
+        return toolStart;
+      }
+      return toolStart + 1;
+    }
+    return last;
+  }
 
   if (lastRole === "tool" || lastRole === "function") {
     let firstTrailingTool = last;
