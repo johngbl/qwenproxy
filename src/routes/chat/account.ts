@@ -544,7 +544,9 @@ async function tryCreateStreamWithRetry(
       err?.createdNewChat === true &&
       typeof err.chatSessionId === "string" &&
       err.chatSessionId &&
-      config.context.threadNative.deleteFailedNewChats
+      config.context.threadNative.deleteFailedNewChats &&
+      // Don't delete chat for temporary errors (anti-bot, retryable)
+      !(err instanceof RetryableQwenStreamError)
     ) {
       try {
         await deleteQwenChat(
