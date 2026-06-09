@@ -10,6 +10,7 @@ import { Watchdog } from "../core/watchdog.js";
 import { app as modelsApp } from "./models.js";
 import { chatCompletions, chatCompletionsStop } from "../routes/chat.js";
 import { uploadFile } from "../routes/upload.js";
+import { anthropicApp } from "../routes/anthropic/index.js";
 import { sendOpenAIError } from "./error-helpers.js";
 import { AuthError, NotFoundError, UpstreamRateLimit } from "../core/errors.js";
 import type { CacheKey } from "../cache/memory-cache.js";
@@ -134,6 +135,9 @@ app.route("", modelsApp);
 app.post("/v1/chat/completions", chatCompletions);
 app.post("/v1/chat/completions/stop", chatCompletionsStop);
 app.post("/v1/upload", uploadFile);
+
+// Anthropic API compatible routes
+app.route("", anthropicApp);
 
 app.get("/health", async (c) => {
   const status = await watchdog?.getStatus();

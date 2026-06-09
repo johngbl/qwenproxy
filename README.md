@@ -312,6 +312,8 @@ Quando uma conta recebe rate limit ou erro crítico upstream, o gerenciador pode
 
 ## Endpoints
 
+### OpenAI Compatible
+
 | Rota | Método | Descrição |
 |---|---|---|
 | `/v1/chat/completions` | `POST` | Compatível com OpenAI, streaming e non-streaming. |
@@ -319,6 +321,19 @@ Quando uma conta recebe rate limit ou erro crítico upstream, o gerenciador pode
 | `/v1/models` | `GET` | Lista os modelos disponíveis, incluindo variantes `-no-thinking`. |
 | `/v1/models/:model` | `GET` | Retorna os metadados de um modelo específico. |
 | `/v1/upload` | `POST` | Faz upload de arquivo para o OSS do Qwen e retorna `url`, `file_id`, `filename` e `type`. |
+
+### Anthropic Compatible
+
+| Rota | Método | Descrição |
+|---|---|---|
+| `/v1/messages` | `POST` | Compatível com Anthropic SDK, streaming e non-streaming. |
+| `/v1/messages/count_tokens` | `POST` | Conta tokens (estimativa). |
+| `/v1/models` | `GET` | Retorna modelos no formato Anthropic quando header `anthropic-version` está presente. |
+
+### Utilidades
+
+| Rota | Método | Descrição |
+|---|---|---|
 | `/health` | `GET` | Health check com estado geral e métricas básicas. |
 | `/metrics` | `GET` | Métricas Prometheus. |
 
@@ -452,6 +467,66 @@ A branch suporta tool calling com parser de stream robusto para blocos `<tool_ca
 - consegue interpretar formatos XML/Hermes-style;
 - preserva texto fora dos blocos de tool call;
 - valida definições de tools com linter antes do registro.
+
+---
+
+## Anthropic SDK
+
+O QwenBridge é compatível com o SDK oficial da Anthropic. Use como substituto direto:
+
+### TypeScript
+
+```typescript
+import Anthropic from "@anthropic-ai/sdk";
+
+const client = new Anthropic({
+  baseURL: "http://localhost:3000",
+  apiKey: "sua-api-key", // mesma API_KEY do .env
+});
+
+const message = await client.messages.create({
+  model: "qwen3.7-plus", // qualquer modelo de /v1/models
+  max_tokens: 1024,
+  messages: [{ role: "user", content: "Hello!" }],
+});
+
+console.log(message.content[0].text);
+```
+
+### Python
+
+```python
+from anthropic import Anthropic
+
+client = Anthropic(
+    base_url="http://localhost:3000",
+    api_key="sua-api-key"
+)
+
+message = client.messages.create(
+    model="qwen3.7-plus",  # qualquer modelo de /v1/models
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "Hello!"}]
+)
+
+print(message.content[0].text)
+```
+
+### Model mapping
+
+O QwenBridge mapeia automaticamente modelos Claude para equivalentes Qwen:
+
+| Claude Model | Qwen Model |
+|---|---|
+| `claude-opus-4-*` | `qwen3.7-max` |
+| `claude-sonnet-4-*` | `qwen3.7-plus` |
+| `claude-haiku-4-*` | `qwen3.5-flash` |
+| `claude-3-5-sonnet` | `qwen3.7-plus` |
+| `claude-3-opus` | `qwen3.7-max` |
+| `claude-3-sonnet` | `qwen3.6-plus` |
+| `claude-3-haiku` | `qwen3.5-flash` |
+
+Modelos Qwen (`qwen3.7-plus`, etc.) são usados diretamente. Modelos desconhecidos são passados para o Qwen decidir.
 
 Isso é especialmente útil para clientes compatíveis com o estilo OpenAI tools/function calling.
 

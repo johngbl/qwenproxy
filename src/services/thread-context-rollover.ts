@@ -128,12 +128,13 @@ export async function prepareThreadContextRollover(
   });
 
   if (!decision.rolloverReady && session.status !== "rollover_ready") {
-    if (decision.shouldSummarize) {
-      enqueueThreadContextSummary(
-        input.sessionId,
-        "pre_rollover_stale_summary",
-      );
-    }
+    // Background summaries disabled — only summarize at rollover limit
+    // if (decision.shouldSummarize) {
+    //   enqueueThreadContextSummary(
+    //     input.sessionId,
+    //     "pre_rollover_stale_summary",
+    //   );
+    // }
     return { finalPrompt: input.finalPrompt, rollover: null };
   }
 

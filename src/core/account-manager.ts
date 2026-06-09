@@ -1,4 +1,5 @@
 import { QwenAccount, loadAccounts } from "./accounts.ts";
+import { config } from "./config.ts";
 
 let currentIndex = 0;
 
@@ -9,19 +10,18 @@ interface CooldownEntry {
 
 const cooldowns = new Map<string, CooldownEntry>();
 
-const DEFAULT_COOLDOWN_MS = 3 * 60 * 1000; // 3 minutes
-
 export function markAccountRateLimited(
   accountId: string,
   cooldownMs?: number,
   reason?: string,
 ): void {
+  const effectiveCooldownMs = cooldownMs ?? config.rateLimit.cooldownMs;
   cooldowns.set(accountId, {
-    until: Date.now() + (cooldownMs ?? DEFAULT_COOLDOWN_MS),
+    until: Date.now() + effectiveCooldownMs,
     reason: reason ?? "RateLimited",
   });
   console.log(
-    `[AccountManager] Rate limited | ${accountId} | until=${new Date(Date.now() + (cooldownMs ?? DEFAULT_COOLDOWN_MS)).toISOString()}`,
+    `[AccountManager] Rate limited | ${accountId} | ${Math.round(effectiveCooldownMs / 1000)}s | until=${new Date(Date.now() + effectiveCooldownMs).toISOString()}`,
   );
 }
 

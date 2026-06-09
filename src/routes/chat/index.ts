@@ -21,7 +21,11 @@ import {
 } from "./streaming.ts";
 import { config } from "../../core/config.ts";
 import { logger } from "../../core/logger.ts";
-import { deleteQwenChat, getLogicalThreadState } from "../../services/qwen.ts";
+import {
+  deleteQwenChat,
+  getLogicalThreadState,
+  RetryableQwenStreamError,
+} from "../../services/qwen.ts";
 import { isAuthMockEnabled } from "../../services/auth-http.ts";
 import { enqueueThreadContextSummary } from "../../services/thread-context-jobs.ts";
 import {
@@ -262,10 +266,11 @@ export async function chatCompletions(c: Context) {
             await finalizeThreadContextRolloverSuccess(activeRolloverPlan);
           }
 
-          enqueueThreadContextSummary(
-            savedSession.sessionId,
-            "assistant_complete",
-          );
+          // Background summaries disabled — only summarize at rollover limit
+          // enqueueThreadContextSummary(
+          //   savedSession.sessionId,
+          //   "assistant_complete",
+          // );
         }
       : isInternalSummarizationRequest
         ? async (event: AssistantCompleteEvent) => {
@@ -314,9 +319,111 @@ export async function chatCompletions(c: Context) {
       },
     };
 
-    return isStream
-      ? await processStreamingResponse(params)
-      : await processNonStreamingResponse(params);
+    // Retry loop for stream processing errors (quota/anti-bot during SSE)
+    let streamProcessingRetries = 2;
+    let currentStreamResult = streamResult;
+    let currentParams = params;
+
+    while (true) {
+      try {
+        return isStream
+          ? await processStreamingResponse(currentParams)
+          : await processNonStreamingResponse(currentParams);
+      } catch (streamErr: any) {
+        // Only retry RetryableQwenStreamError (quota/anti-bot during stream)
+        if (
+          streamProcessingRetries > 0 &&
+          streamErr instanceof RetryableQwenStreamError
+        ) {
+          streamProcessingRetries--;
+          console.warn(
+            `[Chat] Stream processing error, retrying with new stream | ${streamErr.message?.substring(0, 150)} | retries left: ${streamProcessingRetries}`,
+          );
+
+          // Mark current account for cooldown if it's a quota error
+          if (streamErr.message?.includes("quota")) {
+            const { markAccountRateLimited } =
+              await import("../../core/account-manager.ts");
+            markAccountRateLimited(
+              currentStreamResult.activeAccountId,
+              undefined,
+              "QuotaExceeded",
+            );
+          }
+
+          // Release current chat lock
+          if (releaseChatLock) {
+            releaseChatLock();
+            releaseChatLock = null;
+          }
+
+          // Re-acquire stream with different account
+          const newStreamResult = await acquireUpstreamStream({
+            finalPrompt,
+            fullPrompt: ctx.requestPersonalizationInstruction
+              ? parsed.prompt
+              : parsed.systemPrompt + parsed.prompt,
+            isThinkingModel: ctx.isThinkingModel,
+            model: body.model,
+            shouldResetUpstreamThread: ctx.shouldResetUpstreamThread,
+            allFiles: files,
+            isNewSession: ctx.isNewSession,
+            sessionId: ctx.sessionId,
+            useThreadNative: ctx.useThreadNative,
+            updateLogicalThread: ctx.updateLogicalThread,
+            allowThreadReuse: ctx.allowThreadReuse,
+            forceNewChat:
+              activeRolloverPlan !== null || isInternalSummarizationRequest,
+            preferredAccountId: activeRolloverPlan?.preferredAccountId ?? null,
+            messageCount: msgCount,
+            fullMessageCount: parsed.messageCount,
+            toolsCount: declaredTools.length || undefined,
+            requestPersonalizationInstruction:
+              ctx.requestPersonalizationInstruction,
+          });
+
+          if ("error" in newStreamResult) {
+            // Can't get new stream, fail with original error
+            throw streamErr;
+          }
+
+          // Re-acquire chat lock for new stream
+          if (ctx.allowThreadReuse && ctx.sessionId) {
+            const existingThread = getLogicalThreadState(ctx.sessionId);
+            const chatId = existingThread?.chatSessionId;
+            if (chatId) {
+              releaseChatLock = await acquireChatLock(chatId);
+            }
+          }
+
+          currentStreamResult = newStreamResult;
+          currentParams = {
+            c,
+            completionId: newStreamResult.completionId,
+            stream: newStreamResult.stream,
+            uiSessionId: newStreamResult.uiSessionId,
+            activeAccountId: newStreamResult.activeAccountId,
+            logicalSessionId: newStreamResult.logicalSessionId,
+            body,
+            finalPrompt,
+            userPrompt: currentPrompt || prompt,
+            shouldParseToolCalls,
+            declaredTools,
+            onAssistantComplete,
+            onStreamComplete: () => {
+              if (releaseChatLock) {
+                releaseChatLock();
+                releaseChatLock = null;
+              }
+            },
+          };
+          continue;
+        }
+
+        // Not retryable or retries exhausted — propagate error
+        throw streamErr;
+      }
+    }
   } catch (err) {
     timings.preResponse = Date.now() - startedAt;
     c.header("X-QwenBridge-Timing", formatTimingHeader(timings));

@@ -122,7 +122,10 @@ async function processSummaryQueue(): Promise<void> {
         });
         await runThreadContextSummary(job.sessionId);
       } catch (error) {
-        console.warn(`[ThreadContext] Summary failed | ${job.reason}`);
+        const errMsg = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `[ThreadContext] Summary failed | ${job.reason} | ${errMsg}`,
+        );
         logger.debug("[thread-context] summary job failed", {
           sessionId: job.sessionId,
           reason: job.reason,

@@ -64,6 +64,11 @@ const envSchema = z.object({
   WS_CRITICAL: z.string().default("100"),
   RATE_LIMIT_RPM: z.string().default("0"),
   RATE_LIMIT_CONCURRENCY: z.string().default("0"),
+  ACCOUNT_COOLDOWN_MS: z.string().default("60000"),
+  RETRY_BASE_DELAY_MS: z.string().default("1000"),
+  RETRY_MAX_DELAY_MS: z.string().default("10000"),
+  ANTI_BOT_BASE_DELAY_MS: z.string().default("5000"),
+  ANTI_BOT_MAX_DELAY_MS: z.string().default("30000"),
   QWEN_BASE_URL: z.string().default("https://chat.qwen.ai"),
   QWEN_CHAT_POOL_SIZE: z.string().default("1"),
   QWEN_CHAT_POOL_MODELS: z.string().default("qwen3.7-plus"),
@@ -170,6 +175,15 @@ export const config = {
   rateLimit: {
     rpm: parseInt(env.RATE_LIMIT_RPM),
     concurrency: parseInt(env.RATE_LIMIT_CONCURRENCY),
+    cooldownMs: parseInt(env.ACCOUNT_COOLDOWN_MS),
+  },
+  retry: {
+    baseDelayMs: parseInt(env.RETRY_BASE_DELAY_MS),
+    maxDelayMs: parseInt(env.RETRY_MAX_DELAY_MS),
+  },
+  antiBot: {
+    baseDelayMs: parseInt(env.ANTI_BOT_BASE_DELAY_MS),
+    maxDelayMs: parseInt(env.ANTI_BOT_MAX_DELAY_MS),
   },
   apiKey: env.API_KEY,
   qwen: {

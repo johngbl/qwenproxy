@@ -156,6 +156,17 @@ function isAccountUnavailableError(err: any): boolean {
   );
 }
 
+function isAntiBotError(err: any): boolean {
+  if (err instanceof RetryableQwenStreamError) {
+    return err.message?.includes("anti-bot") || false;
+  }
+  const message = String(err?.message || err || "").toLowerCase();
+  return (
+    message.includes("fail_sys_user_validate") ||
+    message.includes("rgv587_error")
+  );
+}
+
 async function attemptRelogin(
   accountId: string,
   accountEmail: string,
@@ -324,7 +335,7 @@ export async function acquireUpstreamStream(
     }
 
     if (stickyThreadAccountId === accountId) {
-      if (isAccountUnavailableError(lastError)) {
+      if (isAccountUnavailableError(lastError) || isAntiBotError(lastError)) {
         console.warn(
           `[Chat] Sticky account unavailable; trying another account with full context.`,
         );
@@ -419,7 +430,7 @@ async function tryCreateStreamWithRetry(
   accountEmail: string,
 ): Promise<CreateStreamSuccess | CreateStreamFailure> {
   let retries = 3;
-  let retryDelay = 500;
+  let retryDelay = config.retry.baseDelayMs;
   let attempt = 0;
   let quotaRetried = false;
   const accounts = loadAccounts();
@@ -519,6 +530,16 @@ async function tryCreateStreamWithRetry(
 
     retries--;
     const err = attemptError;
+
+    // Log the error details for debugging
+    if (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      const errCode = err.upstreamCode || err.code || "unknown";
+      console.warn(
+        `[Chat] Request failed | ${accountEmail} | ${errCode} | ${errMsg.substring(0, 200)}`,
+      );
+    }
+
     if (
       err?.createdNewChat === true &&
       typeof err.chatSessionId === "string" &&
@@ -571,8 +592,12 @@ async function tryCreateStreamWithRetry(
       // Single account: retry once after delay before giving up
       if (isSingleAccount && !quotaRetried && retries > 1) {
         quotaRetried = true;
-        console.warn(`[Chat] Single account mode | Retrying in 2s...`);
-        await new Promise((resolve) => setTimeout(resolve, 2000));
+        console.warn(
+          `[Chat] Single account mode | Retrying in ${config.retry.baseDelayMs}ms...`,
+        );
+        await new Promise((resolve) =>
+          setTimeout(resolve, config.retry.baseDelayMs),
+        );
         continue;
       }
 
@@ -658,7 +683,7 @@ async function tryCreateStreamWithRetry(
       `[Chat] Qwen request failed for ${accountEmail}, retrying in ${useDelay}ms... (${retries} left). Error: ${err.message?.slice(0, 200) || err}`,
     );
     await new Promise((r) => setTimeout(r, useDelay));
-    retryDelay = Math.min(retryDelay * 2, 5000);
+    retryDelay = Math.min(retryDelay * 2, config.retry.maxDelayMs);
   }
 
   return { success: false, error: new Error("Retry exhausted") };

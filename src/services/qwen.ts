@@ -466,7 +466,8 @@ export async function syncQwenRequestPersonalization(
           headers: requestHeaders,
         },
       );
-      const { json: existingJson } = await readJsonTextResponse(existingResponse);
+      const { json: existingJson } =
+        await readJsonTextResponse(existingResponse);
       existing = textSize(existingJson?.data?.personalization?.instruction);
       if (existing.hash === sent.hash) {
         lastSyncedPersonalizationHashes.set(cacheKey, sent.hash);
@@ -830,7 +831,9 @@ async function createQwenChatSession(
       signal: controller.signal,
     });
 
-    const { raw, json } = await readJsonTextResponse(response, { strict: true });
+    const { raw, json } = await readJsonTextResponse(response, {
+      strict: true,
+    });
     if (!response.ok) {
       throw new QwenUpstreamError(
         `Qwen create chat failed: ${response.status} ${response.statusText} - ${raw.substring(0, 300)}`,
@@ -991,6 +994,40 @@ function parseQwenJsonError(
   accountId?: string,
 ): Error | null {
   const errorJson = JSON.parse(raw);
+
+  // Helper: exponential backoff with jitter, capped by config
+  const antiBotDelay = (attempt: number) => {
+    const base = config.antiBot.baseDelayMs;
+    const max = config.antiBot.maxDelayMs;
+    const exp = Math.min(base * Math.pow(2, attempt - 1), max);
+    const jitter = exp * 0.3 * Math.random();
+    return Math.floor(exp + jitter);
+  };
+
+  const retryDelay = (attempt: number) => {
+    const base = config.retry.baseDelayMs;
+    const max = config.retry.maxDelayMs;
+    const exp = Math.min(base * Math.pow(2, attempt - 1), max);
+    const jitter = exp * 0.3 * Math.random();
+    return Math.floor(exp + jitter);
+  };
+
+  // Anti-bot detection: {ret: ["FAIL_SYS_USER_VALIDATE", ...]} format
+  const retArray: string[] | undefined = errorJson?.ret;
+  if (Array.isArray(retArray)) {
+    const retStr = retArray.join(",");
+    if (
+      retStr.includes("FAIL_SYS_USER_VALIDATE") ||
+      retStr.includes("RGV587_ERROR")
+    ) {
+      const attempt = errorJson?.data?.retryCount ?? 1;
+      return new RetryableQwenStreamError(
+        `Qwen anti-bot: ${retStr.substring(0, 200)}`,
+        antiBotDelay(attempt),
+      );
+    }
+  }
+
   const details =
     errorJson?.data?.details ||
     errorJson?.message ||
@@ -999,8 +1036,24 @@ function parseQwenJsonError(
 
   if (typeof details === "string" && isQwenChatNotExistMessage(details)) {
     const attempt = errorJson?.data?.retryCount ?? 1;
-    const retryAfterMs = Math.min(1000 * Math.pow(2, attempt - 1), 10000);
-    return new RetryableQwenStreamError(`Qwen: ${details}`, retryAfterMs);
+    return new RetryableQwenStreamError(
+      `Qwen: ${details}`,
+      retryDelay(attempt),
+    );
+  }
+
+  // Anti-bot detection: FAIL_SYS_USER_VALIDATE / RGV587_ERROR
+  if (
+    typeof details === "string" &&
+    (details.includes("FAIL_SYS_USER_VALIDATE") ||
+      details.includes("RGV587_ERROR") ||
+      details.includes("user validate"))
+  ) {
+    const attempt = errorJson?.data?.retryCount ?? 1;
+    return new RetryableQwenStreamError(
+      `Qwen anti-bot: ${details}`,
+      antiBotDelay(attempt),
+    );
   }
 
   if (
@@ -1009,12 +1062,10 @@ function parseQwenJsonError(
       details.includes("The chat is in progress"))
   ) {
     const attempt = errorJson?.data?.retryCount ?? 1;
-    const baseDelay = 2000;
-    const exponentialDelay = baseDelay * Math.pow(2, attempt - 1);
-    const cappedDelay = Math.min(exponentialDelay, 30000);
-    const jitter = cappedDelay * 0.2 * Math.random();
-    const retryAfterMs = Math.floor(cappedDelay + jitter);
-    return new RetryableQwenStreamError(`Qwen: ${details}`, retryAfterMs);
+    return new RetryableQwenStreamError(
+      `Qwen: ${details}`,
+      retryDelay(attempt),
+    );
   }
 
   if (errorJson?.success === false) {

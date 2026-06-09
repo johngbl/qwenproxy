@@ -14,6 +14,7 @@ import {
   updateLogicalThreadParent,
   updateSessionParent,
   QwenUpstreamError,
+  RetryableQwenStreamError,
 } from "../../services/qwen.ts";
 import type { OpenAIRequest, Usage } from "../../utils/types.ts";
 import { StreamingToolParser } from "../../tools/parser.ts";
@@ -33,6 +34,7 @@ import {
 import { sendOpenAIError, createError } from "../../api/error-helpers.js";
 import { classifyError } from "../../api/error-classifier.js";
 import type { QwenBridgeStatusCode } from "../../core/errors.js";
+import { config } from "../../core/config.js";
 import { parseQwenErrorPayload } from "./errors.ts";
 import {
   getIncrementalDelta,
@@ -282,6 +284,31 @@ export async function processNonStreamingResponse(
             console.error(
               `[Upstream] Error | ${errCode} | ${errDetails.substring(0, 200)}`,
             );
+
+            // Anti-bot: FAIL_SYS_USER_VALIDATE / RGV587_ERROR — retryable
+            if (
+              errDetails.includes("FAIL_SYS_USER_VALIDATE") ||
+              errDetails.includes("RGV587_ERROR") ||
+              errDetails.includes("user validate")
+            ) {
+              throw new RetryableQwenStreamError(
+                `Qwen anti-bot: ${errCode}: ${errDetails}`,
+                config.antiBot.baseDelayMs,
+              );
+            }
+
+            // Quota exceeded in SSE chunk — retryable (try other account)
+            if (
+              errDetails.includes("Allocated quota exceeded") ||
+              errDetails.includes("quota exceeded") ||
+              errDetails.includes("token-limit")
+            ) {
+              throw new RetryableQwenStreamError(
+                `Qwen quota: ${errCode}: ${errDetails.substring(0, 200)}`,
+                config.retry.baseDelayMs,
+              );
+            }
+
             throw new QwenUpstreamError(
               `Qwen upstream error: ${errCode}: ${errDetails}`,
               errCode,
@@ -946,6 +973,31 @@ export async function processStreamingResponse(
               console.error(
                 `[Upstream] Error | ${errCode} | ${errDetails.substring(0, 200)}`,
               );
+
+              // Anti-bot: FAIL_SYS_USER_VALIDATE / RGV587_ERROR — retryable
+              if (
+                errDetails.includes("FAIL_SYS_USER_VALIDATE") ||
+                errDetails.includes("RGV587_ERROR") ||
+                errDetails.includes("user validate")
+              ) {
+                throw new RetryableQwenStreamError(
+                  `Qwen anti-bot: ${errCode}: ${errDetails}`,
+                  config.antiBot.baseDelayMs,
+                );
+              }
+
+              // Quota exceeded in SSE chunk — retryable (try other account)
+              if (
+                errDetails.includes("Allocated quota exceeded") ||
+                errDetails.includes("quota exceeded") ||
+                errDetails.includes("token-limit")
+              ) {
+                throw new RetryableQwenStreamError(
+                  `Qwen quota: ${errCode}: ${errDetails.substring(0, 200)}`,
+                  config.retry.baseDelayMs,
+                );
+              }
+
               throw new QwenUpstreamError(
                 `Qwen upstream error: ${errCode}: ${errDetails}`,
                 errCode,
