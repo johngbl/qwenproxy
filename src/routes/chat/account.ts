@@ -681,6 +681,29 @@ async function tryCreateStreamWithRetry(
       return { success: false, error: err };
     }
 
+    // Anti-bot error: refresh Playwright headers if available
+    const isAntiBot =
+      err.message?.includes("anti-bot") ||
+      err.message?.includes("FAIL_SYS_USER_VALIDATE") ||
+      err.message?.includes("RGV587_ERROR");
+
+    if (isAntiBot && config.playwright.enabled) {
+      try {
+        const { refreshHeaders, isPlaywrightInitialized } =
+          await import("../../services/playwright.ts");
+        if (isPlaywrightInitialized(accountId)) {
+          console.log(
+            `[Playwright] Refreshing headers for ${accountEmail} due to anti-bot...`,
+          );
+          await refreshHeaders(accountId);
+        }
+      } catch (refreshErr) {
+        console.warn(
+          `[Playwright] Header refresh failed: ${refreshErr instanceof Error ? refreshErr.message : refreshErr}`,
+        );
+      }
+    }
+
     console.warn(
       `[Chat] Qwen request failed for ${accountEmail}, retrying in ${useDelay}ms... (${retries} left). Error: ${err.message?.slice(0, 200) || err}`,
     );

@@ -381,7 +381,13 @@ export async function processNonStreamingResponse(
             }
           }
         } catch (_e) {
-          // Ignore partial chunk parse errors
+          // Log warning for large chunks that fail to parse
+          if (dataStr.length > 10) {
+            console.warn(
+              `[Chat] SSE parse error for chunk (${dataStr.length} chars):`,
+              (_e as Error).message,
+            );
+          }
         }
       }
     }

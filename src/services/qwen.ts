@@ -1251,16 +1251,35 @@ export async function createQwenStream(
     preview: contentPreview,
   });
 
+  // Dynamic timeout based on payload size
+  const BASE_TIMEOUT_MS = 120000;
+  const TIMEOUT_PER_MB = 30000;
+  const MAX_PAYLOAD_SIZE = 10 * 1024 * 1024; // 10MB
+
+  const payloadJson = JSON.stringify(payload);
+  const payloadSize = Buffer.byteLength(payloadJson);
+
+  if (payloadSize > MAX_PAYLOAD_SIZE) {
+    throw new Error(
+      `Payload too large: ${payloadSize} bytes exceeds limit of ${MAX_PAYLOAD_SIZE} bytes`,
+    );
+  }
+
+  const payloadMB = payloadSize / (1024 * 1024);
+  const dynamicTimeoutMs =
+    enableThinking || modelId.includes("thinking")
+      ? Math.max(
+          config.timeouts.reasoningModelTimeout,
+          BASE_TIMEOUT_MS + Math.ceil(payloadMB * TIMEOUT_PER_MB),
+        )
+      : BASE_TIMEOUT_MS + Math.ceil(payloadMB * TIMEOUT_PER_MB);
+
   const url = chatSessionId
     ? `${config.qwen.baseUrl}/api/v2/chat/completions?chat_id=${chatSessionId}`
     : `${config.qwen.baseUrl}/api/v2/chat/completions`;
 
   const controller = new AbortController();
-  const timeoutMs =
-    enableThinking || modelId.includes("thinking")
-      ? config.timeouts.reasoningModelTimeout
-      : config.timeouts.totalRequestTimeout;
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  const timeoutId = setTimeout(() => controller.abort(), dynamicTimeoutMs);
   let response: Response;
   try {
     response = await fetch(url, {
@@ -1271,7 +1290,7 @@ export async function createQwenStream(
           "x-accel-buffering": "no",
         },
       }),
-      body: JSON.stringify(payload),
+      body: payloadJson,
       signal: controller.signal,
     });
   } catch (error) {

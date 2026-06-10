@@ -101,6 +101,9 @@ export function robustParseJSON(str: string): any {
     .replace(/```$/, "")
     .trim();
 
+  // Fix double-escaped quotes (e.g., \\" -> ")
+  sanitized = sanitized.replace(/\\\\"/g, '\\"');
+
   const firstBrace = sanitized.indexOf("{");
   if (firstBrace === -1) {
     if (isDebug) {
@@ -139,6 +142,19 @@ export function robustParseJSON(str: string): any {
   currentJson = currentJson.replace(
     /([{,]\s*)([a-zA-Z0-9_]+)\s*:\s*\2\s*:/g,
     "$1$2:",
+  );
+
+  // Handle unquoted string values after colon (e.g., "command":export CI=true)
+  // Matches: "key":value_without_quotes until comma, closing brace, or end
+  currentJson = currentJson.replace(
+    /"([a-zA-Z0-9_]+)":\s*([^"\s{\[\],}][^,}\]]*)/g,
+    (match, key, value) => {
+      // Don't quote if it's a number, boolean, or null
+      if (/^(true|false|null|\d+(\.\d+)?)$/.test(value.trim())) {
+        return match;
+      }
+      return `"${key}":"${value.trim()}"`;
+    },
   );
 
   try {

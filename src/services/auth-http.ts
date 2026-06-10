@@ -448,6 +448,19 @@ export async function getBasicHeaders(accountId?: string): Promise<{
   bxUa: string;
   bxUmidtoken: string;
 }> {
+  // Use Playwright headers if enabled and account is initialized
+  if (config.playwright.enabled && accountId) {
+    try {
+      const { getBasicHeaders: getPwBasicHeaders, isPlaywrightInitialized } =
+        await import("./playwright.ts");
+      if (isPlaywrightInitialized(accountId)) {
+        return await getPwBasicHeaders(accountId);
+      }
+    } catch {
+      // Fallback to HTTP auth
+    }
+  }
+
   const result = await getAuthSession(accountId);
   return {
     cookie: result.cookie,

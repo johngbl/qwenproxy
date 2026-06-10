@@ -7,7 +7,7 @@ const envSchema = z.object({
   USER_AGENT: z
     .string()
     .default(
-      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
     ),
   QWEN_BX_UA: z
     .string()
@@ -20,6 +20,11 @@ const envSchema = z.object({
       "T2gAr9z8byN8sNOmfQ3X9j61MNTNmSqDO5L1rs2jMcQCVhOKgZICcBN-UdTuJGig-NM=",
     ),
   QWEN_BX_V: z.string().default("2.5.36"),
+  PLAYWRIGHT_ENABLED: z.string().default("true"),
+  PLAYWRIGHT_HEADLESS: z.string().default("true"),
+  PLAYWRIGHT_BROWSER: z
+    .enum(["chromium", "chrome", "edge"])
+    .default("chromium"),
   CHAT_REQUEST_LOG: z.string().default("false"),
   HTTP_TIMEOUT: z.string().default("10000"),
   CHAT_TIMEOUT: z.string().default("120000"),
@@ -102,6 +107,11 @@ export const config = {
     bxUa: env.QWEN_BX_UA,
     bxUmidtoken: env.QWEN_BX_UMIDTOKEN,
     bxV: env.QWEN_BX_V,
+  },
+  playwright: {
+    enabled: env.PLAYWRIGHT_ENABLED === "true",
+    headless: env.PLAYWRIGHT_HEADLESS !== "false",
+    browser: env.PLAYWRIGHT_BROWSER,
   },
   timeouts: {
     http: parseInt(env.HTTP_TIMEOUT),

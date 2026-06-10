@@ -338,7 +338,32 @@ export async function startServer(options?: {
     const { initHttpAuth, initHttpAuthForAccount, hasGlobalCredentials } =
       await import("../services/auth-http.ts");
 
-    if (accounts.length > 0) {
+    if (config.playwright.enabled) {
+      console.log(
+        `[Server] Preparing ${accounts.length} configured account(s) with Playwright in parallel...`,
+      );
+
+      const { initPlaywrightForAccount } =
+        await import("../services/playwright.ts");
+
+      await Promise.all(
+        accounts.map((account: QwenAccount) =>
+          prepareQwenRuntime({
+            accountId: account.id,
+            successMessage: `[Server] Account ready (Playwright): ${account.email}`,
+            failureMessage: `[Server] Failed to initialize account ${account.email}:`,
+            initAuth: () =>
+              initPlaywrightForAccount(
+                account,
+                config.playwright.headless,
+                config.playwright.browser,
+              ),
+            disableNativeTools,
+            warmQwenChatPool,
+          }),
+        ),
+      );
+    } else if (accounts.length > 0) {
       console.log(
         `[Server] Preparing ${accounts.length} configured account(s) with HTTP auth in parallel...`,
       );

@@ -40,7 +40,7 @@ test("deleteAllQwenChats sends DELETE to the Qwen chats endpoint", async () => {
     const headers = seenHeaders as Record<string, string>;
     assert.strictEqual(headers.Referer, "https://chat.qwen.ai/settings/chats");
     assert.strictEqual(headers.source, "web");
-    assert.strictEqual(headers.version, "0.2.7");
+    assert.strictEqual(headers.version, "0.2.63");
   } finally {
     globalThis.fetch = originalFetch;
   }
