@@ -45,7 +45,12 @@ export async function acquireChatLock(chatId: string): Promise<() => void> {
     chatLocks.set(chatId, mutex);
   }
   const release = await mutex.acquire();
-  return release;
+  return () => {
+    release();
+    if (mutex!.isIdle()) {
+      chatLocks.delete(chatId);
+    }
+  };
 }
 
 async function acquirePersonalizationLock(
@@ -56,7 +61,13 @@ async function acquirePersonalizationLock(
     mutex = new Mutex();
     personalizationLocks.set(accountId, mutex);
   }
-  return mutex.acquire();
+  const release = await mutex.acquire();
+  return () => {
+    release();
+    if (mutex!.isIdle()) {
+      personalizationLocks.delete(accountId);
+    }
+  };
 }
 
 export interface SelectedAccount {

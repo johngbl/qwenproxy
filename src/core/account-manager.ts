@@ -88,13 +88,7 @@ function isAccountOnCooldown(accountId: string): boolean {
   return getAccountCooldownInfo(accountId) !== null;
 }
 
-export function getNextAccount(): QwenAccount | null {
-  const accounts = loadAccounts();
-  if (accounts.length === 0) {
-    return null;
-  }
-
-  // Sync memory cooldowns from database values
+function syncCooldownsFromDb(accounts: QwenAccount[]): void {
   const now = Date.now();
   for (const account of accounts) {
     if (account.cooldown_until && account.cooldown_until > now) {
@@ -110,6 +104,15 @@ export function getNextAccount(): QwenAccount | null {
       }
     }
   }
+}
+
+export function getNextAccount(): QwenAccount | null {
+  const accounts = loadAccounts();
+  if (accounts.length === 0) {
+    return null;
+  }
+
+  syncCooldownsFromDb(accounts);
 
   for (let i = 0; i < accounts.length; i++) {
     const account = accounts[currentIndex % accounts.length];
@@ -137,6 +140,8 @@ export function getNextAvailableAccount(
 ): QwenAccount | null {
   const accounts = loadAccounts();
   if (accounts.length === 0) return null;
+
+  syncCooldownsFromDb(accounts);
 
   let triedSet: Set<string>;
   if (triedAccountIds instanceof Set) {

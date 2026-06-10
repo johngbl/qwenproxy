@@ -29,4 +29,9 @@ export class Mutex {
 
     this.locked = false;
   }
+
+  /** Returns true if the mutex is not locked and has no waiting queue. */
+  isIdle(): boolean {
+    return !this.locked && this.queue.length === 0;
+  }
 }

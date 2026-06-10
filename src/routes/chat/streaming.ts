@@ -381,6 +381,13 @@ export async function processNonStreamingResponse(
             }
           }
         } catch (_e) {
+          // Re-throw known errors for retry logic in index.ts
+          if (
+            _e instanceof RetryableQwenStreamError ||
+            _e instanceof QwenUpstreamError
+          ) {
+            throw _e;
+          }
           // Log warning for large chunks that fail to parse
           if (dataStr.length > 10) {
             console.warn(
@@ -1093,6 +1100,13 @@ export async function processStreamingResponse(
               }
             }
           } catch (_e) {
+            // Re-throw known errors for retry logic in index.ts
+            if (
+              _e instanceof RetryableQwenStreamError ||
+              _e instanceof QwenUpstreamError
+            ) {
+              throw _e;
+            }
             // Ignore partial chunk parse errors
           }
         }

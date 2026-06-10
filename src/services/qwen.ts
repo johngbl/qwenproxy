@@ -5,13 +5,13 @@ import {
   isAuthMockEnabled,
 } from "./auth-http.ts";
 import { v4 as uuidv4 } from "uuid";
-import { UpstreamRateLimit, UpstreamError, AuthError } from "../core/errors.js";
+import { UpstreamRateLimit, UpstreamError, AuthError } from "../core/errors.ts";
 import { buildQwenRequestHeaders, QWEN_WEB_VERSION } from "./qwen-headers.ts";
-import { config } from "../core/config.js";
-import { logger, isToolcallDebugEnabled } from "../core/logger.js";
-import { getDatabase } from "../core/database.js";
-import { markAccountRateLimited } from "../core/account-manager.js";
-import { MAX_PAYLOAD_SIZE } from "../core/model-registry.js";
+import { config } from "../core/config.ts";
+import { logger, isToolcallDebugEnabled } from "../core/logger.ts";
+import { getDatabase } from "../core/database.ts";
+import { markAccountRateLimited } from "../core/account-manager.ts";
+import { MAX_PAYLOAD_SIZE } from "../core/model-registry.ts";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -1054,7 +1054,12 @@ function parseQwenJsonError(
   status: number,
   accountId?: string,
 ): Error | null {
-  const errorJson = JSON.parse(raw);
+  let errorJson: any;
+  try {
+    errorJson = JSON.parse(raw);
+  } catch {
+    return null;
+  }
 
   // Helper: exponential backoff with jitter, capped by config
   const antiBotDelay = (attempt: number) => {

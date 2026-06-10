@@ -12,6 +12,7 @@ import crypto from "crypto";
 import { QwenAccount } from "../core/accounts.ts";
 import { config } from "../core/config.ts";
 import { maskEmail } from "../core/logger.ts";
+import { Mutex } from "../core/mutex.ts";
 
 // Try to import playwright-extra and stealth, fallback to regular playwright
 let chromiumWithStealth: typeof chromium | null = null;
@@ -48,34 +49,6 @@ function resolveBrowserEngine(browserType: BrowserType): BrowserEngineConfig {
     case "chromium":
     default:
       return { engine: chromium };
-  }
-}
-
-// ─── Mutex ────────────────────────────────────────────────────────────────────
-
-class Mutex {
-  private queue: (() => void)[] = [];
-  private locked = false;
-
-  async acquire(): Promise<() => void> {
-    if (!this.locked) {
-      this.locked = true;
-      return () => this.release();
-    }
-    return new Promise<() => void>((resolve) => {
-      this.queue.push(() => {
-        resolve(() => this.release());
-      });
-    });
-  }
-
-  private release(): void {
-    const next = this.queue.shift();
-    if (next) {
-      next();
-    } else {
-      this.locked = false;
-    }
   }
 }
 
@@ -523,8 +496,11 @@ async function captureHeaders(accountId: string): Promise<void> {
   const cache = getHeaderCache(accountId);
 
   return new Promise<void>((resolve) => {
-    const timeout = setTimeout(() => {
+    const timeout = setTimeout(async () => {
       console.warn(`[Playwright] Header capture timeout for ${accountId}`);
+      await page
+        .unroute("**/api/v2/chat/completions*", routeHandler)
+        .catch(() => {});
       resolve();
     }, 30000);
 
