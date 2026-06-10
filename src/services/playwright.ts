@@ -173,9 +173,6 @@ export async function getBasicHeaders(accountId: string): Promise<{
   // Acquire mutex to prevent concurrent browser access
   const release = await getAccountMutex(accountId).acquire();
   try {
-    const cookie = await getCookies(accountId);
-    const cache = getHeaderCache(accountId);
-
     // Get real user agent from browser
     let userAgent = config.auth.userAgent;
     try {
@@ -183,6 +180,8 @@ export async function getBasicHeaders(accountId: string): Promise<{
     } catch {
       // Use default
     }
+
+    const cache = getHeaderCache(accountId);
 
     // Refresh headers if stale
     const headersAge = Date.now() - cache.lastRefresh;
@@ -192,7 +191,7 @@ export async function getBasicHeaders(accountId: string): Promise<{
 
     let bxUa = cache.headers["bx-ua"] || "";
     let bxUmidtoken = cache.headers["bx-umidtoken"] || "";
-    const bxV = cache.headers["bx-v"] || "2.5.36";
+    let bxV = cache.headers["bx-v"] || "2.5.36";
 
     // Auto-recover missing anti-fraud headers by triggering full header interception
     if (!bxUa || !bxUmidtoken) {
@@ -204,19 +203,16 @@ export async function getBasicHeaders(accountId: string): Promise<{
         const refreshedCache = getHeaderCache(accountId);
         bxUa = refreshedCache.headers["bx-ua"] || bxUa;
         bxUmidtoken = refreshedCache.headers["bx-umidtoken"] || bxUmidtoken;
-        return {
-          cookie: await getCookies(accountId),
-          userAgent,
-          bxV: refreshedCache.headers["bx-v"] || bxV,
-          bxUa,
-          bxUmidtoken,
-        };
+        bxV = refreshedCache.headers["bx-v"] || bxV;
       } catch (err: any) {
         console.warn(
           `[Playwright] Failed to auto-recover headers for ${accountId}: ${err.message}`,
         );
       }
     }
+
+    // Read cookie AFTER all refreshes (re-login may have updated it)
+    const cookie = await getCookies(accountId);
 
     return {
       cookie,
@@ -592,6 +588,8 @@ async function refreshHeadersInternal(accountId: string): Promise<void> {
           const creds = getAccountCredentials(accountId);
           if (creds && creds.email && creds.password) {
             await loginToQwen(accountId, creds.email, creds.password);
+            // Invalidate cookie cache after re-login
+            cookieCaches.delete(accountId);
           } else {
             console.warn(
               `[Playwright] No credentials available for re-login of ${accountId}`,

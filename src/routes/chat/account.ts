@@ -167,7 +167,9 @@ function isAccountUnavailableError(err: any): boolean {
     message.includes("quota exceeded") ||
     message.includes("increase your quota") ||
     message.includes("token-limit") ||
-    message.includes("insufficient quota")
+    message.includes("insufficient quota") ||
+    message.includes("request rate increased too quickly") ||
+    message.includes("rate increased too quickly")
   );
 }
 
@@ -547,8 +549,8 @@ async function tryCreateStreamWithRetry(
     const err = attemptError;
 
     // Log the error details for debugging
+    const errMsg = err instanceof Error ? err.message : String(err || "");
     if (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
       const errCode = err.upstreamCode || err.code || "unknown";
       console.warn(
         `[Chat] Request failed | ${accountEmail} | ${errCode} | ${errMsg.substring(0, 200)}`,
@@ -619,10 +621,21 @@ async function tryCreateStreamWithRetry(
       }
 
       const hourHint = err.message?.match(/Wait about (\d+) hour/);
-      const cooldownMs = hourHint
-        ? parseInt(hourHint[1]) * 60 * 60 * 1000
-        : undefined;
-      markAccountRateLimited(accountId, cooldownMs, "RateLimited");
+      let cooldownMs: number | undefined;
+      let cooldownReason = "RateLimited";
+
+      if (hourHint) {
+        cooldownMs = parseInt(hourHint[1]) * 60 * 60 * 1000;
+      } else if (
+        errMsg.toLowerCase().includes("request rate increased too quickly") ||
+        errMsg.toLowerCase().includes("rate increased too quickly")
+      ) {
+        // Temporary rate limit — shorter cooldown (5 min)
+        cooldownMs = 5 * 60 * 1000;
+        cooldownReason = "RateLimitTemporary";
+      }
+
+      markAccountRateLimited(accountId, cooldownMs, cooldownReason);
       return { success: false, error: err };
     }
 
