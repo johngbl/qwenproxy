@@ -10,12 +10,10 @@ import { buildQwenRequestHeaders, QWEN_WEB_VERSION } from "./qwen-headers.ts";
 import { config } from "../core/config.js";
 import { logger, isToolcallDebugEnabled } from "../core/logger.js";
 import { getDatabase } from "../core/database.js";
+import { markAccountRateLimited } from "../core/account-manager.js";
+import { MAX_PAYLOAD_SIZE } from "../core/model-registry.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-function getRandomDelay(): number {
-  return 20 + Math.floor(Math.random() * 80);
-}
 
 export class RetryableQwenStreamError extends UpstreamRateLimit {
   readonly retryAfterMs: number;
@@ -353,6 +351,38 @@ const nativeToolsDisabled = new Set<string>();
 const disablingNativeToolsInProgress = new Set<string>();
 const lastSyncedPersonalizationHashes = new Map<string, string>();
 
+function getPersonalizationHashFromDb(accountId: string): string | null {
+  try {
+    const db = getDatabase();
+    const row = db
+      .prepare(
+        "SELECT instruction_hash FROM personalization_cache WHERE account_id = ?",
+      )
+      .get(accountId) as { instruction_hash: string } | undefined;
+    return row?.instruction_hash ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function setPersonalizationHashInDb(accountId: string, hash: string): void {
+  try {
+    const db = getDatabase();
+    db.prepare(
+      `
+      INSERT INTO personalization_cache (account_id, instruction_hash, updated_at)
+      VALUES (?, ?, datetime('now'))
+      ON CONFLICT(account_id) DO UPDATE SET instruction_hash = excluded.instruction_hash, updated_at = excluded.updated_at
+    `,
+    ).run(accountId, hash);
+  } catch (err) {
+    console.error(
+      `[Qwen] Failed to persist personalization hash for ${accountId}:`,
+      (err as Error).message,
+    );
+  }
+}
+
 function shortContentHash(value: string): string {
   return crypto.createHash("sha256").update(value).digest("hex").slice(0, 12);
 }
@@ -444,20 +474,26 @@ export async function syncQwenRequestPersonalization(
   };
 
   const sent = textSize(instruction);
+
+  // 1. Check memory cache
   const cachedHash = lastSyncedPersonalizationHashes.get(cacheKey);
   if (sent.hash && cachedHash === sent.hash) {
     console.log(
       `[Qwen] Personalization unchanged | ${metadata.model || "?"} | ${metadata.toolsCount ?? 0} tool(s) | ${sent.chars} chars`,
     );
-    logger.debug("[Qwen] personalization sync skipped from cache", {
-      accountId: cacheKey,
-      model: metadata.model || null,
-      tools: metadata.toolsCount ?? 0,
-      promptChars: metadata.promptChars ?? null,
-      sessionId: metadata.sessionId ?? null,
-      sent,
-    });
     return;
+  }
+
+  // 2. Check DB cache (survives restarts)
+  if (sent.hash && !cachedHash) {
+    const dbHash = getPersonalizationHashFromDb(cacheKey);
+    if (dbHash === sent.hash) {
+      lastSyncedPersonalizationHashes.set(cacheKey, sent.hash);
+      console.log(
+        `[Qwen] Personalization unchanged (DB) | ${metadata.model || "?"} | ${metadata.toolsCount ?? 0} tool(s) | ${sent.chars} chars`,
+      );
+      return;
+    }
   }
 
   let existing = { chars: null, bytes: null, hash: null } as ReturnType<
@@ -477,6 +513,7 @@ export async function syncQwenRequestPersonalization(
       existing = textSize(existingJson?.data?.personalization?.instruction);
       if (existing.hash === sent.hash) {
         lastSyncedPersonalizationHashes.set(cacheKey, sent.hash);
+        setPersonalizationHashInDb(cacheKey, sent.hash);
         console.log(
           `[Qwen] Personalization unchanged | ${metadata.model || "?"} | ${metadata.toolsCount ?? 0} tool(s) | ${sent.chars} chars | verified=true`,
         );
@@ -542,6 +579,7 @@ export async function syncQwenRequestPersonalization(
   const matchStored = stored.hash === null ? null : stored.hash === sent.hash;
   if (sent.hash && (matchReturned || matchStored === true)) {
     lastSyncedPersonalizationHashes.set(cacheKey, sent.hash);
+    setPersonalizationHashInDb(cacheKey, sent.hash);
   }
   console.log(
     `[Qwen] Personalization synced | ${metadata.model || "?"} | ${metadata.toolsCount ?? 0} tool(s) | ${sent.chars} chars${matchStored === null ? "" : ` | verified=${matchStored}`}`,
@@ -937,7 +975,24 @@ async function refillQwenChatPool(
       current.push(chatId);
       precreatedChatSessions.set(key, current);
     }
-  } catch (err) {
+  } catch (err: any) {
+    // Mark account as rate-limited if chat creation fails with RateLimited error
+    if (err instanceof QwenUpstreamError) {
+      if (err.upstreamCode === "RateLimited" || err.upstreamStatus === 429) {
+        const hourHint = err.message?.match(/Wait about (\d+) hour/);
+        const cooldownMs = hourHint
+          ? parseInt(hourHint[1]) * 60 * 60 * 1000
+          : undefined;
+        markAccountRateLimited(
+          accountId || "global",
+          cooldownMs,
+          "RateLimited",
+        );
+        console.warn(
+          `[WarmPool] Account ${accountId || "global"} rate-limited during chat creation. Marked for cooldown.`,
+        );
+      }
+    }
     if (isToolcallDebugEnabled()) {
       logger.debug("[Qwen] Failed to refill chat pool", {
         accountId: accountId || "global",
@@ -1260,7 +1315,6 @@ export async function createQwenStream(
   // Dynamic timeout based on payload size
   const BASE_TIMEOUT_MS = 120000;
   const TIMEOUT_PER_MB = 30000;
-  const MAX_PAYLOAD_SIZE = 10 * 1024 * 1024; // 10MB
 
   const payloadJson = JSON.stringify(payload);
   const payloadSize = Buffer.byteLength(payloadJson);
@@ -1286,7 +1340,6 @@ export async function createQwenStream(
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), dynamicTimeoutMs);
-  await sleep(getRandomDelay());
   let response: Response;
   try {
     response = await fetch(url, {
@@ -1323,7 +1376,7 @@ export async function createQwenStream(
       );
       try {
         const { headers: freshHeaders } = await getQwenHeaders(true, accountId);
-        await sleep(1000 + Math.floor(Math.random() * 2000));
+        await sleep(500 + Math.floor(Math.random() * 1000));
 
         const retryController = new AbortController();
         const retryTimeoutId = setTimeout(

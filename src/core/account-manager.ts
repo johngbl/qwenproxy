@@ -1,4 +1,8 @@
-import { QwenAccount, loadAccounts } from "./accounts.ts";
+import {
+  QwenAccount,
+  loadAccounts,
+  updateAccountCooldown,
+} from "./accounts.ts";
 import { config } from "./config.ts";
 
 let currentIndex = 0;
@@ -10,23 +14,51 @@ interface CooldownEntry {
 
 const cooldowns = new Map<string, CooldownEntry>();
 
+const DEFAULT_COOLDOWN_MS = 24 * 60 * 60 * 1000; // 24 hours
+
 export function markAccountRateLimited(
   accountId: string,
   cooldownMs?: number,
   reason?: string,
 ): void {
-  const effectiveCooldownMs = cooldownMs ?? config.rateLimit.cooldownMs;
+  const duration = cooldownMs ?? DEFAULT_COOLDOWN_MS;
+  const until = Date.now() + duration;
+  const cooldownReason = reason ?? "RateLimited";
+
   cooldowns.set(accountId, {
-    until: Date.now() + effectiveCooldownMs,
-    reason: reason ?? "RateLimited",
+    until,
+    reason: cooldownReason,
   });
+
+  // Persist to database
+  if (accountId !== "global") {
+    try {
+      updateAccountCooldown(accountId, until, cooldownReason);
+    } catch (err) {
+      console.error(
+        `[AccountManager] Failed to save cooldown to DB for ${accountId}:`,
+        (err as Error).message,
+      );
+    }
+  }
+
   console.log(
-    `[AccountManager] Rate limited | ${accountId} | ${Math.round(effectiveCooldownMs / 1000)}s | until=${new Date(Date.now() + effectiveCooldownMs).toISOString()}`,
+    `[AccountManager] Rate limited | ${accountId} | ${Math.round(duration / 1000)}s | until=${new Date(until).toISOString()}`,
   );
 }
 
 export function clearAccountCooldown(accountId: string): void {
   cooldowns.delete(accountId);
+  if (accountId !== "global") {
+    try {
+      updateAccountCooldown(accountId, 0, null);
+    } catch (err) {
+      console.error(
+        `[AccountManager] Failed to clear cooldown in DB for ${accountId}:`,
+        (err as Error).message,
+      );
+    }
+  }
 }
 
 export function getAccountCooldownInfo(
@@ -37,6 +69,16 @@ export function getAccountCooldownInfo(
   const remaining = entry.until - Date.now();
   if (remaining <= 0) {
     cooldowns.delete(accountId);
+    if (accountId !== "global") {
+      try {
+        updateAccountCooldown(accountId, 0, null);
+      } catch (err) {
+        console.error(
+          `[AccountManager] Failed to clear expired cooldown in DB:`,
+          (err as Error).message,
+        );
+      }
+    }
     return null;
   }
   return { onCooldown: true, remainingMs: remaining, reason: entry.reason };
@@ -50,6 +92,23 @@ export function getNextAccount(): QwenAccount | null {
   const accounts = loadAccounts();
   if (accounts.length === 0) {
     return null;
+  }
+
+  // Sync memory cooldowns from database values
+  const now = Date.now();
+  for (const account of accounts) {
+    if (account.cooldown_until && account.cooldown_until > now) {
+      if (!cooldowns.has(account.id)) {
+        cooldowns.set(account.id, {
+          until: account.cooldown_until,
+          reason: account.cooldown_reason || "RateLimited",
+        });
+      }
+    } else {
+      if (cooldowns.has(account.id)) {
+        cooldowns.delete(account.id);
+      }
+    }
   }
 
   for (let i = 0; i < accounts.length; i++) {
@@ -74,26 +133,34 @@ export function getNextAccount(): QwenAccount | null {
 }
 
 export function getNextAvailableAccount(
-  skipAccountId?: string,
+  triedAccountIds?: Set<string> | string,
 ): QwenAccount | null {
   const accounts = loadAccounts();
   if (accounts.length === 0) return null;
 
+  let triedSet: Set<string>;
+  if (triedAccountIds instanceof Set) {
+    triedSet = triedAccountIds;
+  } else {
+    triedSet = new Set(triedAccountIds ? [triedAccountIds] : []);
+  }
+
+  // 1. Try to find an untried account that is NOT on cooldown
   for (let i = 0; i < accounts.length; i++) {
     const idx = (currentIndex + i) % accounts.length;
     const account = accounts[idx];
-    if (skipAccountId && account.id === skipAccountId) continue;
+    if (triedSet.has(account.id)) continue;
     if (!isAccountOnCooldown(account.id)) {
       currentIndex = (idx + 1) % accounts.length;
       return account;
     }
   }
 
-  // All remaining accounts on cooldown — return the one with shortest cooldown.
+  // 2. If all untried accounts are on cooldown, return the untried one with the shortest remaining cooldown
   let best: QwenAccount | null = null;
   let bestRemaining = Infinity;
   for (const account of accounts) {
-    if (skipAccountId && account.id === skipAccountId) continue;
+    if (triedSet.has(account.id)) continue;
     const info = getAccountCooldownInfo(account.id);
     if (info && info.remainingMs < bestRemaining) {
       bestRemaining = info.remainingMs;

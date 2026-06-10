@@ -234,7 +234,7 @@ export async function acquireUpstreamStream(
     const accountEmail = maskEmail(account.email);
 
     if (triedAccountIds.has(accountId)) {
-      account = getNextAvailableAccount(accountId);
+      account = getNextAvailableAccount(triedAccountIds);
       continue;
     }
     triedAccountIds.add(accountId);
@@ -249,7 +249,7 @@ export async function acquireUpstreamStream(
           `[Chat] Sticky account is on cooldown; recreating upstream chat on another account with full context.`,
         );
       }
-      account = getNextAvailableAccount(accountId);
+      account = getNextAvailableAccount(triedAccountIds);
       continue;
     }
 
@@ -356,7 +356,7 @@ export async function acquireUpstreamStream(
       });
     }
 
-    account = getNextAvailableAccount(accountId);
+    account = getNextAvailableAccount(triedAccountIds);
   }
 
   // All accounts exhausted.

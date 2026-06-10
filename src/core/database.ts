@@ -112,6 +112,10 @@ function runMigrations(db: Database.Database): void {
 
     CREATE INDEX IF NOT EXISTS idx_accounts_email ON accounts(email);
 
+    -- Cooldown persistence columns (ignore if already exist)
+    -- Note: SQLite doesn't support IF NOT EXISTS for ALTER TABLE ADD COLUMN,
+    -- so these are wrapped in try-catch at the application level.
+
     CREATE TABLE IF NOT EXISTS qwen_auth_sessions (
       account_id TEXT PRIMARY KEY,
       cookie TEXT NOT NULL,
@@ -234,7 +238,28 @@ function runMigrations(db: Database.Database): void {
 
     CREATE INDEX IF NOT EXISTS idx_thread_context_rollovers_session
       ON thread_context_rollovers(session_id, id);
+
+    CREATE TABLE IF NOT EXISTS personalization_cache (
+      account_id TEXT PRIMARY KEY,
+      instruction_hash TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
   `);
+
+  // Cooldown persistence columns — wrapped in try-catch because
+  // SQLite doesn't support IF NOT EXISTS for ALTER TABLE ADD COLUMN.
+  try {
+    db.exec(
+      `ALTER TABLE accounts ADD COLUMN cooldown_until INTEGER DEFAULT 0;`,
+    );
+  } catch {
+    // Column already exists
+  }
+  try {
+    db.exec(`ALTER TABLE accounts ADD COLUMN cooldown_reason TEXT;`);
+  } catch {
+    // Column already exists
+  }
 }
 
 /**

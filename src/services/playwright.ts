@@ -217,12 +217,40 @@ export async function getBasicHeaders(accountId: string): Promise<{
       await refreshHeadersInternal(accountId);
     }
 
+    let bxUa = cache.headers["bx-ua"] || "";
+    let bxUmidtoken = cache.headers["bx-umidtoken"] || "";
+    const bxV = cache.headers["bx-v"] || "2.5.36";
+
+    // Auto-recover missing anti-fraud headers by triggering full header interception
+    if (!bxUa || !bxUmidtoken) {
+      console.log(
+        `[Playwright] Missing bx-ua/bx-umidtoken for ${accountId}, triggering header interception...`,
+      );
+      try {
+        await refreshHeadersInternal(accountId);
+        const refreshedCache = getHeaderCache(accountId);
+        bxUa = refreshedCache.headers["bx-ua"] || bxUa;
+        bxUmidtoken = refreshedCache.headers["bx-umidtoken"] || bxUmidtoken;
+        return {
+          cookie: await getCookies(accountId),
+          userAgent,
+          bxV: refreshedCache.headers["bx-v"] || bxV,
+          bxUa,
+          bxUmidtoken,
+        };
+      } catch (err: any) {
+        console.warn(
+          `[Playwright] Failed to auto-recover headers for ${accountId}: ${err.message}`,
+        );
+      }
+    }
+
     return {
       cookie,
       userAgent,
-      bxV: cache.headers["bx-v"] || "2.5.36",
-      bxUa: cache.headers["bx-ua"] || "",
-      bxUmidtoken: cache.headers["bx-umidtoken"] || "",
+      bxV,
+      bxUa,
+      bxUmidtoken,
     };
   } finally {
     release();
@@ -294,6 +322,35 @@ export async function initPlaywrightForAccount(
 
     if (!hasAuthCookie && account.email && account.password) {
       await loginToQwen(account.id, account.email, account.password);
+    }
+
+    // Navigate to Qwen home to validate session and populate cookies
+    try {
+      await acctPage.goto("https://chat.qwen.ai/", {
+        waitUntil: "domcontentloaded",
+        timeout: 15000,
+      });
+      const url = acctPage.url();
+      if (url.includes("auth") || url.includes("login")) {
+        if (account.email && account.password) {
+          console.log(
+            `[Playwright] Session expired for ${maskEmail(account.email)}, re-logging in...`,
+          );
+          await loginToQwen(account.id, account.email, account.password);
+        } else {
+          console.warn(
+            `[Playwright] Session expired for account ${account.id} but no credentials available.`,
+          );
+        }
+      } else {
+        console.log(
+          `[Playwright] Session validated for ${maskEmail(account.email)}.`,
+        );
+      }
+    } catch (err: any) {
+      console.warn(
+        `[Playwright] Failed to validate session for ${maskEmail(account.email)}: ${err.message}`,
+      );
     }
 
     // Capture headers by navigating and intercepting

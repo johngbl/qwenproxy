@@ -476,6 +476,30 @@ export async function getQwenHeaders(
   accountId?: string,
   _skipMutex = false,
 ): Promise<HeaderResult> {
+  // Use Playwright headers if enabled and account is initialized
+  if (config.playwright.enabled && accountId) {
+    try {
+      const { getBasicHeaders: getPwBasicHeaders, isPlaywrightInitialized } =
+        await import("./playwright.ts");
+      if (isPlaywrightInitialized(accountId)) {
+        const pwHeaders = await getPwBasicHeaders(accountId);
+        return {
+          headers: {
+            cookie: pwHeaders.cookie,
+            "user-agent": pwHeaders.userAgent,
+            "bx-v": pwHeaders.bxV,
+            "bx-ua": pwHeaders.bxUa || "",
+            "bx-umidtoken": pwHeaders.bxUmidtoken || "",
+          },
+          chatSessionId: "",
+          parentMessageId: null,
+        };
+      }
+    } catch {
+      // Fallback to HTTP auth
+    }
+  }
+
   const result = await getAuthSession(accountId, { forceRefresh: forceNew });
   return {
     headers: authResultToHeaders(result),

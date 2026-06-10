@@ -52,7 +52,7 @@ const modelTokenDivisors: Record<string, number> = {
 
 const defaultContextWindow = 131072;
 const defaultTokenDivisor = 2.0;
-export const MAX_PAYLOAD_SIZE = 10 * 1024 * 1024;
+export const MAX_PAYLOAD_SIZE = 50 * 1024 * 1024;
 
 export function setModelContextWindow(
   modelId: string,

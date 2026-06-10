@@ -338,48 +338,68 @@ export async function startServer(options?: {
     const { initHttpAuth, initHttpAuthForAccount, hasGlobalCredentials } =
       await import("../services/auth-http.ts");
 
+    const BATCH_SIZE = 5;
+
     if (config.playwright.enabled) {
       console.log(
-        `[Server] Preparing ${accounts.length} configured account(s) with Playwright in parallel...`,
+        `[Server] Preparing ${accounts.length} account(s) with Playwright (batch size: ${BATCH_SIZE})...`,
       );
 
       const { initPlaywrightForAccount } =
         await import("../services/playwright.ts");
 
-      await Promise.all(
-        accounts.map((account: QwenAccount) =>
-          prepareQwenRuntime({
-            accountId: account.id,
-            successMessage: `[Server] Account ready (Playwright): ${maskEmail(account.email)}`,
-            failureMessage: `[Server] Failed to initialize account ${maskEmail(account.email)}:`,
-            initAuth: () =>
-              initPlaywrightForAccount(
-                account,
-                config.playwright.headless,
-                config.playwright.browser,
-              ),
-            disableNativeTools,
-            warmQwenChatPool,
-          }),
-        ),
-      );
+      for (let i = 0; i < accounts.length; i += BATCH_SIZE) {
+        const batch = accounts.slice(i, i + BATCH_SIZE);
+        const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+        const totalBatches = Math.ceil(accounts.length / BATCH_SIZE);
+        console.log(
+          `[Server] Batch ${batchNum}/${totalBatches}: initializing ${batch.length} account(s)...`,
+        );
+
+        await Promise.all(
+          batch.map((account: QwenAccount) =>
+            prepareQwenRuntime({
+              accountId: account.id,
+              successMessage: `[Server] Account ready (Playwright): ${maskEmail(account.email)}`,
+              failureMessage: `[Server] Failed to initialize account ${maskEmail(account.email)}:`,
+              initAuth: () =>
+                initPlaywrightForAccount(
+                  account,
+                  config.playwright.headless,
+                  config.playwright.browser,
+                ),
+              disableNativeTools,
+              warmQwenChatPool,
+            }),
+          ),
+        );
+      }
     } else if (accounts.length > 0) {
       console.log(
-        `[Server] Preparing ${accounts.length} configured account(s) with HTTP auth in parallel...`,
+        `[Server] Preparing ${accounts.length} account(s) with HTTP auth (batch size: ${BATCH_SIZE})...`,
       );
 
-      await Promise.all(
-        accounts.map((account: QwenAccount) =>
-          prepareQwenRuntime({
-            accountId: account.id,
-            successMessage: `[Server] Account ready: ${maskEmail(account.email)}`,
-            failureMessage: `[Server] Failed to initialize account ${maskEmail(account.email)}:`,
-            initAuth: () => initHttpAuthForAccount(account),
-            disableNativeTools,
-            warmQwenChatPool,
-          }),
-        ),
-      );
+      for (let i = 0; i < accounts.length; i += BATCH_SIZE) {
+        const batch = accounts.slice(i, i + BATCH_SIZE);
+        const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+        const totalBatches = Math.ceil(accounts.length / BATCH_SIZE);
+        console.log(
+          `[Server] Batch ${batchNum}/${totalBatches}: initializing ${batch.length} account(s)...`,
+        );
+
+        await Promise.all(
+          batch.map((account: QwenAccount) =>
+            prepareQwenRuntime({
+              accountId: account.id,
+              successMessage: `[Server] Account ready: ${maskEmail(account.email)}`,
+              failureMessage: `[Server] Failed to initialize account ${maskEmail(account.email)}:`,
+              initAuth: () => initHttpAuthForAccount(account),
+              disableNativeTools,
+              warmQwenChatPool,
+            }),
+          ),
+        );
+      }
     } else if (hasGlobalCredentials()) {
       await prepareQwenRuntime({
         successMessage: "[Server] Global Qwen HTTP auth ready.",
