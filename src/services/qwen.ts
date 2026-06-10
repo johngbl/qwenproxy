@@ -536,25 +536,60 @@ export async function syncQwenRequestPersonalization(
     }
   }
 
-  const response = await fetch(
-    `${config.qwen.baseUrl}/api/v2/users/user/settings/update`,
-    {
-      method: "POST",
-      headers: requestHeaders,
-      body: JSON.stringify(payload),
-    },
-  );
-  const { raw, json } = await readJsonTextResponse(response);
+  // Helper: attempt the POST, returns { raw, json } or throws on non-retriable errors
+  async function attemptPost(
+    headers: Record<string, string>,
+  ): Promise<{ raw: string; json: any }> {
+    const reqHeaders = buildCapturedQwenHeaders(headers, {
+      referer: `${config.qwen.baseUrl}/settings/personalization`,
+    });
+    const resp = await fetch(
+      `${config.qwen.baseUrl}/api/v2/users/user/settings/update`,
+      {
+        method: "POST",
+        headers: reqHeaders,
+        body: JSON.stringify(payload),
+      },
+    );
+    return readJsonTextResponse(resp);
+  }
 
-  if (!response.ok || json?.success === false) {
+  let raw: string;
+  let json: any;
+
+  // Layer 1: First attempt
+  ({ raw, json } = await attemptPost(headers));
+
+  // Layer 2: On 401/Unauthorized → refresh session and retry once
+  const isUnauthorized =
+    json?.success === false &&
+    (json?.data?.code === "Unauthorized" ||
+      json?.data?.code === "unauthorized" ||
+      (typeof json?.data?.details === "string" &&
+        json.data.details.includes("401")));
+
+  if (isUnauthorized) {
     console.warn(
-      `[Qwen] Personalization sync failed | account=${cacheKey} | status=${response.status} | sent=${sent.chars} chars/${sent.bytes} bytes | response=${raw.slice(0, 240)}`,
+      `[Qwen] Personalization 401 — refreshing session and retrying | account=${cacheKey}`,
     );
-    throw new QwenUpstreamError(
-      `Qwen personalization update failed: ${response.status} ${raw.slice(0, 300)}`,
-      "PersonalizationUpdateFailed",
-      response.status >= 500 ? 502 : response.status,
+    try {
+      const { headers: freshHeaders } = await getQwenHeaders(true, accountId);
+      ({ raw, json } = await attemptPost(freshHeaders));
+    } catch (retryErr) {
+      // Layer 3: Retry failed → non-fatal, continue without personalization
+      console.warn(
+        `[Qwen] Personalization retry failed, continuing without it | account=${cacheKey} | error=${(retryErr as Error).message?.substring(0, 150)}`,
+      );
+      return;
+    }
+  }
+
+  // Layer 3: Check final result — non-fatal on failure
+  if (json?.success === false) {
+    console.warn(
+      `[Qwen] Personalization sync failed (non-fatal) | account=${cacheKey} | response=${raw.slice(0, 200)}`,
     );
+    return; // Don't throw — continue with request without personalization
   }
 
   const returnedInstruction = json?.data?.personalization?.instruction;

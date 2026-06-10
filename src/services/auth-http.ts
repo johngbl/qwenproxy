@@ -479,9 +479,16 @@ export async function getQwenHeaders(
   // Use Playwright headers if enabled and account is initialized
   if (config.playwright.enabled && accountId) {
     try {
-      const { getBasicHeaders: getPwBasicHeaders, isPlaywrightInitialized } =
-        await import("./playwright.ts");
+      const {
+        getBasicHeaders: getPwBasicHeaders,
+        refreshHeaders: pwRefreshHeaders,
+        isPlaywrightInitialized,
+      } = await import("./playwright.ts");
       if (isPlaywrightInitialized(accountId)) {
+        // Force refresh: re-capture headers from browser
+        if (forceNew) {
+          await pwRefreshHeaders(accountId);
+        }
         const pwHeaders = await getPwBasicHeaders(accountId);
         return {
           headers: {

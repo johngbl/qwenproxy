@@ -575,6 +575,37 @@ async function refreshHeadersInternal(accountId: string): Promise<void> {
 
   cache.refreshInProgress = true;
   try {
+    // Check if session is expired before capturing headers
+    const page = accountPages.get(accountId);
+    if (page) {
+      try {
+        await page.goto("https://chat.qwen.ai/", {
+          waitUntil: "domcontentloaded",
+          timeout: 15000,
+        });
+        const url = page.url();
+        if (url.includes("auth") || url.includes("login")) {
+          console.log(
+            `[Playwright] Session expired during refresh, re-logging in for ${accountId}...`,
+          );
+          const { getAccountCredentials } = await import("../core/accounts.ts");
+          const creds = getAccountCredentials(accountId);
+          if (creds && creds.email && creds.password) {
+            await loginToQwen(accountId, creds.email, creds.password);
+          } else {
+            console.warn(
+              `[Playwright] No credentials available for re-login of ${accountId}`,
+            );
+          }
+        }
+      } catch (navErr) {
+        console.warn(
+          `[Playwright] Navigation check failed during refresh for ${accountId}:`,
+          (navErr as Error).message,
+        );
+      }
+    }
+
     await captureHeaders(accountId);
   } finally {
     cache.refreshInProgress = false;
