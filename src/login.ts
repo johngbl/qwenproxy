@@ -6,6 +6,7 @@ import {
   type QwenAccount,
 } from "./core/accounts.ts";
 import { initHttpAuthForAccount, loginViaHttp } from "./services/auth-http.ts";
+import { maskEmail } from "./core/logger.ts";
 import * as readline from "readline";
 import * as dotenv from "dotenv";
 
@@ -100,7 +101,7 @@ async function addAccountFlow() {
     account = addAccount(email, password);
     console.log("\nValidating credentials with Qwen HTTP login...");
     const result = await loginViaHttp(account, { persist: true });
-    console.log(`Account added: ${account.email} (${account.id})`);
+    console.log(`Account added: ${maskEmail(account.email)} (${account.id})`);
     if (result.expiresAt) {
       console.log(
         `Session expires at: ${new Date(result.expiresAt).toISOString()}`,
@@ -122,7 +123,9 @@ async function removeAccountFlow() {
   console.log("=== Remove Account ===\n");
 
   for (let i = 0; i < accounts.length; i++) {
-    console.log(`  [${i + 1}] ${accounts[i].email} (ID: ${accounts[i].id})`);
+    console.log(
+      `  [${i + 1}] ${maskEmail(accounts[i].email)} (ID: ${accounts[i].id})`,
+    );
   }
 
   const input = await askQuestion(
@@ -140,7 +143,7 @@ async function removeAccountFlow() {
   const confirm = await askQuestion(`\nRemove ${account.email}? (y/N): `);
   if (confirm.toLowerCase() === "y") {
     if (removeAccount(account.id)) {
-      console.log(`Account ${account.email} removed.`);
+      console.log(`Account ${maskEmail(account.email)} removed.`);
     } else {
       console.log("Failed to remove account.");
     }
@@ -161,16 +164,20 @@ async function loginAllAccounts() {
   for (const account of accounts) {
     const creds = getAccountCredentials(account.id);
     if (!creds || creds.password === "***" || !creds.password) {
-      console.log(`[Login] Skipping ${account.email} - no password available`);
+      console.log(
+        `[Login] Skipping ${maskEmail(account.email)} - no password available`,
+      );
       continue;
     }
 
-    console.log(`[Login] Processing account: ${account.email}`);
+    console.log(`[Login] Processing account: ${maskEmail(account.email)}`);
     try {
       await initHttpAuthForAccount(creds, true);
-      console.log(`[Login] Account ${account.email} session saved.`);
+      console.log(`[Login] Account ${maskEmail(account.email)} session saved.`);
     } catch (err: any) {
-      console.error(`[Login] Failed to login ${account.email}: ${err.message}`);
+      console.error(
+        `[Login] Failed to login ${maskEmail(account.email)}: ${err.message}`,
+      );
     }
   }
 

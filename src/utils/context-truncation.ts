@@ -1,5 +1,6 @@
-import { Message } from './types.ts';
-import { summarizeMessages } from './context-summarizer.ts';
+import { Message } from "./types.ts";
+import { summarizeMessages } from "./context-summarizer.ts";
+import { getModelTokenDivisor } from "../core/model-registry.ts";
 
 export enum MessagePriority {
   SYSTEM = 0,
@@ -26,9 +27,10 @@ export interface TruncationOptions {
   enableSummarization?: boolean;
   summarizationModel?: string;
   minMessagesToKeep?: number;
+  modelId?: string;
 }
 
-export function estimateTokenCount(text: string): number {
+export function estimateTokenCount(text: string, modelId?: string): number {
   if (!text) return 0;
 
   let tokens = 0;
@@ -39,31 +41,40 @@ export function estimateTokenCount(text: string): number {
     const codePoint = text.codePointAt(i) || 0;
 
     // CJK Unified Ideographs (U+4E00-U+9FFF)
-    if (codePoint >= 0x4E00 && codePoint <= 0x9FFF) {
+    if (codePoint >= 0x4e00 && codePoint <= 0x9fff) {
       tokens += 1.5;
       i += 1;
     }
     // CJK Extension A/B (U+3400-U+2A6DF)
-    else if (codePoint >= 0x3400 && codePoint <= 0x2A6DF) {
+    else if (codePoint >= 0x3400 && codePoint <= 0x2a6df) {
       tokens += 1.5;
-      i += codePoint > 0xFFFF ? 2 : 1;
+      i += codePoint > 0xffff ? 2 : 1;
     }
     // Hiragana/Katakana (U+3040-U+30FF)
-    else if (codePoint >= 0x3040 && codePoint <= 0x30FF) {
+    else if (codePoint >= 0x3040 && codePoint <= 0x30ff) {
       tokens += 1.2;
       i += 1;
     }
     // Hangul (U+AC00-U+D7AF)
-    else if (codePoint >= 0xAC00 && codePoint <= 0xD7AF) {
+    else if (codePoint >= 0xac00 && codePoint <= 0xd7af) {
       tokens += 1.3;
       i += 1;
     }
     // ASCII printable (space to ~)
-    else if (codePoint >= 0x20 && codePoint <= 0x7E) {
+    else if (codePoint >= 0x20 && codePoint <= 0x7e) {
       if (
-        char === '{' || char === '}' || char === '[' || char === ']' ||
-        char === '"' || char === ':' || char === ',' || char === ';' ||
-        char === '(' || char === ')' || char === '/' || char === '\\'
+        char === "{" ||
+        char === "}" ||
+        char === "[" ||
+        char === "]" ||
+        char === '"' ||
+        char === ":" ||
+        char === "," ||
+        char === ";" ||
+        char === "(" ||
+        char === ")" ||
+        char === "/" ||
+        char === "\\"
       ) {
         tokens += 0.4;
       } else {
@@ -72,27 +83,38 @@ export function estimateTokenCount(text: string): number {
       i += 1;
     }
     // Newlines and whitespace
-    else if (char === '\n' || char === '\r' || char === '\t') {
+    else if (char === "\n" || char === "\r" || char === "\t") {
       tokens += 0.2;
       i += 1;
     }
     // Other Unicode (emoji, symbols, etc.)
     else {
       tokens += 1.0;
-      i += codePoint > 0xFFFF ? 2 : 1;
+      i += codePoint > 0xffff ? 2 : 1;
     }
   }
 
-  return Math.ceil(tokens);
+  let result = Math.ceil(tokens);
+
+  // Scale by model-specific token divisor when provided.
+  // Our baseline assumes ~2.0 chars/token for ASCII. Models with higher divisors
+  // (e.g. 2.2 for max variants) produce fewer tokens per char, so we scale down.
+  if (modelId) {
+    const modelDivisor = getModelTokenDivisor(modelId);
+    const baselineDivisor = 2.0;
+    result = Math.ceil(result * (baselineDivisor / modelDivisor));
+  }
+
+  return result;
 }
 
 function normalizeMessageContent(content: string | null | any[]): string {
   if (Array.isArray(content)) {
-    return content.map((c: any) => c.text || JSON.stringify(c)).join('\n');
-  } else if (typeof content === 'object' && content !== null) {
+    return content.map((c: any) => c.text || JSON.stringify(c)).join("\n");
+  } else if (typeof content === "object" && content !== null) {
     return JSON.stringify(content);
   }
-  return content || '';
+  return content || "";
 }
 
 function calculatePriorityScore(
@@ -101,23 +123,23 @@ function calculatePriorityScore(
   totalMessages: number,
 ): MessagePriority {
   // System messages always highest priority
-  if (msg.role === 'system') return MessagePriority.SYSTEM;
+  if (msg.role === "system") return MessagePriority.SYSTEM;
 
   // Recent user messages (last 3)
-  if (msg.role === 'user' && index >= totalMessages - 3) {
+  if (msg.role === "user" && index >= totalMessages - 3) {
     return MessagePriority.RECENT_USER;
   }
 
   // Tool calls and results (last 5)
   if (
-    (msg.role === 'tool' || (msg as any).tool_calls) &&
+    (msg.role === "tool" || (msg as any).tool_calls) &&
     index >= totalMessages - 5
   ) {
     return MessagePriority.TOOL_CALLS;
   }
 
   // Assistant messages (last 5)
-  if (msg.role === 'assistant' && index >= totalMessages - 5) {
+  if (msg.role === "assistant" && index >= totalMessages - 5) {
     return MessagePriority.ASSISTANT;
   }
 
@@ -129,15 +151,21 @@ export async function truncateMessages(
   messages: Message[],
   options: TruncationOptions,
 ): Promise<PrioritizedMessage[]> {
-  const { maxContextLength, systemPrompt = '', enableSummarization, minMessagesToKeep = 10 } = options;
+  const {
+    maxContextLength,
+    systemPrompt = "",
+    enableSummarization,
+    minMessagesToKeep = 10,
+    modelId,
+  } = options;
 
-  const systemTokens = estimateTokenCount(systemPrompt);
+  const systemTokens = estimateTokenCount(systemPrompt, modelId);
   const availableTokens = maxContextLength - systemTokens - 500;
 
   if (availableTokens <= 0) {
     return [
       {
-        role: 'user',
+        role: "user",
         content: systemPrompt,
         priority: MessagePriority.SYSTEM,
         tokens: systemTokens,
@@ -150,7 +178,10 @@ export async function truncateMessages(
   let messagesToProcess = messages;
 
   if (enableSummarization && messages.length > minMessagesToKeep) {
-    const olderMessages = messages.slice(0, messages.length - minMessagesToKeep);
+    const olderMessages = messages.slice(
+      0,
+      messages.length - minMessagesToKeep,
+    );
     const recentMessages = messages.slice(messages.length - minMessagesToKeep);
 
     try {
@@ -158,9 +189,12 @@ export async function truncateMessages(
         model: options.summarizationModel,
       });
 
-      if (result.summary && !result.summary.startsWith('[Summary unavailable')) {
+      if (
+        result.summary &&
+        !result.summary.startsWith("[Summary unavailable")
+      ) {
         summaryMessage = {
-          role: 'system',
+          role: "system",
           content: `[Context Summary]\n${result.summary}`,
           priority: MessagePriority.SYSTEM,
           tokens: result.summaryTokens,
@@ -176,7 +210,7 @@ export async function truncateMessages(
   // Normalize and score all messages
   const scoredMessages = messagesToProcess.map((msg, index) => {
     const content = normalizeMessageContent(msg.content);
-    const tokens = estimateTokenCount(content);
+    const tokens = estimateTokenCount(content, modelId);
     const priority = calculatePriorityScore(msg, index, messages.length);
 
     return {
@@ -243,17 +277,26 @@ export async function truncateMessages(
   // Phase 2: Redistribute unused budget to lower priorities
   let remainingBudget = availableTokens - totalUsedTokens;
   if (remainingBudget > 0) {
-    for (const priority of [MessagePriority.ASSISTANT, MessagePriority.TOOL_CALLS, MessagePriority.OLDER_MESSAGES]) {
+    for (const priority of [
+      MessagePriority.ASSISTANT,
+      MessagePriority.TOOL_CALLS,
+      MessagePriority.OLDER_MESSAGES,
+    ]) {
       if (remainingBudget <= 0) break;
 
       const msgs = messagesByPriority.get(priority) || [];
       const allocatedMsgs = allocated.get(priority) || [];
-      const allocatedIndices = new Set(allocatedMsgs.map(m => m.originalIndex));
+      const allocatedIndices = new Set(
+        allocatedMsgs.map((m) => m.originalIndex),
+      );
 
       // Add unallocated messages from this priority (newest first)
       for (let i = msgs.length - 1; i >= 0; i--) {
         const msg = msgs[i];
-        if (!allocatedIndices.has(msg.originalIndex) && msg.tokens <= remainingBudget) {
+        if (
+          !allocatedIndices.has(msg.originalIndex) &&
+          msg.tokens <= remainingBudget
+        ) {
           allocatedMsgs.unshift(msg);
           remainingBudget -= msg.tokens;
           totalUsedTokens += msg.tokens;
@@ -274,7 +317,7 @@ export async function truncateMessages(
   }
 
   // Collect all allocated messages into flat array
-  const allAllocated: typeof scoredMessages[number][] = [];
+  const allAllocated: (typeof scoredMessages)[number][] = [];
   for (const msgs of allocated.values()) {
     allAllocated.push(...msgs);
   }
@@ -293,12 +336,15 @@ export async function truncateMessages(
   // Fallback: ensure at least one message if result is empty
   if (result.length === 0 && scoredMessages.length > 0) {
     const lastMsg = scoredMessages[scoredMessages.length - 1];
-    const truncatedContent = lastMsg.content.slice(0, Math.max(200, Math.floor(availableTokens * 3.5)));
+    const truncatedContent = lastMsg.content.slice(
+      0,
+      Math.max(200, Math.floor(availableTokens * 3.5)),
+    );
     result.push({
       role: lastMsg.role,
       content: `[Truncated] ${truncatedContent}...`,
       priority: lastMsg.priority,
-      tokens: estimateTokenCount(truncatedContent),
+      tokens: estimateTokenCount(truncatedContent, modelId),
     });
   }
 

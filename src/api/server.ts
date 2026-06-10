@@ -4,7 +4,7 @@ import { Hono, type Context } from "hono";
 import { serve } from "@hono/node-server";
 import { config } from "../core/config.js";
 import { metrics } from "../core/metrics.js";
-import { logger } from "../core/logger.js";
+import { logger, maskEmail } from "../core/logger.js";
 import { MemoryCache } from "../cache/memory-cache.js";
 import { Watchdog } from "../core/watchdog.js";
 import { app as modelsApp } from "./models.js";
@@ -350,8 +350,8 @@ export async function startServer(options?: {
         accounts.map((account: QwenAccount) =>
           prepareQwenRuntime({
             accountId: account.id,
-            successMessage: `[Server] Account ready (Playwright): ${account.email}`,
-            failureMessage: `[Server] Failed to initialize account ${account.email}:`,
+            successMessage: `[Server] Account ready (Playwright): ${maskEmail(account.email)}`,
+            failureMessage: `[Server] Failed to initialize account ${maskEmail(account.email)}:`,
             initAuth: () =>
               initPlaywrightForAccount(
                 account,
@@ -372,8 +372,8 @@ export async function startServer(options?: {
         accounts.map((account: QwenAccount) =>
           prepareQwenRuntime({
             accountId: account.id,
-            successMessage: `[Server] Account ready: ${account.email}`,
-            failureMessage: `[Server] Failed to initialize account ${account.email}:`,
+            successMessage: `[Server] Account ready: ${maskEmail(account.email)}`,
+            failureMessage: `[Server] Failed to initialize account ${maskEmail(account.email)}:`,
             initAuth: () => initHttpAuthForAccount(account),
             disableNativeTools,
             warmQwenChatPool,

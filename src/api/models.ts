@@ -5,6 +5,7 @@ import { loadAccounts } from "../core/accounts.ts";
 import { getAccountCooldownInfo } from "../core/account-manager.ts";
 import { NotFoundError } from "../core/errors.js";
 import { sendOpenAIError } from "./error-helpers.js";
+import { syncModelContextWindows } from "../core/model-registry.ts";
 
 const app = new Hono();
 
@@ -32,6 +33,8 @@ app.get("/v1/models", async (c) => {
     c.header("Cache-Control", "public, max-age=3600");
     c.header("ETag", etag);
 
+    syncModelContextWindows(models);
+
     return c.json({
       object: "list",
       data: models,
@@ -46,6 +49,8 @@ app.get("/v1/models/:model", async (c) => {
   try {
     const modelId = c.req.param("model");
     const models = await fetchQwenModels(getPreferredModelsAccountId());
+    syncModelContextWindows(models);
+
     const model = models.find((entry) => entry.id === modelId);
 
     if (!model) {

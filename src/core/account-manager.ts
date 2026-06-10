@@ -60,8 +60,17 @@ export function getNextAccount(): QwenAccount | null {
     }
   }
 
-  // All accounts are currently on cooldown.
-  return null;
+  // All accounts on cooldown — return the one with the shortest remaining cooldown.
+  let best: QwenAccount | null = null;
+  let bestRemaining = Infinity;
+  for (const account of accounts) {
+    const info = getAccountCooldownInfo(account.id);
+    if (info && info.remainingMs < bestRemaining) {
+      bestRemaining = info.remainingMs;
+      best = account;
+    }
+  }
+  return best;
 }
 
 export function getNextAvailableAccount(
@@ -80,8 +89,18 @@ export function getNextAvailableAccount(
     }
   }
 
-  // All remaining accounts are currently on cooldown.
-  return null;
+  // All remaining accounts on cooldown — return the one with shortest cooldown.
+  let best: QwenAccount | null = null;
+  let bestRemaining = Infinity;
+  for (const account of accounts) {
+    if (skipAccountId && account.id === skipAccountId) continue;
+    const info = getAccountCooldownInfo(account.id);
+    if (info && info.remainingMs < bestRemaining) {
+      bestRemaining = info.remainingMs;
+      best = account;
+    }
+  }
+  return best;
 }
 
 export function getCooldownStatus(): Record<

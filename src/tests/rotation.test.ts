@@ -55,7 +55,7 @@ test("Account Rotation: Round-Robin rotation cycle", async () => {
   }
 });
 
-test("Account Rotation: returns null when all eligible accounts are on cooldown", async () => {
+test("Account Rotation: returns account with shortest cooldown when all accounts are on cooldown", async () => {
   const originalEnv = process.env.QWEN_ACCOUNTS;
   delete process.env.QWEN_ACCOUNTS;
 
@@ -73,10 +73,22 @@ test("Account Rotation: returns null when all eligible accounts are on cooldown"
     invalidateAccountsCache();
 
     markAccountRateLimited("cool-acc-1", 60_000, "RateLimited");
-    markAccountRateLimited("cool-acc-2", 60_000, "RateLimited");
+    markAccountRateLimited("cool-acc-2", 30_000, "RateLimited");
 
-    assert.strictEqual(getNextAccount(), null);
-    assert.strictEqual(getNextAvailableAccount("cool-acc-1"), null);
+    // When all accounts are on cooldown, returns the one with the shortest remaining cooldown.
+    const next = getNextAccount();
+    assert.ok(
+      next !== null,
+      "should return an account even when all are on cooldown",
+    );
+    assert.strictEqual(next!.id, "cool-acc-2"); // 30s cooldown is shorter
+
+    const nextAvail = getNextAvailableAccount("cool-acc-1");
+    assert.ok(
+      nextAvail !== null,
+      "should return an account even when remaining are on cooldown",
+    );
+    assert.strictEqual(nextAvail!.id, "cool-acc-2");
   } finally {
     db.prepare("DELETE FROM accounts").run();
     const insert = db.prepare(

@@ -84,18 +84,30 @@ PLAYWRIGHT_ENABLED=false
 
 ## Modelos e contexto
 
-- `qwen3.7-plus` → contexto interno configurado em `1_000_000`
-- `qwen3.7-max` → contexto interno configurado em `1_000_000`
-- `qwen3.6-plus` → contexto interno configurado em `1_000_000`
-- `qwen3.5-flash` → contexto interno configurado em `1_000_000`
-- **Fallback para modelos desconhecidos** → `262_144`
+Os modelos e janelas de contexto são sincronizados automaticamente via `/v1/models`.
+Valores hardcoded como fallback antes da primeira chamada à API:
+
+| Modelo | Contexto | Divisor de tokens |
+|---|---|---|
+| `qwen3.7-plus` | 1.000.000 | 2.0 |
+| `qwen3.7-max` | 1.000.000 | 2.2 |
+| `qwen3.6-plus` | 1.000.000 | 2.0 |
+| `qwen3.6-plus-preview` | 1.000.000 | 2.0 |
+| `qwen3.5-plus` | 1.000.000 | 2.0 |
+| `qwen3.5-flash` | 1.000.000 | 1.8 |
+| `qwen3-coder-plus` | 1.048.576 | 2.3 |
+| `qwen3.6-max-preview` | 262.144 | 2.2 |
+| `qwen3.5-max-2026-03-08` | 262.144 | 2.2 |
+| `qwen3-vl-plus` | 262.144 | 2.1 |
+| `qwen3.5-omni-plus` | 262.144 | 1.8 |
+| `qwen3-omni-flash-2025-12-01` | 65.536 | 1.7 |
+| `qwen-plus-2025-07-28` | 131.072 | 2.0 |
+| **Fallback** | **131.072** | **2.0** |
 
 ### Variantes `-no-thinking`
 
-- `qwen3.7-plus-no-thinking`
-- `qwen3.7-max-no-thinking`
-- `qwen3.6-plus-no-thinking`
-- `qwen3.5-flash-no-thinking`
+Todos os modelos acima possuem variantes `-no-thinking` (ex: `qwen3.7-plus-no-thinking`).
+Usa a mesma janela de contexto do modelo base.
 
 ---
 
@@ -136,8 +148,11 @@ Crie um `.env` na raiz. O `.env.example` contém apenas as opções mais comuns.
 ### Exemplo mínimo
 
 ```env
-QWEN_ACCOUNTS=user1@example.com:senha1,user2@example.com:senha2
+QWEN_ACCOUNTS=user1@example.com:senha1;user2@example.com:senha2
 ```
+
+> **Dica:** Use `;` como separador de contas para evitar conflito com `,` em senhas.
+> Senhas com `:`, `#`, espaços e outros caracteres especiais funcionam normalmente.
 
 ### Iniciar
 
@@ -171,7 +186,7 @@ npm run test:live  # Só reais/live
 
 | Variável | Default | Descrição |
 |---|---|---|
-| `QWEN_ACCOUNTS` | vazio | Contas no formato `email1:senha1,email2:senha2`. |
+| `QWEN_ACCOUNTS` | vazio | Contas no formato `email1:senha1;email2:senha2`. Use `;` como separador (`,` como fallback legacy). Senhas com `:`, `#`, espaços funcionam normalmente. |
 | `DELETE_ALL_CHATS_ON_SHUTDOWN` | `false` | Limpa chats no shutdown. |
 
 ### Playwright
@@ -413,7 +428,7 @@ QwenBridge/
 | `npm run test:mock` | Testes com mock |
 | `npm run test:live` | Testes reais |
 | `npm run typecheck` | Verificar tipos |
-| `npm run test:direct` | Testar API diretamente |
+
 
 ---
 

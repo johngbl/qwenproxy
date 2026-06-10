@@ -111,7 +111,10 @@ export async function buildFinalContext(
     config.qwen.personalizationFromRequest &&
     !isAuxiliaryRequest &&
     systemPrompt.trim().length > 0;
-  const estimatedTokens = estimateTokenCount(systemPrompt + activePrompt);
+  const estimatedTokens = estimateTokenCount(
+    systemPrompt + activePrompt,
+    modelId,
+  );
   // Normally, system/tool instructions are prepended to the chat prompt. In the
   // experimental Qwen personalization mode, they are synced to the account-level
   // personalization.instruction instead, so they do not appear as chat content.
@@ -137,6 +140,7 @@ export async function buildFinalContext(
         !isInternalSummarizationRequest && config.context.summarization.enabled,
       summarizationModel: config.context.summarization.model,
       minMessagesToKeep: config.context.minMessagesToKeep,
+      modelId,
     });
     finalPrompt = truncated
       .map(

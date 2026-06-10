@@ -11,7 +11,7 @@ import path from "path";
 import crypto from "crypto";
 import { QwenAccount } from "../core/accounts.ts";
 import { config } from "../core/config.ts";
-import { logger } from "../core/logger.ts";
+import { maskEmail } from "../core/logger.ts";
 
 // Try to import playwright-extra and stealth, fallback to regular playwright
 let chromiumWithStealth: typeof chromium | null = null;
@@ -24,10 +24,10 @@ try {
     const plugin = stealth.default();
     pwExtra.chromium.use(plugin);
     chromiumWithStealth = pwExtra.chromium;
-    logger.info("[Playwright] Stealth plugin loaded");
+    console.log("[Playwright] Stealth plugin loaded");
   }
 } catch {
-  logger.warn(
+  console.warn(
     "[Playwright] playwright-extra/stealth not available, using regular playwright",
   );
 }
@@ -111,6 +111,49 @@ const cookieCaches = new Map<string, { cookie: string; timestamp: number }>();
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+function getStealthScript(): string {
+  return `
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    Object.defineProperty(navigator, 'plugins', {
+      get: () => [1, 2, 3, 4, 5],
+    });
+    Object.defineProperty(navigator, 'languages', {
+      get: () => ['pt-BR', 'pt', 'en-US', 'en'],
+    });
+    Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
+    Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
+    Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
+    Object.defineProperty(screen, 'colorDepth', { get: () => 24 });
+    Object.defineProperty(screen, 'pixelDepth', { get: () => 24 });
+    window.chrome = {
+      runtime: {},
+      loadTimes: function() {},
+      csi: function() {},
+      app: {},
+    };
+    const originalQuery = window.navigator.permissions.query;
+    window.navigator.permissions.query = (parameters) =>
+      parameters.name === 'notifications'
+        ? Promise.resolve({ state: Notification.permission })
+        : originalQuery(parameters);
+    const getParameter = WebGLRenderingContext.prototype.getParameter;
+    WebGLRenderingContext.prototype.getParameter = function(parameter) {
+      if (parameter === 37445) return 'Intel Inc.';
+      if (parameter === 37446) return 'Intel Iris OpenGL Engine';
+      return getParameter.apply(this, arguments);
+    };
+    Object.defineProperty(navigator, 'connection', {
+      get: () => ({
+        effectiveType: '4g',
+        rtt: 50,
+        downlink: 10,
+        saveData: false,
+      }),
+    });
+    delete navigator.__proto__.webdriver;
+  `;
+}
+
 function getHeaderCache(accountId: string): AccountHeaderCache {
   let cache = headerCaches.get(accountId);
   if (!cache) {
@@ -192,7 +235,9 @@ export async function initPlaywrightForAccount(
   browserType: BrowserType = "chromium",
 ): Promise<void> {
   if (accountPages.has(account.id)) {
-    console.log(`[Playwright] Already initialized for ${account.email}`);
+    console.log(
+      `[Playwright] Already initialized for ${maskEmail(account.email)}`,
+    );
     return;
   }
 
@@ -200,7 +245,9 @@ export async function initPlaywrightForAccount(
   try {
     // Double-check after acquiring lock
     if (accountPages.has(account.id)) {
-      console.log(`[Playwright] Already initialized for ${account.email}`);
+      console.log(
+        `[Playwright] Already initialized for ${maskEmail(account.email)}`,
+      );
       return;
     }
 
@@ -208,7 +255,7 @@ export async function initPlaywrightForAccount(
     const { engine, channel } = resolveBrowserEngine(browserType);
 
     console.log(
-      `[Playwright] Launching ${browserType} for ${account.email}...`,
+      `[Playwright] Launching ${browserType} for ${maskEmail(account.email)}...`,
     );
 
     // Use playwright-extra with stealth if available, otherwise regular chromium
@@ -223,20 +270,15 @@ export async function initPlaywrightForAccount(
       args: [
         "--disable-blink-features=AutomationControlled",
         "--disable-features=IsolateOrigins,site-per-process",
+        "--disable-infobars",
+        "--no-first-run",
+        "--no-default-browser-check",
         "--no-sandbox",
       ],
     });
 
-    // Additional stealth scripts
-    await acctContext.addInitScript(() => {
-      Object.defineProperty(navigator, "webdriver", { get: () => undefined });
-      Object.defineProperty(navigator, "plugins", {
-        get: () => [1, 2, 3, 4, 5],
-      });
-      Object.defineProperty(navigator, "languages", {
-        get: () => ["zh-CN", "zh", "en"],
-      });
-    });
+    // Comprehensive stealth scripts for anti-bot evasion
+    await acctContext.addInitScript(getStealthScript());
 
     const acctPage = await acctContext.newPage();
     accountContexts.set(account.id, acctContext);
@@ -271,24 +313,28 @@ async function loginToQwen(
   const page = accountPages.get(accountId);
   if (!page) return false;
 
-  console.log(`[Playwright] Logging in ${email}...`);
+  console.log(`[Playwright] Logging in ${maskEmail(email)}...`);
 
   // Try API login first
   const apiResult = await loginViaApi(page, email, password);
   if (apiResult) {
-    console.log(`[Playwright] API login successful for ${email}`);
+    console.log(`[Playwright] API login successful for ${maskEmail(email)}`);
     return true;
   }
 
   // Fallback to UI login
-  console.log(`[Playwright] API login failed, trying UI login for ${email}...`);
+  console.log(
+    `[Playwright] API login failed, trying UI login for ${maskEmail(email)}...`,
+  );
   const uiResult = await loginViaUi(page, email, password);
   if (uiResult) {
-    console.log(`[Playwright] UI login successful for ${email}`);
+    console.log(`[Playwright] UI login successful for ${maskEmail(email)}`);
     return true;
   }
 
-  console.error(`[Playwright] All login methods failed for ${email}`);
+  console.error(
+    `[Playwright] All login methods failed for ${maskEmail(email)}`,
+  );
   return false;
 }
 

@@ -1,5 +1,16 @@
 import "dotenv/config";
 
+/**
+ * Mask an email address for safe logging.
+ * "user@example.com" → "user@***"
+ */
+export function maskEmail(email: string | undefined | null): string {
+  if (!email) return "<unknown>";
+  const atIndex = email.indexOf("@");
+  if (atIndex <= 0) return "<invalid>";
+  return email.substring(0, atIndex);
+}
+
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
 /**

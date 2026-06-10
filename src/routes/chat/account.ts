@@ -23,7 +23,11 @@ import {
 } from "../../core/account-manager.ts";
 import { loadAccounts } from "../../core/accounts.ts";
 import { registerStream, removeStream } from "../../core/stream-registry.ts";
-import { logger, isToolcallDebugEnabled } from "../../core/logger.ts";
+import {
+  logger,
+  isToolcallDebugEnabled,
+  maskEmail,
+} from "../../core/logger.ts";
 import { config } from "../../core/config.ts";
 import { UpstreamRateLimit } from "../../core/errors.ts";
 import { QwenFileEntry } from "../upload.ts";
@@ -174,12 +178,12 @@ async function attemptRelogin(
   try {
     await reauthenticateAccount(accountId === "global" ? undefined : accountId);
     console.log(
-      `[Chat] HTTP re-login successful for ${accountEmail}. Retrying...`,
+      `[Chat] HTTP re-login successful for ${maskEmail(accountEmail)}. Retrying...`,
     );
     return true;
   } catch (reLoginErr: unknown) {
     logger.error("[Chat] Re-login failed", {
-      accountEmail,
+      accountEmail: maskEmail(accountEmail),
       error:
         reLoginErr instanceof Error ? reLoginErr.message : String(reLoginErr),
       cause:
@@ -227,7 +231,7 @@ export async function acquireUpstreamStream(
 
   while (account) {
     const accountId = account.id;
-    const accountEmail = account.email;
+    const accountEmail = maskEmail(account.email);
 
     if (triedAccountIds.has(accountId)) {
       account = getNextAvailableAccount(accountId);
@@ -238,7 +242,7 @@ export async function acquireUpstreamStream(
     const cooldownInfo = getAccountCooldownInfo(accountId);
     if (cooldownInfo && accountId !== "global") {
       console.log(
-        `[Chat] Skipping account ${accountEmail} (${accountId}) — on cooldown for ${Math.round(cooldownInfo.remainingMs / 1000)}s (${cooldownInfo.reason})`,
+        `[Chat] Skipping account ${accountEmail} (${accountId}) on cooldown for ${Math.round(cooldownInfo.remainingMs / 1000)}s (${cooldownInfo.reason})`,
       );
       if (stickyThreadAccountId === accountId) {
         console.warn(
@@ -252,7 +256,7 @@ export async function acquireUpstreamStream(
     if (isToolcallDebugEnabled()) {
       logger.debug("[chat] account selected", {
         accountId,
-        accountEmail,
+        accountEmail: maskEmail(accountEmail),
         isNewSession,
         isThinkingModel,
         promptLength: finalPrompt.length,
@@ -347,7 +351,7 @@ export async function acquireUpstreamStream(
     if (isToolcallDebugEnabled()) {
       logger.debug("[chat] account failed, rotating", {
         accountId,
-        accountEmail,
+        accountEmail: maskEmail(accountEmail),
         triedAccounts: Array.from(triedAccountIds),
       });
     }
@@ -518,7 +522,7 @@ async function tryCreateStreamWithRetry(
       if (isToolcallDebugEnabled()) {
         logger.debug("[chat] stream created successfully", {
           accountId,
-          accountEmail,
+          accountEmail: maskEmail(accountEmail),
           uiSessionId: result.uiSessionId,
         });
       }
