@@ -19,6 +19,8 @@ import { getAccountCooldownInfo } from "../core/account-manager.ts";
 
 const PAYLOAD_SIZE_THRESHOLD = 500_000; // 500KB
 const SUMMARIZATION_TIMEOUT_MS = 60_000;
+const CHUNK_SIZE = 10; // messages per summarization chunk
+const MAX_CHUNK_CHARS = 100_000; // 100KB max per chunk
 
 const SUMMARIZE_PROMPT = `You are a conversation summarizer. Summarize the following conversation history concisely, preserving:
 1. Key decisions and conclusions
@@ -53,21 +55,6 @@ function estimatePayloadChars(
     }
   }
   return total;
-}
-
-function findAvailableAccountId(excludeAccountId?: string): string | null {
-  const accounts = loadAccounts();
-  for (const account of accounts) {
-    if (account.id === excludeAccountId) continue;
-    const cooldown = getAccountCooldownInfo(account.id);
-    if (!cooldown) return account.id;
-  }
-  // Fall back to any account including excluded
-  for (const account of accounts) {
-    const cooldown = getAccountCooldownInfo(account.id);
-    if (!cooldown) return account.id;
-  }
-  return accounts[0]?.id ?? null;
 }
 
 async function deleteQwenChatDirect(
@@ -259,75 +246,125 @@ export async function summarizeLargePayload(
   // Keep last 2 messages (recent context), summarize the rest
   const keepCount = Math.min(2, messages.length);
   const oldMessages = messages.slice(0, messages.length - keepCount);
-  const recentMessages = messages.slice(messages.length - keepCount);
 
   if (oldMessages.length === 0) return null;
 
-  // Build text from old messages
-  const oldText = oldMessages
-    .map((msg) => {
-      const content =
-        typeof msg.content === "string"
-          ? msg.content
-          : Array.isArray(msg.content)
-            ? msg.content
-                .map((p: any) => p.text || JSON.stringify(p))
-                .join("\n")
-            : JSON.stringify(msg.content);
-      return `${msg.role}: ${content}`;
-    })
-    .join("\n\n");
+  // Split old messages into chunks
+  const chunks: Array<Array<{ role: string; content: any }>> = [];
+  for (let i = 0; i < oldMessages.length; i += CHUNK_SIZE) {
+    chunks.push(oldMessages.slice(i, i + CHUNK_SIZE));
+  }
 
-  // Find a different account for summarization
-  const summarizeAccountId = findAvailableAccountId(excludeAccountId);
-  if (!summarizeAccountId) {
+  // Find available accounts for parallel summarization
+  const accounts = loadAccounts();
+  const availableAccountIds = accounts
+    .filter(
+      (acc) => acc.id !== excludeAccountId && !getAccountCooldownInfo(acc.id),
+    )
+    .map((acc) => acc.id);
+
+  if (availableAccountIds.length === 0) {
+    // Fall back to any account
+    const fallback = accounts.find((acc) => acc.id !== excludeAccountId);
+    if (fallback) availableAccountIds.push(fallback.id);
+    else if (accounts[0]) availableAccountIds.push(accounts[0].id);
+  }
+
+  if (availableAccountIds.length === 0) {
     logger.warn("[Summarizer] No available account for summarization");
     return null;
   }
 
   logger.warn(
-    `[Summarizer] Payload too large (${Math.round(totalChars / 1000)}KB); summarizing ${oldMessages.length} old messages on account ${summarizeAccountId.substring(0, 8)}...`,
+    `[Summarizer] Payload too large (${Math.round(totalChars / 1000)}KB); splitting ${oldMessages.length} messages into ${chunks.length} chunk(s) for parallel summarization`,
   );
 
-  let chatId: string | null = null;
-  try {
-    const { headers } = await getQwenHeaders(false, summarizeAccountId);
-    const modelClean = model.replace("-no-thinking", "");
+  // Summarize chunks in parallel, each on a different account
+  const chunkSummaries = await Promise.allSettled(
+    chunks.map(async (chunk, index) => {
+      const accountId = availableAccountIds[index % availableAccountIds.length];
+      const chunkText = chunk
+        .map((msg) => {
+          const content =
+            typeof msg.content === "string"
+              ? msg.content
+              : Array.isArray(msg.content)
+                ? msg.content
+                    .map((p: any) => p.text || JSON.stringify(p))
+                    .join("\n")
+                : JSON.stringify(msg.content);
+          return `${msg.role}: ${content}`;
+        })
+        .join("\n\n");
 
-    chatId = await createTempChat(headers, modelClean);
-    logger.info(`[Summarizer] Temp chat created: ${chatId}`);
+      // Truncate chunk if too large
+      const truncatedText =
+        chunkText.length > MAX_CHUNK_CHARS
+          ? chunkText.substring(0, MAX_CHUNK_CHARS)
+          : chunkText;
 
-    const summary = await sendSummarizationRequest(
-      headers,
-      chatId,
-      modelClean,
-      oldText,
-    );
+      let chatId: string | null = null;
+      try {
+        const { headers } = await getQwenHeaders(false, accountId);
+        const modelClean = model.replace("-no-thinking", "");
 
-    if (!summary) {
-      logger.warn("[Summarizer] Empty summary returned");
-      return null;
-    }
+        chatId = await createTempChat(headers, modelClean);
+        logger.info(
+          `[Summarizer] Chunk ${index + 1}/${chunks.length}: chat ${chatId} on ${accountId.substring(0, 8)}`,
+        );
 
-    logger.info(
-      `[Summarizer] Summary: ${summary.length} chars (from ${oldText.length} chars)`,
-    );
+        const summary = await sendSummarizationRequest(
+          headers,
+          chatId,
+          modelClean,
+          truncatedText,
+        );
 
-    return {
-      summary,
-      originalChars: totalChars,
-      summaryChars: summary.length,
-    };
-  } catch (err) {
-    logger.error("[Summarizer] Failed:", {
-      error: (err as Error).message,
-    });
+        if (!summary) {
+          logger.warn(`[Summarizer] Chunk ${index + 1}: empty summary`);
+          return null;
+        }
+
+        logger.info(`[Summarizer] Chunk ${index + 1}: ${summary.length} chars`);
+        return summary;
+      } catch (err) {
+        logger.error(`[Summarizer] Chunk ${index + 1} failed:`, {
+          error: (err as Error).message,
+        });
+        return null;
+      } finally {
+        if (chatId) {
+          void deleteQwenChatDirect(chatId, accountId);
+        }
+      }
+    }),
+  );
+
+  // Collect successful summaries
+  const summaries = chunkSummaries
+    .filter(
+      (r): r is PromiseFulfilledResult<string | null> =>
+        r.status === "fulfilled" && r.value !== null,
+    )
+    .map((r) => r.value as string);
+
+  if (summaries.length === 0) {
+    logger.warn("[Summarizer] All chunks failed");
     return null;
-  } finally {
-    if (chatId) {
-      void deleteQwenChatDirect(chatId, summarizeAccountId);
-    }
   }
+
+  // Combine chunk summaries
+  const combinedSummary = summaries.join("\n\n---\n\n");
+
+  logger.warn(
+    `[Summarizer] Combined ${summaries.length}/${chunks.length} chunk(s): ${combinedSummary.length} chars (from ${totalChars} chars)`,
+  );
+
+  return {
+    summary: combinedSummary,
+    originalChars: totalChars,
+    summaryChars: combinedSummary.length,
+  };
 }
 
 export function rebuildPromptWithSummary(
