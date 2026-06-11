@@ -34,6 +34,8 @@ export function buildQwenRequestHeaders(
     "Sec-Fetch-Dest": "empty",
     "Sec-Fetch-Mode": "cors",
     "Sec-Fetch-Site": "same-origin",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1",
     Connection: "keep-alive",
     "User-Agent": opts.userAgent || DEFAULT_QWEN_USER_AGENT,
     "X-Request-Id": uuidv4(),

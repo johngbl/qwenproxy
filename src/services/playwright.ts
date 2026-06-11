@@ -87,35 +87,80 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function getStealthScript(): string {
   return `
+    // navigator.webdriver
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    delete navigator.__proto__.webdriver;
+
+    // chrome object
+    window.chrome = {
+      runtime: {
+        onMessage: { addListener: function() {} },
+        sendMessage: function() {},
+      },
+      loadTimes: function() { return {}; },
+      csi: function() { return {}; },
+      app: {
+        isInstalled: false,
+        InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
+        RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' },
+      },
+    };
+
+    // plugins - realistic set
     Object.defineProperty(navigator, 'plugins', {
-      get: () => [1, 2, 3, 4, 5],
+      get: () => {
+        const plugins = [
+          { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+          { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
+          { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' },
+        ];
+        plugins.length = 3;
+        return plugins;
+      },
     });
-    Object.defineProperty(navigator, 'languages', {
-      get: () => ['pt-BR', 'pt', 'en-US', 'en'],
+
+    // mimeTypes
+    Object.defineProperty(navigator, 'mimeTypes', {
+      get: () => {
+        const types = [
+          { type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' },
+          { type: 'application/x-google-chrome-pdf', suffixes: 'pdf', description: 'Portable Document Format' },
+        ];
+        types.length = 2;
+        return types;
+      },
     });
+
+    // languages
+    Object.defineProperty(navigator, 'languages', { get: () => ['pt-BR', 'pt', 'en-US', 'en'] });
+
+    // hardware
     Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
     Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
     Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
+    Object.defineProperty(navigator, 'maxTouchPoints', { get: () => 0 });
+    Object.defineProperty(navigator, 'vendor', { get: () => 'Google Inc.' });
+
+    // screen
     Object.defineProperty(screen, 'colorDepth', { get: () => 24 });
     Object.defineProperty(screen, 'pixelDepth', { get: () => 24 });
-    window.chrome = {
-      runtime: {},
-      loadTimes: function() {},
-      csi: function() {},
-      app: {},
-    };
+
+    // permissions
     const originalQuery = window.navigator.permissions.query;
     window.navigator.permissions.query = (parameters) =>
       parameters.name === 'notifications'
         ? Promise.resolve({ state: Notification.permission })
         : originalQuery(parameters);
+
+    // WebGL - consistent with Windows/Intel
     const getParameter = WebGLRenderingContext.prototype.getParameter;
     WebGLRenderingContext.prototype.getParameter = function(parameter) {
-      if (parameter === 37445) return 'Intel Inc.';
-      if (parameter === 37446) return 'Intel Iris OpenGL Engine';
+      if (parameter === 37445) return 'Google Inc. (Intel)';
+      if (parameter === 37446) return 'ANGLE (Intel, Intel(R) UHD Graphics 630, OpenGL 4.5)';
       return getParameter.apply(this, arguments);
     };
+
+    // connection
     Object.defineProperty(navigator, 'connection', {
       get: () => ({
         effectiveType: '4g',
@@ -124,7 +169,15 @@ function getStealthScript(): string {
         saveData: false,
       }),
     });
-    delete navigator.__proto__.webdriver;
+
+    // toString patching - prevent detection of overridden functions
+    const nativeToString = Function.prototype.toString;
+    const customFunctions = new Map();
+    customFunctions.set(navigator.permissions.query, 'function query() { [native code] }');
+    customFunctions.set(WebGLRenderingContext.prototype.getParameter, 'function getParameter() { [native code] }');
+    Function.prototype.toString = function() {
+      return customFunctions.get(this) || nativeToString.call(this);
+    };
   `;
 }
 
@@ -272,6 +325,14 @@ export async function initPlaywrightForAccount(
         "--no-first-run",
         "--no-default-browser-check",
         "--no-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--window-size=1920,1080",
+        "--disable-extensions",
+        "--disable-background-networking",
+        "--disable-sync",
+        "--metrics-recording-only",
+        "--mute-audio",
       ],
     });
 
