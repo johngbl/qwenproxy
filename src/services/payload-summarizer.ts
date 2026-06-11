@@ -2,11 +2,9 @@
  * Payload summarizer for large requests.
  *
  * When the total payload exceeds a threshold, this module:
- * 1. Splits messages into old (to summarize) and recent (to keep)
- * 2. Creates a temporary Qwen chat on a different account
- * 3. Sends old messages for summarization
- * 4. Returns the summary text
- * 5. Deletes the temporary chat
+ * 1. Splits old messages into chunks and summarizes in parallel
+ * 2. Truncates individual large messages in the recent set
+ * 3. Rebuilds prompt with summary + truncated recent messages
  */
 
 import { config } from "../core/config.ts";
@@ -20,7 +18,8 @@ import { getAccountCooldownInfo } from "../core/account-manager.ts";
 const PAYLOAD_SIZE_THRESHOLD = 500_000; // 500KB
 const SUMMARIZATION_TIMEOUT_MS = 60_000;
 const CHUNK_SIZE = 10; // messages per summarization chunk
-const MAX_CHUNK_CHARS = 100_000; // 100KB max per chunk
+const MAX_CHUNK_CHARS = 100_000; // 100KB max per chunk text
+const MAX_SINGLE_MESSAGE_CHARS = 50_000; // 50KB max per individual message
 
 const SUMMARIZE_PROMPT = `You are a conversation summarizer. Summarize the following conversation history concisely, preserving:
 1. Key decisions and conclusions
@@ -55,6 +54,59 @@ function estimatePayloadChars(
     }
   }
   return total;
+}
+
+function truncateMessageContent(content: any): any {
+  if (typeof content === "string") {
+    if (content.length <= MAX_SINGLE_MESSAGE_CHARS) return content;
+    const keepStart = Math.floor(MAX_SINGLE_MESSAGE_CHARS * 0.7);
+    const keepEnd = Math.floor(MAX_SINGLE_MESSAGE_CHARS * 0.25);
+    return (
+      content.substring(0, keepStart) +
+      `\n\n[... truncated ${content.length - keepStart - keepEnd} chars ...]\n\n` +
+      content.substring(content.length - keepEnd)
+    );
+  }
+  if (Array.isArray(content)) {
+    return content.map((part: any) => {
+      if (part.text && part.text.length > MAX_SINGLE_MESSAGE_CHARS) {
+        const keepStart = Math.floor(MAX_SINGLE_MESSAGE_CHARS * 0.7);
+        const keepEnd = Math.floor(MAX_SINGLE_MESSAGE_CHARS * 0.25);
+        return {
+          ...part,
+          text:
+            part.text.substring(0, keepStart) +
+            `\n\n[... truncated ${part.text.length - keepStart - keepEnd} chars ...]\n\n` +
+            part.text.substring(part.text.length - keepEnd),
+        };
+      }
+      return part;
+    });
+  }
+  return content;
+}
+
+function truncateMessages(
+  messages: Array<{ role: string; content: any }>,
+): Array<{ role: string; content: any }> {
+  return messages.map((msg) => {
+    const contentStr =
+      typeof msg.content === "string"
+        ? msg.content
+        : JSON.stringify(msg.content);
+    if (contentStr.length <= MAX_SINGLE_MESSAGE_CHARS) return msg;
+    return { ...msg, content: truncateMessageContent(msg.content) };
+  });
+}
+
+function messageToText(msg: { role: string; content: any }): string {
+  const content =
+    typeof msg.content === "string"
+      ? msg.content
+      : Array.isArray(msg.content)
+        ? msg.content.map((p: any) => p.text || JSON.stringify(p)).join("\n")
+        : JSON.stringify(msg.content);
+  return `${msg.role}: ${content}`;
 }
 
 async function deleteQwenChatDirect(
@@ -190,7 +242,6 @@ async function sendSummarizationRequest(
       );
     }
 
-    // Read SSE stream and extract text
     const reader = response.body?.getReader();
     if (!reader) throw new Error("No response body for summarization");
 
@@ -264,7 +315,6 @@ export async function summarizeLargePayload(
     .map((acc) => acc.id);
 
   if (availableAccountIds.length === 0) {
-    // Fall back to any account
     const fallback = accounts.find((acc) => acc.id !== excludeAccountId);
     if (fallback) availableAccountIds.push(fallback.id);
     else if (accounts[0]) availableAccountIds.push(accounts[0].id);
@@ -283,25 +333,12 @@ export async function summarizeLargePayload(
   const chunkSummaries = await Promise.allSettled(
     chunks.map(async (chunk, index) => {
       const accountId = availableAccountIds[index % availableAccountIds.length];
-      const chunkText = chunk
-        .map((msg) => {
-          const content =
-            typeof msg.content === "string"
-              ? msg.content
-              : Array.isArray(msg.content)
-                ? msg.content
-                    .map((p: any) => p.text || JSON.stringify(p))
-                    .join("\n")
-                : JSON.stringify(msg.content);
-          return `${msg.role}: ${content}`;
-        })
-        .join("\n\n");
+      let chunkText = chunk.map(messageToText).join("\n\n");
 
       // Truncate chunk if too large
-      const truncatedText =
-        chunkText.length > MAX_CHUNK_CHARS
-          ? chunkText.substring(0, MAX_CHUNK_CHARS)
-          : chunkText;
+      if (chunkText.length > MAX_CHUNK_CHARS) {
+        chunkText = chunkText.substring(0, MAX_CHUNK_CHARS);
+      }
 
       let chatId: string | null = null;
       try {
@@ -310,14 +347,14 @@ export async function summarizeLargePayload(
 
         chatId = await createTempChat(headers, modelClean);
         logger.info(
-          `[Summarizer] Chunk ${index + 1}/${chunks.length}: chat ${chatId} on ${accountId.substring(0, 8)}`,
+          `[Summarizer] Chunk ${index + 1}/${chunks.length}: chat ${chatId.substring(0, 8)} on ${accountId.substring(0, 8)}`,
         );
 
         const summary = await sendSummarizationRequest(
           headers,
           chatId,
           modelClean,
-          truncatedText,
+          chunkText,
         );
 
         if (!summary) {
@@ -372,19 +409,18 @@ export function rebuildPromptWithSummary(
   recentMessages: Array<{ role: string; content: any }>,
   summary: string,
 ): string {
-  const recentText = recentMessages
-    .map((msg) => {
-      const content =
-        typeof msg.content === "string"
-          ? msg.content
-          : Array.isArray(msg.content)
-            ? msg.content
-                .map((p: any) => p.text || JSON.stringify(p))
-                .join("\n")
-            : JSON.stringify(msg.content);
-      return `${msg.role}: ${content}`;
-    })
-    .join("\n\n");
+  // Truncate individual large messages
+  const truncatedMessages = truncateMessages(recentMessages);
+  const truncatedChars = estimatePayloadChars(truncatedMessages);
+  const originalChars = estimatePayloadChars(recentMessages);
+
+  if (truncatedChars < originalChars) {
+    logger.warn(
+      `[Summarizer] Truncated recent messages: ${originalChars} → ${truncatedChars} chars`,
+    );
+  }
+
+  const recentText = truncatedMessages.map(messageToText).join("\n\n");
 
   const parts = [];
   if (systemPrompt) parts.push(systemPrompt);

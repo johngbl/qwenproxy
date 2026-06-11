@@ -135,29 +135,6 @@ export async function chatCompletions(c: Context) {
         console.log(
           `[Chat] Payload summarized: ${summarizeResult.originalChars} → ${summarizeResult.summaryChars} chars`,
         );
-      } else {
-        // Summarization failed — fall back to keeping only recent messages
-        const keepCount = Math.min(2, messages.length);
-        const recentMessages = messages.slice(messages.length - keepCount);
-        const recentText = recentMessages
-          .map((msg: any) => {
-            const content =
-              typeof msg.content === "string"
-                ? msg.content
-                : Array.isArray(msg.content)
-                  ? msg.content
-                      .map((p: any) => p.text || JSON.stringify(p))
-                      .join("\n")
-                  : JSON.stringify(msg.content);
-            return `${msg.role}: ${content}`;
-          })
-          .join("\n\n");
-        finalPrompt = systemPrompt
-          ? `${systemPrompt}\n\n${recentText}`
-          : recentText;
-        console.warn(
-          `[Chat] Summarization failed; falling back to ${keepCount} recent messages (${finalPrompt.length} chars)`,
-        );
       }
     }
 
