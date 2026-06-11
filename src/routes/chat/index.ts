@@ -122,9 +122,8 @@ export async function chatCompletions(c: Context) {
     let activeRolloverPlan: ThreadContextRolloverPlan | null = null;
 
     // Auto-summarize/truncate large payloads to avoid TMD anti-bot
-    // Only on first request (no existing thread) — thread-native handles the rest
     const PROMPT_SIZE_THRESHOLD = 100_000; // 100KB
-    if (!ctx.existingThread && finalPrompt.length > PROMPT_SIZE_THRESHOLD) {
+    if (finalPrompt.length > PROMPT_SIZE_THRESHOLD) {
       if (messages.length > 2) {
         // Many messages — summarize old ones, truncate recent ones
         const summarizeResult = await summarizeLargePayload(
