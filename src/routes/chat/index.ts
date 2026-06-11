@@ -45,6 +45,57 @@ import {
   truncateMessages,
 } from "../../services/payload-summarizer.ts";
 
+async function reducePromptForRetry(
+  messages: Array<{ role: string; content: any }>,
+  systemPrompt: string,
+  model: string,
+): Promise<string | null> {
+  try {
+    if (messages.length > 2) {
+      const result = await summarizeLargePayload(messages, model);
+      if (result) {
+        const keepCount = Math.min(2, messages.length);
+        const recentMessages = messages.slice(messages.length - keepCount);
+        const prompt = rebuildPromptWithSummary(
+          systemPrompt,
+          recentMessages,
+          result.summary,
+        );
+        console.log(
+          `[Chat] Reduced prompt via summarization: ${result.originalChars} → ${result.summaryChars} chars`,
+        );
+        return prompt;
+      }
+    }
+
+    // Fallback: truncate individual messages
+    const truncated = truncateMessages(messages);
+    const truncatedText = truncated
+      .map((msg: any) => {
+        const content =
+          typeof msg.content === "string"
+            ? msg.content
+            : Array.isArray(msg.content)
+              ? msg.content
+                  .map((p: any) => p.text || JSON.stringify(p))
+                  .join("\n")
+              : JSON.stringify(msg.content);
+        return `${msg.role}: ${content}`;
+      })
+      .join("\n\n");
+    const prompt = systemPrompt
+      ? `${systemPrompt}\n\n${truncatedText}`
+      : truncatedText;
+    console.warn(
+      `[Chat] Reduced prompt via truncation: ${messages.length} messages → ${prompt.length} chars`,
+    );
+    return prompt;
+  } catch (err) {
+    console.warn(`[Chat] Failed to reduce prompt: ${(err as Error).message}`);
+    return null;
+  }
+}
+
 function formatTimingHeader(timings: Record<string, number>): string {
   return Object.entries(timings)
     .map(([key, value]) => `${key}=${Math.max(0, Math.round(value))}`)
@@ -121,74 +172,6 @@ export async function chatCompletions(c: Context) {
     let finalPrompt = ctx.finalPrompt;
     let activeRolloverPlan: ThreadContextRolloverPlan | null = null;
 
-    // Auto-summarize/truncate large payloads to avoid TMD anti-bot
-    const PROMPT_SIZE_THRESHOLD = 100_000; // 100KB
-    if (finalPrompt.length > PROMPT_SIZE_THRESHOLD) {
-      if (messages.length > 2) {
-        // Many messages — summarize old ones, truncate recent ones
-        const summarizeResult = await summarizeLargePayload(
-          messages,
-          body.model,
-        );
-        if (summarizeResult) {
-          const keepCount = Math.min(2, messages.length);
-          const recentMessages = messages.slice(messages.length - keepCount);
-          finalPrompt = rebuildPromptWithSummary(
-            systemPrompt,
-            recentMessages,
-            summarizeResult.summary,
-          );
-          console.log(
-            `[Chat] Payload summarized: ${summarizeResult.originalChars} → ${summarizeResult.summaryChars} chars`,
-          );
-        } else {
-          const keepCount = Math.min(2, messages.length);
-          const recentMessages = messages.slice(messages.length - keepCount);
-          const recentText = recentMessages
-            .map((msg: any) => {
-              const content =
-                typeof msg.content === "string"
-                  ? msg.content
-                  : Array.isArray(msg.content)
-                    ? msg.content
-                        .map((p: any) => p.text || JSON.stringify(p))
-                        .join("\n")
-                    : JSON.stringify(msg.content);
-              return `${msg.role}: ${content}`;
-            })
-            .join("\n\n");
-          finalPrompt = systemPrompt
-            ? `${systemPrompt}\n\n${recentText}`
-            : recentText;
-          console.warn(
-            `[Chat] Summarization failed; falling back to ${keepCount} recent messages (${finalPrompt.length} chars)`,
-          );
-        }
-      } else {
-        // Few messages but large — truncate individual messages
-        const truncated = truncateMessages(messages);
-        const truncatedPrompt = truncated
-          .map((msg: any) => {
-            const content =
-              typeof msg.content === "string"
-                ? msg.content
-                : Array.isArray(msg.content)
-                  ? msg.content
-                      .map((p: any) => p.text || JSON.stringify(p))
-                      .join("\n")
-                  : JSON.stringify(msg.content);
-            return `${msg.role}: ${content}`;
-          })
-          .join("\n\n");
-        finalPrompt = systemPrompt
-          ? `${systemPrompt}\n\n${truncatedPrompt}`
-          : truncatedPrompt;
-        console.warn(
-          `[Chat] Large single/few messages truncated: ${ctx.finalPrompt.length} → ${finalPrompt.length} chars`,
-        );
-      }
-    }
-
     stepStartedAt = Date.now();
     if (shouldManageThreadContext && ctx.sessionId) {
       upsertThreadContextSession({
@@ -245,7 +228,7 @@ export async function chatCompletions(c: Context) {
     });
 
     stepStartedAt = Date.now();
-    const streamResult = await acquireUpstreamStream({
+    let streamResult = await acquireUpstreamStream({
       finalPrompt,
       fullPrompt: ctx.requestPersonalizationInstruction
         ? parsed.prompt
@@ -267,6 +250,45 @@ export async function chatCompletions(c: Context) {
       toolsCount: declaredTools.length || undefined,
       requestPersonalizationInstruction: ctx.requestPersonalizationInstruction,
     });
+
+    // TMD retry: if all accounts failed with anti-bot, summarize/truncate and retry
+    if (
+      "error" in streamResult &&
+      streamResult.error?.upstreamCode === "FAIL_SYS_USER_VALIDATE"
+    ) {
+      console.warn(
+        `[Chat] TMD on all accounts; summarizing/truncating prompt and retrying...`,
+      );
+      const reducedPrompt = await reducePromptForRetry(
+        messages,
+        systemPrompt,
+        body.model,
+      );
+      if (reducedPrompt && reducedPrompt.length < finalPrompt.length) {
+        finalPrompt = reducedPrompt;
+        streamResult = await acquireUpstreamStream({
+          finalPrompt,
+          fullPrompt: finalPrompt,
+          isThinkingModel: ctx.isThinkingModel,
+          model: body.model,
+          shouldResetUpstreamThread: ctx.shouldResetUpstreamThread,
+          allFiles: files,
+          isNewSession: ctx.isNewSession,
+          sessionId: ctx.sessionId,
+          useThreadNative: ctx.useThreadNative,
+          updateLogicalThread: ctx.updateLogicalThread,
+          allowThreadReuse: ctx.allowThreadReuse,
+          forceNewChat: true,
+          preferredAccountId: null,
+          messageCount: msgCount,
+          fullMessageCount: parsed.messageCount,
+          toolsCount: declaredTools.length || undefined,
+          requestPersonalizationInstruction:
+            ctx.requestPersonalizationInstruction,
+        });
+      }
+    }
+
     mark("upstream", stepStartedAt);
     timings.preResponse = Date.now() - startedAt;
     c.header("X-QwenBridge-Timing", formatTimingHeader(timings));
