@@ -21,6 +21,11 @@ export function registerStream(
     headers: Record<string, string>;
   },
 ): void {
+  const existing = activeStreams.get(key);
+  if (existing && existing.abortController !== entry.abortController) {
+    existing.abortController.abort();
+  }
+
   activeStreams.set(key, entry);
   metrics.gauge("streams.active", activeStreams.size);
 }

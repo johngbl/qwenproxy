@@ -584,6 +584,7 @@ export async function processStreamingResponse(
 
   const upstreamError = parseQwenErrorPayload(initialStreamBuffer);
   if (upstreamError) {
+    await streamReader.cancel().catch(() => undefined);
     removeStream(completionId);
     if (onStreamComplete) onStreamComplete();
     return sendOpenAIError(

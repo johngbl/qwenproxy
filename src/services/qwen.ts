@@ -86,7 +86,9 @@ function cleanupStaleSessions() {
     db.prepare("DELETE FROM logical_thread_states WHERE updated_at < ?").run(
       cutoff,
     );
-  } catch {}
+  } catch (error) {
+    logger.warn("Failed to clean up stale logical thread states", { error });
+  }
   for (const [key, entry] of logicalThreadStates.entries()) {
     if (now - entry.timestamp > SESSION_TTL_MS) {
       logicalThreadStates.delete(key);

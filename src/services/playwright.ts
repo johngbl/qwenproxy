@@ -336,56 +336,69 @@ export async function initPlaywrightForAccount(
       ],
     });
 
-    // Comprehensive stealth scripts for anti-bot evasion
-    await acctContext.addInitScript(getStealthScript());
-
-    const acctPage = await acctContext.newPage();
-    accountContexts.set(account.id, acctContext);
-    accountPages.set(account.id, acctPage);
-
-    // Check if already logged in
-    const cookies = await acctContext.cookies();
-    const hasAuthCookie = cookies.some(
-      (c) =>
-        c.name.toLowerCase().includes("token") ||
-        c.name.toLowerCase().includes("session"),
-    );
-
-    if (!hasAuthCookie && account.email && account.password) {
-      await loginToQwen(account.id, account.email, account.password);
-    }
-
-    // Navigate to Qwen home to validate session and populate cookies
     try {
-      await acctPage.goto("https://chat.qwen.ai/", {
-        waitUntil: "domcontentloaded",
-        timeout: 15000,
-      });
-      const url = acctPage.url();
-      if (url.includes("auth") || url.includes("login")) {
-        if (account.email && account.password) {
-          console.log(
-            `[Playwright] Session expired for ${maskEmail(account.email)}, re-logging in...`,
-          );
-          await loginToQwen(account.id, account.email, account.password);
+      // Comprehensive stealth scripts for anti-bot evasion
+      await acctContext.addInitScript(getStealthScript());
+
+      const acctPage = await acctContext.newPage();
+      accountContexts.set(account.id, acctContext);
+      accountPages.set(account.id, acctPage);
+
+      // Check if already logged in
+      const cookies = await acctContext.cookies();
+      const hasAuthCookie = cookies.some(
+        (c) =>
+          c.name.toLowerCase().includes("token") ||
+          c.name.toLowerCase().includes("session"),
+      );
+
+      if (!hasAuthCookie && account.email && account.password) {
+        await loginToQwen(account.id, account.email, account.password);
+      }
+
+      // Navigate to Qwen home to validate session and populate cookies
+      try {
+        await acctPage.goto("https://chat.qwen.ai/", {
+          waitUntil: "domcontentloaded",
+          timeout: 15000,
+        });
+        const url = acctPage.url();
+        if (url.includes("auth") || url.includes("login")) {
+          if (account.email && account.password) {
+            console.log(
+              `[Playwright] Session expired for ${maskEmail(account.email)}, re-logging in...`,
+            );
+            await loginToQwen(account.id, account.email, account.password);
+          } else {
+            console.warn(
+              `[Playwright] Session expired for account ${account.id} but no credentials available.`,
+            );
+          }
         } else {
-          console.warn(
-            `[Playwright] Session expired for account ${account.id} but no credentials available.`,
+          console.log(
+            `[Playwright] Session validated for ${maskEmail(account.email)}.`,
           );
         }
-      } else {
-        console.log(
-          `[Playwright] Session validated for ${maskEmail(account.email)}.`,
+      } catch (err: any) {
+        console.warn(
+          `[Playwright] Failed to validate session for ${maskEmail(account.email)}: ${err.message}`,
         );
       }
-    } catch (err: any) {
-      console.warn(
-        `[Playwright] Failed to validate session for ${maskEmail(account.email)}: ${err.message}`,
-      );
-    }
 
-    // Capture headers by navigating and intercepting
-    await captureHeaders(account.id);
+      // Capture headers by navigating and intercepting
+      await captureHeaders(account.id);
+    } catch (error) {
+      accountPages.delete(account.id);
+      accountContexts.delete(account.id);
+      await acctContext.close().catch((closeError) => {
+        if (!isPlaywrightAlreadyClosedError(closeError)) {
+          console.warn(
+            `[Playwright] Failed to close context after init error: ${closeError}`,
+          );
+        }
+      });
+      throw error;
+    }
   } finally {
     release();
   }
@@ -554,15 +567,26 @@ async function captureHeaders(accountId: string): Promise<void> {
   const cache = getHeaderCache(accountId);
 
   return new Promise<void>((resolve) => {
+    let resolved = false;
+    const done = () => {
+      if (resolved) return;
+      resolved = true;
+      resolve();
+    };
+
     const timeout = setTimeout(async () => {
       console.warn(`[Playwright] Header capture timeout for ${accountId}`);
       await page
         .unroute("**/api/v2/chat/completions*", routeHandler)
         .catch(() => {});
-      resolve();
+      done();
     }, 30000);
 
     const routeHandler = async (route: any, request: any) => {
+      if (resolved) {
+        await route.abort("aborted").catch(() => {});
+        return;
+      }
       clearTimeout(timeout);
 
       const reqHeaders = request.headers();
@@ -577,53 +601,68 @@ async function captureHeaders(accountId: string): Promise<void> {
 
       console.log(`[Playwright] Headers captured for ${accountId}`);
 
-      await route.abort("aborted");
-      await page.unroute("**/api/v2/chat/completions*", routeHandler);
-      resolve();
+      await route.abort("aborted").catch(() => {});
+      await page
+        .unroute("**/api/v2/chat/completions*", routeHandler)
+        .catch(() => {});
+      done();
     };
 
-    page.route("**/api/v2/chat/completions*", routeHandler).then(async () => {
-      // Navigate to Qwen and trigger a request
-      await page.goto("https://chat.qwen.ai/", {
-        waitUntil: "domcontentloaded",
-      });
-      await sleep(2000);
+    page
+      .route("**/api/v2/chat/completions*", routeHandler)
+      .then(async () => {
+        // Navigate to Qwen and trigger a request
+        await page.goto("https://chat.qwen.ai/", {
+          waitUntil: "domcontentloaded",
+        });
+        await sleep(2000);
 
-      // Type something and send to trigger header capture
-      const inputSelector =
-        'textarea:visible, [contenteditable="true"]:visible';
-      try {
-        await page.focus(inputSelector);
-        await page.fill(inputSelector, "");
-        await page.type(inputSelector, "a", { delay: 100 });
-        await sleep(1000);
+        // Type something and send to trigger header capture
+        const inputSelector =
+          'textarea:visible, [contenteditable="true"]:visible';
+        try {
+          await page.focus(inputSelector);
+          await page.fill(inputSelector, "");
+          await page.type(inputSelector, "a", { delay: 100 });
+          await sleep(1000);
 
-        // Try to click send button
-        const sendSelectors = [
-          ".message-input-right-button-send .send-button",
-          ".chat-prompt-send-button",
-          "button.send-button",
-        ];
+          // Try to click send button
+          const sendSelectors = [
+            ".message-input-right-button-send .send-button",
+            ".chat-prompt-send-button",
+            "button.send-button",
+          ];
 
-        for (const selector of sendSelectors) {
-          try {
-            const btn = await page.$(selector);
-            if (btn && (await btn.isVisible())) {
-              await btn.click({ force: true, delay: 50 });
-              break;
+          for (const selector of sendSelectors) {
+            try {
+              const btn = await page.$(selector);
+              if (btn && (await btn.isVisible())) {
+                await btn.click({ force: true, delay: 50 });
+                break;
+              }
+            } catch {
+              // Try next selector
             }
-          } catch {
-            // Try next selector
           }
-        }
 
-        // Fallback to Enter key
-        await page.keyboard.press("Enter");
-      } catch (err) {
-        console.warn(`[Playwright] Error triggering request: ${err}`);
-        resolve();
-      }
-    });
+          // Fallback to Enter key
+          await page.keyboard.press("Enter");
+        } catch (err) {
+          console.warn(`[Playwright] Error triggering request: ${err}`);
+          clearTimeout(timeout);
+          await page
+            .unroute("**/api/v2/chat/completions*", routeHandler)
+            .catch(() => {});
+          done();
+        }
+      })
+      .catch(async (err) => {
+        console.warn(
+          `[Playwright] Error registering header capture route: ${err}`,
+        );
+        clearTimeout(timeout);
+        done();
+      });
   });
 }
 

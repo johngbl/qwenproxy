@@ -48,6 +48,18 @@ function anthropicError(
 /**
  * Verify Anthropic API key
  */
+function constantTimeStringEqual(provided: string, expected: string): boolean {
+  const providedBuf = Buffer.from(provided);
+  const expectedBuf = Buffer.from(expected);
+  const providedHash = crypto.createHash("sha256").update(providedBuf).digest();
+  const expectedHash = crypto.createHash("sha256").update(expectedBuf).digest();
+
+  return (
+    crypto.timingSafeEqual(providedHash, expectedHash) &&
+    providedBuf.length === expectedBuf.length
+  );
+}
+
 function verifyAnthropicApiKey(c: Context): boolean {
   const apiKey = process.env.API_KEY || config.apiKey;
   if (!apiKey) return true; // No key configured = open access
@@ -55,7 +67,7 @@ function verifyAnthropicApiKey(c: Context): boolean {
   const providedKey = c.req.header("x-api-key");
   if (!providedKey) return false;
 
-  return providedKey === apiKey;
+  return constantTimeStringEqual(providedKey, apiKey);
 }
 
 /**

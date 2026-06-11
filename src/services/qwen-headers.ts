@@ -18,15 +18,18 @@ export function buildQwenRequestHeaders(
   opts: BuildQwenHeadersOptions,
 ): Record<string, string> {
   const headers: Record<string, string> = {
+    ...(opts.extra ?? {}),
     Accept: "application/json, text/plain, */*",
     "Accept-Language": "pt-BR,pt;q=0.9",
     "Accept-Encoding": "gzip, deflate, br, zstd",
     "Content-Type": "application/json",
     Cookie: opts.cookie,
     Origin: "https://chat.qwen.ai",
-    Referer: opts.chatSessionId
-      ? `https://chat.qwen.ai/c/${opts.chatSessionId}`
-      : "https://chat.qwen.ai/c/new-chat",
+    Referer:
+      opts.extra?.Referer ??
+      (opts.chatSessionId
+        ? `https://chat.qwen.ai/c/${opts.chatSessionId}`
+        : "https://chat.qwen.ai/c/new-chat"),
     "sec-ch-ua":
       '"Google Chrome";v="149", "Chromium";v="149", "Not=A?Brand";v="99"',
     "sec-ch-ua-mobile": "?0",
@@ -47,7 +50,6 @@ export function buildQwenRequestHeaders(
 
   if (opts.bxUa) headers["bx-ua"] = opts.bxUa;
   if (opts.bxUmidtoken) headers["bx-umidtoken"] = opts.bxUmidtoken;
-  if (opts.extra) Object.assign(headers, opts.extra);
 
   return headers;
 }

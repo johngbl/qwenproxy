@@ -12,7 +12,10 @@ export interface HeaderResult {
 }
 
 export function isAuthMockEnabled(): boolean {
-  return process.env.TEST_MOCK_QWEN_AUTH === "true";
+  return (
+    process.env.TEST_MOCK_QWEN_AUTH === "true" &&
+    process.env.NODE_ENV !== "production"
+  );
 }
 
 export async function getBasicHeaders(accountId?: string): Promise<{

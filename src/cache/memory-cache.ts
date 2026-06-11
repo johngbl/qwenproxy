@@ -29,7 +29,9 @@ export class MemoryCache {
   private hits: number = 0;
   private misses: number = 0;
   private totalBytesSaved: number = 0;
+  private totalCompressedBytes: number = 0;
   private compressionCount: number = 0;
+  private mutationQueue: Promise<void> = Promise.resolve();
 
   constructor(options?: { prefix?: string; defaultTTL?: number }) {
     this.prefix = options?.prefix || "qwenbridge:";
@@ -81,6 +83,7 @@ export class MemoryCache {
           storedValue = compressedBuffer;
           compressed = true;
           this.totalBytesSaved += saved;
+          this.totalCompressedBytes += compressedSize;
           this.compressionCount++;
 
           metrics.increment("cache.compression.bytes.saved", saved);
@@ -138,6 +141,11 @@ export class MemoryCache {
       }
     }
 
+    if (entry.compressed) {
+      this.store.delete(fullKey);
+      return null;
+    }
+
     const serialized =
       typeof entry.value === "string" ? entry.value : String(entry.value);
 
@@ -161,15 +169,16 @@ export class MemoryCache {
   }
 
   async setWithNX<T>(key: CacheKey, value: T, ttl?: number): Promise<boolean> {
-    const fullKey = this.prefix + key;
-    if (this.store.has(fullKey)) {
+    return this.withMutation(async () => {
+      const fullKey = this.prefix + key;
       const entry = this.store.get(fullKey);
       if (entry && entry.expiresAt > Date.now()) {
         return false;
       }
-    }
-    await this.set(key, value, ttl);
-    return true;
+      if (entry) this.store.delete(fullKey);
+      await this.set(key, value, ttl);
+      return true;
+    });
   }
 
   async increment(
@@ -177,22 +186,24 @@ export class MemoryCache {
     by: number = 1,
     ttl?: number,
   ): Promise<number> {
-    const currentValue = await this.get<number>(key);
-    const current =
-      typeof currentValue === "number" && Number.isFinite(currentValue)
-        ? currentValue
-        : 0;
+    return this.withMutation(async () => {
+      const currentValue = await this.get<number>(key);
+      const current =
+        typeof currentValue === "number" && Number.isFinite(currentValue)
+          ? currentValue
+          : 0;
 
-    const newValue = current + by;
-    const effectiveTTL = ttl || this.defaultTTL;
-    const fullKey = this.prefix + key;
+      const newValue = current + by;
+      const effectiveTTL = ttl || this.defaultTTL;
+      const fullKey = this.prefix + key;
 
-    this.store.set(fullKey, {
-      value: this.serialize(newValue),
-      expiresAt: Date.now() + effectiveTTL * 1000,
+      this.store.set(fullKey, {
+        value: this.serialize(newValue),
+        expiresAt: Date.now() + effectiveTTL * 1000,
+      });
+
+      return newValue;
     });
-
-    return newValue;
   }
 
   async getMulti<T>(keys: CacheKey[]): Promise<(T | null)[]> {
@@ -248,8 +259,9 @@ export class MemoryCache {
     const totalRequests = this.hits + this.misses;
     const hitRatio = totalRequests > 0 ? this.hits / totalRequests : 0;
     const avgCompressionRatio =
-      this.compressionCount > 0
-        ? this.totalBytesSaved / this.compressionCount + 1
+      this.totalCompressedBytes > 0
+        ? (this.totalCompressedBytes + this.totalBytesSaved) /
+          this.totalCompressedBytes
         : 1;
 
     // Update gauge metrics
@@ -265,6 +277,21 @@ export class MemoryCache {
       compressionRatio: avgCompressionRatio,
       bytesSaved: this.totalBytesSaved,
     };
+  }
+
+  private async withMutation<T>(fn: () => Promise<T>): Promise<T> {
+    const previous = this.mutationQueue;
+    let release!: () => void;
+    this.mutationQueue = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    await previous;
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
   }
 
   async close(): Promise<void> {

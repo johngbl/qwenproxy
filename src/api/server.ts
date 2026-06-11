@@ -47,6 +47,18 @@ app.use("*", async (c, next) => {
   c.header("X-Response-Time", `${duration}ms`);
 });
 
+function constantTimeStringEqual(provided: string, expected: string): boolean {
+  const providedBuf = Buffer.from(provided);
+  const expectedBuf = Buffer.from(expected);
+  const providedHash = crypto.createHash("sha256").update(providedBuf).digest();
+  const expectedHash = crypto.createHash("sha256").update(expectedBuf).digest();
+
+  return (
+    crypto.timingSafeEqual(providedHash, expectedHash) &&
+    providedBuf.length === expectedBuf.length
+  );
+}
+
 function verifyApiKey(c: Context): Response | null {
   const apiKey = process.env.API_KEY || config.apiKey;
   if (!apiKey) return null;
@@ -59,12 +71,7 @@ function verifyApiKey(c: Context): Response | null {
     );
   }
   const token = auth.slice(7);
-  const tokenBuf = Buffer.from(token);
-  const keyBuf = Buffer.from(apiKey);
-  if (
-    tokenBuf.length !== keyBuf.length ||
-    !crypto.timingSafeEqual(tokenBuf, keyBuf)
-  ) {
+  if (!constantTimeStringEqual(token, apiKey)) {
     return sendOpenAIError(c, new AuthError("Invalid API key"));
   }
   return null;
@@ -274,8 +281,25 @@ export async function startServer(options?: {
     cache = new MemoryCache();
     await cache.connect();
 
+    if (!config.apiKey && config.server.host === "0.0.0.0") {
+      logger.warn(
+        "API_KEY is empty and HOST is 0.0.0.0; the API is reachable without authentication.",
+      );
+    }
+
     const { loadAccounts } = await import("../core/accounts.ts");
     const accounts = loadAccounts();
+
+    // Clear stale cooldowns from previous sessions on startup
+    const { clearAccountCooldown } = await import("../core/account-manager.ts");
+    for (const account of accounts) {
+      clearAccountCooldown(account.id);
+    }
+    if (accounts.length > 0) {
+      console.log(
+        `[Server] Cleared stale cooldowns for ${accounts.length} account(s).`,
+      );
+    }
 
     const { disableNativeTools, warmQwenChatPool } =
       await import("../services/qwen.ts");

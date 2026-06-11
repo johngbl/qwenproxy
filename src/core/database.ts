@@ -252,14 +252,18 @@ function runMigrations(db: Database.Database): void {
     db.exec(
       `ALTER TABLE accounts ADD COLUMN cooldown_until INTEGER DEFAULT 0;`,
     );
-  } catch {
-    // Column already exists
+  } catch (err) {
+    if (!isDuplicateColumnError(err)) throw err;
   }
   try {
     db.exec(`ALTER TABLE accounts ADD COLUMN cooldown_reason TEXT;`);
-  } catch {
-    // Column already exists
+  } catch (err) {
+    if (!isDuplicateColumnError(err)) throw err;
   }
+}
+
+function isDuplicateColumnError(err: unknown): boolean {
+  return err instanceof Error && err.message.includes("duplicate column name");
 }
 
 /**
