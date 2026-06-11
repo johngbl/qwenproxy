@@ -42,6 +42,7 @@ import {
 import {
   summarizeLargePayload,
   rebuildPromptWithSummary,
+  truncateMessages,
 } from "../../services/payload-summarizer.ts";
 
 function formatTimingHeader(timings: Record<string, number>): string {
@@ -120,30 +121,54 @@ export async function chatCompletions(c: Context) {
     let finalPrompt = ctx.finalPrompt;
     let activeRolloverPlan: ThreadContextRolloverPlan | null = null;
 
-    // Auto-summarize only when first request (no existing thread) sends full history
-    // Thread-native subsequent requests already send only current message
-    const PROMPT_SIZE_THRESHOLD = 500_000;
-    if (
-      !ctx.existingThread &&
-      finalPrompt.length > PROMPT_SIZE_THRESHOLD &&
-      messages.length > 2
-    ) {
-      const summarizeResult = await summarizeLargePayload(messages, body.model);
-      if (summarizeResult) {
-        const keepCount = Math.min(2, messages.length);
-        const recentMessages = messages.slice(messages.length - keepCount);
-        finalPrompt = rebuildPromptWithSummary(
-          systemPrompt,
-          recentMessages,
-          summarizeResult.summary,
+    // Auto-summarize/truncate large payloads to avoid TMD anti-bot
+    // Only on first request (no existing thread) — thread-native handles the rest
+    const PROMPT_SIZE_THRESHOLD = 100_000; // 100KB
+    if (!ctx.existingThread && finalPrompt.length > PROMPT_SIZE_THRESHOLD) {
+      if (messages.length > 2) {
+        // Many messages — summarize old ones, truncate recent ones
+        const summarizeResult = await summarizeLargePayload(
+          messages,
+          body.model,
         );
-        console.log(
-          `[Chat] Payload summarized: ${summarizeResult.originalChars} → ${summarizeResult.summaryChars} chars`,
-        );
+        if (summarizeResult) {
+          const keepCount = Math.min(2, messages.length);
+          const recentMessages = messages.slice(messages.length - keepCount);
+          finalPrompt = rebuildPromptWithSummary(
+            systemPrompt,
+            recentMessages,
+            summarizeResult.summary,
+          );
+          console.log(
+            `[Chat] Payload summarized: ${summarizeResult.originalChars} → ${summarizeResult.summaryChars} chars`,
+          );
+        } else {
+          const keepCount = Math.min(2, messages.length);
+          const recentMessages = messages.slice(messages.length - keepCount);
+          const recentText = recentMessages
+            .map((msg: any) => {
+              const content =
+                typeof msg.content === "string"
+                  ? msg.content
+                  : Array.isArray(msg.content)
+                    ? msg.content
+                        .map((p: any) => p.text || JSON.stringify(p))
+                        .join("\n")
+                    : JSON.stringify(msg.content);
+              return `${msg.role}: ${content}`;
+            })
+            .join("\n\n");
+          finalPrompt = systemPrompt
+            ? `${systemPrompt}\n\n${recentText}`
+            : recentText;
+          console.warn(
+            `[Chat] Summarization failed; falling back to ${keepCount} recent messages (${finalPrompt.length} chars)`,
+          );
+        }
       } else {
-        const keepCount = Math.min(2, messages.length);
-        const recentMessages = messages.slice(messages.length - keepCount);
-        const recentText = recentMessages
+        // Few messages but large — truncate individual messages
+        const truncated = truncateMessages(messages);
+        const truncatedPrompt = truncated
           .map((msg: any) => {
             const content =
               typeof msg.content === "string"
@@ -157,10 +182,10 @@ export async function chatCompletions(c: Context) {
           })
           .join("\n\n");
         finalPrompt = systemPrompt
-          ? `${systemPrompt}\n\n${recentText}`
-          : recentText;
+          ? `${systemPrompt}\n\n${truncatedPrompt}`
+          : truncatedPrompt;
         console.warn(
-          `[Chat] Summarization failed; falling back to ${keepCount} recent messages (${finalPrompt.length} chars)`,
+          `[Chat] Large single/few messages truncated: ${ctx.finalPrompt.length} → ${finalPrompt.length} chars`,
         );
       }
     }

@@ -15,11 +15,11 @@ import { v4 as uuidv4 } from "uuid";
 import { loadAccounts } from "../core/accounts.ts";
 import { getAccountCooldownInfo } from "../core/account-manager.ts";
 
-const PAYLOAD_SIZE_THRESHOLD = 500_000; // 500KB
+const PAYLOAD_SIZE_THRESHOLD = 100_000; // 100KB - Qwen TMD triggers around this size
 const SUMMARIZATION_TIMEOUT_MS = 60_000;
 const CHUNK_SIZE = 10; // messages per summarization chunk
-const MAX_CHUNK_CHARS = 100_000; // 100KB max per chunk text
-const MAX_SINGLE_MESSAGE_CHARS = 50_000; // 50KB max per individual message
+const MAX_CHUNK_CHARS = 80_000; // 80KB max per chunk text
+const MAX_SINGLE_MESSAGE_CHARS = 40_000; // 40KB max per individual message
 
 const SUMMARIZE_PROMPT = `You are a conversation summarizer. Summarize the following conversation history concisely, preserving:
 1. Key decisions and conclusions
@@ -86,7 +86,7 @@ function truncateMessageContent(content: any): any {
   return content;
 }
 
-function truncateMessages(
+export function truncateMessages(
   messages: Array<{ role: string; content: any }>,
 ): Array<{ role: string; content: any }> {
   return messages.map((msg) => {
