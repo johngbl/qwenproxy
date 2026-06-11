@@ -251,10 +251,35 @@ export async function acquireUpstreamStream(
 
       if (allConfiguredAccountsOnCooldown && !verifiedPersistedCooldown) {
         verifiedPersistedCooldown = true;
-        clearAccountCooldown(accountId);
         console.warn(
-          `[Chat] All accounts are on persisted cooldown; probing ${accountEmail} (${accountId}) once to verify current Qwen status.`,
+          `[Chat] All accounts are on cooldown; clearing cooldowns and resetting all profiles in background.`,
         );
+
+        // Clear all cooldowns
+        for (const acc of configuredAccounts) {
+          clearAccountCooldown(acc.id);
+        }
+
+        // Reset all profiles in background
+        void (async () => {
+          try {
+            const { refreshHeadersWithProfileReset } =
+              await import("../../services/playwright.ts");
+            for (const acc of configuredAccounts) {
+              void refreshHeadersWithProfileReset(acc.id).catch((err) => {
+                console.warn(
+                  `[Playwright] Background profile reset failed for ${acc.id}:`,
+                  (err as Error).message,
+                );
+              });
+            }
+          } catch (err) {
+            console.warn(
+              `[Playwright] Failed to start background profile resets:`,
+              (err as Error).message,
+            );
+          }
+        })();
       } else {
         console.log(
           `[Chat] Skipping account ${accountEmail} (${accountId}) on cooldown for ${Math.round(cooldownInfo.remainingMs / 1000)}s (${cooldownInfo.reason})`,
@@ -731,23 +756,10 @@ async function tryCreateStreamWithRetry(
       err instanceof RetryableQwenStreamError ||
       err.message?.includes("in progress") ||
       err.message?.includes("Bad_Request") ||
-      err?.upstreamCode === "FAIL_SYS_USER_VALIDATE" ||
-      err?.upstreamCode === "RGV587_ERROR";
+      err.message?.includes("internal_error") ||
+      err.message?.includes("Internal error") ||
+      err?.upstreamCode === "internal_error";
     if (!isRetryable) {
-      return { success: false, error: err };
-    }
-
-    // Anti-bot error: mark cooldown and rotate immediately
-    const isAntiBot =
-      isAntiBotError(err) ||
-      err.message?.includes("anti-bot") ||
-      err.message?.includes("FAIL_SYS_USER_VALIDATE") ||
-      err.message?.includes("RGV587_ERROR");
-
-    if (isAntiBot) {
-      console.warn(
-        `[Chat] Anti-bot blocked ${accountEmail}; rotating to next account.`,
-      );
       return { success: false, error: err };
     }
 
