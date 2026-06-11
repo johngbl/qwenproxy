@@ -9,6 +9,11 @@ import { UpstreamRateLimit, UpstreamError, AuthError } from "../core/errors.ts";
 import { buildQwenRequestHeaders, QWEN_WEB_VERSION } from "./qwen-headers.ts";
 import { config } from "../core/config.ts";
 import { logger, isToolcallDebugEnabled } from "../core/logger.ts";
+import { estimateTokenCount } from "../utils/context-truncation.ts";
+import type {
+  PersonalizationEstimationInfo,
+  TokenEstimationContext,
+} from "./token-estimation-metrics.ts";
 import { getDatabase } from "../core/database.ts";
 import { markAccountRateLimited } from "../core/account-manager.ts";
 import { MAX_PAYLOAD_SIZE } from "../core/model-registry.ts";
@@ -352,6 +357,10 @@ const modelsCache = new Map<
 const nativeToolsDisabled = new Set<string>();
 const disablingNativeToolsInProgress = new Set<string>();
 const lastSyncedPersonalizationHashes = new Map<string, string>();
+const activePersonalizationByAccount = new Map<
+  string,
+  PersonalizationEstimationInfo
+>();
 
 function getPersonalizationHashFromDb(accountId: string): string | null {
   try {
@@ -402,6 +411,37 @@ function textSize(value: unknown): {
     bytes: Buffer.byteLength(value, "utf8"),
     hash: shortContentHash(value),
   };
+}
+
+function rememberActivePersonalization(
+  accountId: string,
+  instruction: string,
+  metadata: {
+    model?: string;
+    toolsCount?: number;
+  },
+  source: PersonalizationEstimationInfo["source"],
+): void {
+  const size = textSize(instruction);
+  if (size.chars === null || size.bytes === null || !size.hash) return;
+
+  activePersonalizationByAccount.set(accountId, {
+    accountId,
+    model: metadata.model ?? null,
+    toolCount: metadata.toolsCount ?? 0,
+    chars: size.chars,
+    bytes: size.bytes,
+    hash: size.hash,
+    estimatedTokens: estimateTokenCount(instruction, metadata.model),
+    source,
+    updatedAt: Date.now(),
+  });
+}
+
+function getActivePersonalizationInfo(
+  accountId: string,
+): PersonalizationEstimationInfo | null {
+  return activePersonalizationByAccount.get(accountId) ?? null;
 }
 
 function buildCapturedQwenHeaders(
@@ -480,6 +520,7 @@ export async function syncQwenRequestPersonalization(
   // 1. Check memory cache
   const cachedHash = lastSyncedPersonalizationHashes.get(cacheKey);
   if (sent.hash && cachedHash === sent.hash) {
+    rememberActivePersonalization(cacheKey, instruction, metadata, "memory");
     console.log(
       `[Qwen] Personalization unchanged | ${metadata.model || "?"} | ${metadata.toolsCount ?? 0} tool(s) | ${sent.chars} chars`,
     );
@@ -491,6 +532,7 @@ export async function syncQwenRequestPersonalization(
     const dbHash = getPersonalizationHashFromDb(cacheKey);
     if (dbHash === sent.hash) {
       lastSyncedPersonalizationHashes.set(cacheKey, sent.hash);
+      rememberActivePersonalization(cacheKey, instruction, metadata, "db");
       console.log(
         `[Qwen] Personalization unchanged (DB) | ${metadata.model || "?"} | ${metadata.toolsCount ?? 0} tool(s) | ${sent.chars} chars`,
       );
@@ -516,6 +558,12 @@ export async function syncQwenRequestPersonalization(
       if (existing.hash === sent.hash) {
         lastSyncedPersonalizationHashes.set(cacheKey, sent.hash);
         setPersonalizationHashInDb(cacheKey, sent.hash);
+        rememberActivePersonalization(
+          cacheKey,
+          instruction,
+          metadata,
+          "verified",
+        );
         console.log(
           `[Qwen] Personalization unchanged | ${metadata.model || "?"} | ${metadata.toolsCount ?? 0} tool(s) | ${sent.chars} chars | verified=true`,
         );
@@ -617,6 +665,7 @@ export async function syncQwenRequestPersonalization(
   if (sent.hash && (matchReturned || matchStored === true)) {
     lastSyncedPersonalizationHashes.set(cacheKey, sent.hash);
     setPersonalizationHashInDb(cacheKey, sent.hash);
+    rememberActivePersonalization(cacheKey, instruction, metadata, "synced");
   }
   console.log(
     `[Qwen] Personalization synced | ${metadata.model || "?"} | ${metadata.toolsCount ?? 0} tool(s) | ${sent.chars} chars${matchStored === null ? "" : ` | verified=${matchStored}`}`,
@@ -1241,6 +1290,7 @@ export async function createQwenStream(
   controller: AbortController;
   accountId: string;
   createdNewChat: boolean;
+  tokenEstimationContext: TokenEstimationContext;
 }> {
   // A new logical chat session should reuse the warmed header cache when available.
   // Header recapture is much more expensive and should be reserved for real refresh/login cases,
@@ -1360,6 +1410,12 @@ export async function createQwenStream(
 
   const payloadJson = JSON.stringify(payload);
   const payloadSize = Buffer.byteLength(payloadJson);
+  const tokenEstimationContext: TokenEstimationContext = {
+    activePersonalization: getActivePersonalizationInfo(accountId ?? "global"),
+    qwenPayloadBytes: payloadSize,
+    qwenPayloadPromptChars: prompt.length,
+    qwenPayloadMessageCount: payload.messages.length,
+  };
 
   if (payloadSize > MAX_PAYLOAD_SIZE) {
     throw new Error(
@@ -1479,5 +1535,6 @@ export async function createQwenStream(
     controller,
     accountId: accountId ?? "global",
     createdNewChat,
+    tokenEstimationContext,
   };
 }

@@ -10,6 +10,7 @@ import {
   syncQwenRequestPersonalization,
   type LogicalThreadEntry,
 } from "../../services/qwen.ts";
+import type { TokenEstimationContext } from "../../services/token-estimation-metrics.ts";
 import { isAuthMockEnabled } from "../../services/auth-playwright.ts";
 import { refreshHeaders } from "../../services/playwright.ts";
 import { Mutex } from "../../core/mutex.ts";
@@ -82,6 +83,7 @@ export interface StreamCreationResult {
   completionId: string;
   logicalSessionId: string | null;
   createdNewChat: boolean;
+  tokenEstimationContext: TokenEstimationContext;
 }
 
 export interface StreamCreationFailure {
@@ -371,6 +373,10 @@ export async function acquireUpstreamStream(
           logicalSessionId:
             useThreadNative && updateLogicalThread ? sessionId : null,
           createdNewChat: result.createdNewChat,
+          tokenEstimationContext: {
+            ...result.tokenEstimationContext,
+            requestDeclaredToolCount: params.toolsCount ?? 0,
+          },
         };
       }
 
@@ -469,6 +475,7 @@ interface CreateStreamSuccess {
   controller: AbortController;
   headers: Record<string, string>;
   createdNewChat: boolean;
+  tokenEstimationContext: TokenEstimationContext;
 }
 
 interface CreateStreamFailure {

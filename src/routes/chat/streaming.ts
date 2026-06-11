@@ -37,6 +37,10 @@ import type { QwenBridgeStatusCode } from "../../core/errors.js";
 import { config } from "../../core/config.js";
 import { parseQwenErrorPayload } from "./errors.ts";
 import {
+  logTokenEstimationSample,
+  type TokenEstimationContext,
+} from "../../services/token-estimation-metrics.ts";
+import {
   getIncrementalDelta,
   formatThinkingSummaryContent,
   shouldSuppressStreamAbort,
@@ -101,6 +105,7 @@ export interface StreamProcessingParams {
   userPrompt: string;
   shouldParseToolCalls: boolean;
   declaredTools: any[];
+  tokenEstimationContext?: TokenEstimationContext;
   onAssistantComplete?: AssistantCompleteHandler;
   onStreamComplete?: () => void;
 }
@@ -139,6 +144,7 @@ export async function processNonStreamingResponse(
     userPrompt,
     shouldParseToolCalls,
     declaredTools,
+    tokenEstimationContext,
     onAssistantComplete,
     onStreamComplete,
   } = params;
@@ -500,6 +506,16 @@ export async function processNonStreamingResponse(
     console.log(
       `[Chat] Response sent | ${usage.prompt_tokens} prompt / ${usage.completion_tokens} completion / ${usage.total_tokens} total tokens`,
     );
+    logTokenEstimationSample({
+      model: body.model,
+      finalPrompt,
+      userPrompt,
+      assistantContent: finalContent,
+      reasoningContent: reasoningBuffer || undefined,
+      usage,
+      mode: "non-stream",
+      context: tokenEstimationContext,
+    });
 
     scheduleAssistantComplete(onAssistantComplete, {
       sessionId: logicalSessionId,
@@ -556,6 +572,7 @@ export async function processStreamingResponse(
     userPrompt,
     shouldParseToolCalls,
     declaredTools,
+    tokenEstimationContext,
     onAssistantComplete,
     onStreamComplete,
   } = params;
@@ -1361,6 +1378,16 @@ export async function processStreamingResponse(
         console.log(
           `[Chat] Response sent | ${usage.prompt_tokens} prompt / ${usage.completion_tokens} completion / ${usage.total_tokens} total tokens`,
         );
+        logTokenEstimationSample({
+          model: body.model,
+          finalPrompt,
+          userPrompt,
+          assistantContent: finalContent,
+          reasoningContent: reasoningBuffer || undefined,
+          usage,
+          mode: "stream",
+          context: tokenEstimationContext,
+        });
       } else {
         if (isToolcallDebugEnabled()) {
           logger.debug(

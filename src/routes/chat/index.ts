@@ -405,6 +405,7 @@ export async function chatCompletions(c: Context) {
       userPrompt: currentPrompt || prompt,
       shouldParseToolCalls,
       declaredTools,
+      tokenEstimationContext: streamResult.tokenEstimationContext,
       onAssistantComplete,
       onStreamComplete: () => {
         if (releaseChatLock) {
@@ -504,6 +505,7 @@ export async function chatCompletions(c: Context) {
             userPrompt: currentPrompt || prompt,
             shouldParseToolCalls,
             declaredTools,
+            tokenEstimationContext: newStreamResult.tokenEstimationContext,
             onAssistantComplete,
             onStreamComplete: () => {
               if (releaseChatLock) {
