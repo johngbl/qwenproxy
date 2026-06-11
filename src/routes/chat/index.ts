@@ -39,6 +39,11 @@ import {
   setThreadContextStatus,
   upsertThreadContextSession,
 } from "../../services/thread-context-store.ts";
+import {
+  shouldSummarizePayload,
+  summarizeLargePayload,
+  rebuildPromptWithSummary,
+} from "../../services/payload-summarizer.ts";
 
 function formatTimingHeader(timings: Record<string, number>): string {
   return Object.entries(timings)
@@ -115,6 +120,23 @@ export async function chatCompletions(c: Context) {
 
     let finalPrompt = ctx.finalPrompt;
     let activeRolloverPlan: ThreadContextRolloverPlan | null = null;
+
+    // Auto-summarize large payloads to avoid TMD anti-bot
+    if (messages.length > 2 && shouldSummarizePayload(messages)) {
+      const summarizeResult = await summarizeLargePayload(messages, body.model);
+      if (summarizeResult) {
+        const keepCount = Math.min(2, messages.length);
+        const recentMessages = messages.slice(messages.length - keepCount);
+        finalPrompt = rebuildPromptWithSummary(
+          systemPrompt,
+          recentMessages,
+          summarizeResult.summary,
+        );
+        console.log(
+          `[Chat] Payload summarized: ${summarizeResult.originalChars} → ${summarizeResult.summaryChars} chars`,
+        );
+      }
+    }
 
     stepStartedAt = Date.now();
     if (shouldManageThreadContext && ctx.sessionId) {
