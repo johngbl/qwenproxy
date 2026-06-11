@@ -167,6 +167,8 @@ function isAntiBotError(err: any): boolean {
   }
   const message = String(err?.message || err || "").toLowerCase();
   return (
+    err?.upstreamCode === "FAIL_SYS_USER_VALIDATE" ||
+    err?.upstreamCode === "RGV587_ERROR" ||
     message.includes("fail_sys_user_validate") ||
     message.includes("rgv587_error")
   );
@@ -360,6 +362,11 @@ export async function acquireUpstreamStream(
       } else {
         break;
       }
+    }
+
+    // Mark anti-bot blocked accounts for cooldown to avoid retrying them
+    if (isAntiBotError(lastError)) {
+      markAccountRateLimited(accountId, 10 * 60 * 1000, "AntiBot");
     }
 
     if (isToolcallDebugEnabled()) {
@@ -705,13 +712,16 @@ async function tryCreateStreamWithRetry(
     const isRetryable =
       err instanceof RetryableQwenStreamError ||
       err.message?.includes("in progress") ||
-      err.message?.includes("Bad_Request");
+      err.message?.includes("Bad_Request") ||
+      err?.upstreamCode === "FAIL_SYS_USER_VALIDATE" ||
+      err?.upstreamCode === "RGV587_ERROR";
     if (!isRetryable) {
       return { success: false, error: err };
     }
 
     // Anti-bot error: try header refresh, then profile reset if needed
     const isAntiBot =
+      isAntiBotError(err) ||
       err.message?.includes("anti-bot") ||
       err.message?.includes("FAIL_SYS_USER_VALIDATE") ||
       err.message?.includes("RGV587_ERROR");
