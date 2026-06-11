@@ -9,30 +9,68 @@ import { Usage } from "../../utils/types.ts";
 export interface DeltaResult {
   delta: string;
   matchedContent: string;
+  contentLength: number;
+  contentSuffix: string;
+}
+
+function buildDeltaResult(delta: string, matchedContent: string): DeltaResult {
+  return {
+    delta,
+    matchedContent,
+    contentLength: matchedContent.length,
+    contentSuffix: matchedContent.slice(-64),
+  };
 }
 
 export function getIncrementalDelta(
   oldStr: string,
   newStr: string,
+  previousLength = oldStr.length,
+  previousSuffix = oldStr.slice(-64),
 ): DeltaResult {
   if (!oldStr) {
-    return { delta: newStr, matchedContent: newStr };
+    return buildDeltaResult(newStr, newStr);
   }
   if (newStr === oldStr) {
-    return { delta: "", matchedContent: oldStr };
+    return buildDeltaResult("", oldStr);
+  }
+
+  // Fast path for cumulative Qwen chunks: validate the old boundary using a
+  // short suffix instead of scanning the whole previous content with startsWith.
+  if (newStr.length > previousLength && previousLength > 0) {
+    const checkLen = Math.min(64, previousLength, previousSuffix.length);
+    const expectedSuffix = previousSuffix.slice(-checkLen);
+    const actualSuffix = newStr.slice(
+      previousLength - checkLen,
+      previousLength,
+    );
+
+    if (expectedSuffix === actualSuffix) {
+      return buildDeltaResult(newStr.slice(previousLength), newStr);
+    }
   }
 
   if (newStr.length >= oldStr.length && newStr.startsWith(oldStr)) {
-    return {
-      delta: newStr.substring(oldStr.length),
-      matchedContent: newStr,
-    };
+    return buildDeltaResult(newStr.substring(oldStr.length), newStr);
   }
 
-  // Heuristic to detect if newStr is cumulative or incremental
+  // Heuristic to detect if newStr is cumulative or incremental. Compare in
+  // small segments first to reduce per-character work on long responses.
   const scanWindow = Math.min(2000, oldStr.length);
   let commonPrefixLen = 0;
   const maxLen = Math.min(scanWindow, newStr.length);
+  const segmentLen = 64;
+
+  while (commonPrefixLen + segmentLen <= maxLen) {
+    if (
+      oldStr.slice(commonPrefixLen, commonPrefixLen + segmentLen) !==
+      newStr.slice(commonPrefixLen, commonPrefixLen + segmentLen)
+    ) {
+      break;
+    }
+    commonPrefixLen += segmentLen;
+  }
+
   while (
     commonPrefixLen < maxLen &&
     oldStr[commonPrefixLen] === newStr[commonPrefixLen]
@@ -42,17 +80,11 @@ export function getIncrementalDelta(
 
   const threshold = Math.min(scanWindow, 4);
   if (commonPrefixLen >= threshold) {
-    return {
-      delta: newStr.substring(commonPrefixLen),
-      matchedContent: newStr,
-    };
+    return buildDeltaResult(newStr.substring(commonPrefixLen), newStr);
   }
 
   // Treat as strictly incremental to avoid false-positive corruptions
-  return {
-    delta: newStr,
-    matchedContent: oldStr + newStr,
-  };
+  return buildDeltaResult(newStr, oldStr + newStr);
 }
 
 export function formatThinkingSummaryContent(delta: any): string {

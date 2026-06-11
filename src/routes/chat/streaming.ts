@@ -99,6 +99,7 @@ export interface StreamProcessingParams {
   stream: ReadableStream;
   uiSessionId: string;
   activeAccountId: string;
+  activeAccountLabel?: string;
   logicalSessionId: string | null;
   body: OpenAIRequest & { stream_options?: { include_usage?: boolean } };
   finalPrompt: string;
@@ -138,6 +139,7 @@ export async function processNonStreamingResponse(
     stream,
     uiSessionId,
     activeAccountId,
+    activeAccountLabel = activeAccountId,
     logicalSessionId,
     body,
     finalPrompt,
@@ -154,8 +156,12 @@ export async function processNonStreamingResponse(
     const decoder = new TextDecoder();
 
     let lastThinkingSummary = "";
+    let lastThinkingSummaryLength = 0;
+    let lastThinkingSummarySuffix = "";
     let reasoningBuffer = "";
     let lastRawContent = "";
+    let lastRawContentLength = 0;
+    let lastRawContentSuffix = "";
     let finalContent = "";
     let targetResponseId: string | null = null;
     let currentUiSessionId = uiSessionId;
@@ -262,10 +268,12 @@ export async function processNonStreamingResponse(
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
+      let lineStart = 0;
+      let lineEnd = buffer.indexOf("\n", lineStart);
 
-      for (const line of lines) {
+      for (; lineEnd !== -1; lineEnd = buffer.indexOf("\n", lineStart)) {
+        const line = buffer.slice(lineStart, lineEnd);
+        lineStart = lineEnd + 1;
         const trimmed = line.trim();
         if (!trimmed || !trimmed.startsWith("data: ")) continue;
 
@@ -357,9 +365,13 @@ export async function processNonStreamingResponse(
                 const result = getIncrementalDelta(
                   lastThinkingSummary,
                   formattedSummary,
+                  lastThinkingSummaryLength,
+                  lastThinkingSummarySuffix,
                 );
                 vStr = result.delta;
                 lastThinkingSummary = result.matchedContent;
+                lastThinkingSummaryLength = result.contentLength;
+                lastThinkingSummarySuffix = result.contentSuffix;
                 if (vStr) {
                   foundStr = true;
                 }
@@ -368,10 +380,17 @@ export async function processNonStreamingResponse(
               isThinkingChunk = false;
               if (delta.content !== undefined) {
                 const newContent = delta.content || "";
-                const result = getIncrementalDelta(lastRawContent, newContent);
+                const result = getIncrementalDelta(
+                  lastRawContent,
+                  newContent,
+                  lastRawContentLength,
+                  lastRawContentSuffix,
+                );
                 vStr = result.delta;
                 if (vStr) {
                   lastRawContent = result.matchedContent;
+                  lastRawContentLength = result.contentLength;
+                  lastRawContentSuffix = result.contentSuffix;
                   foundStr = true;
                 }
               }
@@ -403,6 +422,8 @@ export async function processNonStreamingResponse(
           }
         }
       }
+
+      buffer = lineStart > 0 ? buffer.slice(lineStart) : buffer;
     }
 
     const upstreamError = parseQwenErrorPayload(buffer);
@@ -504,7 +525,7 @@ export async function processNonStreamingResponse(
     }
 
     console.log(
-      `[Chat] Response sent | ${usage.prompt_tokens} prompt / ${usage.completion_tokens} completion / ${usage.total_tokens} total tokens`,
+      `[Chat] Response sent | ${activeAccountLabel} | ${usage.prompt_tokens} prompt / ${usage.completion_tokens} completion / ${usage.total_tokens} total tokens`,
     );
     logTokenEstimationSample({
       model: body.model,
@@ -566,6 +587,7 @@ export async function processStreamingResponse(
     stream,
     uiSessionId,
     activeAccountId,
+    activeAccountLabel = activeAccountId,
     logicalSessionId,
     body,
     finalPrompt,
@@ -710,6 +732,8 @@ export async function processStreamingResponse(
 
       scheduleHeartbeat();
 
+      const createdTimestamp = Math.floor(Date.now() / 1000);
+
       // Batch buffer: when non-null, writeEvent accumulates instead of flushing
       let flushBuffer: string[] | null = null;
 
@@ -733,7 +757,7 @@ export async function processStreamingResponse(
       await writeEvent({
         id: completionId,
         object: "chat.completion.chunk",
-        created: Math.floor(Date.now() / 1000),
+        created: createdTimestamp,
         model: body.model,
         choices: [makeChoice({ role: "assistant", content: "" })],
       });
@@ -742,7 +766,11 @@ export async function processStreamingResponse(
       const decoder = new TextDecoder();
 
       let lastThinkingSummary = "";
+      let lastThinkingSummaryLength = 0;
+      let lastThinkingSummarySuffix = "";
       let lastRawContent = "";
+      let lastRawContentLength = 0;
+      let lastRawContentSuffix = "";
       let finalContent = "";
       let reasoningBuffer = "";
       let targetResponseId: string | null = null;
@@ -785,7 +813,7 @@ export async function processStreamingResponse(
           await writeEvent({
             id: completionId,
             object: "chat.completion.chunk",
-            created: Math.floor(Date.now() / 1000),
+            created: createdTimestamp,
             model: body.model,
             choices: [makeChoice({ content: textChunk })],
           });
@@ -812,7 +840,7 @@ export async function processStreamingResponse(
           await writeEvent({
             id: completionId,
             object: "chat.completion.chunk",
-            created: Math.floor(Date.now() / 1000),
+            created: createdTimestamp,
             model: body.model,
             choices: [makeChoice({ content: text })],
           });
@@ -834,7 +862,7 @@ export async function processStreamingResponse(
           await writeEvent({
             id: completionId,
             object: "chat.completion.chunk",
-            created: Math.floor(Date.now() / 1000),
+            created: createdTimestamp,
             model: body.model,
             choices: [
               makeChoice({
@@ -874,7 +902,7 @@ export async function processStreamingResponse(
           await writeEvent({
             id: completionId,
             object: "chat.completion.chunk",
-            created: Math.floor(Date.now() / 1000),
+            created: createdTimestamp,
             model: body.model,
             choices: [
               makeChoice({
@@ -923,7 +951,7 @@ export async function processStreamingResponse(
           await writeEvent({
             id: completionId,
             object: "chat.completion.chunk",
-            created: Math.floor(Date.now() / 1000),
+            created: createdTimestamp,
             model: body.model,
             choices: [makeChoice({ reasoning_content: sanitized.reasoning })],
           });
@@ -949,10 +977,13 @@ export async function processStreamingResponse(
 
           buffer += decoder.decode(value, { stream: true });
         }
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
 
-        for (const line of lines) {
+        let lineStart = 0;
+        let lineEnd = buffer.indexOf("\n", lineStart);
+
+        for (; lineEnd !== -1; lineEnd = buffer.indexOf("\n", lineStart)) {
+          const line = buffer.slice(lineStart, lineEnd);
+          lineStart = lineEnd + 1;
           const trimmed = line.trim();
           if (!trimmed || !trimmed.startsWith("data: ")) continue;
 
@@ -980,10 +1011,17 @@ export async function processStreamingResponse(
               .replace(/\\\\/g, "\\");
 
             if (unescaped) {
-              const result = getIncrementalDelta(lastRawContent, unescaped);
+              const result = getIncrementalDelta(
+                lastRawContent,
+                unescaped,
+                lastRawContentLength,
+                lastRawContentSuffix,
+              );
               const vStr = result.delta;
               if (vStr && vStr !== "FINISHED") {
                 lastRawContent = result.matchedContent;
+                lastRawContentLength = result.contentLength;
+                lastRawContentSuffix = result.contentSuffix;
                 await emitSanitizedAnswerChunk(vStr);
               }
             }
@@ -1077,9 +1115,13 @@ export async function processStreamingResponse(
                   const result = getIncrementalDelta(
                     lastThinkingSummary,
                     formattedSummary,
+                    lastThinkingSummaryLength,
+                    lastThinkingSummarySuffix,
                   );
                   vStr = result.delta;
                   lastThinkingSummary = result.matchedContent;
+                  lastThinkingSummaryLength = result.contentLength;
+                  lastThinkingSummarySuffix = result.contentSuffix;
                   if (vStr) {
                     foundStr = true;
                   }
@@ -1091,10 +1133,14 @@ export async function processStreamingResponse(
                   const result = getIncrementalDelta(
                     lastRawContent,
                     newContent,
+                    lastRawContentLength,
+                    lastRawContentSuffix,
                   );
                   vStr = result.delta;
                   if (vStr) {
                     lastRawContent = result.matchedContent;
+                    lastRawContentLength = result.contentLength;
+                    lastRawContentSuffix = result.contentSuffix;
                     foundStr = true;
                   }
                 }
@@ -1109,7 +1155,7 @@ export async function processStreamingResponse(
                 await writeEvent({
                   id: completionId,
                   object: "chat.completion.chunk",
-                  created: Math.floor(Date.now() / 1000),
+                  created: createdTimestamp,
                   model: body.model,
                   choices: [makeChoice({ reasoning_content: vStr })],
                 });
@@ -1128,6 +1174,8 @@ export async function processStreamingResponse(
             // Ignore partial chunk parse errors
           }
         }
+
+        buffer = lineStart > 0 ? buffer.slice(lineStart) : buffer;
       }
 
       // Post-stream: error check + flush remaining content
@@ -1136,14 +1184,14 @@ export async function processStreamingResponse(
         await writeEvent({
           id: completionId,
           object: "chat.completion.chunk",
-          created: Math.floor(Date.now() / 1000),
+          created: createdTimestamp,
           model: body.model,
           choices: [makeChoice({ content: upstreamError.message })],
         });
         await writeEvent({
           id: completionId,
           object: "chat.completion.chunk",
-          created: Math.floor(Date.now() / 1000),
+          created: createdTimestamp,
           model: body.model,
           choices: [makeChoice({}, "stop")],
         });
@@ -1174,7 +1222,7 @@ export async function processStreamingResponse(
           await writeEvent({
             id: completionId,
             object: "chat.completion.chunk",
-            created: Math.floor(Date.now() / 1000),
+            created: createdTimestamp,
             model: body.model,
             choices: [
               makeChoice({ reasoning_content: remainingSanitized.reasoning }),
@@ -1210,7 +1258,7 @@ export async function processStreamingResponse(
         await writeEvent({
           id: completionId,
           object: "chat.completion.chunk",
-          created: Math.floor(Date.now() / 1000),
+          created: createdTimestamp,
           model: body.model,
           choices: [makeChoice({ content: remainingText })],
         });
@@ -1231,7 +1279,7 @@ export async function processStreamingResponse(
         await writeEvent({
           id: completionId,
           object: "chat.completion.chunk",
-          created: Math.floor(Date.now() / 1000),
+          created: createdTimestamp,
           model: body.model,
           choices: [
             makeChoice({
@@ -1270,7 +1318,7 @@ export async function processStreamingResponse(
         await writeEvent({
           id: completionId,
           object: "chat.completion.chunk",
-          created: Math.floor(Date.now() / 1000),
+          created: createdTimestamp,
           model: body.model,
           choices: [
             makeChoice({
@@ -1314,7 +1362,7 @@ export async function processStreamingResponse(
       await writeEvent({
         id: completionId,
         object: "chat.completion.chunk",
-        created: Math.floor(Date.now() / 1000),
+        created: createdTimestamp,
         model: body.model,
         choices: [makeChoice({}, finalFinishReason)],
         ...(body.stream_options?.include_usage ? {} : { usage }),
@@ -1327,7 +1375,7 @@ export async function processStreamingResponse(
         await writeEvent({
           id: completionId,
           object: "chat.completion.chunk",
-          created: Math.floor(Date.now() / 1000),
+          created: createdTimestamp,
           model: body.model,
           choices: [],
           usage,
@@ -1376,7 +1424,7 @@ export async function processStreamingResponse(
         }
 
         console.log(
-          `[Chat] Response sent | ${usage.prompt_tokens} prompt / ${usage.completion_tokens} completion / ${usage.total_tokens} total tokens`,
+          `[Chat] Response sent | ${activeAccountLabel} | ${usage.prompt_tokens} prompt / ${usage.completion_tokens} completion / ${usage.total_tokens} total tokens`,
         );
         logTokenEstimationSample({
           model: body.model,

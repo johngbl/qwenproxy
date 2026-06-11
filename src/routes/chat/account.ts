@@ -80,6 +80,7 @@ export interface StreamCreationResult {
   stream: ReadableStream;
   uiSessionId: string;
   activeAccountId: string;
+  activeAccountLabel: string;
   completionId: string;
   logicalSessionId: string | null;
   createdNewChat: boolean;
@@ -299,7 +300,7 @@ export async function acquireUpstreamStream(
     if (isToolcallDebugEnabled()) {
       logger.debug("[chat] account selected", {
         accountId,
-        accountEmail: maskEmail(accountEmail),
+        accountEmail,
         isNewSession,
         isThinkingModel,
         promptLength: finalPrompt.length,
@@ -369,6 +370,7 @@ export async function acquireUpstreamStream(
           stream: result.stream,
           uiSessionId: result.uiSessionId,
           activeAccountId: result.accountId,
+          activeAccountLabel: accountEmail,
           completionId,
           logicalSessionId:
             useThreadNative && updateLogicalThread ? sessionId : null,
@@ -515,7 +517,7 @@ async function tryCreateStreamWithRetry(
     attempt++;
     if (attempt > 1) {
       console.log(
-        `[Chat] Retrying request | ${params.model} | ${params.messageCount ?? "?"} msg(s) | ${params.finalPrompt.length} chars${params.toolsCount ? ` | ${params.toolsCount} tool(s)` : ""} | attempt ${attempt}`,
+        `[Chat] Retrying request | ${accountEmail} | ${params.model} | ${params.messageCount ?? "?"} msg(s) | ${params.finalPrompt.length} chars${params.toolsCount ? ` | ${params.toolsCount} tool(s)` : ""} | attempt ${attempt}`,
       );
     }
     let attemptError: any = null;
@@ -593,7 +595,7 @@ async function tryCreateStreamWithRetry(
       if (isToolcallDebugEnabled()) {
         logger.debug("[chat] stream created successfully", {
           accountId,
-          accountEmail: maskEmail(accountEmail),
+          accountEmail,
           uiSessionId: result.uiSessionId,
         });
       }

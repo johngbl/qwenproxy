@@ -1,4 +1,4 @@
-import { v4 as uuidv4 } from "uuid";
+import crypto from "node:crypto";
 import { robustParseJSON } from "../utils/json.ts";
 import { logger, isToolcallDebugEnabled } from "../core/logger.js";
 import type { ParsedToolCall } from "./types";
@@ -674,6 +674,9 @@ export class StreamingToolParser {
   private emittedToolCallCount = 0;
   private pendingLeadIn = "";
   private tools: ToolDefinitionLike[] = [];
+  private declaredToolNames: string[] = [];
+  private declaredToolNameSet = new Set<string>();
+  private toolByName = new Map<string, ToolDefinitionLike>();
   private markdownCodeDelimiterLength = 0;
   private incrementalToolCalls = false;
   private activeIncrementalToolCall: ActiveIncrementalToolCall | null = null;
@@ -685,12 +688,12 @@ export class StreamingToolParser {
     tools: ToolDefinitionLike[] = [],
     options: StreamingToolParserOptions = {},
   ) {
-    this.tools = tools;
+    this.setTools(tools);
     this.incrementalToolCalls = options.incrementalToolCalls ?? false;
     if (isToolcallDebugEnabled()) {
       logger.debug("[parser] StreamingToolParser initialized", {
         toolsCount: tools.length,
-        toolNames: tools.map((t) => this.getToolName(t)).filter(Boolean),
+        toolNames: this.declaredToolNames,
         incrementalToolCalls: this.incrementalToolCalls,
       });
     }
@@ -701,13 +704,24 @@ export class StreamingToolParser {
    */
   setTools(tools: ToolDefinitionLike[]): void {
     this.tools = tools;
+    this.declaredToolNames = [];
+    this.declaredToolNameSet = new Set<string>();
+    this.toolByName = new Map<string, ToolDefinitionLike>();
+
+    for (const tool of tools) {
+      const name = this.getToolName(tool);
+      if (!name) continue;
+      this.declaredToolNames.push(name);
+      this.declaredToolNameSet.add(name);
+      this.toolByName.set(name, tool);
+    }
   }
 
   private startIncrementalToolCall(): void {
     if (!this.incrementalToolCalls) return;
     this.activeIncrementalToolCall = {
       index: this.emittedToolCallCount,
-      id: `call_${uuidv4()}`,
+      id: `call_${crypto.randomUUID()}`,
       name: null,
       argumentsValueStart: null,
       emittedArgumentsLength: 0,
@@ -734,10 +748,7 @@ export class StreamingToolParser {
     name: string,
     args: Record<string, unknown>,
   ): Record<string, unknown> {
-    const matchingTool = this.tools.find(
-      (tool) => this.getToolName(tool) === name,
-    );
-    const toolProperties = this.getToolProperties(matchingTool);
+    const toolProperties = this.getToolProperties(this.toolByName.get(name));
     if (
       Object.keys(args).length === 1 &&
       Object.prototype.hasOwnProperty.call(args, "arguments") &&
@@ -758,7 +769,7 @@ export class StreamingToolParser {
     if (!this.isDeclaredToolName(tc.name)) {
       logger.warn("[parser] Undeclared tool call passed through", {
         toolName: tc.name,
-        declaredTools: this.tools.map((tool) => this.getToolName(tool)),
+        declaredTools: this.declaredToolNames,
       });
     }
 
@@ -914,8 +925,8 @@ export class StreamingToolParser {
   }
 
   private isDeclaredToolName(name: string): boolean {
-    if (!name || this.tools.length === 0) return true;
-    return this.tools.some((tool) => this.getToolName(tool) === name);
+    if (!name || this.declaredToolNameSet.size === 0) return true;
+    return this.declaredToolNameSet.has(name);
   }
 
   private preserveLiteralToolCall(
@@ -1278,7 +1289,7 @@ export class StreamingToolParser {
       }
       this.finalizeSuccessfulToolCall(
         {
-          id: `call_${uuidv4()}`,
+          id: `call_${crypto.randomUUID()}`,
           name: xmlParsed.name,
           arguments: xmlParsed.arguments,
         },
@@ -1470,7 +1481,7 @@ export class StreamingToolParser {
         });
       }
       return {
-        id: `call_${uuidv4()}`,
+        id: `call_${crypto.randomUUID()}`,
         name: xmlParsed.name,
         arguments: xmlParsed.arguments,
       };
@@ -1504,7 +1515,7 @@ export class StreamingToolParser {
         );
       }
       return {
-        id: `call_${uuidv4()}`,
+        id: `call_${crypto.randomUUID()}`,
         name: recovered.name,
         arguments: recovered.arguments,
       };
@@ -1611,7 +1622,7 @@ export class StreamingToolParser {
               }
 
               return {
-                id: `call_${uuidv4()}`,
+                id: `call_${crypto.randomUUID()}`,
                 name,
                 arguments: args,
               };
@@ -1843,7 +1854,7 @@ export class StreamingToolParser {
     args = this.normalizeArgumentsForTool(name, args);
 
     return {
-      id: parsed.id || parsed.tool_call_id || `call_${uuidv4()}`,
+      id: parsed.id || parsed.tool_call_id || `call_${crypto.randomUUID()}`,
       name,
       arguments: args,
     };

@@ -321,6 +321,10 @@ export async function chatCompletions(c: Context) {
       throw streamResult.error || new Error("All accounts failed");
     }
 
+    console.log(
+      `[Chat] Request routed | ${streamResult.activeAccountLabel} | ${body.model} | ${msgCount} msg(s) | ${finalPrompt.length} chars${declaredTools.length ? ` | ${declaredTools.length} tool(s)` : ""}${files.length ? ` | ${files.length} file(s)` : ""}`,
+    );
+
     if (activeRolloverPlan) {
       activeRolloverPlan = markThreadContextRolloverStarted({
         plan: activeRolloverPlan,
@@ -399,6 +403,7 @@ export async function chatCompletions(c: Context) {
       stream: streamResult.stream,
       uiSessionId: streamResult.uiSessionId,
       activeAccountId: streamResult.activeAccountId,
+      activeAccountLabel: streamResult.activeAccountLabel,
       logicalSessionId: streamResult.logicalSessionId,
       body,
       finalPrompt,
@@ -483,6 +488,10 @@ export async function chatCompletions(c: Context) {
             throw streamErr;
           }
 
+          console.log(
+            `[Chat] Request routed | ${newStreamResult.activeAccountLabel} | ${body.model} | ${msgCount} msg(s) | ${finalPrompt.length} chars${declaredTools.length ? ` | ${declaredTools.length} tool(s)` : ""}${files.length ? ` | ${files.length} file(s)` : ""} | retry`,
+          );
+
           // Re-acquire chat lock for new stream
           if (ctx.allowThreadReuse && ctx.sessionId) {
             const existingThread = getLogicalThreadState(ctx.sessionId);
@@ -499,6 +508,7 @@ export async function chatCompletions(c: Context) {
             stream: newStreamResult.stream,
             uiSessionId: newStreamResult.uiSessionId,
             activeAccountId: newStreamResult.activeAccountId,
+            activeAccountLabel: newStreamResult.activeAccountLabel,
             logicalSessionId: newStreamResult.logicalSessionId,
             body,
             finalPrompt,
