@@ -86,6 +86,7 @@ export interface AnthropicStreamEvent {
   index?: number;
   content_block?: AnthropicResponseContentBlock;
   delta?: AnthropicStreamDelta;
+  usage?: AnthropicUsage;
 }
 
 export interface AnthropicStreamDelta {
@@ -93,7 +94,7 @@ export interface AnthropicStreamDelta {
   text?: string;
   partial_json?: string;
   stop_reason?: string;
-  usage?: { output_tokens: number };
+  stop_sequence?: string | null;
 }
 
 export interface AnthropicError {

@@ -7,6 +7,7 @@ import {
   translateAnthropicToOpenAI,
   translateOpenAIToAnthropic,
   mapAnthropicModel,
+  translateStreamChunk,
 } from "../routes/anthropic/translate.ts";
 import { validateAnthropicRequest } from "../routes/anthropic/validation.ts";
 
@@ -213,4 +214,66 @@ test("Anthropic: validateAnthropicRequest validates tool_choice", () => {
   const result = validateAnthropicRequest(invalidReq);
   assert.equal(result.valid, false);
   assert.ok(result.error?.includes("tool_choice.type"));
+});
+
+test("Anthropic: translateStreamChunk emits message_delta with top-level usage", () => {
+  const state = {
+    contentBlockIndex: 0,
+    currentBlockType: null as string | null,
+    requestModel: "claude-sonnet-4-6",
+    inputTokens: 0,
+  };
+
+  const events = translateStreamChunk(
+    {
+      choices: [
+        {
+          delta: {},
+          finish_reason: "stop",
+        },
+      ],
+      usage: {
+        prompt_tokens: 123,
+        completion_tokens: 456,
+        total_tokens: 579,
+      },
+    },
+    state,
+  );
+
+  const parsed = events.map((event) => JSON.parse(event));
+  const messageDelta = parsed.find((event) => event.type === "message_delta");
+
+  assert.ok(messageDelta, "expected message_delta event");
+  assert.equal(messageDelta.delta.stop_reason, "end_turn");
+  assert.equal(messageDelta.usage.input_tokens, 123);
+  assert.equal(messageDelta.usage.output_tokens, 456);
+});
+
+test("Anthropic: translateStreamChunk falls back to zero usage when missing", () => {
+  const state = {
+    contentBlockIndex: 0,
+    currentBlockType: null as string | null,
+    requestModel: "claude-sonnet-4-6",
+    inputTokens: 0,
+  };
+
+  const events = translateStreamChunk(
+    {
+      choices: [
+        {
+          delta: {},
+          finish_reason: "stop",
+        },
+      ],
+    },
+    state,
+  );
+
+  const parsed = events.map((event) => JSON.parse(event));
+  const messageDelta = parsed.find((event) => event.type === "message_delta");
+
+  assert.ok(messageDelta, "expected message_delta event");
+  assert.equal(messageDelta.usage.input_tokens, 0);
+  assert.equal(messageDelta.usage.output_tokens, 0);
 });

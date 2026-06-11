@@ -285,9 +285,15 @@ export function translateStreamChunk(
   },
 ): string[] {
   const events: string[] = [];
-  const delta = chunk.choices?.[0]?.delta;
+  const usage = chunk.usage;
+  if (usage?.prompt_tokens !== undefined) {
+    state.inputTokens = usage.prompt_tokens;
+  }
 
-  if (!delta) return events;
+  const choice = chunk.choices?.[0];
+  const delta = choice?.delta ?? {};
+
+  if (!choice?.delta && !choice?.finish_reason) return events;
 
   // Text content
   if (delta.content) {
@@ -361,7 +367,7 @@ export function translateStreamChunk(
   }
 
   // Finish reason
-  if (chunk.choices?.[0]?.finish_reason) {
+  if (choice?.finish_reason) {
     // Close current block
     if (state.currentBlockType) {
       events.push(
@@ -385,9 +391,12 @@ export function translateStreamChunk(
       JSON.stringify({
         type: "message_delta",
         delta: {
-          stop_reason:
-            stopReasonMap[chunk.choices[0].finish_reason] || "end_turn",
-          usage: { output_tokens: chunk.usage?.completion_tokens || 0 },
+          stop_reason: stopReasonMap[choice.finish_reason] || "end_turn",
+          stop_sequence: null,
+        },
+        usage: {
+          input_tokens: state.inputTokens,
+          output_tokens: usage?.completion_tokens || 0,
         },
       }),
     );
