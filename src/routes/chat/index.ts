@@ -40,7 +40,6 @@ import {
   upsertThreadContextSession,
 } from "../../services/thread-context-store.ts";
 import {
-  shouldSummarizePayload,
   summarizeLargePayload,
   rebuildPromptWithSummary,
 } from "../../services/payload-summarizer.ts";
@@ -121,8 +120,14 @@ export async function chatCompletions(c: Context) {
     let finalPrompt = ctx.finalPrompt;
     let activeRolloverPlan: ThreadContextRolloverPlan | null = null;
 
-    // Auto-summarize large payloads to avoid TMD anti-bot
-    if (messages.length > 2 && shouldSummarizePayload(messages)) {
+    // Auto-summarize only when first request (no existing thread) sends full history
+    // Thread-native subsequent requests already send only current message
+    const PROMPT_SIZE_THRESHOLD = 500_000;
+    if (
+      !ctx.existingThread &&
+      finalPrompt.length > PROMPT_SIZE_THRESHOLD &&
+      messages.length > 2
+    ) {
       const summarizeResult = await summarizeLargePayload(messages, body.model);
       if (summarizeResult) {
         const keepCount = Math.min(2, messages.length);
@@ -134,6 +139,28 @@ export async function chatCompletions(c: Context) {
         );
         console.log(
           `[Chat] Payload summarized: ${summarizeResult.originalChars} → ${summarizeResult.summaryChars} chars`,
+        );
+      } else {
+        const keepCount = Math.min(2, messages.length);
+        const recentMessages = messages.slice(messages.length - keepCount);
+        const recentText = recentMessages
+          .map((msg: any) => {
+            const content =
+              typeof msg.content === "string"
+                ? msg.content
+                : Array.isArray(msg.content)
+                  ? msg.content
+                      .map((p: any) => p.text || JSON.stringify(p))
+                      .join("\n")
+                  : JSON.stringify(msg.content);
+            return `${msg.role}: ${content}`;
+          })
+          .join("\n\n");
+        finalPrompt = systemPrompt
+          ? `${systemPrompt}\n\n${recentText}`
+          : recentText;
+        console.warn(
+          `[Chat] Summarization failed; falling back to ${keepCount} recent messages (${finalPrompt.length} chars)`,
         );
       }
     }

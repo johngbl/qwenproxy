@@ -10,7 +10,7 @@ export { estimateTokenCount, getModelContextWindow, deriveSessionId };
 export interface FinalContext {
   finalPrompt: string;
   sessionId: string | null;
-
+  existingThread: boolean;
   shouldResetUpstreamThread: boolean;
   isNewSession: boolean;
   useThreadNative: boolean;
@@ -115,7 +115,7 @@ export async function buildFinalContext(
   return {
     finalPrompt,
     sessionId,
-
+    existingThread: !!existingThread,
     shouldResetUpstreamThread,
     isNewSession,
     useThreadNative,
