@@ -1415,6 +1415,8 @@ export async function createQwenStream(
         "[Qwen] TMD challenge detected in 200 OK, refreshing headers and retrying...",
       );
 
+      const TMD_RECOVERY_TIMEOUT_MS = 60_000;
+
       const tmdRecoveryStrategies: Array<{
         name: string;
         apply: () => Promise<{ headers: Record<string, string> }>;
@@ -1437,7 +1439,20 @@ export async function createQwenStream(
       for (const strategy of tmdRecoveryStrategies) {
         try {
           logger.warn(`[Qwen] TMD recovery strategy: ${strategy.name}`);
-          const { headers: freshHeaders } = await strategy.apply();
+          const { headers: freshHeaders } = await Promise.race([
+            strategy.apply(),
+            new Promise<never>((_, reject) =>
+              setTimeout(
+                () =>
+                  reject(
+                    new Error(
+                      `TMD recovery strategy '${strategy.name}' timed out after ${TMD_RECOVERY_TIMEOUT_MS}ms`,
+                    ),
+                  ),
+                TMD_RECOVERY_TIMEOUT_MS,
+              ),
+            ),
+          ]);
           await sleep(500 + Math.floor(Math.random() * 1000));
 
           const retryController = new AbortController();

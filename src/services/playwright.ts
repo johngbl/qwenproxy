@@ -646,6 +646,8 @@ async function resetPlaywrightProfile(accountId: string): Promise<void> {
   }
 }
 
+const PROFILE_RESET_TIMEOUT_MS = 45_000;
+
 export async function refreshHeadersWithProfileReset(
   accountId: string,
 ): Promise<void> {
@@ -658,7 +660,20 @@ export async function refreshHeadersWithProfileReset(
       throw new Error(`Account ${accountId} not found during profile reset`);
     }
 
-    await initPlaywrightForAccount(account);
+    await Promise.race([
+      initPlaywrightForAccount(account),
+      new Promise<never>((_, reject) =>
+        setTimeout(
+          () =>
+            reject(
+              new Error(
+                `Playwright re-initialization timed out after ${PROFILE_RESET_TIMEOUT_MS}ms`,
+              ),
+            ),
+          PROFILE_RESET_TIMEOUT_MS,
+        ),
+      ),
+    ]);
   } finally {
     release();
   }
