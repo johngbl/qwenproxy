@@ -3,7 +3,6 @@ import {
   loadAccounts,
   updateAccountCooldown,
 } from "./accounts.ts";
-import { config } from "./config.ts";
 
 let currentIndex = 0;
 

@@ -1,26 +1,15 @@
 /**
  * Diagnostic test for personalization flow.
- * Tests the header chain: auth-http.ts → playwright.ts → Qwen API
+ * Tests the header chain: auth-playwright.ts → playwright.ts → Qwen API
  */
 
-import { test, afterEach } from "node:test";
+import { test } from "node:test";
 import assert from "node:assert/strict";
 
-// Mock config before imports
-process.env.PLAYWRIGHT_ENABLED = "false"; // Use HTTP auth mode for testing
 process.env.TEST_MOCK_QWEN_AUTH = "true";
 
-import { config } from "../core/config.ts";
-
-// Save originals
-const savedPlaywrightEnabled = config.playwright.enabled;
-
-afterEach(() => {
-  (config as any).playwright.enabled = savedPlaywrightEnabled;
-});
-
 test("Personalization: getQwenHeaders returns valid header structure", async () => {
-  const { getQwenHeaders } = await import("../services/auth-http.ts");
+  const { getQwenHeaders } = await import("../services/auth-playwright.ts");
 
   const result = await getQwenHeaders(false, undefined);
 
@@ -46,7 +35,7 @@ test("Personalization: getQwenHeaders returns valid header structure", async () 
 });
 
 test("Personalization: getQwenHeaders with forceNew returns fresh headers", async () => {
-  const { getQwenHeaders } = await import("../services/auth-http.ts");
+  const { getQwenHeaders } = await import("../services/auth-playwright.ts");
 
   const result1 = await getQwenHeaders(false, undefined);
   const result2 = await getQwenHeaders(true, undefined);
@@ -119,7 +108,7 @@ test("Personalization: syncQwenRequestPersonalization handles 401 gracefully", a
 
 test("Personalization: buildCapturedQwenHeaders includes all required fields", async () => {
   // Verify that the headers built for personalization POST include cookie, bx-ua, etc.
-  const { getQwenHeaders } = await import("../services/auth-http.ts");
+  const { getQwenHeaders } = await import("../services/auth-playwright.ts");
   const { buildQwenRequestHeaders } =
     await import("../services/qwen-headers.ts");
 
@@ -142,7 +131,7 @@ test("Personalization: buildCapturedQwenHeaders includes all required fields", a
 });
 
 test("Personalization: isAuthMockEnabled returns true in test mode", async () => {
-  const { isAuthMockEnabled } = await import("../services/auth-http.ts");
+  const { isAuthMockEnabled } = await import("../services/auth-playwright.ts");
   assert.strictEqual(
     isAuthMockEnabled(),
     true,

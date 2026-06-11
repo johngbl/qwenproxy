@@ -1,30 +1,16 @@
 import { config } from "../../core/config.ts";
 import { getModelContextWindow } from "../../core/model-registry.ts";
-import { getCache } from "../../api/server.ts";
 import type { Message } from "../../utils/types.ts";
-import {
-  estimateTokenCount,
-  truncateMessages,
-  type PrioritizedMessage,
-} from "../../utils/context-truncation.ts";
-import {
-  deriveSessionId,
-  detectTopicChange,
-  type TopicAnalysis,
-} from "../../utils/topic-detector.ts";
+import { estimateTokenCount } from "../../utils/context-truncation.ts";
+import { deriveSessionId } from "../../utils/session-id.ts";
 import { getLogicalThreadState } from "../../services/qwen.ts";
 
-export {
-  estimateTokenCount,
-  getModelContextWindow,
-  deriveSessionId,
-  detectTopicChange,
-};
+export { estimateTokenCount, getModelContextWindow, deriveSessionId };
 
 export interface FinalContext {
   finalPrompt: string;
   sessionId: string | null;
-  topicAnalysis: TopicAnalysis | null;
+
   shouldResetUpstreamThread: boolean;
   isNewSession: boolean;
   useThreadNative: boolean;
@@ -67,8 +53,7 @@ export async function buildFinalContext(
   } = params;
 
   const modelContextWindow = getModelContextWindow(modelId);
-  const useThreadNative =
-    !isInternalSummarizationRequest && config.context.mode === "thread-native";
+  const useThreadNative = !isInternalSummarizationRequest;
   const isNewSession = !messages.some((m) => m.role === "assistant");
 
   // Thread reuse is allowed when:
@@ -100,10 +85,9 @@ export async function buildFinalContext(
   const hasTrailingToolResult = detectTrailingToolResult(messages);
   // Thread-native: send full history when Qwen has no context yet, but preserve
   // tool-result deltas because the upstream parent chain already owns the call.
-  const activePrompt = useThreadNative
-    ? (!existingThread && !hasTrailingToolResult ? prompt : currentPrompt) ||
-      prompt
-    : prompt;
+  const activePrompt =
+    (!existingThread && !hasTrailingToolResult ? prompt : currentPrompt) ||
+    prompt;
   const isTitleGenerationRequest = detectTitleGenerationRequest(messages);
   const isAuxiliaryRequest =
     isInternalSummarizationRequest || isTitleGenerationRequest;
@@ -120,50 +104,18 @@ export async function buildFinalContext(
   // personalization.instruction instead, so they do not appear as chat content.
   const shouldSendInstructions = !useRequestPersonalization;
 
-  const cache = getCache();
-  const topicAnalysis =
-    cache && sessionId
-      ? await detectTopicChange(messages, sessionId, cache).catch(() => null)
-      : null;
-
-  const summarizationTriggerTokens = Math.floor(modelContextWindow * 0.9);
-
-  let finalPrompt: string;
-  if (!useThreadNative && estimatedTokens > summarizationTriggerTokens) {
-    const truncationMessages = useRequestPersonalization
-      ? messages.filter((message) => message.role !== "system")
-      : messages;
-    const truncated = await truncateMessages(truncationMessages, {
-      maxContextLength: modelContextWindow,
-      systemPrompt: useRequestPersonalization ? "" : systemPrompt,
-      enableSummarization:
-        !isInternalSummarizationRequest && config.context.summarization.enabled,
-      summarizationModel: config.context.summarization.model,
-      minMessagesToKeep: config.context.minMessagesToKeep,
-      modelId,
-    });
-    finalPrompt = truncated
-      .map(
-        (m: PrioritizedMessage) =>
-          `${m.role === "user" ? "User" : m.role === "assistant" ? "Assistant" : m.role}: ${m.content}`,
-      )
-      .join("\n\n");
-  } else {
-    finalPrompt =
-      shouldSendInstructions && systemPrompt
-        ? `${systemPrompt}\n${activePrompt}`
-        : activePrompt;
-  }
+  const finalPrompt =
+    shouldSendInstructions && systemPrompt
+      ? `${systemPrompt}\n${activePrompt}`
+      : activePrompt;
 
   const isThinkingModel = enableThinking;
-  const shouldResetUpstreamThread = useThreadNative
-    ? false
-    : isNewSession || topicAnalysis?.hasChanged === true;
+  const shouldResetUpstreamThread = false;
 
   return {
     finalPrompt,
     sessionId,
-    topicAnalysis,
+
     shouldResetUpstreamThread,
     isNewSession,
     useThreadNative,

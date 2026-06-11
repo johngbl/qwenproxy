@@ -12,8 +12,7 @@ import { chatCompletions, chatCompletionsStop } from "../routes/chat.js";
 import { uploadFile } from "../routes/upload.js";
 import { anthropicApp } from "../routes/anthropic/index.js";
 import { sendOpenAIError } from "./error-helpers.js";
-import { AuthError, NotFoundError, UpstreamRateLimit } from "../core/errors.js";
-import type { CacheKey } from "../cache/memory-cache.js";
+import { AuthError, NotFoundError } from "../core/errors.js";
 import type { QwenAccount } from "../core/accounts.js";
 
 // Module-level state (initialized in startServer)
@@ -75,59 +74,6 @@ app.use("/v1/*", async (c, next) => {
   const error = verifyApiKey(c);
   if (error) return error;
   await next();
-});
-
-app.use("/v1/*", async (c, next) => {
-  if (!cache) {
-    await next();
-    return;
-  }
-
-  // Skip rate limiting if disabled (0)
-  if (config.rateLimit.rpm === 0 && config.rateLimit.concurrency === 0) {
-    await next();
-    return;
-  }
-
-  const auth = c.req.header("Authorization");
-  const apiKey = auth?.startsWith("Bearer ") ? auth.slice(7) : "anonymous";
-  const clientIp =
-    c.req.header("x-forwarded-for")?.split(",")[0].trim() ||
-    c.req.header("x-real-ip") ||
-    "unknown";
-
-  const identifier =
-    apiKey !== "anonymous" ? `key:${apiKey}` : `ip:${clientIp}`;
-
-  const concurrencyKey = `rate:concurrency:${identifier}` as CacheKey;
-  const currentConcurrency = await cache.increment(concurrencyKey, 1, 60);
-
-  if (
-    config.rateLimit.concurrency > 0 &&
-    currentConcurrency > config.rateLimit.concurrency
-  ) {
-    await cache.increment(concurrencyKey, -1);
-    return sendOpenAIError(
-      c,
-      new UpstreamRateLimit("Too many concurrent requests"),
-    );
-  }
-
-  try {
-    const rpmKey = `rate:rpm:${identifier}` as CacheKey;
-    const currentRpm = await cache.increment(rpmKey, 1, 60);
-
-    if (config.rateLimit.rpm > 0 && currentRpm > config.rateLimit.rpm) {
-      return sendOpenAIError(
-        c,
-        new UpstreamRateLimit("Rate limit exceeded (RPM)"),
-      );
-    }
-
-    await next();
-  } finally {
-    await cache.increment(concurrencyKey, -1);
-  }
 });
 
 // Routes
@@ -241,9 +187,7 @@ async function cleanupServerResources(): Promise<void> {
     try {
       const { deleteChatsForConfiguredAccounts } =
         await import("../services/chat-cleanup.ts");
-      const result = await deleteChatsForConfiguredAccounts({
-        useExistingSessions: true,
-      });
+      const result = await deleteChatsForConfiguredAccounts();
       console.log(
         `[Server] Deleted Qwen chats on shutdown: ${result.succeeded}/${result.attempted} scope(s).`,
       );
@@ -255,8 +199,8 @@ async function cleanupServerResources(): Promise<void> {
     }
   }
 
-  const { closeHttpAuth } = await import("../services/auth-http.ts");
-  await closeHttpAuth();
+  const { closeAllPlaywright } = await import("../services/playwright.ts");
+  await closeAllPlaywright();
 
   const { closeDatabase } = await import("../core/database.ts");
   closeDatabase();
@@ -335,18 +279,15 @@ export async function startServer(options?: {
 
     const { disableNativeTools, warmQwenChatPool } =
       await import("../services/qwen.ts");
-    const { initHttpAuth, initHttpAuthForAccount, hasGlobalCredentials } =
-      await import("../services/auth-http.ts");
+    const { initPlaywrightForAccount } =
+      await import("../services/playwright.ts");
 
     const BATCH_SIZE = 5;
 
-    if (config.playwright.enabled) {
+    if (accounts.length > 0) {
       console.log(
         `[Server] Preparing ${accounts.length} account(s) with Playwright (batch size: ${BATCH_SIZE})...`,
       );
-
-      const { initPlaywrightForAccount } =
-        await import("../services/playwright.ts");
 
       for (let i = 0; i < accounts.length; i += BATCH_SIZE) {
         const batch = accounts.slice(i, i + BATCH_SIZE);
@@ -374,43 +315,9 @@ export async function startServer(options?: {
           ),
         );
       }
-    } else if (accounts.length > 0) {
-      console.log(
-        `[Server] Preparing ${accounts.length} account(s) with HTTP auth (batch size: ${BATCH_SIZE})...`,
-      );
-
-      for (let i = 0; i < accounts.length; i += BATCH_SIZE) {
-        const batch = accounts.slice(i, i + BATCH_SIZE);
-        const batchNum = Math.floor(i / BATCH_SIZE) + 1;
-        const totalBatches = Math.ceil(accounts.length / BATCH_SIZE);
-        console.log(
-          `[Server] Batch ${batchNum}/${totalBatches}: initializing ${batch.length} account(s)...`,
-        );
-
-        await Promise.all(
-          batch.map((account: QwenAccount) =>
-            prepareQwenRuntime({
-              accountId: account.id,
-              successMessage: `[Server] Account ready: ${maskEmail(account.email)}`,
-              failureMessage: `[Server] Failed to initialize account ${maskEmail(account.email)}:`,
-              initAuth: () => initHttpAuthForAccount(account),
-              disableNativeTools,
-              warmQwenChatPool,
-            }),
-          ),
-        );
-      }
-    } else if (hasGlobalCredentials()) {
-      await prepareQwenRuntime({
-        successMessage: "[Server] Global Qwen HTTP auth ready.",
-        failureMessage: "[Server] Failed to initialize global Qwen auth:",
-        initAuth: () => initHttpAuth(),
-        disableNativeTools,
-        warmQwenChatPool,
-      });
     } else {
       console.warn(
-        "[Server] No Qwen credentials configured. Requests will fail until QWEN_EMAIL/QWEN_PASSWORD or QWEN_ACCOUNTS are provided.",
+        "[Server] No Qwen accounts configured. Add accounts with npm run login before sending requests.",
       );
     }
 

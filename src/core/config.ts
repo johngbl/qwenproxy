@@ -9,18 +9,7 @@ const envSchema = z.object({
     .default(
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
     ),
-  QWEN_BX_UA: z
-    .string()
-    .default(
-      "231!lWD36kmUe5E+joKDK5gBZ48FEl2ZWfPwIPF92lBLek2KxVW/XJ2EwruCiDOX5Px4EXNhmh6EfS9eDwQGRwijIK64A4nPqeLysJcDjUACje/H3J4ZgGZpicG6K8AkiGGaEKC830+QSiSUsLRlL/EyhXTmLcJc/5iDkMuOpUhNz0e0Q/nTqjVJ3ko00Q/oyE+jauHhUHfb1GxGHkE+++3+qCS4+ItkaA6tiItCo+romzElfLFD6RIj7oHt9vffs98nLwpHnaqKjufnLFMejSlAUGiQvTofIiGhIvftAMcoFV4mrUHsqyQ/ncQihmJHkbxXjvM57FCb6b9dEIRZl7jgj0+QLNLRs0NZ4azdZ6rzbGTSO8KA5I3Aq/3gBr87X16Mj0oJtaPKmFGaP2zghfOVhxQht8YjRd50lJa+Ue4PAuPSdu2O69DKLH8VOhrsB+psaBIRxnRi5POUQ6w8s8qlb9vxvExjHNOAKWXV1by1Nz+6FPWdyTeAgcmonjCcV0dCtPj/KyeVDkeSrDkKZjnDzHEqeCdfmJ65kve+Vy3YS0vagzyHfVEnzN0ULUZtkGfJXFNm6+bIa55wmGBhUeXbHL0EdlQXMu1YXxmcwBgTaq7tlQcfv7AefanbfjGE8R1IFnNyg2/jXLbnLg5Z6l1oKqgnxZQg0DE9BJuw6s0XjGwTdSxybWxp+WFD/RsXt76uwvCBk7z+YmSFLtFj2UlTsoq+vl0DTmsVItDKf9SZ94NcuJ7mxJYI02S/2kQBfbbHG0d4hXevDrEC0cb86EvzN2ud+v6bAunNRGNFz/RH0KLusoBVeo+puCFKeeIJWEo0t1UicX5YxJwMAoV7+g0gK93y4W9sMQtso8/wY5wsBzis9dwfLvIwXpaAM1g0MZp/YIRq8T/Qc+U/8x99tam4er0IWizvrkjqhIzCWBKpJ4Y4gj3bOmiS3VCMEaoVfKCwUWENwYKuP3H5VI0n+O2vVVRrekUrwvkm6URRhVhN4eEFTCjB9nSQu++qKyDH8HPpkS3YfwF8/OQtrZo7hQXxvNmP2HcH/K7zcweD00BaoOLiYUtXRItGYbl06sVSbm04soRf1Jqpyo3XiRqBWD9rmJfr4w8NOEGVGUCKXLDLsXy+8JC4Iqf0FsIjWxjMVdraTUtCbwXRbYUownQVm6bt7LYD1SNPoWNPqUJgsLMwP33ugrb1UbHCs24roOch6Go5QHIPA8E15SZE9pkr1SkmqrNs/+KRomFJ9HyFnWUYhZIV9MRLqlOAt6XBBTash3WJnCjhx/PZGhXVvdn2jX4+0Pm55LsiNugA8vaAUJQBxD/8a1u/RvTgbj35+b7I7m8tG0hMhClNZF+tpsOmZZhUGuXH9uVbkJMlMuAmMVCHwn3O31GlLeXXzzep2WS3xN2U+p5J0I7GySnuZUkuGs1ZTVqGUvR2g4q+7ljU55Ak78yPZiQXeUeqS74azszvZvCqWxXn2eePj+gcpliOjrYKpglUP19rQrMt8PqLt8L0ghIqVCmMwl3Hgr/VUcqDpXdpPTR=",
-    ),
-  QWEN_BX_UMIDTOKEN: z
-    .string()
-    .default(
-      "T2gAr9z8byN8sNOmfQ3X9j61MNTNmSqDO5L1rs2jMcQCVhOKgZICcBN-UdTuJGig-NM=",
-    ),
   QWEN_BX_V: z.string().default("2.5.36"),
-  PLAYWRIGHT_ENABLED: z.string().default("true"),
   PLAYWRIGHT_HEADLESS: z.string().default("true"),
   PLAYWRIGHT_BROWSER: z
     .enum(["chromium", "chrome", "edge"])
@@ -37,15 +26,9 @@ const envSchema = z.object({
   CACHE_COMPRESSION_ENABLED: z.string().default("true"),
   CACHE_COMPRESSION_THRESHOLD: z.string().default("1024"),
   CACHE_COMPRESSION_LEVEL: z.string().default("6"),
-  TOPIC_DETECTION_ENABLED: z.string().default("true"),
-  TOPIC_DETECTION_CONFIDENCE: z.string().default("0.7"),
-  CONTEXT_MODE: z
-    .enum(["thread-native", "full-history"])
-    .default("thread-native"),
   CONTEXT_SUMMARIZATION_ENABLED: z.string().default("true"),
   CONTEXT_SUMMARIZATION_MODEL: z.string().default("qwen3.5-flash"),
   CONTEXT_SUMMARIZATION_TIMEOUT: z.string().default("15000"),
-  CONTEXT_MIN_MESSAGES_TO_KEEP: z.string().default("4"),
   CONTEXT_PERSISTENCE_ENABLED: z.string().default("true"),
   CONTEXT_ROLLOVER_ENABLED: z.string().default("true"),
   CONTEXT_INCREMENTAL_SUMMARY_TOKENS: z.string().default("30000"),
@@ -75,8 +58,6 @@ const envSchema = z.object({
   RAM_CRITICAL: z.string().default("95"),
   WS_WARNING: z.string().default("50"),
   WS_CRITICAL: z.string().default("100"),
-  RATE_LIMIT_RPM: z.string().default("0"),
-  RATE_LIMIT_CONCURRENCY: z.string().default("0"),
   ACCOUNT_COOLDOWN_MS: z.string().default("60000"),
   RETRY_BASE_DELAY_MS: z.string().default("1000"),
   RETRY_MAX_DELAY_MS: z.string().default("10000"),
@@ -104,12 +85,9 @@ export const config = {
   },
   auth: {
     userAgent: env.USER_AGENT,
-    bxUa: env.QWEN_BX_UA,
-    bxUmidtoken: env.QWEN_BX_UMIDTOKEN,
     bxV: env.QWEN_BX_V,
   },
   playwright: {
-    enabled: env.PLAYWRIGHT_ENABLED === "true",
     headless: env.PLAYWRIGHT_HEADLESS !== "false",
     browser: env.PLAYWRIGHT_BROWSER,
   },
@@ -130,18 +108,13 @@ export const config = {
       level: parseInt(env.CACHE_COMPRESSION_LEVEL),
     },
   },
-  topicDetection: {
-    enabled: env.TOPIC_DETECTION_ENABLED !== "false",
-    confidence: parseFloat(env.TOPIC_DETECTION_CONFIDENCE),
-  },
+
   context: {
-    mode: env.CONTEXT_MODE,
     summarization: {
       enabled: env.CONTEXT_SUMMARIZATION_ENABLED !== "false",
       model: env.CONTEXT_SUMMARIZATION_MODEL,
       timeout: parseInt(env.CONTEXT_SUMMARIZATION_TIMEOUT),
     },
-    minMessagesToKeep: parseInt(env.CONTEXT_MIN_MESSAGES_TO_KEEP),
     threadNative: {
       persistenceEnabled: env.CONTEXT_PERSISTENCE_ENABLED !== "false",
       rolloverEnabled: env.CONTEXT_ROLLOVER_ENABLED !== "false",
@@ -189,11 +162,6 @@ export const config = {
       warningThreshold: parseInt(env.WS_WARNING),
       criticalThreshold: parseInt(env.WS_CRITICAL),
     },
-  },
-  rateLimit: {
-    rpm: parseInt(env.RATE_LIMIT_RPM),
-    concurrency: parseInt(env.RATE_LIMIT_CONCURRENCY),
-    cooldownMs: parseInt(env.ACCOUNT_COOLDOWN_MS),
   },
   retry: {
     baseDelayMs: parseInt(env.RETRY_BASE_DELAY_MS),

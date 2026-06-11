@@ -1429,5 +1429,5 @@ export function handleChatCompletionsError(c: Context, err: unknown): Response {
   const status = classified.statusCode;
   console.error(`[Chat] Error | ${status} ${code} | ${message}`);
 
-  return sendOpenAIError(c, classified);
+  return sendOpenAIError(c, err);
 }

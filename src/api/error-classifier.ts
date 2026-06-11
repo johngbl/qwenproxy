@@ -14,7 +14,6 @@ import {
   QwenSessionExpiredError,
 } from "../services/qwen.js";
 import { SchemaValidationError } from "../tools/schema.js";
-import { ToolLinterError } from "../tools/linter.js";
 
 /**
  * Classifies unknown errors into standard QwenBridgeError hierarchy.
@@ -36,7 +35,7 @@ export function classifyError(err: unknown): QwenBridgeError {
     return err;
   }
 
-  if (err instanceof SchemaValidationError || err instanceof ToolLinterError) {
+  if (err instanceof SchemaValidationError) {
     return err;
   }
 

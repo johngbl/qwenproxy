@@ -10,16 +10,15 @@ import {
   syncQwenRequestPersonalization,
   type LogicalThreadEntry,
 } from "../../services/qwen.ts";
-import {
-  reauthenticateAccount,
-  isAuthMockEnabled,
-} from "../../services/auth-http.ts";
+import { isAuthMockEnabled } from "../../services/auth-playwright.ts";
+import { refreshHeaders } from "../../services/playwright.ts";
 import { Mutex } from "../../core/mutex.ts";
 import {
   getNextAccount,
   getNextAvailableAccount,
   markAccountRateLimited,
   getAccountCooldownInfo,
+  clearAccountCooldown,
 } from "../../core/account-manager.ts";
 import { loadAccounts } from "../../core/accounts.ts";
 import { registerStream, removeStream } from "../../core/stream-registry.ts";
@@ -140,20 +139,9 @@ function resolveInitialAccount(preferredAccountId?: string): {
     return { account, configuredAccounts };
   }
 
-  // Fallback: global HTTP-authenticated session.
-  if (preferredAccountId && preferredAccountId !== "global") {
-    console.warn(
-      `[Chat] Sticky account ${preferredAccountId} not found; falling back to global session.`,
-    );
-  }
-  return {
-    account: {
-      id: "global",
-      email: process.env.QWEN_EMAIL || "global-session",
-      password: process.env.QWEN_PASSWORD || "",
-    },
-    configuredAccounts: [],
-  };
+  throw new Error(
+    "No Qwen accounts configured. Add accounts with npm run login.",
+  );
 }
 
 function isAccountUnavailableError(err: any): boolean {
@@ -189,20 +177,20 @@ async function attemptRelogin(
   accountEmail: string,
 ): Promise<boolean> {
   try {
-    await reauthenticateAccount(accountId === "global" ? undefined : accountId);
+    await refreshHeaders(accountId);
     console.log(
-      `[Chat] HTTP re-login successful for ${maskEmail(accountEmail)}. Retrying...`,
+      `[Chat] Playwright headers refreshed for ${maskEmail(accountEmail)}. Retrying...`,
     );
     return true;
-  } catch (reLoginErr: unknown) {
-    logger.error("[Chat] Re-login failed", {
+  } catch (refreshErr: unknown) {
+    logger.error("[Chat] Playwright header refresh failed", {
       accountEmail: maskEmail(accountEmail),
       error:
-        reLoginErr instanceof Error ? reLoginErr.message : String(reLoginErr),
+        refreshErr instanceof Error ? refreshErr.message : String(refreshErr),
       cause:
-        reLoginErr instanceof Error
-          ? reLoginErr.constructor.name
-          : typeof reLoginErr,
+        refreshErr instanceof Error
+          ? refreshErr.constructor.name
+          : typeof refreshErr,
     });
   }
   return false;
@@ -241,6 +229,7 @@ export async function acquireUpstreamStream(
     : (existingThread?.accountId ?? null);
   const triedAccountIds = new Set<string>();
   let lastError: any = null;
+  let verifiedPersistedCooldown = false;
 
   while (account) {
     const accountId = account.id;
@@ -253,17 +242,29 @@ export async function acquireUpstreamStream(
     triedAccountIds.add(accountId);
 
     const cooldownInfo = getAccountCooldownInfo(accountId);
-    if (cooldownInfo && accountId !== "global") {
-      console.log(
-        `[Chat] Skipping account ${accountEmail} (${accountId}) on cooldown for ${Math.round(cooldownInfo.remainingMs / 1000)}s (${cooldownInfo.reason})`,
+    if (cooldownInfo) {
+      const allConfiguredAccountsOnCooldown = configuredAccounts.every(
+        (configuredAccount) => getAccountCooldownInfo(configuredAccount.id),
       );
-      if (stickyThreadAccountId === accountId) {
+
+      if (allConfiguredAccountsOnCooldown && !verifiedPersistedCooldown) {
+        verifiedPersistedCooldown = true;
+        clearAccountCooldown(accountId);
         console.warn(
-          `[Chat] Sticky account is on cooldown; recreating upstream chat on another account with full context.`,
+          `[Chat] All accounts are on persisted cooldown; probing ${accountEmail} (${accountId}) once to verify current Qwen status.`,
         );
+      } else {
+        console.log(
+          `[Chat] Skipping account ${accountEmail} (${accountId}) on cooldown for ${Math.round(cooldownInfo.remainingMs / 1000)}s (${cooldownInfo.reason})`,
+        );
+        if (stickyThreadAccountId === accountId) {
+          console.warn(
+            `[Chat] Sticky account is on cooldown; recreating upstream chat on another account with full context.`,
+          );
+        }
+        account = getNextAvailableAccount(triedAccountIds);
+        continue;
       }
-      account = getNextAvailableAccount(triedAccountIds);
-      continue;
     }
 
     if (isToolcallDebugEnabled()) {
@@ -715,7 +716,7 @@ async function tryCreateStreamWithRetry(
       err.message?.includes("FAIL_SYS_USER_VALIDATE") ||
       err.message?.includes("RGV587_ERROR");
 
-    if (isAntiBot && config.playwright.enabled) {
+    if (isAntiBot) {
       try {
         const { refreshHeaders, isPlaywrightInitialized } =
           await import("../../services/playwright.ts");

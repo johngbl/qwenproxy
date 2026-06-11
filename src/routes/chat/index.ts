@@ -26,7 +26,7 @@ import {
   getLogicalThreadState,
   RetryableQwenStreamError,
 } from "../../services/qwen.ts";
-import { isAuthMockEnabled } from "../../services/auth-http.ts";
+import { isAuthMockEnabled } from "../../services/auth-playwright.ts";
 import { enqueueThreadContextSummary } from "../../services/thread-context-jobs.ts";
 import {
   finalizeThreadContextRolloverSuccess,

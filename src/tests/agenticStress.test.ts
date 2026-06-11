@@ -5,7 +5,6 @@ import path from "node:path";
 import net from "node:net";
 import { serve } from "@hono/node-server";
 import { app } from "../api/server.js";
-import { initHttpAuth, closeHttpAuth } from "../services/auth-http.ts";
 
 const SANDBOX_DIR = "/tmp/kilo/sandbox";
 
@@ -197,9 +196,8 @@ test(
     });
     console.log(`[RealTest] Local Hono server started on port ${port}`);
 
-    // Initialize HTTP auth and fetch a real Qwen session token.
-    console.log("[RealTest] Initializing HTTP auth...");
-    await initHttpAuth(true);
+    console.log("[RealTest] Using Playwright-backed auth...");
+    await Promise.resolve();
 
     // Dynamic conversation prompt sequence (explicitly instructing tool calls)
     const conversationScenario = [
@@ -397,13 +395,12 @@ test(
         "Sandbox directory must be empty at the end",
       );
     } finally {
-      // Teardown HTTP auth cache and Hono server
-      await closeHttpAuth();
+      await Promise.resolve();
       if (server) {
         server.close();
-        console.log("[RealTest] Server stopped and HTTP auth cache cleared.");
+        console.log("[RealTest] Server stopped.");
       } else {
-        console.log("[RealTest] HTTP auth cache cleared.");
+        console.log("[RealTest] Server was not started.");
       }
     }
   },

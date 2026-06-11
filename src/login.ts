@@ -2,10 +2,9 @@ import {
   addAccount,
   removeAccount,
   listAccounts,
-  getAccountCredentials,
   type QwenAccount,
 } from "./core/accounts.ts";
-import { initHttpAuthForAccount, loginViaHttp } from "./services/auth-http.ts";
+
 import { maskEmail } from "./core/logger.ts";
 import * as readline from "readline";
 import * as dotenv from "dotenv";
@@ -34,7 +33,7 @@ async function showMenu() {
     const accounts = listAccounts();
     clear();
     console.log("=== QwenBridge Account Manager ===\n");
-    console.log("Auth mode: HTTP-only (sem navegador)\n");
+    console.log("Auth mode: Playwright (validated on server start)\n");
 
     if (accounts.length > 0) {
       console.log(`Configured accounts (${accounts.length}):\n`);
@@ -48,10 +47,9 @@ async function showMenu() {
     }
 
     console.log("\nOptions:");
-    console.log("  [A] Add account and validate HTTP login");
+    console.log("  [A] Add account");
     if (accounts.length > 0) {
       console.log("  [R] Remove an account");
-      console.log("  [L] Refresh login for all accounts");
     }
     console.log("  [Q] Quit\n");
 
@@ -70,11 +68,6 @@ async function showMenu() {
     if (choice === "R" && accounts.length > 0) {
       await removeAccountFlow();
       continue;
-    }
-
-    if (choice === "L" && accounts.length > 0) {
-      await loginAllAccounts();
-      await askQuestion("Press Enter to continue...");
     }
   }
 }
@@ -99,14 +92,8 @@ async function addAccountFlow() {
   let account: QwenAccount | null = null;
   try {
     account = addAccount(email, password);
-    console.log("\nValidating credentials with Qwen HTTP login...");
-    const result = await loginViaHttp(account, { persist: true });
     console.log(`Account added: ${maskEmail(account.email)} (${account.id})`);
-    if (result.expiresAt) {
-      console.log(
-        `Session expires at: ${new Date(result.expiresAt).toISOString()}`,
-      );
-    }
+    console.log("Credentials will be validated by Playwright on server start.");
   } catch (err: any) {
     if (account) removeAccount(account.id);
     console.log(`\nError: ${err.message}`);
@@ -152,36 +139,6 @@ async function removeAccountFlow() {
   }
 
   await askQuestion("Press Enter to continue...");
-}
-
-async function loginAllAccounts() {
-  const accounts = listAccounts();
-  if (accounts.length === 0) return;
-
-  clear();
-  console.log(`Refreshing HTTP login for ${accounts.length} account(s)...\n`);
-
-  for (const account of accounts) {
-    const creds = getAccountCredentials(account.id);
-    if (!creds || creds.password === "***" || !creds.password) {
-      console.log(
-        `[Login] Skipping ${maskEmail(account.email)} - no password available`,
-      );
-      continue;
-    }
-
-    console.log(`[Login] Processing account: ${maskEmail(account.email)}`);
-    try {
-      await initHttpAuthForAccount(creds, true);
-      console.log(`[Login] Account ${maskEmail(account.email)} session saved.`);
-    } catch (err: any) {
-      console.error(
-        `[Login] Failed to login ${maskEmail(account.email)}: ${err.message}`,
-      );
-    }
-  }
-
-  console.log("\n[Login] All accounts processed.");
 }
 
 showMenu().catch((err) => {

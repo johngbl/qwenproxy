@@ -4,7 +4,7 @@ import assert from "node:assert";
 process.env.TEST_MOCK_QWEN_AUTH = "true";
 
 import { app } from "../api/server.js";
-import { initHttpAuth, closeHttpAuth } from "../services/auth-http.ts";
+
 
 test("Concurrent new sessions can overlap after startup lock", async () => {
   const originalFetch = globalThis.fetch;
@@ -50,7 +50,7 @@ test("Concurrent new sessions can overlap after startup lock", async () => {
     return originalFetch(input);
   };
 
-  await initHttpAuth(false);
+  await Promise.resolve();
 
   try {
     const promises = Array.from({ length: 3 }, (_, i) =>
@@ -82,7 +82,7 @@ test("Concurrent new sessions can overlap after startup lock", async () => {
     );
   } finally {
     globalThis.fetch = originalFetch;
-    await closeHttpAuth();
+    await Promise.resolve();
   }
 });
 
@@ -117,7 +117,7 @@ test("No-thinking model variant is accepted", async () => {
     return originalFetch(input);
   };
 
-  await initHttpAuth(false);
+  await Promise.resolve();
 
   try {
     // Test no-thinking model is accepted without error
@@ -139,6 +139,6 @@ test("No-thinking model variant is accepted", async () => {
     );
   } finally {
     globalThis.fetch = originalFetch;
-    await closeHttpAuth();
+    await Promise.resolve();
   }
 });

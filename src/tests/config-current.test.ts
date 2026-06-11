@@ -1,0 +1,24 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { config } from "../core/config.ts";
+
+test("config exposes only Playwright/thread-native current auth and context settings", () => {
+  assert.equal(typeof config.playwright.headless, "boolean");
+  assert.match(config.playwright.browser, /^(chromium|chrome|edge)$/);
+
+  assert.equal("enabled" in config.playwright, false);
+  assert.equal("rateLimit" in config, false);
+  assert.equal("topicDetection" in config, false);
+  assert.equal("mode" in config.context, false);
+
+  assert.equal(typeof config.context.summarization.enabled, "boolean");
+  assert.equal(typeof config.context.threadNative.persistenceEnabled, "boolean");
+  assert.equal(typeof config.qwen.personalizationFromRequest, "boolean");
+});
+
+test("config keeps Qwen anti-bot static config limited to bx-v fallback", () => {
+  assert.equal(typeof config.auth.userAgent, "string");
+  assert.equal(typeof config.auth.bxV, "string");
+  assert.equal("bxUa" in config.auth, false);
+  assert.equal("bxUmidtoken" in config.auth, false);
+});

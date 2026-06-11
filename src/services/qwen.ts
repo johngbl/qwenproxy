@@ -3,7 +3,7 @@ import {
   getQwenHeaders,
   getBasicHeaders,
   isAuthMockEnabled,
-} from "./auth-http.ts";
+} from "./auth-playwright.ts";
 import { v4 as uuidv4 } from "uuid";
 import { UpstreamRateLimit, UpstreamError, AuthError } from "../core/errors.ts";
 import { buildQwenRequestHeaders, QWEN_WEB_VERSION } from "./qwen-headers.ts";

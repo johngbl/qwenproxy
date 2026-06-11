@@ -38,16 +38,12 @@ flowchart TD
     Proxy --> Models["/v1/models"]
     Proxy --> Upload["/v1/upload"]
     Proxy --> Anthropic["/v1/messages"]
-    Chat --> Context["Context manager"]
-    Context --> Topic["Topic detector"]
+    Chat --> Context["Thread-native context manager"]
     Context --> Summary["Context summarizer"]
     Chat --> Accounts["Account manager"]
     Accounts --> DB[("SQLite")]
-    Accounts --> Auth["Auth service"]
-    Auth --> Playwright["Playwright + Stealth"]
-    Auth --> HTTP["HTTP auth"]
+    Accounts --> Playwright["Playwright + Stealth"]
     Playwright --> Qwen
-    HTTP --> Qwen
     Chat --> Parser["Tool-call parser"]
     Chat --> Qwen["chat.qwen.ai"]
     Upload --> OSS["Qwen OSS upload"]
@@ -55,14 +51,11 @@ flowchart TD
 
 ---
 
-## Modos de autenticação
+## Autenticação
 
-### Playwright (padrão)
-
-Captura headers reais do browser (`bx-ua`, `bx-umidtoken`) por conta. Usa `playwright-extra` com `puppeteer-extra-plugin-stealth` para evasão de anti-bot.
+QwenBridge usa Playwright por padrão e de forma exclusiva. Cada conta configurada abre uma sessão real de browser para capturar cookies e headers anti-bot (`bx-ua`, `bx-umidtoken`, `bx-v`).
 
 ```env
-PLAYWRIGHT_ENABLED=true   # padrão
 PLAYWRIGHT_HEADLESS=true
 PLAYWRIGHT_BROWSER=chromium
 ```
@@ -70,14 +63,6 @@ PLAYWRIGHT_BROWSER=chromium
 **Requisitos:**
 ```bash
 npx playwright install chromium
-```
-
-### HTTP (legado)
-
-Login direto via API do Qwen. Mais rápido mas sem headers de fingerprint.
-
-```env
-PLAYWRIGHT_ENABLED=false
 ```
 
 ---
@@ -193,7 +178,6 @@ npm run test:live  # Só reais/live
 
 | Variável | Default | Descrição |
 |---|---|---|
-| `PLAYWRIGHT_ENABLED` | `true` | Usa Playwright para capturar headers reais. |
 | `PLAYWRIGHT_HEADLESS` | `true` | Browser headless (sem janela). |
 | `PLAYWRIGHT_BROWSER` | `chromium` | Navegador: `chromium`, `chrome`, `edge`. |
 
@@ -201,10 +185,8 @@ npm run test:live  # Só reais/live
 
 | Variável | Default | Descrição |
 |---|---|---|
-| `USER_AGENT` | Chrome 145 macOS | User-Agent das chamadas HTTP. |
-| `QWEN_BX_UA` | Token real | Header `bx-ua` de fingerprint. |
-| `QWEN_BX_UMIDTOKEN` | Token real | Header `bx-umidtoken` de fingerprint. |
-| `QWEN_BX_V` | `2.5.36` | Versão `bx-v`. |
+| `USER_AGENT` | Chrome 149 Windows | User-Agent fallback para Playwright/downloads. |
+| `QWEN_BX_V` | `2.5.36` | Versão `bx-v` fallback; `bx-ua` e `bx-umidtoken` são capturados do browser. |
 
 ### Delays e retry
 
@@ -237,8 +219,7 @@ npm run test:live  # Só reais/live
 
 | Variável | Default | Descrição |
 |---|---|---|
-| `CONTEXT_MODE` | `thread-native` | `thread-native` ou `full-history`. |
-| `CONTEXT_SUMMARIZATION_ENABLED` | `true` | Sumarização de mensagens antigas. |
+| `CONTEXT_SUMMARIZATION_ENABLED` | `true` | Sumarização do contexto thread-native. |
 | `CONTEXT_SUMMARIZATION_MODEL` | `qwen3.5-flash` | Modelo para sumarização. |
 
 ### Observabilidade
@@ -405,11 +386,11 @@ QwenBridge/
 │   │   ├── anthropic/    # Anthropic API compatible
 │   │   └── chat/         # Chat completions, streaming
 │   ├── services/
-│   │   ├── auth-http.ts  # HTTP auth
-│   │   ├── playwright.ts # Playwright + stealth
-│   │   └── qwen.ts       # Qwen API integration
-│   ├── tools/            # Tool parser, linter, registry
-│   └── utils/            # JSON parser, context truncation
+│   │   ├── auth-playwright.ts # Headers Playwright + mock de testes
+│   │   ├── playwright.ts      # Playwright + stealth
+│   │   └── qwen.ts            # Qwen API integration
+│   ├── tools/                 # Tool-call instructions, parser e schema
+│   └── utils/                 # JSON parser, token estimation, context summary
 ├── data/                 # SQLite, profiles (gitignored)
 ├── Dockerfile
 ├── docker-compose.yml
@@ -436,7 +417,7 @@ QwenBridge/
 
 | Problema | Solução |
 |---|---|
-| Anti-bot bloqueando | Ative Playwright (`PLAYWRIGHT_ENABLED=true`) |
+| Anti-bot bloqueando | Refaça login da conta e verifique se o Playwright está capturando headers |
 | Quota exceeded | Adicione mais contas ou espere cooldown |
 | Timeout em requests grandes | Aumente `TOTAL_REQUEST_TIMEOUT` |
 | Playwright não inicia | Execute `npx playwright install chromium` |

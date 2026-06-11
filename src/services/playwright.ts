@@ -621,14 +621,30 @@ export async function refreshHeaders(accountId: string): Promise<void> {
 
 // ─── Cleanup ──────────────────────────────────────────────────────────────────
 
+function isPlaywrightAlreadyClosedError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes("Target page, context or browser has been closed") ||
+    message.includes("Browser has been closed") ||
+    message.includes("Target closed")
+  );
+}
+
 export async function closePlaywrightForAccount(
   accountId: string,
 ): Promise<void> {
   const release = await getAccountMutex(accountId).acquire();
   try {
     const acctContext = accountContexts.get(accountId);
-    if (acctContext) {
+    if (!acctContext) return;
+
+    try {
       await acctContext.close();
+    } catch (error) {
+      if (!isPlaywrightAlreadyClosedError(error)) {
+        throw error;
+      }
+    } finally {
       accountContexts.delete(accountId);
       accountPages.delete(accountId);
       headerCaches.delete(accountId);
@@ -641,7 +657,8 @@ export async function closePlaywrightForAccount(
 }
 
 export async function closeAllPlaywright(): Promise<void> {
-  for (const accountId of accountContexts.keys()) {
+  const accountIds = Array.from(accountContexts.keys());
+  for (const accountId of accountIds) {
     await closePlaywrightForAccount(accountId);
   }
 }

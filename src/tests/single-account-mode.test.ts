@@ -13,7 +13,7 @@ import { app } from "../api/server.js";
 import { getDatabase } from "../core/database.ts";
 import { invalidateAccountsCache } from "../core/accounts.ts";
 
-test("Chat Completions works with the global HTTP auth session when no accounts are configured", async () => {
+test("Chat Completions works with mock auth when no accounts are configured", async () => {
   const originalFetch = globalThis.fetch;
   const db = getDatabase();
   const existing = db.prepare("SELECT id, email, password FROM accounts").all();

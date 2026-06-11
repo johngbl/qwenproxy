@@ -4,7 +4,10 @@
  */
 
 import { Context } from "hono";
-import { getBasicHeaders, isAuthMockEnabled } from "../services/auth-http.ts";
+import {
+  getBasicHeaders,
+  isAuthMockEnabled,
+} from "../services/auth-playwright.ts";
 import { v4 as uuidv4 } from "uuid";
 import { ValidationError, ServiceUnavailable } from "../core/errors.js";
 import { sendOpenAIError } from "../api/error-helpers.js";

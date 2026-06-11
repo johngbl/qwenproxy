@@ -7,7 +7,7 @@ import "dotenv/config";
 import { deleteChatsForConfiguredAccounts } from "./services/chat-cleanup.ts";
 
 async function run(): Promise<void> {
-  console.log("[DeleteChats] Using HTTP auth");
+  console.log("[DeleteChats] Using Playwright sessions");
 
   const result = await deleteChatsForConfiguredAccounts();
   console.log(
