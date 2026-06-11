@@ -364,9 +364,27 @@ export async function acquireUpstreamStream(
       }
     }
 
-    // Mark anti-bot blocked accounts for cooldown to avoid retrying them
+    // Mark anti-bot blocked accounts for cooldown and reset profile in background
     if (isAntiBotError(lastError)) {
       markAccountRateLimited(accountId, 10 * 60 * 1000, "AntiBot");
+      void (async () => {
+        try {
+          const { refreshHeadersWithProfileReset } =
+            await import("../../services/playwright.ts");
+          console.log(
+            `[Playwright] Background profile reset for ${accountEmail}...`,
+          );
+          await refreshHeadersWithProfileReset(accountId);
+          console.log(
+            `[Playwright] Background profile reset complete for ${accountEmail}.`,
+          );
+        } catch (resetErr) {
+          console.warn(
+            `[Playwright] Background profile reset failed for ${accountEmail}:`,
+            (resetErr as Error).message,
+          );
+        }
+      })();
     }
 
     if (isToolcallDebugEnabled()) {
@@ -719,7 +737,7 @@ async function tryCreateStreamWithRetry(
       return { success: false, error: err };
     }
 
-    // Anti-bot error: try header refresh, then profile reset if needed
+    // Anti-bot error: mark cooldown and rotate immediately
     const isAntiBot =
       isAntiBotError(err) ||
       err.message?.includes("anti-bot") ||
@@ -727,33 +745,10 @@ async function tryCreateStreamWithRetry(
       err.message?.includes("RGV587_ERROR");
 
     if (isAntiBot) {
-      try {
-        const {
-          refreshHeaders,
-          refreshHeadersWithProfileReset,
-          isPlaywrightInitialized,
-        } = await import("../../services/playwright.ts");
-        if (isPlaywrightInitialized(accountId)) {
-          console.log(
-            `[Playwright] Refreshing headers for ${accountEmail} due to anti-bot...`,
-          );
-          await refreshHeaders(accountId);
-
-          if (
-            err.message?.includes("FAIL_SYS_USER_VALIDATE") ||
-            err.message?.includes("_____tmd_____")
-          ) {
-            console.warn(
-              `[Playwright] Anti-bot challenge persists for ${accountEmail}; resetting Playwright profile...`,
-            );
-            await refreshHeadersWithProfileReset(accountId);
-          }
-        }
-      } catch (refreshErr) {
-        console.warn(
-          `[Playwright] Header refresh failed: ${refreshErr instanceof Error ? refreshErr.message : refreshErr}`,
-        );
-      }
+      console.warn(
+        `[Chat] Anti-bot blocked ${accountEmail}; rotating to next account.`,
+      );
+      return { success: false, error: err };
     }
 
     console.warn(
