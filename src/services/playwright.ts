@@ -8,6 +8,7 @@
 
 import { chromium, BrowserContext, Page } from "playwright";
 import path from "path";
+import fs from "fs";
 import crypto from "crypto";
 import { QwenAccount } from "../core/accounts.ts";
 import { config } from "../core/config.ts";
@@ -614,6 +615,50 @@ export async function refreshHeaders(accountId: string): Promise<void> {
   const release = await getAccountMutex(accountId).acquire();
   try {
     await refreshHeadersInternal(accountId);
+  } finally {
+    release();
+  }
+}
+
+function isPlaywrightProfileCorruptedError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes("Target page, context or browser has been closed") ||
+    message.includes("Browser has been closed") ||
+    message.includes("Target closed") ||
+    message.includes("Session closed") ||
+    message.includes("Connection closed")
+  );
+}
+
+async function resetPlaywrightProfile(accountId: string): Promise<void> {
+  await closePlaywrightForAccount(accountId);
+  const profilePath = path.resolve("data", "qwen_profiles", accountId);
+  try {
+    fs.rmSync(profilePath, { recursive: true, force: true });
+  } catch (error) {
+    if (!isPlaywrightProfileCorruptedError(error)) {
+      console.warn(
+        `[Playwright] Failed to delete profile for ${accountId}:`,
+        (error as Error).message,
+      );
+    }
+  }
+}
+
+export async function refreshHeadersWithProfileReset(
+  accountId: string,
+): Promise<void> {
+  const release = await getAccountMutex(accountId).acquire();
+  try {
+    await resetPlaywrightProfile(accountId);
+    const accounts = await import("../core/accounts.ts");
+    const account = accounts.getAccountCredentials(accountId);
+    if (!account) {
+      throw new Error(`Account ${accountId} not found during profile reset`);
+    }
+
+    await initPlaywrightForAccount(account);
   } finally {
     release();
   }

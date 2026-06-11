@@ -710,7 +710,7 @@ async function tryCreateStreamWithRetry(
       return { success: false, error: err };
     }
 
-    // Anti-bot error: refresh Playwright headers if available
+    // Anti-bot error: try header refresh, then profile reset if needed
     const isAntiBot =
       err.message?.includes("anti-bot") ||
       err.message?.includes("FAIL_SYS_USER_VALIDATE") ||
@@ -718,13 +718,26 @@ async function tryCreateStreamWithRetry(
 
     if (isAntiBot) {
       try {
-        const { refreshHeaders, isPlaywrightInitialized } =
-          await import("../../services/playwright.ts");
+        const {
+          refreshHeaders,
+          refreshHeadersWithProfileReset,
+          isPlaywrightInitialized,
+        } = await import("../../services/playwright.ts");
         if (isPlaywrightInitialized(accountId)) {
           console.log(
             `[Playwright] Refreshing headers for ${accountEmail} due to anti-bot...`,
           );
           await refreshHeaders(accountId);
+
+          if (
+            err.message?.includes("FAIL_SYS_USER_VALIDATE") ||
+            err.message?.includes("_____tmd_____")
+          ) {
+            console.warn(
+              `[Playwright] Anti-bot challenge persists for ${accountEmail}; resetting Playwright profile...`,
+            );
+            await refreshHeadersWithProfileReset(accountId);
+          }
         }
       } catch (refreshErr) {
         console.warn(

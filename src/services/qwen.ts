@@ -1414,84 +1414,103 @@ export async function createQwenStream(
       logger.warn(
         "[Qwen] TMD challenge detected in 200 OK, refreshing headers and retrying...",
       );
-      try {
-        const { headers: freshHeaders } = await getQwenHeaders(true, accountId);
-        await sleep(500 + Math.floor(Math.random() * 1000));
 
-        const retryController = new AbortController();
-        const retryTimeoutId = setTimeout(
-          () => retryController.abort(),
-          dynamicTimeoutMs,
-        );
-        const retryResponse = await fetch(url, {
-          method: "POST",
-          headers: buildCapturedQwenHeaders(freshHeaders, {
-            chatSessionId,
-            extra: { "x-accel-buffering": "no" },
-          }),
-          body: payloadJson,
-          signal: retryController.signal,
-        });
-        clearTimeout(retryTimeoutId);
+      const tmdRecoveryStrategies: Array<{
+        name: string;
+        apply: () => Promise<{ headers: Record<string, string> }>;
+      }> = [
+        {
+          name: "refresh headers",
+          apply: () => getQwenHeaders(true, accountId),
+        },
+        {
+          name: "reset Playwright profile",
+          apply: async () => {
+            const { refreshHeadersWithProfileReset } =
+              await import("./playwright.ts");
+            await refreshHeadersWithProfileReset(accountId ?? "global");
+            return getQwenHeaders(false, accountId);
+          },
+        },
+      ];
 
-        const retryContentType =
-          retryResponse.headers.get("content-type") || "";
-        if (
-          retryResponse.ok &&
-          retryContentType.includes("text/event-stream") &&
-          retryResponse.body
-        ) {
-          return {
-            stream: retryResponse.body,
-            headers: freshHeaders,
-            uiSessionId: chatSessionId || "",
-            controller: retryController,
-            accountId: accountId ?? "global",
-            createdNewChat,
-          };
-        }
+      for (const strategy of tmdRecoveryStrategies) {
+        try {
+          logger.warn(`[Qwen] TMD recovery strategy: ${strategy.name}`);
+          const { headers: freshHeaders } = await strategy.apply();
+          await sleep(500 + Math.floor(Math.random() * 1000));
 
-        const retryPeek = await retryResponse.text().catch(() => "");
-        if (
-          retryPeek.includes("FAIL_SYS_USER_VALIDATE") ||
-          retryPeek.includes("_____tmd_____")
-        ) {
-          throw withCreatedChatMetadata(
-            new QwenUpstreamError(
-              "Qwen TMD challenge persists after header refresh. Account may need manual captcha.",
-              "FAIL_SYS_USER_VALIDATE",
-              403,
-            ),
+          const retryController = new AbortController();
+          const retryTimeoutId = setTimeout(
+            () => retryController.abort(),
+            dynamicTimeoutMs,
           );
-        }
+          const retryResponse = await fetch(url, {
+            method: "POST",
+            headers: buildCapturedQwenHeaders(freshHeaders, {
+              chatSessionId,
+              extra: { "x-accel-buffering": "no" },
+            }),
+            body: payloadJson,
+            signal: retryController.signal,
+          });
+          clearTimeout(retryTimeoutId);
 
-        // Retry returned something else — fall through to normal error handling
-        if (retryResponse.ok && retryPeek) {
-          throw withCreatedChatMetadata(
-            parseQwenJsonError(retryPeek, retryResponse.status, accountId) ??
-              new QwenUpstreamError(
-                `Qwen returned non-stream JSON after TMD retry: ${retryPeek.substring(0, 300)}`,
-                "NonStreamJsonResponse",
-                502,
-              ),
-          );
+          const retryContentType =
+            retryResponse.headers.get("content-type") || "";
+          if (
+            retryResponse.ok &&
+            retryContentType.includes("text/event-stream") &&
+            retryResponse.body
+          ) {
+            return {
+              stream: retryResponse.body,
+              headers: freshHeaders,
+              uiSessionId: chatSessionId || "",
+              controller: retryController,
+              accountId: accountId ?? "global",
+              createdNewChat,
+            };
+          }
+
+          const retryPeek = await retryResponse.text().catch(() => "");
+          if (
+            retryPeek.includes("FAIL_SYS_USER_VALIDATE") ||
+            retryPeek.includes("_____tmd_____")
+          ) {
+            logger.warn(
+              `[Qwen] TMD challenge still present after ${strategy.name}`,
+            );
+            continue;
+          }
+
+          if (retryResponse.ok && retryPeek) {
+            throw withCreatedChatMetadata(
+              parseQwenJsonError(retryPeek, retryResponse.status, accountId) ??
+                new QwenUpstreamError(
+                  `Qwen returned non-stream JSON after TMD retry: ${retryPeek.substring(0, 300)}`,
+                  "NonStreamJsonResponse",
+                  502,
+                ),
+            );
+          }
+        } catch (retryErr) {
+          if (
+            retryErr instanceof QwenUpstreamError ||
+            retryErr instanceof RetryableQwenStreamError ||
+            retryErr instanceof QwenSessionExpiredError
+          ) {
+            throw withCreatedChatMetadata(retryErr);
+          }
+          logger.error(`[Qwen] TMD strategy failed: ${strategy.name}`, {
+            error: (retryErr as Error).message,
+          });
         }
-      } catch (retryErr) {
-        if (
-          retryErr instanceof QwenUpstreamError ||
-          retryErr instanceof RetryableQwenStreamError ||
-          retryErr instanceof QwenSessionExpiredError
-        ) {
-          throw withCreatedChatMetadata(retryErr);
-        }
-        logger.error("[Qwen] TMD retry failed:", {
-          error: (retryErr as Error).message,
-        });
       }
 
       throw withCreatedChatMetadata(
         new QwenUpstreamError(
-          "Qwen TMD anti-bot challenge detected. Headers were refreshed but the challenge persists.",
+          "Qwen TMD anti-bot challenge detected. Headers were refreshed and profile reset, but the challenge persists.",
           "FAIL_SYS_USER_VALIDATE",
           403,
         ),
