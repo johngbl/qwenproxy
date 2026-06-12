@@ -623,8 +623,8 @@ async function captureHeaders(accountId: string): Promise<void> {
         try {
           await page.focus(inputSelector);
           await page.fill(inputSelector, "");
-          await page.type(inputSelector, "a", { delay: 20 });
-          await sleep(800);
+          await page.type(inputSelector, "a", { delay: 100 });
+          await sleep(2000);
 
           // Try to click send button
           const sendSelectors = [
@@ -633,11 +633,22 @@ async function captureHeaders(accountId: string): Promise<void> {
             "button.send-button",
           ];
 
+          let clicked = false;
           for (const selector of sendSelectors) {
             try {
               const btn = await page.$(selector);
               if (btn && (await btn.isVisible())) {
-                await btn.click({ force: true, delay: 50 });
+                // DOM click first (more faithful to real user interaction)
+                await page.evaluate((sel) => {
+                  const element = document.querySelector(sel) as HTMLElement;
+                  if (element) {
+                    element.focus();
+                    element.click();
+                  }
+                }, selector);
+
+                await btn.click({ force: true, delay: 50 }).catch(() => {});
+                clicked = true;
                 break;
               }
             } catch {
@@ -645,8 +656,10 @@ async function captureHeaders(accountId: string): Promise<void> {
             }
           }
 
-          // Fallback to Enter key
-          await page.keyboard.press("Enter");
+          if (!clicked) {
+            // Fallback to Enter key
+            await page.keyboard.press("Enter");
+          }
         } catch (err) {
           console.warn(`[Playwright] Error triggering request: ${err}`);
           clearTimeout(timeout);

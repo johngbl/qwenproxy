@@ -3,6 +3,7 @@ import type {
   ResponsesResponse,
   ResponsesOutputMessage,
   ResponsesOutputFunctionCall,
+  ResponsesOutputReasoning,
   ResponsesOutputContentPart,
   ResponsesUsage,
   ResponsesStreamEvent,
@@ -28,11 +29,13 @@ import type {
 export interface ResponsesStreamState {
   responseId: string;
   messageId: string;
+  reasoningId: string;
   requestModel: string;
   outputIndex: number;
   contentIndex: number;
-  currentBlockType: "text" | "function_call" | null;
+  currentBlockType: "text" | "function_call" | "reasoning" | null;
   accumulatedText: string;
+  accumulatedReasoning: string;
   accumulatedToolCalls: Map<
     number,
     {
@@ -42,7 +45,11 @@ export interface ResponsesStreamState {
       arguments: string;
     }
   >;
-  completedOutput: (ResponsesOutputMessage | ResponsesOutputFunctionCall)[];
+  completedOutput: (
+    | ResponsesOutputMessage
+    | ResponsesOutputFunctionCall
+    | ResponsesOutputReasoning
+  )[];
   inputTokens: number;
 }
 
@@ -53,11 +60,13 @@ export function createStreamState(
   return {
     responseId,
     messageId: `msg_${crypto.randomBytes(16).toString("hex")}`,
+    reasoningId: `rs_${crypto.randomBytes(16).toString("hex")}`,
     requestModel,
     outputIndex: 0,
     contentIndex: 0,
     currentBlockType: null,
     accumulatedText: "",
+    accumulatedReasoning: "",
     accumulatedToolCalls: new Map(),
     completedOutput: [],
     inputTokens: 0,
@@ -84,6 +93,44 @@ export function processChatChunk(
 
   const delta = choice.delta ?? {};
 
+  // Reasoning content (thinking/reasoning from Qwen models)
+  if (delta.reasoning_content) {
+    // Close non-reasoning block if active
+    if (
+      state.currentBlockType === "text" ||
+      state.currentBlockType === "function_call"
+    ) {
+      if (state.currentBlockType === "text") {
+        events.push(...closeCurrentText(state));
+      } else if (state.currentBlockType === "function_call") {
+        events.push(...closeCurrentFunctionCall(state));
+      }
+    }
+
+    // Start reasoning block if needed
+    if (state.currentBlockType !== "reasoning") {
+      const reasoningItem: ResponsesOutputReasoning = {
+        type: "reasoning",
+        id: state.reasoningId,
+        summary: [],
+      };
+      events.push({
+        type: "response.output_item.added",
+        output_index: state.outputIndex,
+        item: reasoningItem,
+      });
+      state.currentBlockType = "reasoning";
+    }
+
+    state.accumulatedReasoning += delta.reasoning_content;
+    events.push({
+      type: "response.reasoning_summary_text.delta",
+      item_id: state.reasoningId,
+      output_index: state.outputIndex,
+      delta: delta.reasoning_content,
+    });
+  }
+
   // Text content
   if (delta.content) {
     // Start text block if needed
@@ -91,6 +138,8 @@ export function processChatChunk(
       // Close previous block if exists
       if (state.currentBlockType === "function_call") {
         events.push(...closeCurrentFunctionCall(state));
+      } else if (state.currentBlockType === "reasoning") {
+        events.push(...closeCurrentReasoning(state));
       }
 
       // Emit output_item.added for message
@@ -195,6 +244,9 @@ export function processChatChunk(
   // Finish reason
   if (choice.finish_reason) {
     // Close current block
+    if (state.currentBlockType === "reasoning") {
+      events.push(...closeCurrentReasoning(state));
+    }
     if (state.currentBlockType === "text") {
       events.push(...closeCurrentText(state));
     } else if (state.currentBlockType === "function_call") {
@@ -304,14 +356,57 @@ function closeCurrentFunctionCall(
 }
 
 /**
+ * Close the current reasoning block.
+ */
+function closeCurrentReasoning(
+  state: ResponsesStreamState,
+): ResponsesStreamEvent[] {
+  const events: ResponsesStreamEvent[] = [];
+
+  if (state.currentBlockType !== "reasoning") return events;
+
+  const reasoningItem: ResponsesOutputReasoning = {
+    type: "reasoning",
+    id: state.reasoningId,
+    summary: [{ type: "summary_text", text: state.accumulatedReasoning }],
+  };
+  events.push({
+    type: "response.output_item.done",
+    output_index: state.outputIndex,
+    item: reasoningItem,
+  });
+  state.completedOutput.push(reasoningItem);
+
+  state.currentBlockType = null;
+  state.outputIndex++;
+
+  return events;
+}
+
+/**
  * Build the final output items from accumulated stream state.
  */
 export function buildFinalOutput(
   state: ResponsesStreamState,
-): (ResponsesOutputMessage | ResponsesOutputFunctionCall)[] {
-  const output: (ResponsesOutputMessage | ResponsesOutputFunctionCall)[] = [
-    ...state.completedOutput,
-  ];
+): (
+  | ResponsesOutputMessage
+  | ResponsesOutputFunctionCall
+  | ResponsesOutputReasoning
+)[] {
+  const output: (
+    | ResponsesOutputMessage
+    | ResponsesOutputFunctionCall
+    | ResponsesOutputReasoning
+  )[] = [...state.completedOutput];
+
+  // Add an open reasoning block if the stream ended without a finish_reason
+  if (state.currentBlockType === "reasoning" && state.accumulatedReasoning) {
+    output.push({
+      type: "reasoning",
+      id: state.reasoningId,
+      summary: [{ type: "summary_text", text: state.accumulatedReasoning }],
+    });
+  }
 
   // Add an open text block if the stream ended without a finish_reason
   if (state.currentBlockType === "text" && state.accumulatedText) {

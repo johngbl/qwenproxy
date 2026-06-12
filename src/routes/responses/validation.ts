@@ -44,10 +44,25 @@ const FunctionCallOutputInputSchema = z.object({
   role: z.literal("tool").optional(),
 });
 
-const InputMessageSchema = z.union([
+// Items with explicit type field
+const TypedInputSchema = z.union([
   FunctionCallInputSchema,
   FunctionCallOutputInputSchema,
+]);
+
+// Fallback: accept any object with a type field (e.g. reasoning items)
+// This prevents rejection of input types we don't explicitly handle
+const UnknownTypedInputSchema = z
+  .object({
+    type: z.string(),
+  })
+  .passthrough();
+
+// Messages can have type: "message" or no type at all (inferred from role)
+const InputMessageSchema = z.union([
+  TypedInputSchema,
   MessageInputSchema,
+  UnknownTypedInputSchema,
 ]);
 
 // Function tool schema
@@ -120,7 +135,10 @@ const ResponsesRequestSchema = z.object({
 export interface ValidationResult {
   valid: boolean;
   error?: string;
-  data?: ResponsesRequest;
+  // Use broader type to accept unknown input item types from clients like Codex
+  data?: Omit<ResponsesRequest, "input"> & {
+    input: string | unknown[];
+  };
 }
 
 export function validateResponsesRequest(body: unknown): ValidationResult {
@@ -128,6 +146,19 @@ export function validateResponsesRequest(body: unknown): ValidationResult {
   if (!result.success) {
     const firstIssue = result.error.issues[0];
     const path = firstIssue.path.join(".");
+    // Log the problematic input for debugging
+    const inputVal = (body as any)?.input;
+    const itemPath = firstIssue.path;
+    let debugInfo = "";
+    if (Array.isArray(inputVal) && itemPath.length >= 2) {
+      const idx = typeof itemPath[1] === "number" ? itemPath[1] : undefined;
+      if (idx !== undefined) {
+        debugInfo = ` | item[${idx}]: ${JSON.stringify(inputVal[idx]).substring(0, 200)}`;
+      }
+    }
+    console.warn(
+      `[Responses] Validation failed: '${path}' — ${firstIssue.message}${debugInfo}`,
+    );
     return {
       valid: false,
       error: `Invalid '${path}': ${firstIssue.message}`,

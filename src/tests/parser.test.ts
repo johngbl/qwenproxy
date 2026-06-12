@@ -34,6 +34,34 @@ const FLAT_TOOLS = [
   },
 ];
 
+const EDIT_FILE_TOOLS = [
+  {
+    type: "function" as const,
+    function: {
+      name: "edit_file",
+      description: "Edit a file",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string" },
+          edits: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                old_text: { type: "string" },
+                new_text: { type: "string" },
+              },
+              required: ["old_text", "new_text"],
+            },
+          },
+        },
+        required: ["path", "edits"],
+      },
+    },
+  },
+];
+
 test("StreamingToolParser: basic tool call", () => {
   const parser = new StreamingToolParser();
 
@@ -261,4 +289,35 @@ test("StreamingToolParser: accepts declared tool names from flat tool definition
     description: "Resume backend analysis",
     prompt: "Analyze all files",
   });
+});
+
+test("StreamingToolParser: parses JSON-stringified nested argument fields", () => {
+  const parser = new StreamingToolParser(EDIT_FILE_TOOLS);
+  const edits = [
+    {
+      old_text:
+        "        const streamState = createStreamState(responseId, requestModel);\n        let completionTokens = 0;\n        let streamError: Error | null = null;",
+      new_text:
+        "        const streamState = createStreamState(responseId, requestModel);\n        let completionTokens = 0;\n        let streamError: Error | null = null;\n        resetTimeout();",
+    },
+  ];
+
+  const result = parser.feed(
+    `<tool_call>${JSON.stringify({
+      name: "edit_file",
+      arguments: {
+        path: "src/routes/responses/index.ts",
+        edits: JSON.stringify(edits),
+      },
+    })}</tool_call>`,
+  );
+
+  assert.strictEqual(result.text, "");
+  assert.strictEqual(result.toolCalls.length, 1);
+  assert.strictEqual(result.toolCalls[0].name, "edit_file");
+  assert.strictEqual(
+    result.toolCalls[0].arguments.path,
+    "src/routes/responses/index.ts",
+  );
+  assert.deepStrictEqual(result.toolCalls[0].arguments.edits, edits);
 });

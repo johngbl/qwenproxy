@@ -141,9 +141,16 @@ export interface ResponsesUsage {
   };
 }
 
+export interface ResponsesOutputReasoning {
+  type: "reasoning";
+  id: string;
+  summary: Array<{ type: "summary_text"; text: string }>;
+}
+
 export type ResponsesOutputItem =
   | ResponsesOutputMessage
-  | ResponsesOutputFunctionCall;
+  | ResponsesOutputFunctionCall
+  | ResponsesOutputReasoning;
 
 export interface ResponsesOutputMessage {
   type: "message";
@@ -222,6 +229,12 @@ export type ResponsesStreamEvent =
       item_id: string;
       output_index: number;
       arguments: string;
+    }
+  | {
+      type: "response.reasoning_summary_text.delta";
+      item_id: string;
+      output_index: number;
+      delta: string;
     }
   | { type: "response.completed"; response: ResponsesResponse }
   | { type: "response.failed"; response: ResponsesResponse }

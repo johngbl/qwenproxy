@@ -749,17 +749,51 @@ export class StreamingToolParser {
     args: Record<string, unknown>,
   ): Record<string, unknown> {
     const toolProperties = this.getToolProperties(this.toolByName.get(name));
+    let normalized = args;
     if (
-      Object.keys(args).length === 1 &&
-      Object.prototype.hasOwnProperty.call(args, "arguments") &&
-      typeof (args as any).arguments === "object" &&
-      (args as any).arguments !== null &&
+      Object.keys(normalized).length === 1 &&
+      Object.prototype.hasOwnProperty.call(normalized, "arguments") &&
+      typeof (normalized as any).arguments === "object" &&
+      (normalized as any).arguments !== null &&
       !Object.prototype.hasOwnProperty.call(toolProperties, "arguments")
     ) {
-      return (args as any).arguments as Record<string, unknown>;
+      normalized = (normalized as any).arguments as Record<string, unknown>;
     }
 
-    return args;
+    return this.coerceJsonLikeArgumentStrings(normalized);
+  }
+
+  private coerceJsonLikeArgumentStrings(
+    args: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const coerced: Record<string, unknown> = { ...args };
+
+    for (const [key, value] of Object.entries(coerced)) {
+      if (typeof value !== "string") continue;
+
+      const trimmed = value.trim();
+      if (
+        !(
+          (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+          (trimmed.startsWith("[") && trimmed.endsWith("]"))
+        )
+      ) {
+        continue;
+      }
+
+      try {
+        coerced[key] = JSON.parse(trimmed);
+        continue;
+      } catch {}
+
+      if (trimmed.startsWith("{")) {
+        try {
+          coerced[key] = robustParseJSON(trimmed);
+        } catch {}
+      }
+    }
+
+    return coerced;
   }
 
   private finalizeSuccessfulToolCall(

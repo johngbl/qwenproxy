@@ -88,11 +88,16 @@ app.post("/v1/responses", async (c) => {
       const readable = new ReadableStream({
         async start(controller) {
           const encoder = new TextEncoder();
+          let streamClosed = false;
           const enqueue = (_event: string, data: any) => {
-            // Responses API SSE format: only data: lines, type field in JSON identifies event
-            controller.enqueue(
-              encoder.encode(`data: ${JSON.stringify(data)}\n\n`),
-            );
+            if (streamClosed) return;
+            try {
+              controller.enqueue(
+                encoder.encode(`data: ${JSON.stringify(data)}\n\n`),
+              );
+            } catch {
+              streamClosed = true;
+            }
           };
 
           const streamState = createStreamState(responseId, requestModel);
@@ -181,9 +186,19 @@ app.post("/v1/responses", async (c) => {
           } catch (error) {
             streamError =
               error instanceof Error ? error : new Error(String(error));
-            console.error("[Responses] Stream error:", streamError.message);
+            // Client disconnect is normal, not an error
+            if (
+              streamError.message?.includes("ERR_INVALID_STATE") ||
+              streamError.message?.includes("aborted") ||
+              streamError.message?.includes("cancelled")
+            ) {
+              streamClosed = true;
+            } else {
+              console.error("[Responses] Stream error:", streamError.message);
+            }
           } finally {
-            // ALWAYS emit final event
+            // ALWAYS emit final event (if stream is still open)
+            if (streamClosed) return;
             try {
               const finalOutput = buildFinalOutput(streamState);
               const finalUsage = buildFinalUsage(streamState, completionTokens);
@@ -230,7 +245,11 @@ app.post("/v1/responses", async (c) => {
             }
 
             // Close the stream
-            controller.close();
+            try {
+              if (!streamClosed) controller.close();
+            } catch {
+              // Already closed
+            }
           }
         },
       });

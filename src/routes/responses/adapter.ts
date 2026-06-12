@@ -5,6 +5,7 @@ import type {
   ResponsesContentPart,
   ResponsesOutputMessage,
   ResponsesOutputFunctionCall,
+  ResponsesOutputReasoning,
   ResponsesUsage,
   ResponsesFunctionTool,
 } from "./types.ts";
@@ -13,6 +14,7 @@ import type {
 interface ChatMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string | null;
+  reasoning_content?: string;
   tool_calls?: ChatToolCall[];
   tool_call_id?: string;
 }
@@ -140,8 +142,12 @@ function extractText(content?: string | ResponsesContentPart[]): string {
 /**
  * Convert Responses API request to OpenAI Chat Completions format.
  */
+type ResponsesRequestInput = {
+  input: string | unknown[];
+} & Omit<ResponsesRequest, "input">;
+
 export function responsesToChatCompletions(
-  req: ResponsesRequest,
+  req: ResponsesRequestInput,
   historyMessages: ChatMessage[] = [],
 ): ChatRequest {
   const messages: ChatMessage[] = [...historyMessages];
@@ -155,22 +161,24 @@ export function responsesToChatCompletions(
   if (typeof req.input === "string") {
     messages.push({ role: "user", content: req.input });
   } else if (Array.isArray(req.input)) {
-    for (const msg of req.input) {
+    for (const raw of req.input) {
+      const msg = raw as Record<string, unknown>;
+
       // Handle function_call_output (tool results)
       if (msg.type === "function_call_output") {
         messages.push({
           role: "tool",
-          content: msg.output ?? extractText(msg.content),
-          tool_call_id: msg.call_id,
+          content: (msg.output as string) ?? extractText(msg.content as any),
+          tool_call_id: msg.call_id as string,
         });
         continue;
       }
 
       // Handle function_call (assistant tool calls from history)
       if (msg.type === "function_call") {
-        const callId = msg.call_id || generateCallId();
-        const name = msg.name || "unknown";
-        const args = msg.arguments || "{}";
+        const callId = (msg.call_id as string) || generateCallId();
+        const name = (msg.name as string) || "unknown";
+        const args = (msg.arguments as string) || "{}";
 
         messages.push({
           role: "assistant",
@@ -186,15 +194,16 @@ export function responsesToChatCompletions(
         continue;
       }
 
+      // Skip items without role (unknown types like reasoning)
       if (!("role" in msg)) continue;
 
-      const msgRole = msg.role;
-      const content = extractText(msg.content);
+      const msgRole = msg.role as string;
+      const content = extractText(msg.content as any);
 
       if (msgRole === "system" || msgRole === "developer") {
         messages.push({ role: "system", content });
       } else {
-        messages.push({ role: msgRole, content });
+        messages.push({ role: msgRole as any, content });
       }
     }
   }
@@ -261,10 +270,28 @@ export function responsesToChatCompletions(
 export function chatCompletionsToResponses(
   chatRes: ChatResponse,
   requestModel: string,
-  originalRequest: ResponsesRequest,
+  originalRequest: ResponsesRequestInput,
 ): ResponsesResponse {
   const choice = chatRes.choices[0];
-  const output: (ResponsesOutputMessage | ResponsesOutputFunctionCall)[] = [];
+  const output: (
+    | ResponsesOutputMessage
+    | ResponsesOutputFunctionCall
+    | ResponsesOutputReasoning
+  )[] = [];
+
+  // Reasoning content → reasoning output item
+  if ((choice.message as any).reasoning_content) {
+    output.push({
+      type: "reasoning",
+      id: `rs_${crypto.randomBytes(16).toString("hex")}`,
+      summary: [
+        {
+          type: "summary_text",
+          text: (choice.message as any).reasoning_content,
+        },
+      ],
+    });
+  }
 
   // Text content → message output item
   if (choice.message.content) {
@@ -333,7 +360,7 @@ export function chatCompletionsToResponses(
 export function buildInProgressResponse(
   responseId: string,
   requestModel: string,
-  originalRequest: ResponsesRequest,
+  originalRequest: ResponsesRequestInput,
 ): ResponsesResponse {
   return {
     id: responseId,
@@ -366,7 +393,11 @@ export function buildInProgressResponse(
  */
 export function finalizeResponse(
   inProgress: ResponsesResponse,
-  output: (ResponsesOutputMessage | ResponsesOutputFunctionCall)[],
+  output: (
+    | ResponsesOutputMessage
+    | ResponsesOutputFunctionCall
+    | ResponsesOutputReasoning
+  )[],
   usage: ResponsesUsage,
 ): ResponsesResponse {
   return {
@@ -383,7 +414,11 @@ export type ChatHistoryMessage = ChatMessage;
  * Convert a Responses API output array into Chat Completions history messages.
  */
 export function responsesOutputToChatMessages(
-  output: (ResponsesOutputMessage | ResponsesOutputFunctionCall)[],
+  output: (
+    | ResponsesOutputMessage
+    | ResponsesOutputFunctionCall
+    | ResponsesOutputReasoning
+  )[],
 ): ChatMessage[] {
   const messages: ChatMessage[] = [];
   const toolCalls: ChatToolCall[] = [];
