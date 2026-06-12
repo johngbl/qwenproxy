@@ -11,6 +11,7 @@ import { app as modelsApp } from "./models.js";
 import { chatCompletions, chatCompletionsStop } from "../routes/chat.js";
 import { uploadFile } from "../routes/upload.js";
 import { anthropicApp } from "../routes/anthropic/index.js";
+import { responsesApp } from "../routes/responses/index.js";
 import { sendOpenAIError } from "./error-helpers.js";
 import { AuthError, NotFoundError } from "../core/errors.js";
 import type { QwenAccount } from "../core/accounts.js";
@@ -91,6 +92,9 @@ app.post("/v1/upload", uploadFile);
 
 // Anthropic API compatible routes
 app.route("", anthropicApp);
+
+// OpenAI Responses API compatible routes
+app.route("", responsesApp);
 
 app.get("/health", async (c) => {
   const status = await watchdog?.getStatus();
