@@ -360,7 +360,7 @@ export async function initPlaywrightForAccount(
       try {
         await acctPage.goto("https://chat.qwen.ai/", {
           waitUntil: "domcontentloaded",
-          timeout: 15000,
+          timeout: config.timeouts.navigation,
         });
         const url = acctPage.url();
         if (url.includes("auth") || url.includes("login")) {
@@ -519,7 +519,9 @@ async function loginViaUi(
     // Wait for email input
     const emailSelector = 'input[type="email"], input[placeholder*="Email"]';
     try {
-      await page.waitForSelector(emailSelector, { timeout: 10000 });
+      await page.waitForSelector(emailSelector, {
+        timeout: config.timeouts.page,
+      });
     } catch {
       if (!page.url().includes("/auth")) return true;
       throw new Error("Email input not found");
@@ -533,7 +535,9 @@ async function loginViaUi(
 
     // Wait for password input
     const passwordSelector = 'input[type="password"]';
-    await page.waitForSelector(passwordSelector, { timeout: 10000 });
+    await page.waitForSelector(passwordSelector, {
+      timeout: config.timeouts.page,
+    });
 
     // Fill password
     console.log(`[Playwright] UI: Filling password...`);
@@ -580,7 +584,7 @@ async function captureHeaders(accountId: string): Promise<void> {
         .unroute("**/api/v2/chat/completions*", routeHandler)
         .catch(() => {});
       done();
-    }, 30000);
+    }, config.timeouts.headers);
 
     const routeHandler = async (route: any, request: any) => {
       if (resolved) {
@@ -691,7 +695,7 @@ async function refreshHeadersInternal(accountId: string): Promise<void> {
       try {
         await page.goto("https://chat.qwen.ai/", {
           waitUntil: "domcontentloaded",
-          timeout: 15000,
+          timeout: config.timeouts.navigation,
         });
         const url = page.url();
         if (url.includes("auth") || url.includes("login")) {

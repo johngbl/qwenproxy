@@ -993,6 +993,57 @@ async function createQwenChatSession(
   }
 }
 
+/**
+ * Fetch existing unused chats from the Qwen API.
+ * Unused chats have title "Nova Conversa" and created_at === updated_at.
+ */
+async function fetchUnusedChats(
+  headers: Record<string, string>,
+): Promise<string[]> {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(
+      () => controller.abort(),
+      config.timeouts.http,
+    );
+
+    const response = await fetch(
+      `${config.qwen.baseUrl}/api/v2/chats/?page=1&exclude_project=true`,
+      {
+        method: "GET",
+        headers: buildCapturedQwenHeaders(headers, {
+          extra: {
+            accept: "application/json, text/plain, */*",
+            "x-request-id": crypto.randomUUID(),
+            source: "web",
+          },
+        }),
+        signal: controller.signal,
+      },
+    );
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) return [];
+
+    const json: any = await response.json().catch(() => null);
+    if (!json?.success || !Array.isArray(json.data)) return [];
+
+    const unused: string[] = [];
+    for (const chat of json.data) {
+      if (
+        chat.title === "Nova Conversa" &&
+        chat.created_at === chat.updated_at
+      ) {
+        unused.push(chat.id);
+      }
+    }
+    return unused;
+  } catch {
+    return [];
+  }
+}
+
 const precreatedChatSessions = new Map<string, string[]>();
 const precreatingChatSessions = new Set<string>();
 const WARM_POOL_LOW_WATER = 3;
@@ -1065,6 +1116,33 @@ async function refillQwenChatPool(
 
   precreatingChatSessions.add(key);
   try {
+    // Reuse existing unused chats before creating new ones
+    const existingIds = new Set(precreatedChatSessions.get(key) ?? []);
+    let reused = 0;
+    try {
+      const unusedChats = await fetchUnusedChats(headers);
+      for (const chatId of unusedChats) {
+        if ((precreatedChatSessions.get(key)?.length ?? 0) >= targetSize) break;
+        if (existingIds.has(chatId)) continue;
+        const current = precreatedChatSessions.get(key) ?? [];
+        current.push(chatId);
+        precreatedChatSessions.set(key, current);
+        existingIds.add(chatId);
+        reused++;
+      }
+      if (reused > 0) {
+        console.log(
+          `[WarmPool] Reused ${reused} existing unused chats for ${accountId || "global"}`,
+        );
+      }
+    } catch (err: any) {
+      console.warn(
+        `[WarmPool] Failed to fetch unused chats for ${accountId || "global"}:`,
+        err.message,
+      );
+    }
+
+    // Create remaining chats needed
     let isFirst = true;
     while ((precreatedChatSessions.get(key)?.length ?? 0) < targetSize) {
       if (!isFirst) {
