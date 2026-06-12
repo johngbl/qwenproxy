@@ -79,7 +79,7 @@ interface AccountHeaderCache {
 }
 
 const headerCaches = new Map<string, AccountHeaderCache>();
-const HEADER_CACHE_TTL = 50 * 60 * 1000; // 50 minutes
+const HEADER_CACHE_TTL = 5 * 60 * 1000; // 5 minutes (matches Alibaba token lifetime)
 const COOKIE_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 const cookieCaches = new Map<string, { cookie: string; timestamp: number }>();
 
@@ -623,8 +623,8 @@ async function captureHeaders(accountId: string): Promise<void> {
         try {
           await page.focus(inputSelector);
           await page.fill(inputSelector, "");
-          await page.type(inputSelector, "a", { delay: 100 });
-          await sleep(1000);
+          await page.type(inputSelector, "a", { delay: 20 });
+          await sleep(800);
 
           // Try to click send button
           const sendSelectors = [

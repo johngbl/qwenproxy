@@ -995,6 +995,7 @@ async function createQwenChatSession(
 
 const precreatedChatSessions = new Map<string, string[]>();
 const precreatingChatSessions = new Set<string>();
+const WARM_POOL_LOW_WATER = 3;
 
 function chatPoolKey(accountId: string | undefined, model: string): string {
   return `${accountId || "global"}:${model}`;
@@ -1024,7 +1025,16 @@ async function acquireNewQwenChatSession(
         model,
         chatId,
       });
-      void scheduleQwenChatPoolRefill(headers, model, accountId);
+
+      // Proactive refill when pool drops below low-water mark
+      if (
+        (pooled?.length ?? 0) < WARM_POOL_LOW_WATER &&
+        !precreatingChatSessions.has(key)
+      ) {
+        void refillQwenChatPool(headers, model, accountId);
+      } else {
+        void scheduleQwenChatPoolRefill(headers, model, accountId);
+      }
       return chatId;
     }
   }
@@ -1055,7 +1065,12 @@ async function refillQwenChatPool(
 
   precreatingChatSessions.add(key);
   try {
+    let isFirst = true;
     while ((precreatedChatSessions.get(key)?.length ?? 0) < targetSize) {
+      if (!isFirst) {
+        await sleep(800 + Math.floor(Math.random() * 2200));
+      }
+      isFirst = false;
       const chatId = await createQwenChatSession(headers, model);
       const current = precreatedChatSessions.get(key) ?? [];
       current.push(chatId);
