@@ -6,14 +6,20 @@
  * Captures real browser headers (bx-ua, bx-umidtoken) per account.
  */
 
-import { chromium, BrowserContext, Page } from "playwright";
+import { chromium, type BrowserContext, type Page } from "playwright";
 import path from "path";
 import fs from "fs";
 import crypto from "crypto";
-import { QwenAccount } from "../core/accounts.ts";
+import type { QwenAccount } from "../core/accounts.ts";
 import { config } from "../core/config.ts";
 import { maskEmail } from "../core/logger.ts";
 import { Mutex } from "../core/mutex.ts";
+import {
+  clearFingerprintCache,
+  getFingerprintProfile,
+  type FingerprintProfile,
+} from "./fingerprint.ts";
+import { subtlePageActivity } from "./human-behavior.ts";
 
 // Try to import playwright-extra and stealth, fallback to regular playwright
 let chromiumWithStealth: typeof chromium | null = null;
@@ -82,11 +88,20 @@ const headerCaches = new Map<string, AccountHeaderCache>();
 const HEADER_CACHE_TTL = 5 * 60 * 1000; // 5 minutes (matches Alibaba token lifetime)
 const COOKIE_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 const cookieCaches = new Map<string, { cookie: string; timestamp: number }>();
+const lastAccountActivity = new Map<string, number>();
+const lastKeepAliveNavigation = new Map<string, number>();
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-function getStealthScript(): string {
+function touchAccountActivity(accountId: string): void {
+  lastAccountActivity.set(accountId, Date.now());
+}
+
+function getStealthScript(profile: FingerprintProfile): string {
+  const profileJson = JSON.stringify(profile).replace(/</g, "\\u003c");
   return `
+    const __qwenFingerprint = ${profileJson};
+
     // navigator.webdriver
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
     delete navigator.__proto__.webdriver;
@@ -131,19 +146,57 @@ function getStealthScript(): string {
       },
     });
 
+    // identity
+    Object.defineProperty(navigator, 'userAgent', { get: () => __qwenFingerprint.userAgent });
+    Object.defineProperty(navigator, 'appVersion', { get: () => __qwenFingerprint.appVersion });
+
     // languages
-    Object.defineProperty(navigator, 'languages', { get: () => ['pt-BR', 'pt', 'en-US', 'en'] });
+    Object.defineProperty(navigator, 'languages', { get: () => __qwenFingerprint.languages });
+    Object.defineProperty(navigator, 'language', { get: () => __qwenFingerprint.locale });
 
     // hardware
-    Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
-    Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
-    Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
+    Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => __qwenFingerprint.hardwareConcurrency });
+    Object.defineProperty(navigator, 'deviceMemory', { get: () => __qwenFingerprint.deviceMemory });
+    Object.defineProperty(navigator, 'platform', { get: () => __qwenFingerprint.platform });
     Object.defineProperty(navigator, 'maxTouchPoints', { get: () => 0 });
     Object.defineProperty(navigator, 'vendor', { get: () => 'Google Inc.' });
 
+    if ('userAgentData' in navigator) {
+      Object.defineProperty(navigator, 'userAgentData', {
+        get: () => ({
+          brands: __qwenFingerprint.brands,
+          mobile: false,
+          platform: 'Windows',
+          getHighEntropyValues: async (hints) => {
+            const values = {
+              architecture: 'x86',
+              bitness: '64',
+              brands: __qwenFingerprint.brands,
+              fullVersionList: __qwenFingerprint.fullVersionList,
+              mobile: false,
+              model: '',
+              platform: 'Windows',
+              platformVersion: __qwenFingerprint.platformVersion,
+              uaFullVersion: __qwenFingerprint.chromeVersion,
+              wow64: false,
+            };
+            return hints.reduce((acc, hint) => {
+              if (hint in values) acc[hint] = values[hint];
+              return acc;
+            }, {});
+          },
+          toJSON: () => ({
+            brands: __qwenFingerprint.brands,
+            mobile: false,
+            platform: 'Windows',
+          }),
+        }),
+      });
+    }
+
     // screen
-    Object.defineProperty(screen, 'colorDepth', { get: () => 24 });
-    Object.defineProperty(screen, 'pixelDepth', { get: () => 24 });
+    Object.defineProperty(screen, 'colorDepth', { get: () => __qwenFingerprint.colorDepth });
+    Object.defineProperty(screen, 'pixelDepth', { get: () => __qwenFingerprint.pixelDepth });
 
     // permissions
     const originalQuery = window.navigator.permissions.query;
@@ -152,11 +205,11 @@ function getStealthScript(): string {
         ? Promise.resolve({ state: Notification.permission })
         : originalQuery(parameters);
 
-    // WebGL - consistent with Windows/Intel
+    // WebGL - consistent per account
     const getParameter = WebGLRenderingContext.prototype.getParameter;
     WebGLRenderingContext.prototype.getParameter = function(parameter) {
-      if (parameter === 37445) return 'Google Inc. (Intel)';
-      if (parameter === 37446) return 'ANGLE (Intel, Intel(R) UHD Graphics 630, OpenGL 4.5)';
+      if (parameter === 37445) return __qwenFingerprint.webglVendor;
+      if (parameter === 37446) return __qwenFingerprint.webglRenderer;
       return getParameter.apply(this, arguments);
     };
 
@@ -227,6 +280,7 @@ export async function getBasicHeaders(accountId: string): Promise<{
   // Acquire mutex to prevent concurrent browser access
   const release = await getAccountMutex(accountId).acquire();
   try {
+    touchAccountActivity(accountId);
     // Get real user agent from browser
     let userAgent = config.auth.userAgent;
     try {
@@ -268,6 +322,7 @@ export async function getBasicHeaders(accountId: string): Promise<{
     // Read cookie AFTER all refreshes (re-login may have updated it)
     const cookie = await getCookies(accountId);
 
+    touchAccountActivity(accountId);
     return {
       cookie,
       userAgent,
@@ -303,6 +358,7 @@ export async function initPlaywrightForAccount(
     }
 
     const profilePath = path.resolve("data", "qwen_profiles", account.id);
+    const fingerprint = getFingerprintProfile(account.id);
     const { engine, channel } = resolveBrowserEngine(browserType);
 
     console.log(
@@ -315,8 +371,16 @@ export async function initPlaywrightForAccount(
     const acctContext = await engineToUse.launchPersistentContext(profilePath, {
       headless,
       channel,
-      userAgent:
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
+      userAgent: fingerprint.userAgent,
+      locale: fingerprint.locale,
+      timezoneId: fingerprint.timezoneId,
+      viewport: fingerprint.viewport,
+      screen: fingerprint.viewport,
+      extraHTTPHeaders: {
+        "sec-ch-ua": fingerprint.secChUa,
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+      },
       ignoreDefaultArgs: ["--enable-automation"],
       args: [
         "--disable-blink-features=AutomationControlled",
@@ -327,7 +391,7 @@ export async function initPlaywrightForAccount(
         "--no-sandbox",
         "--disable-dev-shm-usage",
         "--disable-gpu",
-        "--window-size=1920,1080",
+        `--window-size=${fingerprint.viewport.width},${fingerprint.viewport.height}`,
         "--disable-extensions",
         "--disable-background-networking",
         "--disable-sync",
@@ -338,11 +402,12 @@ export async function initPlaywrightForAccount(
 
     try {
       // Comprehensive stealth scripts for anti-bot evasion
-      await acctContext.addInitScript(getStealthScript());
+      await acctContext.addInitScript(getStealthScript(fingerprint));
 
       const acctPage = await acctContext.newPage();
       accountContexts.set(account.id, acctContext);
       accountPages.set(account.id, acctPage);
+      touchAccountActivity(account.id);
 
       // Check if already logged in
       const cookies = await acctContext.cookies();
@@ -387,6 +452,7 @@ export async function initPlaywrightForAccount(
 
       // Capture headers by navigating and intercepting
       await captureHeaders(account.id);
+      touchAccountActivity(account.id);
     } catch (error) {
       accountPages.delete(account.id);
       accountContexts.delete(account.id);
@@ -568,6 +634,7 @@ async function captureHeaders(accountId: string): Promise<void> {
   const page = accountPages.get(accountId);
   if (!page) return;
 
+  touchAccountActivity(accountId);
   const cache = getHeaderCache(accountId);
 
   return new Promise<void>((resolve) => {
@@ -602,6 +669,7 @@ async function captureHeaders(accountId: string): Promise<void> {
         "user-agent": reqHeaders["user-agent"] || "",
       };
       cache.lastRefresh = Date.now();
+      touchAccountActivity(accountId);
 
       console.log(`[Playwright] Headers captured for ${accountId}`);
 
@@ -687,6 +755,7 @@ async function refreshHeadersInternal(accountId: string): Promise<void> {
   const cache = getHeaderCache(accountId);
   if (cache.refreshInProgress) return;
 
+  touchAccountActivity(accountId);
   cache.refreshInProgress = true;
   try {
     // Check if session is expired before capturing headers
@@ -724,6 +793,7 @@ async function refreshHeadersInternal(accountId: string): Promise<void> {
 
     await captureHeaders(accountId);
   } finally {
+    touchAccountActivity(accountId);
     cache.refreshInProgress = false;
   }
 }
@@ -796,6 +866,52 @@ export async function refreshHeadersWithProfileReset(
   }
 }
 
+// ─── Keep Alive ───────────────────────────────────────────────────────────────
+
+export function getActivePlaywrightAccountIds(): string[] {
+  return Array.from(accountPages.keys());
+}
+
+export async function keepAlivePlaywrightAccount(
+  accountId: string,
+): Promise<boolean> {
+  const mutex = accountMutexes.get(accountId);
+  if (!mutex?.isIdle()) return false;
+
+  const lastActivity = lastAccountActivity.get(accountId) ?? 0;
+  if (Date.now() - lastActivity < config.sessionKeeper.idleMs) return false;
+
+  const release = await mutex.acquire(2_000).catch(() => null);
+  if (!release) return false;
+
+  try {
+    const page = accountPages.get(accountId);
+    if (!page || page.isClosed()) return false;
+
+    const now = Date.now();
+    const currentUrl = page.url();
+    const lastNavigation = lastKeepAliveNavigation.get(accountId) ?? 0;
+    const shouldNavigate =
+      !currentUrl.includes("chat.qwen.ai") ||
+      now - lastNavigation > config.sessionKeeper.navigationIntervalMs;
+
+    if (shouldNavigate) {
+      await page.goto(config.qwen.baseUrl, {
+        waitUntil: "domcontentloaded",
+        timeout: Math.min(config.timeouts.navigation, 15_000),
+      });
+      lastKeepAliveNavigation.set(accountId, now);
+    } else {
+      await subtlePageActivity(page);
+    }
+
+    touchAccountActivity(accountId);
+    return true;
+  } finally {
+    release();
+  }
+}
+
 // ─── Cleanup ──────────────────────────────────────────────────────────────────
 
 function isPlaywrightAlreadyClosedError(error: unknown): boolean {
@@ -826,6 +942,9 @@ export async function closePlaywrightForAccount(
       accountPages.delete(accountId);
       headerCaches.delete(accountId);
       cookieCaches.delete(accountId);
+      lastAccountActivity.delete(accountId);
+      lastKeepAliveNavigation.delete(accountId);
+      clearFingerprintCache(accountId);
       accountMutexes.delete(accountId);
     }
   } finally {

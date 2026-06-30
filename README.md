@@ -181,6 +181,10 @@ npm run test:live  # Só reais/live
 |---|---|---|
 | `PLAYWRIGHT_HEADLESS` | `true` | Browser headless (sem janela). |
 | `PLAYWRIGHT_BROWSER` | `chromium` | Navegador: `chromium`, `chrome`, `edge`. |
+| `SESSION_KEEP_ALIVE_ENABLED` | `true` | Mantém sessões ativas com atividade leve apenas quando a conta está ociosa. |
+| `SESSION_KEEP_ALIVE_INTERVAL_MS` | `180000` | Intervalo entre ciclos de keep-alive. |
+| `SESSION_KEEP_ALIVE_IDLE_MS` | `120000` | Tempo mínimo sem uso antes de uma conta ser elegível ao keep-alive. |
+| `SESSION_KEEP_ALIVE_NAVIGATION_INTERVAL_MS` | `480000` | Intervalo mínimo para navegação leve de validação durante keep-alive. |
 
 ### Headers anti-bot
 
@@ -188,6 +192,8 @@ npm run test:live  # Só reais/live
 |---|---|---|
 | `USER_AGENT` | Chrome 149 Windows | User-Agent fallback para Playwright/downloads. |
 | `QWEN_BX_V` | `2.5.36` | Versão `bx-v` fallback; `bx-ua` e `bx-umidtoken` são capturados do browser. |
+
+O Playwright também aplica um fingerprint estável por conta (UA Chrome 149, locale, viewport, hardware e WebGL coerentes) para reduzir inconsistências sem trocar a arquitetura thread-native/tools do fork.
 
 ### Delays e retry
 

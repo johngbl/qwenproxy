@@ -194,6 +194,13 @@ async function cleanupServerResources(): Promise<void> {
     cache = undefined;
   }
 
+  try {
+    const { stopSessionKeeper } = await import("../services/session-keeper.ts");
+    stopSessionKeeper();
+  } catch {
+    // Session keeper may not have been initialized.
+  }
+
   if (config.qwen.deleteAllChatsOnShutdown) {
     try {
       const { deleteChatsForConfiguredAccounts } =
@@ -361,6 +368,10 @@ export async function startServer(options?: {
     watchdog.start();
 
     metrics.startCollection();
+
+    const { startSessionKeeper } =
+      await import("../services/session-keeper.ts");
+    startSessionKeeper();
 
     server = serve({
       fetch: app.fetch,

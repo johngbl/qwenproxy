@@ -80,6 +80,10 @@ const envSchema = z
     QWEN_PERSONALIZATION_FROM_REQUEST: z.string().default("true"),
     QWEN_PERSONALIZATION_VERIFY_GET: z.string().default("true"),
     DELETE_ALL_CHATS_ON_SHUTDOWN: z.string().default("false"),
+    SESSION_KEEP_ALIVE_ENABLED: z.string().default("true"),
+    SESSION_KEEP_ALIVE_INTERVAL_MS: z.string().default("180000"),
+    SESSION_KEEP_ALIVE_IDLE_MS: z.string().default("120000"),
+    SESSION_KEEP_ALIVE_NAVIGATION_INTERVAL_MS: z.string().default("480000"),
     API_KEY: z.string().default(""),
   })
   .superRefine((env, ctx) => {
@@ -222,6 +226,14 @@ export const config = {
   antiBot: {
     baseDelayMs: parseInt(env.ANTI_BOT_BASE_DELAY_MS),
     maxDelayMs: parseInt(env.ANTI_BOT_MAX_DELAY_MS),
+  },
+  sessionKeeper: {
+    enabled: env.SESSION_KEEP_ALIVE_ENABLED !== "false",
+    intervalMs: parseInt(env.SESSION_KEEP_ALIVE_INTERVAL_MS),
+    idleMs: parseInt(env.SESSION_KEEP_ALIVE_IDLE_MS),
+    navigationIntervalMs: parseInt(
+      env.SESSION_KEEP_ALIVE_NAVIGATION_INTERVAL_MS,
+    ),
   },
   apiKey: env.API_KEY,
   qwen: {

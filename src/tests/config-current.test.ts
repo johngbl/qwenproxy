@@ -12,8 +12,15 @@ test("config exposes only Playwright/thread-native current auth and context sett
   assert.equal("mode" in config.context, false);
 
   assert.equal(typeof config.context.summarization.enabled, "boolean");
-  assert.equal(typeof config.context.threadNative.persistenceEnabled, "boolean");
+  assert.equal(
+    typeof config.context.threadNative.persistenceEnabled,
+    "boolean",
+  );
   assert.equal(typeof config.qwen.personalizationFromRequest, "boolean");
+  assert.equal(typeof config.sessionKeeper.enabled, "boolean");
+  assert.equal(typeof config.sessionKeeper.intervalMs, "number");
+  assert.equal(typeof config.sessionKeeper.idleMs, "number");
+  assert.equal(typeof config.sessionKeeper.navigationIntervalMs, "number");
 });
 
 test("config keeps Qwen anti-bot static config limited to bx-v fallback", () => {
