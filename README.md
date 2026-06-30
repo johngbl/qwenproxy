@@ -128,7 +128,7 @@ docker-compose up -d
 
 ## Início rápido
 
-Crie um `.env` na raiz. O `.env.example` contém apenas as opções mais comuns.
+Crie um `.env` na raiz. O `.env.example` contém a lista completa das opções suportadas pelo fork.
 
 ### Exemplo mínimo
 
@@ -136,7 +136,8 @@ Crie um `.env` na raiz. O `.env.example` contém apenas as opções mais comuns.
 QWEN_ACCOUNTS=user1@example.com:senha1;user2@example.com:senha2
 ```
 
-> **Dica:** Use `;` como separador de contas para evitar conflito com `,` em senhas.
+> **Dica:** Use `;` como separador preferencial de contas para evitar conflito com `,` em senhas.
+> O formato legado com `,` continua aceito.
 > Senhas com `:`, `#`, espaços e outros caracteres especiais funcionam normalmente.
 
 ### Iniciar
@@ -368,9 +369,15 @@ services:
       - .env
     volumes:
       - ./data:/app/data
-      - ./qwen_profiles:/app/qwen_profiles
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 ```
+
+O container ajusta permissões no startup para `data/db` e `data/qwen_profiles`, evitando falhas comuns com volumes bind-mounted.
 
 ---
 
@@ -391,7 +398,7 @@ QwenBridge/
 │   │   └── qwen.ts            # Qwen API integration
 │   ├── tools/                 # Tool-call instructions, parser e schema
 │   └── utils/                 # JSON parser, token estimation, context summary
-├── data/                 # SQLite, profiles (gitignored)
+├── data/                 # SQLite, encryption key e profiles (gitignored)
 ├── Dockerfile
 ├── docker-compose.yml
 └── package.json

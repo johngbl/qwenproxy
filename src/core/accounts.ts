@@ -1,6 +1,7 @@
 import "dotenv/config";
 import crypto from "crypto";
 import { getDatabase } from "./database.ts";
+import { decrypt, encrypt } from "./crypto-utils.ts";
 
 export interface QwenAccount {
   id: string;
@@ -22,8 +23,10 @@ function parseEnvAccounts(): QwenAccount[] {
   const envAccounts = process.env.QWEN_ACCOUNTS;
   if (!envAccounts) return [];
 
+  const separator = envAccounts.includes(";") ? ";" : ",";
+
   return envAccounts
-    .split(",")
+    .split(separator)
     .map((entry, index) => {
       const trimmed = entry.trim();
       const colonIdx = trimmed.indexOf(":");
@@ -74,7 +77,7 @@ function syncEnvAccounts(): void {
 
   const sync = db.transaction(() => {
     for (const acc of accounts) {
-      upsert.run(acc.id, acc.email, acc.password);
+      upsert.run(acc.id, acc.email, encrypt(acc.password));
     }
   });
 
@@ -85,22 +88,34 @@ let accountsCache: QwenAccount[] | null = null;
 let accountsCacheTime = 0;
 const ACCOUNTS_CACHE_TTL = 5_000;
 
-export function loadAccounts(): QwenAccount[] {
+function getCachedAccounts(): QwenAccount[] {
   syncEnvAccounts();
 
   const now = Date.now();
-  if (accountsCache && now - accountsCacheTime < ACCOUNTS_CACHE_TTL)
+  if (accountsCache && now - accountsCacheTime < ACCOUNTS_CACHE_TTL) {
     return accountsCache;
+  }
 
   const db = getDatabase();
   const rows = db
     .prepare(
       "SELECT id, email, password, cooldown_until, cooldown_reason FROM accounts ORDER BY created_at ASC",
     )
-    .all();
-  accountsCache = rows as QwenAccount[];
+    .all() as QwenAccount[];
+
+  accountsCache = rows.map((row) => ({
+    ...row,
+    password: decrypt(row.password),
+  }));
   accountsCacheTime = now;
   return accountsCache;
+}
+
+export function loadAccounts(): QwenAccount[] {
+  return getCachedAccounts().map((account) => ({
+    ...account,
+    password: "***",
+  }));
 }
 
 export function invalidateAccountsCache(): void {
@@ -135,7 +150,7 @@ export function addAccount(
   db.prepare("INSERT INTO accounts (id, email, password) VALUES (?, ?, ?)").run(
     newAccount.id,
     newAccount.email,
-    newAccount.password,
+    encrypt(newAccount.password),
   );
 
   invalidateAccountsCache();
@@ -150,15 +165,11 @@ export function removeAccount(id: string): boolean {
 }
 
 export function listAccounts(): QwenAccount[] {
-  return loadAccounts().map((a) => ({
-    id: a.id,
-    email: a.email,
-    password: "***",
-  }));
+  return loadAccounts();
 }
 
 export function getAccountCredentials(id: string): QwenAccount | undefined {
-  const cached = loadAccounts();
+  const cached = getCachedAccounts();
   return cached.find((a) => a.id === id);
 }
 

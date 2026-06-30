@@ -291,7 +291,8 @@ export async function startServer(options?: {
       );
     }
 
-    const { loadAccounts } = await import("../core/accounts.ts");
+    const { loadAccounts, getAccountCredentials } =
+      await import("../core/accounts.ts");
     const accounts = loadAccounts();
 
     // Clear stale cooldowns from previous sessions on startup
@@ -331,12 +332,19 @@ export async function startServer(options?: {
               accountId: account.id,
               successMessage: `[Server] Account ready (Playwright): ${maskEmail(account.email)}`,
               failureMessage: `[Server] Failed to initialize account ${maskEmail(account.email)}:`,
-              initAuth: () =>
-                initPlaywrightForAccount(
-                  account,
+              initAuth: () => {
+                const credentials = getAccountCredentials(account.id);
+                if (!credentials) {
+                  throw new Error(
+                    `Account ${account.id} credentials not found`,
+                  );
+                }
+                return initPlaywrightForAccount(
+                  credentials,
                   config.playwright.headless,
                   config.playwright.browser,
-                ),
+                );
+              },
               disableNativeTools,
               warmQwenChatPool,
             }),

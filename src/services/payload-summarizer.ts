@@ -20,6 +20,8 @@ const SUMMARIZATION_TIMEOUT_MS = 60_000;
 const CHUNK_SIZE = 10; // messages per summarization chunk
 const MAX_CHUNK_CHARS = 80_000; // 80KB max per chunk text
 const MAX_SINGLE_MESSAGE_CHARS = 40_000; // 40KB max per individual message
+const TOOL_MEMORY_MAX_ITEMS = 24;
+const TOOL_MEMORY_ITEM_MAX_CHARS = 180;
 
 const SUMMARIZE_PROMPT = `You are a conversation summarizer. Summarize the following conversation history concisely, preserving:
 1. Key decisions and conclusions
@@ -56,6 +58,69 @@ function estimatePayloadChars(
   return total;
 }
 
+function summarizeCompactText(
+  value: string,
+  maxChars = TOOL_MEMORY_ITEM_MAX_CHARS,
+): string {
+  const compact = value.replace(/\s+/g, " ").trim();
+  if (compact.length <= maxChars) return compact;
+  return `${compact.slice(0, maxChars)}... [truncated]`;
+}
+
+function stringifyToolArgs(args: unknown): string {
+  try {
+    return summarizeCompactText(JSON.stringify(args), 220);
+  } catch {
+    return summarizeCompactText(String(args), 220);
+  }
+}
+
+function extractMessageText(content: any): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part: any) => part.text || JSON.stringify(part))
+      .join("\n");
+  }
+  return content ? JSON.stringify(content) : "";
+}
+
+function buildToolMemory(messages: Array<any>): string {
+  const lines: string[] = [];
+
+  for (const msg of messages) {
+    if (msg.role === "assistant" && Array.isArray(msg.tool_calls)) {
+      for (const call of msg.tool_calls) {
+        const name = call?.function?.name || call?.name || "unknown_tool";
+        let args: unknown = {};
+        if (typeof call?.function?.arguments === "string") {
+          try {
+            args = JSON.parse(call.function.arguments);
+          } catch {
+            args = call.function.arguments;
+          }
+        } else if (call?.function?.arguments !== undefined) {
+          args = call.function.arguments;
+        }
+        lines.push(
+          `- call ${call?.id || "unknown"}: ${name}(${stringifyToolArgs(args)})`,
+        );
+        if (lines.length >= TOOL_MEMORY_MAX_ITEMS) return lines.join("\n");
+      }
+    }
+
+    if (msg.role === "tool" || msg.role === "function") {
+      const toolName = msg.name || msg.tool_call_id || "tool";
+      lines.push(
+        `- ${toolName} response: ${summarizeCompactText(extractMessageText(msg.content))}`,
+      );
+      if (lines.length >= TOOL_MEMORY_MAX_ITEMS) return lines.join("\n");
+    }
+  }
+
+  return lines.join("\n");
+}
+
 function truncateMessageContent(content: any): any {
   if (typeof content === "string") {
     if (content.length <= MAX_SINGLE_MESSAGE_CHARS) return content;
@@ -89,24 +154,44 @@ function truncateMessageContent(content: any): any {
 export function truncateMessages(
   messages: Array<{ role: string; content: any }>,
 ): Array<{ role: string; content: any }> {
-  return messages.map((msg) => {
-    const contentStr =
-      typeof msg.content === "string"
-        ? msg.content
-        : JSON.stringify(msg.content);
-    if (contentStr.length <= MAX_SINGLE_MESSAGE_CHARS) return msg;
-    return { ...msg, content: truncateMessageContent(msg.content) };
-  });
+  const truncatedMessages: Array<{ role: string; content: any }> = [];
+  const toolMemorySource: Array<any> = [];
+
+  for (const msg of messages) {
+    const contentStr = extractMessageText(msg.content);
+    if (contentStr.length <= MAX_SINGLE_MESSAGE_CHARS) {
+      truncatedMessages.push(msg);
+      continue;
+    }
+
+    if (
+      (msg.role === "assistant" && Array.isArray((msg as any).tool_calls)) ||
+      msg.role === "tool" ||
+      msg.role === "function"
+    ) {
+      toolMemorySource.push(msg);
+    }
+
+    truncatedMessages.push({
+      ...msg,
+      content: truncateMessageContent(msg.content),
+    });
+  }
+
+  const toolMemory = buildToolMemory(toolMemorySource);
+  if (!toolMemory) return truncatedMessages;
+
+  return [
+    {
+      role: "user",
+      content: `[Earlier tool memory]\n${toolMemory}`,
+    },
+    ...truncatedMessages,
+  ];
 }
 
 function messageToText(msg: { role: string; content: any }): string {
-  const content =
-    typeof msg.content === "string"
-      ? msg.content
-      : Array.isArray(msg.content)
-        ? msg.content.map((p: any) => p.text || JSON.stringify(p)).join("\n")
-        : JSON.stringify(msg.content);
-  return `${msg.role}: ${content}`;
+  return `${msg.role}: ${extractMessageText(msg.content)}`;
 }
 
 async function deleteQwenChatDirect(

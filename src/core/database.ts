@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import path from "path";
 import fs from "fs";
+import { encrypt, isEncrypted } from "./crypto-utils.ts";
 
 const DATA_DIR = path.resolve("data");
 const DB_DIR = path.join(DATA_DIR, "db");
@@ -96,6 +97,7 @@ export function getDatabase(): Database.Database {
 
   runMigrations(db);
   migrateFromJson(db);
+  encryptPlaintextPasswords(db);
 
   return db;
 }
@@ -264,6 +266,34 @@ function runMigrations(db: Database.Database): void {
 
 function isDuplicateColumnError(err: unknown): boolean {
   return err instanceof Error && err.message.includes("duplicate column name");
+}
+
+function encryptPlaintextPasswords(db: Database.Database): void {
+  const rows = db.prepare("SELECT id, password FROM accounts").all() as Array<{
+    id: string;
+    password: string;
+  }>;
+  const update = db.prepare(
+    "UPDATE accounts SET password = ?, updated_at = datetime('now') WHERE id = ?",
+  );
+  let migrated = 0;
+
+  const migrate = db.transaction(() => {
+    for (const row of rows) {
+      if (row.password && !isEncrypted(row.password)) {
+        update.run(encrypt(row.password), row.id);
+        migrated++;
+      }
+    }
+  });
+
+  migrate();
+
+  if (migrated > 0) {
+    console.log(
+      `[Database] Encrypted ${migrated} plaintext password(s) in database`,
+    );
+  }
 }
 
 /**

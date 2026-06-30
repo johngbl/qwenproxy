@@ -3,7 +3,11 @@
  * QwenBridge - OpenAI-compatible proxy for Qwen
  */
 
-import { loadAccounts, type QwenAccount } from "../core/accounts.ts";
+import {
+  getAccountCredentials,
+  loadAccounts,
+  type QwenAccount,
+} from "../core/accounts.ts";
 import { deleteAllQwenChats } from "./qwen.ts";
 import {
   initPlaywrightForAccount,
@@ -20,10 +24,15 @@ export interface DeleteChatsResult {
 async function ensurePlaywrightSession(account: QwenAccount): Promise<void> {
   if (isPlaywrightInitialized(account.id)) return;
 
+  const credentials = getAccountCredentials(account.id);
+  if (!credentials) {
+    throw new Error(`Account ${account.id} credentials not found`);
+  }
+
   console.log(
     `[DeleteChats] Initializing Playwright session for ${account.email}...`,
   );
-  await initPlaywrightForAccount(account);
+  await initPlaywrightForAccount(credentials);
   console.log(`[DeleteChats] Playwright session ready for ${account.email}.`);
 }
 

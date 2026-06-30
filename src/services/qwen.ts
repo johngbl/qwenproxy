@@ -20,6 +20,68 @@ import { MAX_PAYLOAD_SIZE } from "../core/model-registry.ts";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+function addIdleTimeoutToStream(
+  stream: ReadableStream<Uint8Array>,
+  controller: AbortController,
+  idleTimeoutMs: number,
+  label: string,
+  onTimeout?: () => void,
+  onDone?: () => void,
+): ReadableStream<Uint8Array> {
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+
+  const clearIdleTimer = () => {
+    if (idleTimer) {
+      clearTimeout(idleTimer);
+      idleTimer = undefined;
+    }
+  };
+
+  const resetIdleTimer = () => {
+    clearIdleTimer();
+    idleTimer = setTimeout(() => {
+      const message = `${label} idle timeout after ${idleTimeoutMs}ms without upstream data`;
+      clearIdleTimer();
+      controller.abort();
+      onTimeout?.();
+      try {
+        void stream.cancel(message).catch(() => {});
+      } catch {}
+    }, idleTimeoutMs);
+  };
+
+  return new ReadableStream<Uint8Array>({
+    start() {
+      reader = stream.getReader();
+      resetIdleTimer();
+    },
+    async pull(streamController) {
+      try {
+        if (!reader) throw new Error("Stream reader was not initialized");
+        const { done, value } = await reader.read();
+        if (done) {
+          clearIdleTimer();
+          onDone?.();
+          streamController.close();
+          return;
+        }
+        resetIdleTimer();
+        streamController.enqueue(value);
+      } catch (error) {
+        clearIdleTimer();
+        onDone?.();
+        streamController.error(error);
+      }
+    },
+    cancel(reason) {
+      clearIdleTimer();
+      onDone?.();
+      return stream.cancel(reason);
+    },
+  });
+}
+
 export class RetryableQwenStreamError extends UpstreamRateLimit {
   readonly retryAfterMs: number;
 
@@ -1046,7 +1108,40 @@ async function fetchUnusedChats(
 
 const precreatedChatSessions = new Map<string, string[]>();
 const precreatingChatSessions = new Set<string>();
+const inFlightWarmChats = new Set<string>();
 const WARM_POOL_LOW_WATER = 3;
+
+function warmChatKey(
+  accountId: string | undefined,
+  model: string,
+  chatId: string,
+) {
+  return `${accountId || "global"}:${model}:${chatId}`;
+}
+
+function markWarmChatInFlight(
+  accountId: string | undefined,
+  model: string,
+  chatId: string,
+): void {
+  inFlightWarmChats.add(warmChatKey(accountId, model, chatId));
+}
+
+function releaseWarmChat(
+  accountId: string | undefined,
+  model: string,
+  chatId: string,
+): void {
+  inFlightWarmChats.delete(warmChatKey(accountId, model, chatId));
+}
+
+function isWarmChatInFlight(
+  accountId: string | undefined,
+  model: string,
+  chatId: string,
+): boolean {
+  return inFlightWarmChats.has(warmChatKey(accountId, model, chatId));
+}
 
 function chatPoolKey(accountId: string | undefined, model: string): string {
   return `${accountId || "global"}:${model}`;
@@ -1064,7 +1159,7 @@ async function acquireNewQwenChatSession(
   headers: Record<string, string>,
   model: string,
   accountId?: string,
-): Promise<string> {
+): Promise<{ chatId: string; leasedFromPool: boolean }> {
   if (isQwenChatPoolEnabled()) {
     const key = chatPoolKey(accountId, model);
     const pooled = precreatedChatSessions.get(key);
@@ -1078,6 +1173,8 @@ async function acquireNewQwenChatSession(
       });
 
       // Proactive refill when pool drops below low-water mark
+      markWarmChatInFlight(accountId, model, chatId);
+
       if (
         (pooled?.length ?? 0) < WARM_POOL_LOW_WATER &&
         !precreatingChatSessions.has(key)
@@ -1086,7 +1183,7 @@ async function acquireNewQwenChatSession(
       } else {
         void scheduleQwenChatPoolRefill(headers, model, accountId);
       }
-      return chatId;
+      return { chatId, leasedFromPool: true };
     }
   }
 
@@ -1099,7 +1196,7 @@ async function acquireNewQwenChatSession(
   if (isQwenChatPoolEnabled()) {
     void scheduleQwenChatPoolRefill(headers, model, accountId);
   }
-  return created;
+  return { chatId: created, leasedFromPool: false };
 }
 
 async function refillQwenChatPool(
@@ -1124,6 +1221,7 @@ async function refillQwenChatPool(
       for (const chatId of unusedChats) {
         if ((precreatedChatSessions.get(key)?.length ?? 0) >= targetSize) break;
         if (existingIds.has(chatId)) continue;
+        if (isWarmChatInFlight(accountId, model, chatId)) continue;
         const current = precreatedChatSessions.get(key) ?? [];
         current.push(chatId);
         precreatedChatSessions.set(key, current);
@@ -1396,13 +1494,16 @@ export async function createQwenStream(
   const model = modelId.replace("-no-thinking", "");
   let createdNewChat = false;
   let chatSessionId: string | null | undefined;
+  let leasedWarmChat = false;
   if (options && "chatSessionId" in options) {
     if (options.chatSessionId === null || options.chatSessionId === "") {
-      chatSessionId = await acquireNewQwenChatSession(
+      const acquired = await acquireNewQwenChatSession(
         headers,
         model,
         accountId,
       );
+      chatSessionId = acquired.chatId;
+      leasedWarmChat = acquired.leasedFromPool;
       createdNewChat = true;
     } else {
       chatSessionId = options.chatSessionId;
@@ -1410,14 +1511,65 @@ export async function createQwenStream(
   } else {
     chatSessionId = captured.chatSessionId;
     if (!chatSessionId) {
-      chatSessionId = await acquireNewQwenChatSession(
+      const acquired = await acquireNewQwenChatSession(
         headers,
         model,
         accountId,
       );
+      chatSessionId = acquired.chatId;
+      leasedWarmChat = acquired.leasedFromPool;
       createdNewChat = true;
     }
   }
+
+  let warmChatReleased = false;
+  const releaseLeasedWarmChat = () => {
+    if (!leasedWarmChat || warmChatReleased || !chatSessionId) return;
+    warmChatReleased = true;
+    releaseWarmChat(accountId, model, chatSessionId);
+  };
+
+  const wrapUpstreamStream = (
+    stream: ReadableStream<Uint8Array>,
+    controller: AbortController,
+  ): ReadableStream<Uint8Array> => {
+    if (config.timeouts.idleStreamTimeout <= 0) {
+      let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+      return new ReadableStream<Uint8Array>({
+        start() {
+          reader = stream.getReader();
+        },
+        async pull(streamController) {
+          try {
+            if (!reader) throw new Error("Stream reader was not initialized");
+            const { done, value } = await reader.read();
+            if (done) {
+              releaseLeasedWarmChat();
+              streamController.close();
+              return;
+            }
+            streamController.enqueue(value);
+          } catch (error) {
+            releaseLeasedWarmChat();
+            streamController.error(error);
+          }
+        },
+        cancel(reason) {
+          releaseLeasedWarmChat();
+          return stream.cancel(reason);
+        },
+      });
+    }
+
+    return addIdleTimeoutToStream(
+      stream,
+      controller,
+      config.timeouts.idleStreamTimeout,
+      `Qwen stream ${chatSessionId || "unknown"}`,
+      releaseLeasedWarmChat,
+      releaseLeasedWarmChat,
+    );
+  };
 
   const withCreatedChatMetadata = <T extends Error>(error: T): T => {
     if (createdNewChat && chatSessionId) {
@@ -1531,103 +1683,106 @@ export async function createQwenStream(
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), dynamicTimeoutMs);
-  let response: Response;
+
   try {
-    response = await fetch(url, {
-      method: "POST",
-      headers: buildCapturedQwenHeaders(headers, {
-        chatSessionId,
-        extra: {
-          "x-accel-buffering": "no",
-        },
-      }),
-      body: payloadJson,
-      signal: controller.signal,
-    });
-  } catch (error) {
-    throw withCreatedChatMetadata(
-      error instanceof Error ? error : new Error(String(error)),
-    );
-  } finally {
-    clearTimeout(timeoutId);
-  }
-
-  const responseContentType = response.headers.get("content-type") || "";
-  if (response.ok && responseContentType.includes("application/json")) {
-    const errText = await response.text().catch(() => "");
-
-    // TMD anti-bot challenge detection in 200 OK responses
-    if (
-      errText.includes("FAIL_SYS_USER_VALIDATE") ||
-      errText.includes("_____tmd_____") ||
-      errText.includes("RGV587_ERROR")
-    ) {
-      logger.warn(
-        "[Qwen] TMD challenge detected in 200 OK; account will rotate.",
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        headers: buildCapturedQwenHeaders(headers, {
+          chatSessionId,
+          extra: {
+            "x-accel-buffering": "no",
+          },
+        }),
+        body: payloadJson,
+        signal: controller.signal,
+      });
+    } catch (error) {
+      throw withCreatedChatMetadata(
+        error instanceof Error ? error : new Error(String(error)),
       );
+    } finally {
+      clearTimeout(timeoutId);
+    }
+
+    const responseContentType = response.headers.get("content-type") || "";
+    if (response.ok && responseContentType.includes("application/json")) {
+      const errText = await response.text().catch(() => "");
+
+      if (
+        errText.includes("FAIL_SYS_USER_VALIDATE") ||
+        errText.includes("_____tmd_____") ||
+        errText.includes("RGV587_ERROR")
+      ) {
+        logger.warn(
+          "[Qwen] TMD challenge detected in 200 OK; account will rotate.",
+        );
+
+        throw withCreatedChatMetadata(
+          new QwenUpstreamError(
+            "Qwen TMD anti-bot challenge detected. Account needs recovery.",
+            "FAIL_SYS_USER_VALIDATE",
+            403,
+          ),
+        );
+      }
 
       throw withCreatedChatMetadata(
-        new QwenUpstreamError(
-          "Qwen TMD anti-bot challenge detected. Account needs recovery.",
-          "FAIL_SYS_USER_VALIDATE",
-          403,
+        parseQwenJsonError(errText, response.status, accountId) ??
+          new QwenUpstreamError(
+            `Qwen returned non-stream JSON response: ${errText.substring(0, 300)}`,
+            "NonStreamJsonResponse",
+            502,
+          ),
+      );
+    }
+
+    if (!response.ok || !response.body) {
+      const errText = await response.text().catch(() => "");
+      const contentType = response.headers.get("content-type") || "";
+
+      if (contentType.includes("application/json")) {
+        try {
+          const parsedError = parseQwenJsonError(
+            errText,
+            response.status,
+            accountId,
+          );
+          if (parsedError) {
+            throw withCreatedChatMetadata(parsedError);
+          }
+        } catch (parseOrRetryError) {
+          if (
+            parseOrRetryError instanceof RetryableQwenStreamError ||
+            parseOrRetryError instanceof QwenUpstreamError ||
+            parseOrRetryError instanceof QwenSessionExpiredError
+          ) {
+            throw withCreatedChatMetadata(parseOrRetryError);
+          }
+          logger.warn("Unexpected error during stream error parsing", {
+            error: parseOrRetryError,
+          });
+        }
+      }
+      throw withCreatedChatMetadata(
+        new Error(
+          `Failed to fetch from Qwen: ${response.status} ${response.statusText} - ${errText}`,
         ),
       );
     }
 
-    // Not TMD — regular JSON error
-    throw withCreatedChatMetadata(
-      parseQwenJsonError(errText, response.status, accountId) ??
-        new QwenUpstreamError(
-          `Qwen returned non-stream JSON response: ${errText.substring(0, 300)}`,
-          "NonStreamJsonResponse",
-          502,
-        ),
-    );
+    return {
+      stream: wrapUpstreamStream(response.body, controller),
+      headers,
+      uiSessionId: chatSessionId || "",
+      controller,
+      accountId: accountId ?? "global",
+      createdNewChat,
+      tokenEstimationContext,
+    };
+  } catch (error) {
+    releaseLeasedWarmChat();
+    throw error;
   }
-
-  if (!response.ok || !response.body) {
-    const errText = await response.text().catch(() => "");
-    const contentType = response.headers.get("content-type") || "";
-
-    if (contentType.includes("application/json")) {
-      try {
-        const parsedError = parseQwenJsonError(
-          errText,
-          response.status,
-          accountId,
-        );
-        if (parsedError) {
-          throw withCreatedChatMetadata(parsedError);
-        }
-      } catch (parseOrRetryError) {
-        if (
-          parseOrRetryError instanceof RetryableQwenStreamError ||
-          parseOrRetryError instanceof QwenUpstreamError ||
-          parseOrRetryError instanceof QwenSessionExpiredError
-        ) {
-          throw withCreatedChatMetadata(parseOrRetryError);
-        }
-        // Log unexpected parsing or retry errors to prevent silent failures
-        logger.warn("Unexpected error during stream error parsing", {
-          error: parseOrRetryError,
-        });
-      }
-    }
-    throw withCreatedChatMetadata(
-      new Error(
-        `Failed to fetch from Qwen: ${response.status} ${response.statusText} - ${errText}`,
-      ),
-    );
-  }
-
-  return {
-    stream: response.body,
-    headers,
-    uiSessionId: chatSessionId || "",
-    controller,
-    accountId: accountId ?? "global",
-    createdNewChat,
-    tokenEstimationContext,
-  };
 }
