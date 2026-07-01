@@ -22,6 +22,9 @@ const envSchema = z
     PLAYWRIGHT_BROWSER: z
       .enum(["chromium", "chrome", "edge"])
       .default("chromium"),
+    PLAYWRIGHT_INIT_BATCH_SIZE: z.string().default("1"),
+    PLAYWRIGHT_CONTEXT_CLOSE_TIMEOUT_MS: z.string().default("10000"),
+    PLAYWRIGHT_IDLE_CONTEXT_TTL_MS: z.string().default("600000"),
     CHAT_REQUEST_LOG: z.string().default("false"),
     HTTP_TIMEOUT: z.string().default("10000"),
     CHAT_TIMEOUT: z.string().default("120000"),
@@ -80,7 +83,7 @@ const envSchema = z
     QWEN_PERSONALIZATION_FROM_REQUEST: z.string().default("true"),
     QWEN_PERSONALIZATION_VERIFY_GET: z.string().default("true"),
     DELETE_ALL_CHATS_ON_SHUTDOWN: z.string().default("false"),
-    SESSION_KEEP_ALIVE_ENABLED: z.string().default("true"),
+    SESSION_KEEP_ALIVE_ENABLED: z.string().default("false"),
     SESSION_KEEP_ALIVE_INTERVAL_MS: z.string().default("180000"),
     SESSION_KEEP_ALIVE_IDLE_MS: z.string().default("120000"),
     SESSION_KEEP_ALIVE_NAVIGATION_INTERVAL_MS: z.string().default("480000"),
@@ -143,6 +146,12 @@ export const config = {
   playwright: {
     headless: env.PLAYWRIGHT_HEADLESS !== "false",
     browser: env.PLAYWRIGHT_BROWSER,
+    initBatchSize: Math.max(1, parseInt(env.PLAYWRIGHT_INIT_BATCH_SIZE)),
+    contextCloseTimeoutMs: Math.max(
+      1_000,
+      parseInt(env.PLAYWRIGHT_CONTEXT_CLOSE_TIMEOUT_MS),
+    ),
+    idleContextTtlMs: Math.max(0, parseInt(env.PLAYWRIGHT_IDLE_CONTEXT_TTL_MS)),
   },
   timeouts: {
     http: parseInt(env.HTTP_TIMEOUT),

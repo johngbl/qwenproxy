@@ -17,6 +17,9 @@ test("config exposes only Playwright/thread-native current auth and context sett
     "boolean",
   );
   assert.equal(typeof config.qwen.personalizationFromRequest, "boolean");
+  assert.equal(typeof config.playwright.initBatchSize, "number");
+  assert.equal(typeof config.playwright.contextCloseTimeoutMs, "number");
+  assert.equal(typeof config.playwright.idleContextTtlMs, "number");
   assert.equal(typeof config.sessionKeeper.enabled, "boolean");
   assert.equal(typeof config.sessionKeeper.intervalMs, "number");
   assert.equal(typeof config.sessionKeeper.idleMs, "number");

@@ -90,8 +90,45 @@ const COOKIE_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 const cookieCaches = new Map<string, { cookie: string; timestamp: number }>();
 const lastAccountActivity = new Map<string, number>();
 const lastKeepAliveNavigation = new Map<string, number>();
+const profileResetQueue = new Map<string, Promise<void>>();
+let profileResetChain: Promise<void> = Promise.resolve();
+let closingAllPlaywright = false;
+
+type KillableProcess = {
+  killed?: boolean;
+  kill: (signal?: NodeJS.Signals | number) => boolean;
+};
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  message: string,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    promise.finally(() => {
+      if (timer) clearTimeout(timer);
+    }),
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      timer.unref?.();
+    }),
+  ]);
+}
+
+function getBrowserProcess(context: BrowserContext): KillableProcess | null {
+  const browser = context.browser();
+  const maybeBrowser = browser as unknown as {
+    process?: () => KillableProcess | null;
+  };
+  return maybeBrowser.process?.() ?? null;
+}
 
 function touchAccountActivity(accountId: string): void {
   lastAccountActivity.set(accountId, Date.now());
@@ -454,15 +491,8 @@ export async function initPlaywrightForAccount(
       await captureHeaders(account.id);
       touchAccountActivity(account.id);
     } catch (error) {
-      accountPages.delete(account.id);
-      accountContexts.delete(account.id);
-      await acctContext.close().catch((closeError) => {
-        if (!isPlaywrightAlreadyClosedError(closeError)) {
-          console.warn(
-            `[Playwright] Failed to close context after init error: ${closeError}`,
-          );
-        }
-      });
+      await closePlaywrightContextBestEffort(account.id, acctContext);
+      cleanupPlaywrightAccountState(account.id);
       throw error;
     }
   } finally {
@@ -818,8 +848,8 @@ function isPlaywrightProfileCorruptedError(error: unknown): boolean {
   );
 }
 
-async function resetPlaywrightProfile(accountId: string): Promise<void> {
-  await closePlaywrightForAccount(accountId);
+async function resetPlaywrightProfileLocked(accountId: string): Promise<void> {
+  await closePlaywrightForAccountLocked(accountId);
   const profilePath = path.resolve("data", "qwen_profiles", accountId);
   try {
     fs.rmSync(profilePath, { recursive: true, force: true });
@@ -827,7 +857,7 @@ async function resetPlaywrightProfile(accountId: string): Promise<void> {
     if (!isPlaywrightProfileCorruptedError(error)) {
       console.warn(
         `[Playwright] Failed to delete profile for ${accountId}:`,
-        (error as Error).message,
+        getErrorMessage(error),
       );
     }
   }
@@ -838,38 +868,92 @@ const PROFILE_RESET_TIMEOUT_MS = 45_000;
 export async function refreshHeadersWithProfileReset(
   accountId: string,
 ): Promise<void> {
+  let account: QwenAccount | null = null;
+
   const release = await getAccountMutex(accountId).acquire();
   try {
-    await resetPlaywrightProfile(accountId);
+    await resetPlaywrightProfileLocked(accountId);
     const accounts = await import("../core/accounts.ts");
-    const account = accounts.getAccountCredentials(accountId);
+    account = accounts.getAccountCredentials(accountId) ?? null;
     if (!account) {
       throw new Error(`Account ${accountId} not found during profile reset`);
     }
-
-    await Promise.race([
-      initPlaywrightForAccount(account),
-      new Promise<never>((_, reject) =>
-        setTimeout(
-          () =>
-            reject(
-              new Error(
-                `Playwright re-initialization timed out after ${PROFILE_RESET_TIMEOUT_MS}ms`,
-              ),
-            ),
-          PROFILE_RESET_TIMEOUT_MS,
-        ),
-      ),
-    ]);
   } finally {
     release();
   }
+
+  await withTimeout(
+    initPlaywrightForAccount(account),
+    PROFILE_RESET_TIMEOUT_MS,
+    `Playwright re-initialization timed out after ${PROFILE_RESET_TIMEOUT_MS}ms`,
+  ).catch(async (error) => {
+    await closePlaywrightForAccount(accountId).catch(() => {});
+    throw error;
+  });
+}
+
+export function schedulePlaywrightProfileReset(accountId: string): void {
+  if (closingAllPlaywright || profileResetQueue.has(accountId)) return;
+
+  const resetPromise = profileResetChain
+    .catch(() => {})
+    .then(async () => {
+      if (closingAllPlaywright) return;
+      console.log(`[Playwright] Queued profile reset for ${accountId}...`);
+      await refreshHeadersWithProfileReset(accountId);
+      console.log(
+        `[Playwright] Queued profile reset complete for ${accountId}.`,
+      );
+    })
+    .catch((error) => {
+      console.warn(
+        `[Playwright] Queued profile reset failed for ${accountId}: ${getErrorMessage(error)}`,
+      );
+    })
+    .finally(() => {
+      profileResetQueue.delete(accountId);
+    });
+
+  profileResetQueue.set(accountId, resetPromise);
+  profileResetChain = resetPromise.then(
+    () => undefined,
+    () => undefined,
+  );
 }
 
 // ─── Keep Alive ───────────────────────────────────────────────────────────────
 
 export function getActivePlaywrightAccountIds(): string[] {
   return Array.from(accountPages.keys());
+}
+
+export function getIdlePlaywrightAccountIds(idleMs: number): string[] {
+  const now = Date.now();
+  return Array.from(accountPages.keys()).filter((accountId) => {
+    const mutex = accountMutexes.get(accountId);
+    if (!mutex?.isIdle()) return false;
+    const lastActivity = lastAccountActivity.get(accountId) ?? 0;
+    return now - lastActivity >= idleMs;
+  });
+}
+
+export async function closeIdlePlaywrightAccounts(
+  idleMs: number,
+): Promise<number> {
+  if (idleMs <= 0) return 0;
+  const accountIds = getIdlePlaywrightAccountIds(idleMs);
+  let closed = 0;
+  for (const accountId of accountIds) {
+    const mutex = accountMutexes.get(accountId);
+    if (!mutex?.isIdle()) continue;
+    await closePlaywrightForAccount(accountId).catch((error) => {
+      console.warn(
+        `[Playwright] Failed to close idle context for ${accountId}: ${getErrorMessage(error)}`,
+      );
+    });
+    closed++;
+  }
+  return closed;
 }
 
 export async function keepAlivePlaywrightAccount(
@@ -914,6 +998,74 @@ export async function keepAlivePlaywrightAccount(
 
 // ─── Cleanup ──────────────────────────────────────────────────────────────────
 
+function cleanupPlaywrightAccountState(accountId: string): void {
+  accountContexts.delete(accountId);
+  accountPages.delete(accountId);
+  headerCaches.delete(accountId);
+  cookieCaches.delete(accountId);
+  lastAccountActivity.delete(accountId);
+  lastKeepAliveNavigation.delete(accountId);
+  clearFingerprintCache(accountId);
+}
+
+async function closePlaywrightContextBestEffort(
+  accountId: string,
+  context: BrowserContext,
+): Promise<void> {
+  const browserProcess = getBrowserProcess(context);
+
+  try {
+    const pages = context.pages();
+    await Promise.all(
+      pages.map((page) =>
+        withTimeout(
+          page.close({ runBeforeUnload: false }),
+          2_000,
+          `Timed out closing page for ${accountId}`,
+        ).catch(() => {}),
+      ),
+    );
+
+    await withTimeout(
+      context.close(),
+      config.playwright.contextCloseTimeoutMs,
+      `Timed out closing Playwright context for ${accountId}`,
+    );
+  } catch (error) {
+    if (!isPlaywrightAlreadyClosedError(error)) {
+      console.warn(
+        `[Playwright] Failed to close context for ${accountId}: ${getErrorMessage(error)}`,
+      );
+    }
+
+    if (browserProcess && !browserProcess.killed) {
+      try {
+        browserProcess.kill("SIGKILL");
+        console.warn(
+          `[Playwright] Killed lingering browser process for ${accountId}`,
+        );
+      } catch (killError) {
+        console.warn(
+          `[Playwright] Failed to kill browser process for ${accountId}: ${getErrorMessage(killError)}`,
+        );
+      }
+    }
+  }
+}
+
+async function closePlaywrightForAccountLocked(
+  accountId: string,
+): Promise<void> {
+  const acctContext = accountContexts.get(accountId);
+  try {
+    if (acctContext) {
+      await closePlaywrightContextBestEffort(accountId, acctContext);
+    }
+  } finally {
+    cleanupPlaywrightAccountState(accountId);
+  }
+}
+
 function isPlaywrightAlreadyClosedError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return (
@@ -928,34 +1080,29 @@ export async function closePlaywrightForAccount(
 ): Promise<void> {
   const release = await getAccountMutex(accountId).acquire();
   try {
-    const acctContext = accountContexts.get(accountId);
-    if (!acctContext) return;
-
-    try {
-      await acctContext.close();
-    } catch (error) {
-      if (!isPlaywrightAlreadyClosedError(error)) {
-        throw error;
-      }
-    } finally {
-      accountContexts.delete(accountId);
-      accountPages.delete(accountId);
-      headerCaches.delete(accountId);
-      cookieCaches.delete(accountId);
-      lastAccountActivity.delete(accountId);
-      lastKeepAliveNavigation.delete(accountId);
-      clearFingerprintCache(accountId);
-      accountMutexes.delete(accountId);
-    }
+    await closePlaywrightForAccountLocked(accountId);
   } finally {
     release();
   }
 }
 
 export async function closeAllPlaywright(): Promise<void> {
-  const accountIds = Array.from(accountContexts.keys());
-  for (const accountId of accountIds) {
-    await closePlaywrightForAccount(accountId);
+  closingAllPlaywright = true;
+  try {
+    const accountIds = Array.from(
+      new Set([
+        ...accountContexts.keys(),
+        ...accountPages.keys(),
+        ...headerCaches.keys(),
+        ...cookieCaches.keys(),
+        ...lastAccountActivity.keys(),
+      ]),
+    );
+    for (const accountId of accountIds) {
+      await closePlaywrightForAccount(accountId);
+    }
+  } finally {
+    closingAllPlaywright = false;
   }
 }
 

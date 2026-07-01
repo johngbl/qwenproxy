@@ -1,5 +1,6 @@
 import { config } from "../core/config.ts";
 import {
+  closeIdlePlaywrightAccounts,
   getActivePlaywrightAccountIds,
   keepAlivePlaywrightAccount,
 } from "./playwright.ts";
@@ -17,15 +18,32 @@ async function runKeepAliveCycle(): Promise<void> {
   if (cycleInProgress) return;
   cycleInProgress = true;
   try {
-    const accountIds = getActivePlaywrightAccountIds();
-    for (const accountId of accountIds) {
-      await keepAlivePlaywrightAccount(accountId).catch((error) => {
-        const message = error instanceof Error ? error.message : String(error);
-        if (!message.includes("Target closed") && !message.includes("Page is closed")) {
-          console.warn(`[SessionKeeper] Keep-alive failed for ${accountId}: ${message}`);
-        }
-      });
-      await sleep(humanDelay(250, 900));
+    if (config.sessionKeeper.enabled) {
+      const accountIds = getActivePlaywrightAccountIds();
+      for (const accountId of accountIds) {
+        await keepAlivePlaywrightAccount(accountId).catch((error) => {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          if (
+            !message.includes("Target closed") &&
+            !message.includes("Page is closed")
+          ) {
+            console.warn(
+              `[SessionKeeper] Keep-alive failed for ${accountId}: ${message}`,
+            );
+          }
+        });
+        await sleep(humanDelay(250, 900));
+      }
+    }
+
+    const closed = await closeIdlePlaywrightAccounts(
+      config.playwright.idleContextTtlMs,
+    );
+    if (closed > 0) {
+      console.log(
+        `[SessionKeeper] Closed ${closed} idle Playwright context(s).`,
+      );
     }
   } finally {
     cycleInProgress = false;
@@ -33,7 +51,9 @@ async function runKeepAliveCycle(): Promise<void> {
 }
 
 export function startSessionKeeper(): void {
-  if (running || !config.sessionKeeper.enabled) return;
+  const hasKeepAliveWork = config.sessionKeeper.enabled;
+  const hasIdleCleanupWork = config.playwright.idleContextTtlMs > 0;
+  if (running || (!hasKeepAliveWork && !hasIdleCleanupWork)) return;
 
   running = true;
   intervalId = setInterval(() => {
@@ -42,7 +62,7 @@ export function startSessionKeeper(): void {
   intervalId.unref?.();
 
   console.log(
-    `[SessionKeeper] Started | interval=${config.sessionKeeper.intervalMs}ms idle=${config.sessionKeeper.idleMs}ms`,
+    `[SessionKeeper] Started | keepAlive=${config.sessionKeeper.enabled} interval=${config.sessionKeeper.intervalMs}ms idle=${config.sessionKeeper.idleMs}ms idleClose=${config.playwright.idleContextTtlMs}ms`,
   );
 }
 

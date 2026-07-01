@@ -13,7 +13,10 @@ test("session keeper starts and stops safely", () => {
   assert.equal(isSessionKeeperRunning(), false);
 
   startSessionKeeper();
-  assert.equal(isSessionKeeperRunning(), config.sessionKeeper.enabled);
+  assert.equal(
+    isSessionKeeperRunning(),
+    config.sessionKeeper.enabled || config.playwright.idleContextTtlMs > 0,
+  );
 
   stopSessionKeeper();
   assert.equal(isSessionKeeperRunning(), false);

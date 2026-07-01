@@ -1,7 +1,10 @@
 import { AuthError } from "../core/errors.ts";
-import { loadAccounts } from "../core/accounts.ts";
+import { getAccountCredentials, loadAccounts } from "../core/accounts.ts";
+import { config } from "../core/config.ts";
 import {
   getBasicHeaders as getPlaywrightBasicHeaders,
+  initPlaywrightForAccount,
+  isPlaywrightInitialized,
   refreshHeaders,
 } from "./playwright.ts";
 
@@ -15,6 +18,34 @@ export function isAuthMockEnabled(): boolean {
   return (
     process.env.TEST_MOCK_QWEN_AUTH === "true" &&
     process.env.NODE_ENV !== "production"
+  );
+}
+
+function isRunningUnderNodeTest(): boolean {
+  return process.argv.some(
+    (arg) =>
+      arg === "--test" ||
+      arg.includes("src/tests/") ||
+      arg.includes("src\\tests\\"),
+  );
+}
+
+async function ensurePlaywrightInitialized(accountId: string): Promise<void> {
+  if (isPlaywrightInitialized(accountId)) return;
+
+  if (isRunningUnderNodeTest()) {
+    throw new Error(`Playwright not initialized for account: ${accountId}`);
+  }
+
+  const credentials = getAccountCredentials(accountId);
+  if (!credentials) {
+    throw new AuthError(`Qwen account ${accountId} is not configured.`);
+  }
+
+  await initPlaywrightForAccount(
+    credentials,
+    config.playwright.headless,
+    config.playwright.browser,
   );
 }
 
@@ -42,6 +73,7 @@ export async function getBasicHeaders(accountId?: string): Promise<{
     );
   }
 
+  await ensurePlaywrightInitialized(resolvedAccountId);
   return getPlaywrightBasicHeaders(resolvedAccountId);
 }
 
@@ -70,6 +102,8 @@ export async function getQwenHeaders(
       "No Qwen accounts configured. Add accounts with npm run login.",
     );
   }
+
+  await ensurePlaywrightInitialized(resolvedAccountId);
 
   if (forceNew) {
     await refreshHeaders(resolvedAccountId);

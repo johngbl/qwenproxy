@@ -266,15 +266,10 @@ export async function acquireUpstreamStream(
         // Reset all profiles in background
         void (async () => {
           try {
-            const { refreshHeadersWithProfileReset } =
+            const { schedulePlaywrightProfileReset } =
               await import("../../services/playwright.ts");
             for (const acc of configuredAccounts) {
-              void refreshHeadersWithProfileReset(acc.id).catch((err) => {
-                console.warn(
-                  `[Playwright] Background profile reset failed for ${acc.id}:`,
-                  (err as Error).message,
-                );
-              });
+              schedulePlaywrightProfileReset(acc.id);
             }
           } catch (err) {
             console.warn(
@@ -402,15 +397,12 @@ export async function acquireUpstreamStream(
       markAccountRateLimited(accountId, 10 * 60 * 1000, "AntiBot");
       void (async () => {
         try {
-          const { refreshHeadersWithProfileReset } =
+          const { schedulePlaywrightProfileReset } =
             await import("../../services/playwright.ts");
           console.log(
-            `[Playwright] Background profile reset for ${accountEmail}...`,
+            `[Playwright] Scheduling profile reset for ${accountEmail}...`,
           );
-          await refreshHeadersWithProfileReset(accountId);
-          console.log(
-            `[Playwright] Background profile reset complete for ${accountEmail}.`,
-          );
+          schedulePlaywrightProfileReset(accountId);
         } catch (resetErr) {
           console.warn(
             `[Playwright] Background profile reset failed for ${accountEmail}:`,

@@ -318,7 +318,7 @@ export async function startServer(options?: {
     const { initPlaywrightForAccount } =
       await import("../services/playwright.ts");
 
-    const BATCH_SIZE = 5;
+    const BATCH_SIZE = config.playwright.initBatchSize;
 
     if (accounts.length > 0) {
       console.log(
