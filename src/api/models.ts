@@ -35,9 +35,24 @@ app.get("/v1/models", async (c) => {
 
     syncModelContextWindows(models);
 
+    // Generate variants with -no-thinking and -thinking suffixes (upstream: a63f054)
+    const allModels = [
+      ...models,
+      ...models.map((m) => ({
+        ...m,
+        id: `${m.id}-no-thinking`,
+        object: "model",
+      })),
+      ...models.map((m) => ({
+        ...m,
+        id: `${m.id}-thinking`,
+        object: "model",
+      })),
+    ];
+
     return c.json({
       object: "list",
-      data: models,
+      data: allModels,
     });
   } catch (error) {
     console.error("Error fetching models:", error);
@@ -51,7 +66,29 @@ app.get("/v1/models/:model", async (c) => {
     const models = await fetchQwenModels(getPreferredModelsAccountId());
     syncModelContextWindows(models);
 
-    const model = models.find((entry) => entry.id === modelId);
+    // Check for exact match first
+    let model = models.find((entry) => entry.id === modelId);
+
+    // If not found, check if it's a -no-thinking or -thinking variant (upstream: a63f054)
+    if (!model) {
+      const isNoThinkingVariant = modelId.endsWith("-no-thinking");
+      const isThinkingVariant = modelId.endsWith("-thinking");
+
+      if (isNoThinkingVariant || isThinkingVariant) {
+        const baseId = isNoThinkingVariant
+          ? modelId.replace("-no-thinking", "")
+          : modelId.replace("-thinking", "");
+        const baseModel = models.find((entry) => entry.id === baseId);
+
+        if (baseModel) {
+          model = {
+            ...baseModel,
+            id: modelId,
+            object: "model",
+          };
+        }
+      }
+    }
 
     if (!model) {
       return sendOpenAIError(c, new NotFoundError("Model not found"));

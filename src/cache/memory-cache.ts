@@ -32,6 +32,8 @@ export class MemoryCache {
   private totalCompressedBytes: number = 0;
   private compressionCount: number = 0;
   private mutationQueue: Promise<void> = Promise.resolve();
+  // Cache for compiled regex patterns in scan operations (upstream: a63f054)
+  private scanRegexCache: Map<string, RegExp> = new Map();
 
   constructor(options?: { prefix?: string; defaultTTL?: number }) {
     this.prefix = options?.prefix || "qwenbridge:";
@@ -211,7 +213,12 @@ export class MemoryCache {
   }
 
   async scan(pattern: string, _count: number = 100): Promise<string[]> {
-    const regex = new RegExp(this.prefix + pattern.replace(/\*/g, ".*"));
+    // Use cached regex for repeated patterns (upstream: a63f054)
+    let regex = this.scanRegexCache.get(pattern);
+    if (!regex) {
+      regex = new RegExp(this.prefix + pattern.replace(/\*/g, ".*"));
+      this.scanRegexCache.set(pattern, regex);
+    }
     const now = Date.now();
     const keys: string[] = [];
 

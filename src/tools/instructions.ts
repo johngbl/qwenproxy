@@ -1,4 +1,12 @@
 /**
+ * LRU-style cache for tool instructions to avoid rebuilding on every request.
+ * Key format: toolsJson + "##" + toolChoice
+ * Upstream: cb518e0
+ */
+const toolInstructionsCache = new Map<string, string>();
+const TOOL_CACHE_MAX_ENTRIES = 64;
+
+/**
  * Builds tool calling instructions for the system prompt.
  *
  * @param toolsJson - Stringified JSON array of available tools.
@@ -9,6 +17,13 @@ export function buildToolInstructions(
   toolsJson: string,
   toolChoice?: unknown,
 ): string {
+  // Check cache first
+  const cacheKey = `${toolsJson}##${JSON.stringify(toolChoice ?? null)}`;
+  const cached = toolInstructionsCache.get(cacheKey);
+  if (cached !== undefined) {
+    return cached;
+  }
+
   // Split tags to avoid proxy parser misinterpretation
   const toolOpen = "<" + "tool_call>";
   const toolClose = "</" + "tool_call>";
@@ -57,6 +72,12 @@ export function buildToolInstructions(
   ) {
     instructions += `CRITICAL: You MUST call the tool "${(toolChoice as any).function.name}" in this response.\n\n`;
   }
+
+  // Cache result (with LRU-style eviction)
+  if (toolInstructionsCache.size >= TOOL_CACHE_MAX_ENTRIES) {
+    toolInstructionsCache.clear();
+  }
+  toolInstructionsCache.set(cacheKey, instructions);
 
   return instructions;
 }

@@ -114,6 +114,16 @@ export class QwenSessionExpiredError extends AuthError {
   }
 }
 
+export class QwenUpstreamUnavailableError extends RetryableQwenStreamError {
+  readonly httpStatusCode: number;
+
+  constructor(message: string, httpStatusCode: number) {
+    super(message, 5000);
+    this.name = "QwenUpstreamUnavailableError";
+    this.httpStatusCode = httpStatusCode;
+  }
+}
+
 interface SessionEntry {
   accountId: string;
   parentId: string | null;
@@ -1244,7 +1254,8 @@ async function refillQwenChatPool(
     let isFirst = true;
     while ((precreatedChatSessions.get(key)?.length ?? 0) < targetSize) {
       if (!isFirst) {
-        await sleep(800 + Math.floor(Math.random() * 2200));
+        // Reduced delay for faster warm pool filling (upstream: 3806cf6)
+        await sleep(300 + Math.floor(Math.random() * 700));
       }
       isFirst = false;
       const chatId = await createQwenChatSession(headers, model);
@@ -1741,6 +1752,20 @@ export async function createQwenStream(
     if (!response.ok || !response.body) {
       const errText = await response.text().catch(() => "");
       const contentType = response.headers.get("content-type") || "";
+
+      // Handle 502/503/504 as retryable upstream unavailability
+      if (
+        response.status === 502 ||
+        response.status === 503 ||
+        response.status === 504
+      ) {
+        throw withCreatedChatMetadata(
+          new QwenUpstreamUnavailableError(
+            `Qwen upstream unavailable: ${response.status} ${response.statusText}`,
+            response.status,
+          ),
+        );
+      }
 
       if (contentType.includes("application/json")) {
         try {

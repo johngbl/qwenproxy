@@ -87,6 +87,31 @@ function closeBraces(
   return out;
 }
 
+/**
+ * Fixes missing opening quotes in JSON values.
+ * Handles cases like: {"key": value_without_quotes"}
+ * Upstream: a63f054, 9328bde
+ */
+function fixMissingOpeningQuotes(input: string): string {
+  let out = input;
+  let prev: string;
+  do {
+    prev = out;
+    // Pattern 1: {"key": value"} or {key: value"}
+    out = out.replace(
+      /([{,[]\s*"[a-zA-Z_][\w]*"\s*:\s*)([^"\s,}\]][^"\n]*?)"([\s,}\]])/g,
+      '$1"$2"$3',
+    );
+    out = out.replace(
+      /([{,[]\s*[a-zA-Z_][\w]*\s*:\s*)([^"\s,}\]][^"\n]*?)"([\s,}\]])/g,
+      '$1"$2"$3',
+    );
+    // Pattern 2: {: value"} - upstream 9328bde
+    out = out.replace(/(:\s*)([A-Za-z_][\w.-]*?)"([\s,}\]])/g, '$1"$2"$3');
+  } while (out !== prev);
+  return out;
+}
+
 export function robustParseJSON(str: string): any {
   if (isDebug) {
     logger.debug("[json] robustParseJSON: starting", {
@@ -143,6 +168,9 @@ export function robustParseJSON(str: string): any {
     /([{,]\s*)([a-zA-Z0-9_]+)\s*:\s*\2\s*:/g,
     "$1$2:",
   );
+
+  // Fix missing opening quotes in values (upstream: a63f054, 9328bde)
+  currentJson = fixMissingOpeningQuotes(currentJson);
 
   // Handle unquoted string values after colon (e.g., "command":export CI=true)
   // Matches: "key":value_without_quotes until comma, closing brace, or end

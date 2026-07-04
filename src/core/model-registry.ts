@@ -62,12 +62,14 @@ export function setModelContextWindow(
 }
 
 export function getModelContextWindow(modelId: string): number {
-  const baseId = modelId.replace("-no-thinking", "");
+  // Remove both -thinking and -no-thinking suffixes to get base model ID
+  const baseId = modelId.replace("-no-thinking", "").replace("-thinking", "");
   return modelContextWindows[baseId] ?? defaultContextWindow;
 }
 
 export function getModelTokenDivisor(modelId: string): number {
-  const baseId = modelId.replace("-no-thinking", "");
+  // Remove both -thinking and -no-thinking suffixes to get base model ID
+  const baseId = modelId.replace("-no-thinking", "").replace("-thinking", "");
   return modelTokenDivisors[baseId] ?? defaultTokenDivisor;
 }
 

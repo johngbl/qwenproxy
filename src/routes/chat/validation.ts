@@ -65,7 +65,10 @@ export async function parseRequestBody(c: Context): Promise<ParsedRequest> {
   const prompt = promptParts.join("");
   const currentPrompt = currentPromptParts.join("");
 
-  const modelId = body.model.replace("-no-thinking", "");
+  // Support both -no-thinking and -thinking suffixes (upstream: a63f054)
+  const modelId = body.model
+    .replace("-no-thinking", "")
+    .replace("-thinking", "");
   const enableThinking = !body.model.endsWith("-no-thinking");
 
   return {
