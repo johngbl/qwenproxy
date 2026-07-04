@@ -7,6 +7,7 @@ import {
   deleteQwenChat,
   QwenSessionExpiredError,
   QwenUpstreamUnavailableError,
+  QwenNetworkError,
   RetryableQwenStreamError,
   syncQwenRequestPersonalization,
   type LogicalThreadEntry,
@@ -757,6 +758,7 @@ async function tryCreateStreamWithRetry(
     const isRetryable =
       err instanceof RetryableQwenStreamError ||
       err instanceof QwenUpstreamUnavailableError ||
+      err instanceof QwenNetworkError ||
       err.message?.includes("in progress") ||
       err.message?.includes("Bad_Request") ||
       err.message?.includes("internal_error") ||
@@ -764,6 +766,10 @@ async function tryCreateStreamWithRetry(
       err.message?.includes("502 Bad Gateway") ||
       err.message?.includes("503 Service Unavailable") ||
       err.message?.includes("504 Gateway Timeout") ||
+      err.message?.includes("fetch failed") ||
+      err.message?.includes("ECONNREFUSED") ||
+      err.message?.includes("ETIMEDOUT") ||
+      err.message?.includes("ENOTFOUND") ||
       err?.upstreamCode === "internal_error";
     if (!isRetryable) {
       return { success: false, error: err };
@@ -772,6 +778,11 @@ async function tryCreateStreamWithRetry(
     // For upstream unavailability (502/503/504), use shorter retry delay
     if (err instanceof QwenUpstreamUnavailableError) {
       useDelay = 2000; // 2 seconds for upstream issues
+    }
+
+    // For network errors (fetch failed, etc.), use shorter retry delay
+    if (err instanceof QwenNetworkError) {
+      useDelay = 3000; // 3 seconds for network issues
     }
 
     console.warn(

@@ -124,6 +124,13 @@ export class QwenUpstreamUnavailableError extends RetryableQwenStreamError {
   }
 }
 
+export class QwenNetworkError extends RetryableQwenStreamError {
+  constructor(message: string) {
+    super(message, 3000);
+    this.name = "QwenNetworkError";
+  }
+}
+
 interface SessionEntry {
   accountId: string;
   parentId: string | null;
@@ -1710,8 +1717,20 @@ export async function createQwenStream(
         signal: controller.signal,
       });
     } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      // Treat network errors (fetch failed, timeout, DNS, etc.) as retryable
+      if (
+        errorMsg.includes("fetch failed") ||
+        errorMsg.includes("ECONNREFUSED") ||
+        errorMsg.includes("ETIMEDOUT") ||
+        errorMsg.includes("ENOTFOUND") ||
+        errorMsg.includes("network") ||
+        error instanceof TypeError
+      ) {
+        throw withCreatedChatMetadata(new QwenNetworkError(errorMsg));
+      }
       throw withCreatedChatMetadata(
-        error instanceof Error ? error : new Error(String(error)),
+        error instanceof Error ? error : new Error(errorMsg),
       );
     } finally {
       clearTimeout(timeoutId);
