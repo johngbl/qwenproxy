@@ -35,14 +35,14 @@ export function markAccountRateLimited(
       updateAccountCooldown(accountId, until, cooldownReason);
     } catch (err) {
       console.error(
-        `[AccountManager] Failed to save cooldown to DB for ${accountId}:`,
+        `❌ [AccountManager] Failed to save cooldown to DB for ${accountId}:`,
         (err as Error).message,
       );
     }
   }
 
   console.log(
-    `[AccountManager] Rate limited | ${accountId} | ${Math.round(duration / 1000)}s | until=${new Date(until).toISOString()}`,
+    `⏱️  [AccountManager] Cooldown set | ${accountId} | reason=${cooldownReason} | ${Math.round(duration / 1000)}s | until=${new Date(until).toISOString()}`,
   );
 }
 
@@ -53,7 +53,7 @@ export function clearAccountCooldown(accountId: string): void {
       updateAccountCooldown(accountId, 0, null);
     } catch (err) {
       console.error(
-        `[AccountManager] Failed to clear cooldown in DB for ${accountId}:`,
+        `❌ [AccountManager] Failed to clear cooldown in DB for ${accountId}:`,
         (err as Error).message,
       );
     }
@@ -73,7 +73,7 @@ export function getAccountCooldownInfo(
         updateAccountCooldown(accountId, 0, null);
       } catch (err) {
         console.error(
-          `[AccountManager] Failed to clear expired cooldown in DB:`,
+          `❌ [AccountManager] Failed to clear expired cooldown in DB:`,
           (err as Error).message,
         );
       }

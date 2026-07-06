@@ -32,11 +32,11 @@ try {
     const plugin = stealth.default();
     pwExtra.chromium.use(plugin);
     chromiumWithStealth = pwExtra.chromium;
-    console.log("[Playwright] Stealth plugin loaded");
+    console.log("🛡️  [Playwright] Stealth plugin loaded");
   }
 } catch {
   console.warn(
-    "[Playwright] playwright-extra/stealth not available, using regular playwright",
+    "⚠️  [Playwright] playwright-extra/stealth not available, using regular playwright",
   );
 }
 
@@ -100,6 +100,7 @@ type KillableProcess = {
 };
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const HEADER_CAPTURE_SETTLE_MS = 1500;
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -341,7 +342,7 @@ export async function getBasicHeaders(accountId: string): Promise<{
     // Auto-recover missing anti-fraud headers by triggering full header interception
     if (!bxUa || !bxUmidtoken) {
       console.log(
-        `[Playwright] Missing bx-ua/bx-umidtoken for ${accountId}, triggering header interception...`,
+        `🔄 [Playwright] Missing bx-ua/bx-umidtoken for ${accountId}, triggering header interception...`,
       );
       try {
         await refreshHeadersInternal(accountId);
@@ -351,7 +352,7 @@ export async function getBasicHeaders(accountId: string): Promise<{
         bxV = refreshedCache.headers["bx-v"] || bxV;
       } catch (err: any) {
         console.warn(
-          `[Playwright] Failed to auto-recover headers for ${accountId}: ${err.message}`,
+          `❌ [Playwright] Failed to auto-recover headers for ${accountId}: ${err.message}`,
         );
       }
     }
@@ -399,7 +400,7 @@ export async function initPlaywrightForAccount(
     const { engine, channel } = resolveBrowserEngine(browserType);
 
     console.log(
-      `[Playwright] Launching ${browserType} for ${maskEmail(account.email)}...`,
+      `🚀 [Playwright] Launching ${browserType} for ${maskEmail(account.email)}...`,
     );
 
     // Use playwright-extra with stealth if available, otherwise regular chromium
@@ -478,7 +479,7 @@ export async function initPlaywrightForAccount(
           }
         } else {
           console.log(
-            `[Playwright] Session validated for ${maskEmail(account.email)}.`,
+            `✅ [Playwright] Session validated for ${maskEmail(account.email)}.`,
           );
         }
       } catch (err: any) {
@@ -510,12 +511,12 @@ async function loginToQwen(
   const page = accountPages.get(accountId);
   if (!page) return false;
 
-  console.log(`[Playwright] Logging in ${maskEmail(email)}...`);
+  console.log(`🔐 [Playwright] Logging in ${maskEmail(email)}...`);
 
   // Try API login first
   const apiResult = await loginViaApi(page, email, password);
   if (apiResult) {
-    console.log(`[Playwright] API login successful for ${maskEmail(email)}`);
+    console.log(`✅ [Playwright] API login successful for ${maskEmail(email)}`);
     return true;
   }
 
@@ -525,7 +526,7 @@ async function loginToQwen(
   );
   const uiResult = await loginViaUi(page, email, password);
   if (uiResult) {
-    console.log(`[Playwright] UI login successful for ${maskEmail(email)}`);
+    console.log(`✅ [Playwright] UI login successful for ${maskEmail(email)}`);
     return true;
   }
 
@@ -591,7 +592,7 @@ async function loginViaApi(
 
     return false;
   } catch (err) {
-    console.warn(`[Playwright] API login error: ${err}`);
+    console.warn(`⚠️  [Playwright] API login error: ${err}`);
     return false;
   }
 }
@@ -624,7 +625,7 @@ async function loginViaUi(
     }
 
     // Fill email
-    console.log(`[Playwright] UI: Filling email...`);
+    console.log(`📝 [Playwright] UI: Filling email...`);
     await page.fill(emailSelector, email);
     await page.keyboard.press("Enter");
     await sleep(1500);
@@ -636,7 +637,7 @@ async function loginViaUi(
     });
 
     // Fill password
-    console.log(`[Playwright] UI: Filling password...`);
+    console.log(`📝 [Playwright] UI: Filling password...`);
     await page.fill(passwordSelector, password);
     await page.keyboard.press("Enter");
     await sleep(3000);
@@ -653,7 +654,7 @@ async function loginViaUi(
 
     return isLoggedIn;
   } catch (err) {
-    console.warn(`[Playwright] UI login error: ${err}`);
+    console.warn(`⚠️  [Playwright] UI login error: ${err}`);
     return false;
   }
 }
@@ -676,7 +677,7 @@ async function captureHeaders(accountId: string): Promise<void> {
     };
 
     const timeout = setTimeout(async () => {
-      console.warn(`[Playwright] Header capture timeout for ${accountId}`);
+      console.warn(`⏱️  [Playwright] Header capture timeout for ${accountId}`);
       await page
         .unroute("**/api/v2/chat/completions*", routeHandler)
         .catch(() => {});
@@ -701,12 +702,13 @@ async function captureHeaders(accountId: string): Promise<void> {
       cache.lastRefresh = Date.now();
       touchAccountActivity(accountId);
 
-      console.log(`[Playwright] Headers captured for ${accountId}`);
+      console.log(`✅ [Playwright] Headers captured for ${accountId}`);
 
       await route.abort("aborted").catch(() => {});
       await page
         .unroute("**/api/v2/chat/completions*", routeHandler)
         .catch(() => {});
+      await sleep(HEADER_CAPTURE_SETTLE_MS);
       done();
     };
 
@@ -763,7 +765,7 @@ async function captureHeaders(accountId: string): Promise<void> {
             await page.keyboard.press("Enter");
           }
         } catch (err) {
-          console.warn(`[Playwright] Error triggering request: ${err}`);
+          console.warn(`❌ [Playwright] Error triggering request: ${err}`);
           clearTimeout(timeout);
           await page
             .unroute("**/api/v2/chat/completions*", routeHandler)
@@ -899,10 +901,10 @@ export function schedulePlaywrightProfileReset(accountId: string): void {
     .catch(() => {})
     .then(async () => {
       if (closingAllPlaywright) return;
-      console.log(`[Playwright] Queued profile reset for ${accountId}...`);
+      console.log(`🔄 [Playwright] Queued profile reset for ${accountId}...`);
       await refreshHeadersWithProfileReset(accountId);
       console.log(
-        `[Playwright] Queued profile reset complete for ${accountId}.`,
+        `✅ [Playwright] Queued profile reset complete for ${accountId}.`,
       );
     })
     .catch((error) => {

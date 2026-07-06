@@ -91,11 +91,11 @@ export async function chatCompletionsStop(c: Context) {
     stream.abortController.abort();
     removeStream(streamKey);
 
-    console.log(`[Stop] Generation stopped for chat_id=${chat_id}`);
+    console.log(`🛑 [Stop] Generation stopped for chat_id=${chat_id}`);
     return c.json({ success: true });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error(`[Stop] Error | ${message}`);
+    console.error(`❌ [Stop] Error | ${message}`);
     return sendOpenAIError(c, err, 500);
   }
 }

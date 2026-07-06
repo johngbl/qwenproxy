@@ -194,9 +194,9 @@ test(
       fetch: app.fetch,
       port: port,
     });
-    console.log(`[RealTest] Local Hono server started on port ${port}`);
+    console.log(`🚀 [RealTest] Local Hono server started on port ${port}`);
 
-    console.log("[RealTest] Using Playwright-backed auth...");
+    console.log("🔐 [RealTest] Using Playwright-backed auth...");
     await Promise.resolve();
 
     // Dynamic conversation prompt sequence (explicitly instructing tool calls)
@@ -398,9 +398,9 @@ test(
       await Promise.resolve();
       if (server) {
         server.close();
-        console.log("[RealTest] Server stopped.");
+        console.log("🛑 [RealTest] Server stopped.");
       } else {
-        console.log("[RealTest] Server was not started.");
+        console.log("⚠️  [RealTest] Server was not started.");
       }
     }
   },

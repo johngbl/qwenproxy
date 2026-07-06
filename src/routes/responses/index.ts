@@ -194,61 +194,68 @@ app.post("/v1/responses", async (c) => {
             ) {
               streamClosed = true;
             } else {
-              console.error("[Responses] Stream error:", streamError.message);
+              console.error(
+                "❌ [Responses] Stream error:",
+                streamError.message,
+              );
             }
           } finally {
             // ALWAYS emit final event (if stream is still open)
-            if (streamClosed) return;
-            try {
-              const finalOutput = buildFinalOutput(streamState);
-              const finalUsage = buildFinalUsage(streamState, completionTokens);
-              const finalResponse = finalizeResponse(
-                inProgressResponse,
-                finalOutput,
-                finalUsage,
-              );
+            if (!streamClosed) {
+              try {
+                const finalOutput = buildFinalOutput(streamState);
+                const finalUsage = buildFinalUsage(
+                  streamState,
+                  completionTokens,
+                );
+                const finalResponse = finalizeResponse(
+                  inProgressResponse,
+                  finalOutput,
+                  finalUsage,
+                );
 
-              if (streamError) {
-                enqueue("response.failed", {
-                  type: "response.failed",
-                  response: {
-                    ...finalResponse,
-                    status: "failed",
-                    error: {
-                      code: "api_error",
-                      message: streamError.message,
+                if (streamError) {
+                  enqueue("response.failed", {
+                    type: "response.failed",
+                    response: {
+                      ...finalResponse,
+                      status: "failed",
+                      error: {
+                        code: "api_error",
+                        message: streamError.message,
+                      },
                     },
-                  },
-                });
-              } else {
-                enqueue("response.completed", {
-                  type: "response.completed",
-                  response: finalResponse,
-                });
+                  });
+                } else {
+                  enqueue("response.completed", {
+                    type: "response.completed",
+                    response: finalResponse,
+                  });
 
-                if (req.store !== false) {
-                  storeResponse(responseId, finalResponse, [
-                    ...chatRequest.messages,
-                    ...responsesOutputToChatMessages(finalOutput),
-                  ]);
+                  if (req.store !== false) {
+                    storeResponse(responseId, finalResponse, [
+                      ...chatRequest.messages,
+                      ...responsesOutputToChatMessages(finalOutput),
+                    ]);
+                  }
+
+                  console.log(
+                    `[Responses] Response | ${responseId} | ${finalUsage.input_tokens} input / ${finalUsage.output_tokens} output`,
+                  );
                 }
-
-                console.log(
-                  `[Responses] Response | ${responseId} | ${finalUsage.input_tokens} input / ${finalUsage.output_tokens} output`,
+              } catch (finalError) {
+                console.error(
+                  "[Responses] Failed to emit final event:",
+                  finalError,
                 );
               }
-            } catch (finalError) {
-              console.error(
-                "[Responses] Failed to emit final event:",
-                finalError,
-              );
-            }
 
-            // Close the stream
-            try {
-              if (!streamClosed) controller.close();
-            } catch {
-              // Already closed
+              // Close the stream
+              try {
+                controller.close();
+              } catch {
+                // Already closed
+              }
             }
           }
         },
@@ -307,7 +314,7 @@ app.post("/v1/responses", async (c) => {
       return c.json(responsesResponse);
     }
   } catch (error) {
-    console.error("[Responses] Error:", error);
+    console.error("❌ [Responses] Error:", error);
     return responsesError(c, "api_error", "Internal server error", 500);
   }
 });

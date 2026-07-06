@@ -1113,6 +1113,6 @@ run().catch(async (error: unknown) => {
   } catch {
     // Best effort cleanup.
   }
-  console.error("[benchmark] Failed:", error);
+  console.error("❌ [benchmark] Failed:", error);
   process.exit(1);
 });

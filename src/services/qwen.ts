@@ -357,7 +357,9 @@ export function clearAllSessionsForAccount(accountId: string): void {
     removed += result.changes;
   } catch {}
 
-  console.log(`[Qwen] Cleared ${removed} session(s) for account ${accountId}`);
+  console.log(
+    `🧹 [Qwen] Cleared ${removed} session(s) for account ${accountId}`,
+  );
 }
 
 function getSessionParent(
@@ -545,6 +547,80 @@ function buildCapturedQwenHeaders(
   });
 }
 
+const QWEN_SAFE_SETTINGS_PATCH = {
+  ui: {
+    autoTags: false,
+    largeTextAsFile: false,
+    splitLargeChunks: false,
+  },
+  mcp_remind: false,
+  memory: {
+    enable_memory: false,
+    enable_history_memory: false,
+    memory_version_reminder: false,
+  },
+  tools_enabled: {
+    web_extractor: false,
+    web_search_image: false,
+    web_search: false,
+    image_gen_tool: false,
+    code_interpreter: false,
+    history_retriever: false,
+    image_edit_tool: false,
+    bio: false,
+    image_zoom_in_tool: false,
+  },
+} as const;
+
+const QWEN_SAFE_SETTINGS_HASH = crypto
+  .createHash("sha256")
+  .update(JSON.stringify(QWEN_SAFE_SETTINGS_PATCH))
+  .digest("hex")
+  .slice(0, 12);
+
+function buildQwenSettingsUpdatePayload(
+  currentSettings: any,
+  instruction: string,
+): Record<string, unknown> {
+  return {
+    ...(currentSettings && typeof currentSettings === "object"
+      ? currentSettings
+      : {}),
+    ui: {
+      ...(currentSettings?.ui && typeof currentSettings.ui === "object"
+        ? currentSettings.ui
+        : {}),
+      ...QWEN_SAFE_SETTINGS_PATCH.ui,
+    },
+    mcp_remind: QWEN_SAFE_SETTINGS_PATCH.mcp_remind,
+    memory: {
+      ...(currentSettings?.memory && typeof currentSettings.memory === "object"
+        ? currentSettings.memory
+        : {}),
+      ...QWEN_SAFE_SETTINGS_PATCH.memory,
+    },
+    tools_enabled: {
+      ...(currentSettings?.tools_enabled &&
+      typeof currentSettings.tools_enabled === "object"
+        ? currentSettings.tools_enabled
+        : {}),
+      ...QWEN_SAFE_SETTINGS_PATCH.tools_enabled,
+    },
+    personalization: {
+      ...(currentSettings?.personalization &&
+      typeof currentSettings.personalization === "object"
+        ? currentSettings.personalization
+        : {}),
+      name: "",
+      description:
+        "Always follow the active personalized instructions. Always think in English, and always answer in the language of the user's question. Always remember and consider the full conversation history and context when responding.",
+      style: null,
+      instruction,
+      enable_for_new_chat: true,
+    },
+  };
+}
+
 async function readJsonTextResponse(
   response: Response,
   options: { strict?: boolean } = {},
@@ -583,38 +659,27 @@ export async function syncQwenRequestPersonalization(
     referer: `${config.qwen.baseUrl}/settings/personalization`,
   });
 
-  const payload = {
-    personalization: {
-      name: "",
-      description:
-        "Always follow the active personalized instructions. Always think in English, and always answer in the language of the user's question. Always remember and consider the full conversation history and context when responding.",
-      style: null,
-      instruction,
-      enable_for_new_chat: true,
-    },
-  };
+  let currentSettings: any = null;
+  let payload = buildQwenSettingsUpdatePayload(currentSettings, instruction);
 
   const sent = textSize(instruction);
+  const syncHash = sent.hash ? `${sent.hash}:${QWEN_SAFE_SETTINGS_HASH}` : null;
 
   // 1. Check memory cache
   const cachedHash = lastSyncedPersonalizationHashes.get(cacheKey);
-  if (sent.hash && cachedHash === sent.hash) {
+  if (syncHash && cachedHash === syncHash) {
     rememberActivePersonalization(cacheKey, instruction, metadata, "memory");
-    console.log(
-      `[Qwen] Personalization unchanged | ${metadata.model || "?"} | ${metadata.toolsCount ?? 0} tool(s) | ${sent.chars} chars`,
-    );
+    // Personalization unchanged - no log needed
     return;
   }
 
   // 2. Check DB cache (survives restarts)
-  if (sent.hash && !cachedHash) {
+  if (syncHash && !cachedHash) {
     const dbHash = getPersonalizationHashFromDb(cacheKey);
-    if (dbHash === sent.hash) {
-      lastSyncedPersonalizationHashes.set(cacheKey, sent.hash);
+    if (dbHash === syncHash) {
+      lastSyncedPersonalizationHashes.set(cacheKey, syncHash);
       rememberActivePersonalization(cacheKey, instruction, metadata, "db");
-      console.log(
-        `[Qwen] Personalization unchanged (DB) | ${metadata.model || "?"} | ${metadata.toolsCount ?? 0} tool(s) | ${sent.chars} chars`,
-      );
+      // Personalization unchanged (DB) - no log needed
       return;
     }
   }
@@ -622,7 +687,7 @@ export async function syncQwenRequestPersonalization(
   let existing = { chars: null, bytes: null, hash: null } as ReturnType<
     typeof textSize
   >;
-  if (sent.hash && !cachedHash && config.qwen.personalizationVerifyGet) {
+  if (syncHash && !cachedHash && config.qwen.personalizationVerifyGet) {
     try {
       const existingResponse = await fetch(
         `${config.qwen.baseUrl}/api/v2/users/user/settings`,
@@ -633,19 +698,28 @@ export async function syncQwenRequestPersonalization(
       );
       const { json: existingJson } =
         await readJsonTextResponse(existingResponse);
+      currentSettings = existingJson?.data ?? null;
+      payload = buildQwenSettingsUpdatePayload(currentSettings, instruction);
       existing = textSize(existingJson?.data?.personalization?.instruction);
-      if (existing.hash === sent.hash) {
-        lastSyncedPersonalizationHashes.set(cacheKey, sent.hash);
-        setPersonalizationHashInDb(cacheKey, sent.hash);
+      const existingSafeSettingsApplied =
+        existingJson?.data?.ui?.largeTextAsFile === false &&
+        existingJson?.data?.ui?.splitLargeChunks === false &&
+        existingJson?.data?.ui?.autoTags === false &&
+        existingJson?.data?.mcp_remind === false &&
+        existingJson?.data?.memory?.enable_memory === false &&
+        existingJson?.data?.memory?.enable_history_memory === false &&
+        existingJson?.data?.tools_enabled?.web_search === false &&
+        existingJson?.data?.tools_enabled?.code_interpreter === false;
+      if (existing.hash === sent.hash && existingSafeSettingsApplied) {
+        lastSyncedPersonalizationHashes.set(cacheKey, syncHash);
+        setPersonalizationHashInDb(cacheKey, syncHash);
         rememberActivePersonalization(
           cacheKey,
           instruction,
           metadata,
           "verified",
         );
-        console.log(
-          `[Qwen] Personalization unchanged | ${metadata.model || "?"} | ${metadata.toolsCount ?? 0} tool(s) | ${sent.chars} chars | verified=true`,
-        );
+        // Personalization unchanged (verified) - no log needed
         logger.debug("[Qwen] personalization sync skipped after GET", {
           accountId: cacheKey,
           model: metadata.model || null,
@@ -669,6 +743,32 @@ export async function syncQwenRequestPersonalization(
   async function attemptPost(
     headers: Record<string, string>,
   ): Promise<{ raw: string; json: any }> {
+    if (!currentSettings) {
+      try {
+        const settingsResponse = await fetch(
+          `${config.qwen.baseUrl}/api/v2/users/user/settings`,
+          {
+            method: "GET",
+            headers: buildCapturedQwenHeaders(headers, {
+              referer: `${config.qwen.baseUrl}/settings/personalization`,
+            }),
+          },
+        );
+        const { json: settingsJson } =
+          await readJsonTextResponse(settingsResponse);
+        currentSettings = settingsJson?.data ?? null;
+        payload = buildQwenSettingsUpdatePayload(currentSettings, instruction);
+      } catch (err) {
+        logger.debug(
+          "[Qwen] settings GET before update failed; using safe partial payload",
+          {
+            accountId: cacheKey,
+            error: err instanceof Error ? err.message : String(err),
+          },
+        );
+      }
+    }
+
     const reqHeaders = buildCapturedQwenHeaders(headers, {
       referer: `${config.qwen.baseUrl}/settings/personalization`,
     });
@@ -741,13 +841,13 @@ export async function syncQwenRequestPersonalization(
 
   const matchReturned = returned.hash !== null && returned.hash === sent.hash;
   const matchStored = stored.hash === null ? null : stored.hash === sent.hash;
-  if (sent.hash && (matchReturned || matchStored === true)) {
-    lastSyncedPersonalizationHashes.set(cacheKey, sent.hash);
-    setPersonalizationHashInDb(cacheKey, sent.hash);
+  if (syncHash && (matchReturned || matchStored === true)) {
+    lastSyncedPersonalizationHashes.set(cacheKey, syncHash);
+    setPersonalizationHashInDb(cacheKey, syncHash);
     rememberActivePersonalization(cacheKey, instruction, metadata, "synced");
   }
   console.log(
-    `[Qwen] Personalization synced | ${metadata.model || "?"} | ${metadata.toolsCount ?? 0} tool(s) | ${sent.chars} chars${matchStored === null ? "" : ` | verified=${matchStored}`}`,
+    `✅ [Qwen] Personalization synced | ${metadata.model || "?"} | ${metadata.toolsCount ?? 0} tool(s) | ${sent.chars} chars${matchStored === null ? "" : ` | verified=${matchStored}`}`,
   );
   logger.debug("[Qwen] personalization sync details", {
     accountId: cacheKey,
@@ -820,11 +920,11 @@ export async function disableNativeTools(accountId?: string): Promise<void> {
           const text = await response.text();
           lastError = `${response.status} - ${text}`;
           console.warn(
-            `[Qwen] Failed to disable native tools for ${cacheKey} (attempt ${attempt}/${DISABLE_TOOLS_MAX_RETRIES}): ${lastError}`,
+            `⚠️  [Qwen] Failed to disable native tools for ${cacheKey} (attempt ${attempt}/${DISABLE_TOOLS_MAX_RETRIES}): ${lastError}`,
           );
         } else {
           console.log(
-            `[Qwen] Native tools disabled successfully for ${cacheKey}.`,
+            `✅ [Qwen] Native tools disabled successfully for ${cacheKey}.`,
           );
           nativeToolsDisabled.add(cacheKey);
           return;
@@ -839,7 +939,9 @@ export async function disableNativeTools(accountId?: string): Promise<void> {
 
       if (attempt < DISABLE_TOOLS_MAX_RETRIES) {
         const backoff = DISABLE_TOOLS_BACKOFF_MS * attempt;
-        console.log(`[Qwen] Retrying disable native tools in ${backoff}ms...`);
+        console.log(
+          `🔄 [Qwen] Retrying disable native tools in ${backoff}ms...`,
+        );
         await new Promise((r) => setTimeout(r, backoff));
       }
     }

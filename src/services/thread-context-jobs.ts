@@ -114,7 +114,7 @@ async function processSummaryQueue(): Promise<void> {
 
     void (async () => {
       try {
-        console.log(`[ThreadContext] Summary started | ${job.reason}`);
+        console.log(`🔄 [ThreadContext] Summary started | ${job.reason}`);
         logger.debug("[thread-context] summary job started", {
           sessionId: job.sessionId,
           reason: job.reason,

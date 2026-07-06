@@ -75,6 +75,38 @@ function extractChatSessionId(chunk: any): string | null {
   );
 }
 
+function isRetryableInvalidInputError(
+  errCode: string,
+  errDetails: string,
+): boolean {
+  const normalizedCode = errCode.toLowerCase();
+  const details = errDetails.toLowerCase();
+  return (
+    normalizedCode === "invalid_input" &&
+    (details.includes("entrada ou anexo inválido") ||
+      details.includes("invalid input") ||
+      details.includes("invalid attachment"))
+  );
+}
+
+function createRetryableInvalidInputError(
+  errCode: string,
+  errDetails: string,
+): RetryableQwenStreamError {
+  const error = new RetryableQwenStreamError(
+    `Qwen retryable invalid input: ${errCode}: ${errDetails.substring(0, 200)}`,
+    config.retry.baseDelayMs,
+  ) as RetryableQwenStreamError & {
+    upstreamCode?: string;
+    forceNewChat?: boolean;
+    retryWithFullPrompt?: boolean;
+  };
+  error.upstreamCode = errCode;
+  error.forceNewChat = true;
+  error.retryWithFullPrompt = true;
+  return error;
+}
+
 export interface AssistantCompleteEvent {
   sessionId: string | null;
   accountId: string;
@@ -281,7 +313,7 @@ export async function processNonStreamingResponse(
         if (dataStr === "[DONE]") continue;
 
         if (upstreamDebugEnabled) {
-          console.log(`[Upstream] Chunk | ${dataStr.substring(0, 500)}`);
+          console.log(`📤 [Upstream] Chunk | ${dataStr.substring(0, 500)}`);
         }
 
         try {
@@ -321,6 +353,10 @@ export async function processNonStreamingResponse(
                 `Qwen quota: ${errCode}: ${errDetails.substring(0, 200)}`,
                 config.retry.baseDelayMs,
               );
+            }
+
+            if (isRetryableInvalidInputError(errCode, errDetails)) {
+              throw createRetryableInvalidInputError(errCode, errDetails);
             }
 
             throw new QwenUpstreamError(
@@ -525,7 +561,7 @@ export async function processNonStreamingResponse(
     }
 
     console.log(
-      `[Chat] Response sent | ${activeAccountLabel} | ${usage.prompt_tokens} prompt / ${usage.completion_tokens} completion / ${usage.total_tokens} total tokens`,
+      `✅ [Chat] Response sent | ${activeAccountLabel} | ${usage.prompt_tokens} prompt / ${usage.completion_tokens} completion / ${usage.total_tokens} total tokens`,
     );
     logTokenEstimationSample({
       model: body.model,
@@ -685,7 +721,9 @@ export async function processStreamingResponse(
                 }),
               },
             ).catch((err) => {
-              console.error(`[Chat] Error calling Qwen stop: ${err.message}`);
+              console.error(
+                `❌ [Chat] Error calling Qwen stop: ${err.message}`,
+              );
             });
           } else {
             console.log(
@@ -698,11 +736,15 @@ export async function processStreamingResponse(
           streamData?.abortController.abort();
         } catch (abortErr: any) {
           if (abortErr.name !== "AbortError") {
-            console.error(`[Chat] Error aborting stream: ${abortErr.message}`);
+            console.error(
+              `❌ [Chat] Error aborting stream: ${abortErr.message}`,
+            );
           }
         }
       } catch (err: any) {
-        console.error(`[Chat] Error during disconnect cleanup: ${err.message}`);
+        console.error(
+          `❌ [Chat] Error during disconnect cleanup: ${err.message}`,
+        );
       }
 
       if (heartbeatTimeout) {
@@ -996,7 +1038,7 @@ export async function processStreamingResponse(
           }
 
           if (upstreamDebugEnabled) {
-            console.log(`[Upstream] Chunk | ${dataStr.substring(0, 500)}`);
+            console.log(`📤 [Upstream] Chunk | ${dataStr.substring(0, 500)}`);
           }
 
           // Fast-path: simple text delta (avoids JSON.parse for ~90% of chunks)
@@ -1065,6 +1107,10 @@ export async function processStreamingResponse(
                   `Qwen quota: ${errCode}: ${errDetails.substring(0, 200)}`,
                   config.retry.baseDelayMs,
                 );
+              }
+
+              if (isRetryableInvalidInputError(errCode, errDetails)) {
+                throw createRetryableInvalidInputError(errCode, errDetails);
               }
 
               throw new QwenUpstreamError(
@@ -1424,7 +1470,7 @@ export async function processStreamingResponse(
         }
 
         console.log(
-          `[Chat] Response sent | ${activeAccountLabel} | ${usage.prompt_tokens} prompt / ${usage.completion_tokens} completion / ${usage.total_tokens} total tokens`,
+          `✅ [Chat] Response sent | ${activeAccountLabel} | ${usage.prompt_tokens} prompt / ${usage.completion_tokens} completion / ${usage.total_tokens} total tokens`,
         );
         logTokenEstimationSample({
           model: body.model,
@@ -1503,7 +1549,7 @@ export function handleChatCompletionsError(c: Context, err: unknown): Response {
   const message = err instanceof Error ? err.message : String(err);
   const code = classified.code || "unknown";
   const status = classified.statusCode;
-  console.error(`[Chat] Error | ${status} ${code} | ${message}`);
+  console.error(`❌ [Chat] Error | ${status} ${code} | ${message}`);
 
   return sendOpenAIError(c, err);
 }

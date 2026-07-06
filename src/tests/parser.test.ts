@@ -291,6 +291,56 @@ test("StreamingToolParser: accepts declared tool names from flat tool definition
   });
 });
 
+test("StreamingToolParser: fuzzy-matches declared tool names safely", () => {
+  const parser = new StreamingToolParser(TOOLS);
+
+  const result = parser.feed(
+    '<tool_call>{"name":"readFile","arguments":{"path":"src/index.ts"}}</tool_call>',
+  );
+
+  assert.strictEqual(result.text, "");
+  assert.strictEqual(result.toolCalls.length, 1);
+  assert.strictEqual(result.toolCalls[0].name, "read_file");
+  assert.deepStrictEqual(result.toolCalls[0].arguments, {
+    path: "src/index.ts",
+  });
+});
+
+test("StreamingToolParser: parses case-insensitive tool close tags", () => {
+  const parser = new StreamingToolParser(TOOLS);
+
+  const result = parser.feed(
+    '<tool_call>{"name":"read_file","arguments":{"path":"package.json"}}</TOOL_CALL>',
+  );
+
+  assert.strictEqual(result.text, "");
+  assert.strictEqual(result.toolCalls.length, 1);
+  assert.strictEqual(result.toolCalls[0].name, "read_file");
+  assert.deepStrictEqual(result.toolCalls[0].arguments, {
+    path: "package.json",
+  });
+});
+
+test("StreamingToolParser: parses double-escaped JSON argument strings", () => {
+  const parser = new StreamingToolParser(EDIT_FILE_TOOLS);
+
+  const escapedEdits = JSON.stringify([
+    { old_text: "a", new_text: "b" },
+  ]).replaceAll('"', "\\" + '"');
+  const payload = `<tool_call>${JSON.stringify({
+    name: "edit_file",
+    arguments: { path: "src/a.ts", edits: escapedEdits },
+  })}</tool_call>`;
+  const result = parser.feed(payload);
+
+  assert.strictEqual(result.text, "");
+  assert.strictEqual(result.toolCalls.length, 1);
+  assert.strictEqual(result.toolCalls[0].name, "edit_file");
+  assert.deepStrictEqual(result.toolCalls[0].arguments.edits, [
+    { old_text: "a", new_text: "b" },
+  ]);
+});
+
 test("StreamingToolParser: parses JSON-stringified nested argument fields", () => {
   const parser = new StreamingToolParser(EDIT_FILE_TOOLS);
   const edits = [

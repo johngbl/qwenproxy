@@ -55,7 +55,7 @@ app.get("/v1/models", async (c) => {
       data: allModels,
     });
   } catch (error) {
-    console.error("Error fetching models:", error);
+    console.error("❌ [Models] Error fetching models:", error);
     return sendOpenAIError(c, error);
   }
 });
@@ -96,7 +96,7 @@ app.get("/v1/models/:model", async (c) => {
 
     return c.json(model);
   } catch (error) {
-    console.error("Error fetching model:", error);
+    console.error("❌ [Models] Error fetching model:", error);
     return sendOpenAIError(c, error);
   }
 });

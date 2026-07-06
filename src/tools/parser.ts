@@ -44,13 +44,44 @@ interface ActiveIncrementalToolCall {
 
 const TOOL_END = "</" + "tool_call>";
 
+function normalizeToolNameForMatch(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function parseJsonishString(value: string): unknown {
+  const trimmed = value.trim();
+  const candidates = [trimmed];
+
+  if (trimmed.includes('\\"')) {
+    candidates.push(trimmed.replace(/\\"/g, '"'));
+  }
+
+  if (trimmed.includes("\\\\")) {
+    candidates.push(trimmed.replace(/\\\\/g, "\\"));
+  }
+
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(candidate);
+    } catch {}
+
+    if (candidate.startsWith("{")) {
+      try {
+        return robustParseJSON(candidate);
+      } catch {}
+    }
+  }
+
+  return undefined;
+}
+
 function advanceMarkdownCodeState(
   text: string,
   initialDelimiterLength = 0,
 ): number {
   let delimiterLength = initialDelimiterLength;
 
-  for (let i = 0; i < text.length; ) {
+  for (let i = 0; i < text.length;) {
     if (text[i] !== "`") {
       i++;
       continue;
@@ -79,7 +110,7 @@ function findNextToolOpenTagOutsideMarkdownCode(
 ): { index: number; openTag: string } | null {
   let delimiterLength = initialDelimiterLength;
 
-  for (let i = 0; i < buffer.length; ) {
+  for (let i = 0; i < buffer.length;) {
     if (buffer[i] === "`") {
       let runLength = 1;
       while (i + runLength < buffer.length && buffer[i + runLength] === "`") {
@@ -116,7 +147,7 @@ function findPartialToolOpenIndexOutsideMarkdownCode(
   let delimiterLength = initialDelimiterLength;
   const lowerToolStart = TOOL_START_LITERAL.toLowerCase();
 
-  for (let i = 0; i < buffer.length; ) {
+  for (let i = 0; i < buffer.length;) {
     if (buffer[i] === "`") {
       let runLength = 1;
       while (i + runLength < buffer.length && buffer[i + runLength] === "`") {
@@ -677,6 +708,7 @@ export class StreamingToolParser {
   private declaredToolNames: string[] = [];
   private declaredToolNameSet = new Set<string>();
   private toolByName = new Map<string, ToolDefinitionLike>();
+  private normalizedDeclaredToolNames = new Map<string, string>();
   private markdownCodeDelimiterLength = 0;
   private incrementalToolCalls = false;
   private activeIncrementalToolCall: ActiveIncrementalToolCall | null = null;
@@ -707,6 +739,7 @@ export class StreamingToolParser {
     this.declaredToolNames = [];
     this.declaredToolNameSet = new Set<string>();
     this.toolByName = new Map<string, ToolDefinitionLike>();
+    this.normalizedDeclaredToolNames = new Map<string, string>();
 
     for (const tool of tools) {
       const name = this.getToolName(tool);
@@ -714,6 +747,12 @@ export class StreamingToolParser {
       this.declaredToolNames.push(name);
       this.declaredToolNameSet.add(name);
       this.toolByName.set(name, tool);
+      const normalizedName = normalizeToolNameForMatch(name);
+      if (!this.normalizedDeclaredToolNames.has(normalizedName)) {
+        this.normalizedDeclaredToolNames.set(normalizedName, name);
+      } else {
+        this.normalizedDeclaredToolNames.set(normalizedName, "");
+      }
     }
   }
 
@@ -744,6 +783,25 @@ export class StreamingToolParser {
     return getToolDefinitionProperties(tool);
   }
 
+  private resolveDeclaredToolName(name: string): string | null {
+    if (!name) return null;
+    if (this.declaredToolNameSet.size === 0) return name;
+    if (this.declaredToolNameSet.has(name)) return name;
+
+    const normalized = normalizeToolNameForMatch(name);
+    const candidate = this.normalizedDeclaredToolNames.get(normalized);
+    if (candidate) {
+      logger.warn("[parser] Fuzzy-matched tool name to declared tool", {
+        emittedToolName: name,
+        matchedToolName: candidate,
+        declaredTools: this.declaredToolNames,
+      });
+      return candidate;
+    }
+
+    return null;
+  }
+
   private normalizeArgumentsForTool(
     name: string,
     args: Record<string, unknown>,
@@ -772,24 +830,16 @@ export class StreamingToolParser {
       if (typeof value !== "string") continue;
 
       const trimmed = value.trim();
-      if (
-        !(
-          (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
-          (trimmed.startsWith("[") && trimmed.endsWith("]"))
-        )
-      ) {
+      if (!(
+        (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+        (trimmed.startsWith("[") && trimmed.endsWith("]"))
+      )) {
         continue;
       }
 
-      try {
-        coerced[key] = JSON.parse(trimmed);
-        continue;
-      } catch {}
-
-      if (trimmed.startsWith("{")) {
-        try {
-          coerced[key] = robustParseJSON(trimmed);
-        } catch {}
+      const parsed = parseJsonishString(trimmed);
+      if (parsed !== undefined) {
+        coerced[key] = parsed;
       }
     }
 
@@ -959,8 +1009,7 @@ export class StreamingToolParser {
   }
 
   private isDeclaredToolName(name: string): boolean {
-    if (!name || this.declaredToolNameSet.size === 0) return true;
-    return this.declaredToolNameSet.has(name);
+    return this.resolveDeclaredToolName(name) !== null;
   }
 
   private preserveLiteralToolCall(
@@ -1303,7 +1352,8 @@ export class StreamingToolParser {
       this.tools,
     );
     if (xmlParsed) {
-      if (!this.isDeclaredToolName(xmlParsed.name)) {
+      const resolvedXmlName = this.resolveDeclaredToolName(xmlParsed.name);
+      if (!resolvedXmlName) {
         this.preserveLiteralToolCall(
           content,
           result,
@@ -1311,6 +1361,7 @@ export class StreamingToolParser {
         );
         return;
       }
+      xmlParsed.name = resolvedXmlName;
       if (isToolcallDebugEnabled()) {
         logger.debug(
           "[parser] processToolContent: XML parameter format parsed successfully",
@@ -1347,6 +1398,10 @@ export class StreamingToolParser {
             (tc: ParsedToolCall | null): tc is ParsedToolCall => tc !== null,
           );
 
+        for (const tc of parsedCalls) {
+          const resolvedName = this.resolveDeclaredToolName(tc.name);
+          if (resolvedName) tc.name = resolvedName;
+        }
         const undeclaredToolNames = parsedCalls
           .map((tc) => tc.name)
           .filter((name) => !this.isDeclaredToolName(name));
@@ -1388,6 +1443,10 @@ export class StreamingToolParser {
       }
       const tcs = this.parseToolContent(t);
       if (tcs.length > 0) {
+        for (const tc of tcs) {
+          const resolvedName = this.resolveDeclaredToolName(tc.name);
+          if (resolvedName) tc.name = resolvedName;
+        }
         const undeclaredToolNames = tcs
           .map((tc) => tc.name)
           .filter((name) => !this.isDeclaredToolName(name));
@@ -1497,7 +1556,8 @@ export class StreamingToolParser {
       this.tools,
     );
     if (xmlParsed) {
-      if (!this.isDeclaredToolName(xmlParsed.name)) {
+      const resolvedXmlName = this.resolveDeclaredToolName(xmlParsed.name);
+      if (!resolvedXmlName) {
         if (isToolcallDebugEnabled()) {
           logger.debug(
             "[parser] tryRecoverToolCall: rejecting undeclared XML tool name",
@@ -1508,6 +1568,7 @@ export class StreamingToolParser {
         }
         return null;
       }
+      xmlParsed.name = resolvedXmlName;
       if (isToolcallDebugEnabled()) {
         logger.debug("[parser] tryRecoverToolCall: full XML parse succeeded", {
           name: xmlParsed.name,
@@ -1528,7 +1589,10 @@ export class StreamingToolParser {
       this.tools,
     );
     if (recovered) {
-      if (!this.isDeclaredToolName(recovered.name)) {
+      const resolvedRecoveredName = this.resolveDeclaredToolName(
+        recovered.name,
+      );
+      if (!resolvedRecoveredName) {
         if (isToolcallDebugEnabled()) {
           logger.debug(
             "[parser] tryRecoverToolCall: rejecting undeclared recoverable XML tool name",
@@ -1539,6 +1603,7 @@ export class StreamingToolParser {
         }
         return null;
       }
+      recovered.name = resolvedRecoveredName;
       if (isToolcallDebugEnabled()) {
         logger.debug(
           "[parser] tryRecoverToolCall: recoverable XML parse succeeded",
@@ -1562,7 +1627,8 @@ export class StreamingToolParser {
       const attrName = extractToolName(this.currentOpenTag, block);
       if (attrName && !first.name) first.name = attrName;
       if (first.name) {
-        if (!this.isDeclaredToolName(first.name)) {
+        const resolvedFirstName = this.resolveDeclaredToolName(first.name);
+        if (!resolvedFirstName) {
           if (isToolcallDebugEnabled()) {
             logger.debug(
               "[parser] tryRecoverToolCall: rejecting undeclared JSON tool name",
@@ -1573,6 +1639,7 @@ export class StreamingToolParser {
           }
           return null;
         }
+        first.name = resolvedFirstName;
         if (isToolcallDebugEnabled()) {
           logger.debug("[parser] tryRecoverToolCall: JSON parse succeeded", {
             name: first.name,
@@ -1626,6 +1693,7 @@ export class StreamingToolParser {
               parsed.tool_name ||
               parsed.tool;
             if (name && typeof name === "string") {
+              const resolvedName = this.resolveDeclaredToolName(name) ?? name;
               let args =
                 parsed.arguments ||
                 parsed.function?.arguments ||
@@ -1634,17 +1702,17 @@ export class StreamingToolParser {
                 parsed.input ||
                 {};
               if (typeof args === "string") {
-                try {
-                  args = JSON.parse(args);
-                } catch {
-                  args = {};
-                }
+                args = parseJsonishString(args) ?? {};
               }
               if (typeof args !== "object" || args === null) args = {};
+              args = this.normalizeArgumentsForTool(
+                resolvedName,
+                args as Record<string, unknown>,
+              );
 
               if (isToolcallDebugEnabled()) {
                 logger.debug("[parser] tryRecoverMalformedJson: success", {
-                  name,
+                  name: resolvedName,
                   argsKeys: Object.keys(args),
                   method:
                     candidate === candidates[0]
@@ -1657,7 +1725,7 @@ export class StreamingToolParser {
 
               return {
                 id: `call_${crypto.randomUUID()}`,
-                name,
+                name: resolvedName,
                 arguments: args,
               };
             }
@@ -1877,19 +1945,16 @@ export class StreamingToolParser {
       parsed.input ||
       {};
     if (typeof args === "string") {
-      try {
-        args = JSON.parse(args);
-      } catch {
-        args = {};
-      }
+      args = parseJsonishString(args) ?? {};
     }
     if (typeof args !== "object" || args === null) args = {};
 
-    args = this.normalizeArgumentsForTool(name, args);
+    const resolvedName = this.resolveDeclaredToolName(name) ?? name;
+    args = this.normalizeArgumentsForTool(resolvedName, args);
 
     return {
       id: parsed.id || parsed.tool_call_id || `call_${crypto.randomUUID()}`,
-      name,
+      name: resolvedName,
       arguments: args,
     };
   }

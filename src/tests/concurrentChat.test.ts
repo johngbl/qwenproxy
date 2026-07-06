@@ -1,15 +1,14 @@
-import test from 'node:test';
-import assert from 'node:assert';
-import net from 'node:net';
-import { serve } from '@hono/node-server';
-import { app } from '../api/server.js';
-
+import test from "node:test";
+import assert from "node:assert";
+import net from "node:net";
+import { serve } from "@hono/node-server";
+import { app } from "../api/server.js";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise((resolve) => {
     const server = net.createServer();
-    server.once('error', () => resolve(false));
-    server.once('listening', () => {
+    server.once("error", () => resolve(false));
+    server.once("listening", () => {
       server.close(() => resolve(true));
     });
     server.listen(port);
@@ -25,47 +24,66 @@ async function getFreePort(startPort: number): Promise<number> {
   }
 }
 
-test('Concurrent chat requests check for "chat is in progress"', { skip: process.env.CI ? 'Requires real accounts - skipped in CI' : false }, async () => {
-  const port = await getFreePort(3100);
-  const server = serve({ fetch: app.fetch, port });
-  console.log(`[ConcurrentTest] Server started on port ${port}`);
+test(
+  'Concurrent chat requests check for "chat is in progress"',
+  { skip: process.env.CI ? "Requires real accounts - skipped in CI" : false },
+  async () => {
+    const port = await getFreePort(3100);
+    const server = serve({ fetch: app.fetch, port });
+    console.log(`🚀 [ConcurrentTest] Server started on port ${port}`);
 
-  await Promise.resolve();
-
-  try {
-    const requestPayload = {
-      model: 'qwen3.6-plus',
-      messages: [{ role: 'user', content: 'Say "hello" and nothing else.' }],
-      stream: false
-    };
-
-    console.log('[ConcurrentTest] Sending 2 requests concurrently...');
-    
-    const p1 = fetch(`http://localhost:${port}/v1/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(requestPayload)
-    });
-
-    const p2 = fetch(`http://localhost:${port}/v1/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(requestPayload)
-    });
-
-    const [res1, res2] = await Promise.all([p1, p2]);
-
-    const data1 = await res1.json();
-    const data2 = await res2.json();
-
-    console.log('[ConcurrentTest] Result 1:', res1.status, JSON.stringify(data1).substring(0, 200));
-    console.log('[ConcurrentTest] Result 2:', res2.status, JSON.stringify(data2).substring(0, 200));
-
-    assert.strictEqual(res1.status, 200, `Request 1 failed: ${JSON.stringify(data1)}`);
-    assert.strictEqual(res2.status, 200, `Request 2 failed: ${JSON.stringify(data2)}`);
-
-  } finally {
     await Promise.resolve();
-    server.close();
-  }
-});
+
+    try {
+      const requestPayload = {
+        model: "qwen3.6-plus",
+        messages: [{ role: "user", content: 'Say "hello" and nothing else.' }],
+        stream: false,
+      };
+
+      console.log("📤 [ConcurrentTest] Sending 2 requests concurrently...");
+
+      const p1 = fetch(`http://localhost:${port}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(requestPayload),
+      });
+
+      const p2 = fetch(`http://localhost:${port}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(requestPayload),
+      });
+
+      const [res1, res2] = await Promise.all([p1, p2]);
+
+      const data1 = await res1.json();
+      const data2 = await res2.json();
+
+      console.log(
+        "✅ [ConcurrentTest] Result 1:",
+        res1.status,
+        JSON.stringify(data1).substring(0, 200),
+      );
+      console.log(
+        "✅ [ConcurrentTest] Result 2:",
+        res2.status,
+        JSON.stringify(data2).substring(0, 200),
+      );
+
+      assert.strictEqual(
+        res1.status,
+        200,
+        `Request 1 failed: ${JSON.stringify(data1)}`,
+      );
+      assert.strictEqual(
+        res2.status,
+        200,
+        `Request 2 failed: ${JSON.stringify(data2)}`,
+      );
+    } finally {
+      await Promise.resolve();
+      server.close();
+    }
+  },
+);

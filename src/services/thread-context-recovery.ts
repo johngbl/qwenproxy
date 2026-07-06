@@ -135,7 +135,9 @@ export async function recoverThreadContextFromQwenHistory(params: {
     }
 
     if (recovered > 0) {
-      console.log(`[ThreadContext] History recovered | ${recovered} turn(s)`);
+      console.log(
+        `✅ [ThreadContext] History recovered | ${recovered} turn(s)`,
+      );
       logger.debug("[thread-context] recovered turns from Qwen history", {
         sessionId: params.sessionId,
         chatId: params.chatId,

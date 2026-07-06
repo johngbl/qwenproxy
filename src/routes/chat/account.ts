@@ -175,7 +175,11 @@ function isAntiBotError(err: any): boolean {
     err?.upstreamCode === "FAIL_SYS_USER_VALIDATE" ||
     err?.upstreamCode === "RGV587_ERROR" ||
     message.includes("fail_sys_user_validate") ||
-    message.includes("rgv587_error")
+    message.includes("rgv587_error") ||
+    message.includes("captcha") ||
+    message.includes("security verification") ||
+    message.includes("verify you are human") ||
+    message.includes("human verification")
   );
 }
 
@@ -186,7 +190,7 @@ async function attemptRelogin(
   try {
     await refreshHeaders(accountId);
     console.log(
-      `[Chat] Playwright headers refreshed for ${maskEmail(accountEmail)}. Retrying...`,
+      `✅ [Chat] Playwright headers refreshed for ${maskEmail(accountEmail)}. Retrying...`,
     );
     return true;
   } catch (refreshErr: unknown) {
@@ -257,7 +261,7 @@ export async function acquireUpstreamStream(
       if (allConfiguredAccountsOnCooldown && !verifiedPersistedCooldown) {
         verifiedPersistedCooldown = true;
         console.warn(
-          `[Chat] All accounts are on cooldown; clearing cooldowns and resetting all profiles in background.`,
+          `⚠️  [Chat] All accounts are on cooldown; clearing cooldowns and resetting all profiles in background.`,
         );
 
         // Clear all cooldowns
@@ -275,18 +279,18 @@ export async function acquireUpstreamStream(
             }
           } catch (err) {
             console.warn(
-              `[Playwright] Failed to start background profile resets:`,
+              `❌ [Playwright] Failed to start background profile resets:`,
               (err as Error).message,
             );
           }
         })();
       } else {
         console.log(
-          `[Chat] Skipping account ${accountEmail} (${accountId}) on cooldown for ${Math.round(cooldownInfo.remainingMs / 1000)}s (${cooldownInfo.reason})`,
+          `⏭️  [Chat] Skipping account ${accountEmail} (${accountId}) on cooldown for ${Math.round(cooldownInfo.remainingMs / 1000)}s (${cooldownInfo.reason})`,
         );
         if (stickyThreadAccountId === accountId) {
           console.warn(
-            `[Chat] Sticky account is on cooldown; recreating upstream chat on another account with full context.`,
+            `⚠️  [Chat] Sticky account is on cooldown; recreating upstream chat on another account with full context.`,
           );
         }
         account = getNextAvailableAccount(triedAccountIds);
@@ -387,7 +391,7 @@ export async function acquireUpstreamStream(
     if (stickyThreadAccountId === accountId) {
       if (isAccountUnavailableError(lastError) || isAntiBotError(lastError)) {
         console.warn(
-          `[Chat] Sticky account unavailable; trying another account with full context.`,
+          `⚠️  [Chat] Sticky account unavailable; trying another account with full context.`,
         );
       } else {
         break;
@@ -402,12 +406,12 @@ export async function acquireUpstreamStream(
           const { schedulePlaywrightProfileReset } =
             await import("../../services/playwright.ts");
           console.log(
-            `[Playwright] Scheduling profile reset for ${accountEmail}...`,
+            `🔄 [Playwright] Scheduling profile reset for ${accountEmail}...`,
           );
           schedulePlaywrightProfileReset(accountId);
         } catch (resetErr) {
           console.warn(
-            `[Playwright] Background profile reset failed for ${accountEmail}:`,
+            `❌ [Playwright] Background profile reset failed for ${accountEmail}:`,
             (resetErr as Error).message,
           );
         }
@@ -511,7 +515,7 @@ async function tryCreateStreamWithRetry(
     attempt++;
     if (attempt > 1) {
       console.log(
-        `[Chat] Retrying request | ${accountEmail} | ${params.model} | ${params.messageCount ?? "?"} msg(s) | ${params.finalPrompt.length} chars${params.toolsCount ? ` | ${params.toolsCount} tool(s)` : ""} | attempt ${attempt}`,
+        `🔄 [Chat] Retrying request | ${accountEmail} | ${params.model} | ${params.messageCount ?? "?"} msg(s) | ${params.finalPrompt.length} chars${params.toolsCount ? ` | ${params.toolsCount} tool(s)` : ""} | attempt ${attempt}`,
       );
     }
     let attemptError: any = null;
@@ -607,7 +611,7 @@ async function tryCreateStreamWithRetry(
     if (err) {
       const errCode = err.upstreamCode || err.code || "unknown";
       console.warn(
-        `[Chat] Request failed | ${accountEmail} | ${errCode} | ${errMsg.substring(0, 200)}`,
+        `❌ [Chat] Request failed | ${accountEmail} | ${errCode} | ${errMsg.substring(0, 200)}`,
       );
     }
 
@@ -629,13 +633,13 @@ async function tryCreateStreamWithRetry(
               : accountId,
         );
         console.log(
-          `[ThreadContext] Deleted failed chat | ${err.chatSessionId} | account=${accountId}`,
+          `🗑️  [ThreadContext] Deleted failed chat | ${err.chatSessionId} | account=${accountId}`,
         );
       } catch (deleteErr) {
         const msg =
           deleteErr instanceof Error ? deleteErr.message : String(deleteErr);
         console.error(
-          `[ThreadContext] Delete failed chat error | ${err.chatSessionId} | ${msg}`,
+          `❌ [ThreadContext] Delete failed chat error | ${err.chatSessionId} | ${msg}`,
         );
       }
     }
@@ -649,7 +653,7 @@ async function tryCreateStreamWithRetry(
 
     if (err.name === "QwenSessionExpiredError") {
       console.warn(
-        `[Chat] Session expired for ${accountEmail} (${accountId}). Attempting re-login...`,
+        `🔄 [Chat] Session expired for ${accountEmail} (${accountId}). Attempting re-login...`,
       );
       const reLoginOk = await attemptRelogin(accountId, accountEmail);
       if (reLoginOk) continue;
@@ -659,14 +663,14 @@ async function tryCreateStreamWithRetry(
     if (isAccountUnavailableError(err)) {
       const quotaMsg = err.message || "Unknown quota error";
       console.warn(
-        `[Chat] Quota exceeded | ${accountEmail} | ${quotaMsg.substring(0, 200)}`,
+        `⚠️  [Chat] Quota exceeded | ${accountEmail} | ${quotaMsg.substring(0, 200)}`,
       );
 
       // Single account: retry once after delay before giving up
       if (isSingleAccount && !quotaRetried && retries > 1) {
         quotaRetried = true;
         console.warn(
-          `[Chat] Single account mode | Retrying in ${config.retry.baseDelayMs}ms...`,
+          `🔄 [Chat] Single account mode | Retrying in ${config.retry.baseDelayMs}ms...`,
         );
         await new Promise((resolve) =>
           setTimeout(resolve, config.retry.baseDelayMs),
@@ -693,6 +697,36 @@ async function tryCreateStreamWithRetry(
       return { success: false, error: err };
     }
 
+    const isRetryableInvalidInputError =
+      err?.upstreamCode === "invalid_input" ||
+      err.message?.includes("invalid_input") ||
+      err.message?.includes("Entrada ou anexo inválido") ||
+      err.message?.includes("invalid input") ||
+      err.message?.includes("invalid attachment");
+
+    if (
+      isRetryableInvalidInputError &&
+      params.useThreadNative &&
+      params.sessionId
+    ) {
+      console.warn(
+        `⚠️  [Chat] Upstream invalid_input | forcing new chat with full context`,
+      );
+      params.existingThread = null;
+      params.finalPrompt = params.fullPrompt;
+      params.messageCount = params.fullMessageCount ?? params.messageCount;
+      updateLogicalThreadState(params.sessionId, {
+        accountId,
+        chatSessionId: "",
+        parentId: null,
+        instructionsSent: false,
+      });
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.min(config.retry.baseDelayMs, 2000)),
+      );
+      continue;
+    }
+
     // Detect "chat not exist" error and force new chat creation on retry
     const isChatNotExistError =
       err.message?.includes("is not exist") ||
@@ -700,7 +734,7 @@ async function tryCreateStreamWithRetry(
       err.message?.includes("does not exist");
 
     if (isChatNotExistError && params.useThreadNative && params.sessionId) {
-      console.warn(`[Chat] Session expired | forcing new chat`);
+      console.warn(`🔄 [Chat] Session expired | forcing new chat`);
       // Clear the stale chat session ID from logical thread state
       // so the next attempt creates a fresh chat
       params.existingThread = null;
@@ -731,7 +765,7 @@ async function tryCreateStreamWithRetry(
       ) {
         markAccountRateLimited(accountId, undefined, "ServerError");
         console.warn(
-          `[Chat] Account ${accountEmail} (${accountId}) returned server error. Marked for cooldown.`,
+          `⚠️  [Chat] Account ${accountEmail} (${accountId}) returned server error. Marked for cooldown.`,
         );
       }
 
@@ -740,7 +774,7 @@ async function tryCreateStreamWithRetry(
         err.message?.includes("in progress")
       ) {
         console.warn(
-          `[Chat] Clearing session state for ${accountEmail} (${accountId}) due to persistent 'chat in progress'`,
+          `🧹 [Chat] Clearing session state for ${accountEmail} (${accountId}) due to persistent 'chat in progress'`,
         );
         clearAllSessionsForAccount(accountId);
       }
@@ -786,7 +820,7 @@ async function tryCreateStreamWithRetry(
     }
 
     console.warn(
-      `[Chat] Qwen request failed for ${accountEmail}, retrying in ${useDelay}ms... (${retries} left). Error: ${err.message?.slice(0, 200) || err}`,
+      `🔄 [Chat] Qwen request failed for ${accountEmail}, retrying in ${useDelay}ms... (${retries} left). Error: ${err.message?.slice(0, 200) || err}`,
     );
     await new Promise((r) => setTimeout(r, useDelay));
     retryDelay = Math.min(retryDelay * 2, config.retry.maxDelayMs);

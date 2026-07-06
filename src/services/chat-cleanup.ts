@@ -33,7 +33,9 @@ async function ensurePlaywrightSession(account: QwenAccount): Promise<void> {
     `[DeleteChats] Initializing Playwright session for ${account.email}...`,
   );
   await initPlaywrightForAccount(credentials);
-  console.log(`[DeleteChats] Playwright session ready for ${account.email}.`);
+  console.log(
+    `✅ [DeleteChats] Playwright session ready for ${account.email}.`,
+  );
 }
 
 async function deleteChatsForAccount(account: QwenAccount): Promise<boolean> {

@@ -42,7 +42,7 @@ async function runKeepAliveCycle(): Promise<void> {
     );
     if (closed > 0) {
       console.log(
-        `[SessionKeeper] Closed ${closed} idle Playwright context(s).`,
+        `🧹 [SessionKeeper] Closed ${closed} idle Playwright context(s)`,
       );
     }
   } finally {
@@ -61,9 +61,11 @@ export function startSessionKeeper(): void {
   }, config.sessionKeeper.intervalMs);
   intervalId.unref?.();
 
-  console.log(
-    `[SessionKeeper] Started | keepAlive=${config.sessionKeeper.enabled} interval=${config.sessionKeeper.intervalMs}ms idle=${config.sessionKeeper.idleMs}ms idleClose=${config.playwright.idleContextTtlMs}ms`,
-  );
+  if (config.sessionKeeper.enabled) {
+    console.log(
+      `💓 [SessionKeeper] Keep-alive enabled | interval=${config.sessionKeeper.intervalMs}ms idle=${config.sessionKeeper.idleMs}ms`,
+    );
+  }
 }
 
 export function stopSessionKeeper(): void {

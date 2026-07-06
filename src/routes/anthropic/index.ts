@@ -116,7 +116,7 @@ app.get("/v1/models", async (c) => {
       });
     }
   } catch (error) {
-    console.error("[Anthropic] Error fetching models:", error);
+    console.error("❌ [Anthropic] Error fetching models:", error);
     return anthropicError(c, "api_error", "Failed to fetch models", 500);
   }
 });
@@ -150,7 +150,7 @@ app.get("/v1/models/:model_id", async (c) => {
       type: "model" as const,
     });
   } catch (error) {
-    console.error("[Anthropic] Error fetching model:", error);
+    console.error("❌ [Anthropic] Error fetching model:", error);
     return anthropicError(c, "api_error", "Failed to fetch model", 500);
   }
 });
@@ -254,7 +254,7 @@ app.post("/v1/messages", async (c) => {
           if (timeoutId) clearTimeout(timeoutId);
           timeoutId = setTimeout(() => {
             if (!isDone) {
-              console.error("[Anthropic] Stream timeout");
+              console.error("⏱️  [Anthropic] Stream timeout");
               stream.close().catch(() => {});
             }
           }, timeoutMs);
@@ -339,7 +339,7 @@ app.post("/v1/messages", async (c) => {
         } catch (error) {
           isDone = true;
           if (timeoutId) clearTimeout(timeoutId);
-          console.error("[Anthropic] Stream error:", error);
+          console.error("❌ [Anthropic] Stream error:", error);
           try {
             await write(
               `event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "api_error", message: "Stream error" } })}\n\n`,
@@ -387,7 +387,7 @@ app.post("/v1/messages", async (c) => {
       return c.json(anthropicResponse);
     }
   } catch (error) {
-    console.error("[Anthropic] Error:", error);
+    console.error("❌ [Anthropic] Error:", error);
     return anthropicError(c, "api_error", "Internal server error", 500);
   }
 });

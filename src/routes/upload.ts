@@ -624,7 +624,7 @@ export async function processImagesForQwen(
           fileUrl = await uploadToOSS(buffer, stsData, filename);
           fileId = stsData.file_id;
         } catch (err: any) {
-          console.error("[Upload] Failed to upload media:", err.message);
+          console.error("❌ [Upload] Failed to upload media:", err.message);
           continue;
         }
       }

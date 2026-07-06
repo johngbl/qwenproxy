@@ -158,13 +158,13 @@ export const upstreamDebugEnabled = process.env.UPSTREAM_DEBUG === "true";
 // Confirm debug mode on startup (only log if explicitly set)
 if (process.env.TOOLCALL_DEBUG) {
   if (toolcallDebugLevel === "1") {
-    console.log("[Logger] TOOLCALL_DEBUG=1 - full debug logs active");
+    console.log("🔍 [Logger] TOOLCALL_DEBUG=1 - full debug logs active");
   } else if (toolcallDebugLevel === "errors") {
     console.log(
       "[Logger] TOOLCALL_DEBUG=errors - toolcall logs on errors only",
     );
   } else {
-    console.log("[Logger] TOOLCALL_DEBUG=0 - toolcall logs disabled");
+    console.log("🔇 [Logger] TOOLCALL_DEBUG=0 - toolcall logs disabled");
   }
 }
 

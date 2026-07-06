@@ -261,7 +261,7 @@ export function markThreadContextRolloverStarted(input: {
     status: "rollover_in_progress",
   });
 
-  console.log(`[ThreadContext] Rollover started | ${plan.reason}`);
+  console.log(`🔄 [ThreadContext] Rollover started | ${plan.reason}`);
   logger.debug("[thread-context] rollover started", {
     event: "thread_context_rollover_started",
     sessionId: plan.sessionId,
@@ -295,7 +295,7 @@ async function deletePreviousChat(
       plan.sessionId,
       plan.previousChatSessionId,
     );
-    console.log(`[ThreadContext] Old chat deleted | rollover`);
+    console.log(`✅ [ThreadContext] Old chat deleted | rollover`);
     logger.debug("[thread-context] old Qwen chat deleted after rollover", {
       event: "thread_context_old_chat_deleted",
       sessionId: plan.sessionId,

@@ -41,7 +41,7 @@ export function getDatabase(): Database.Database {
         if (fs.existsSync(legacyShmPath) && !fs.existsSync(DB_SHM_PATH)) {
           fs.renameSync(legacyShmPath, DB_SHM_PATH);
         }
-        console.log(`[Database] Migrated legacy database to ${DB_PATH}`);
+        console.log(`📦 [Database] Migrated legacy database to ${DB_PATH}`);
       }
     };
 
@@ -67,13 +67,15 @@ export function getDatabase(): Database.Database {
     fs.unlinkSync(testFile);
   } catch (err: any) {
     console.error(
-      `[Database] Cannot access database directory '${DB_DIR}':`,
+      `❌ [Database] Cannot access database directory '${DB_DIR}':`,
       err.message,
     );
     console.error(
-      "[Database] Ensure the directory exists and has proper permissions",
+      "❌ [Database] Ensure the directory exists and has proper permissions",
     );
-    console.error("[Database] In Docker, mount a volume: -v ./data:/app/data");
+    console.error(
+      "❌ [Database] In Docker, mount a volume: -v ./data:/app/data",
+    );
     throw new Error(`Database directory not accessible: ${DB_DIR}`);
   }
 
@@ -81,10 +83,10 @@ export function getDatabase(): Database.Database {
     db = new Database(DB_PATH);
   } catch (err: any) {
     console.error(
-      `[Database] Failed to open database at '${DB_PATH}':`,
+      `❌ [Database] Failed to open database at '${DB_PATH}':`,
       err.message,
     );
-    console.error("[Database] Check file permissions and disk space");
+    console.error("❌ [Database] Check file permissions and disk space");
     throw err;
   }
 
@@ -342,7 +344,10 @@ function migrateFromJson(db: Database.Database): void {
       `[Database] Migrated ${accounts.length} account(s) from accounts.json to SQLite`,
     );
   } catch (err: any) {
-    console.error("[Database] Failed to migrate accounts.json:", err.message);
+    console.error(
+      "❌ [Database] Failed to migrate accounts.json:",
+      err.message,
+    );
   }
 }
 

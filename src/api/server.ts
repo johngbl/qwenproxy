@@ -172,15 +172,106 @@ async function prepareQwenRuntime(params: {
     accountId: string | undefined,
     modelId: string,
   ) => Promise<void>;
-}): Promise<void> {
+}): Promise<boolean> {
   try {
     await params.initAuth();
     await params.disableNativeTools(params.accountId).catch(() => {});
     await warmConfiguredChatPools(params.warmQwenChatPool, params.accountId);
-    console.log(params.successMessage);
+    if (params.accountId) {
+      const { getAccountCooldownInfo } =
+        await import("../core/account-manager.ts");
+      const cooldownInfo = getAccountCooldownInfo(params.accountId);
+      if (cooldownInfo) {
+        console.warn(
+          `⚠️  [Server] Account not ready: cooldown ${Math.ceil(cooldownInfo.remainingMs / 1000)}s (${cooldownInfo.reason})`,
+        );
+        return false;
+      }
+    }
+    console.log(`✅ ${params.successMessage}`);
+    return true;
   } catch (error) {
-    console.error(params.failureMessage, getErrorMessage(error));
+    console.warn(`❌ ${params.failureMessage}`, getErrorMessage(error));
+    return false;
   }
+}
+
+async function prepareAccountRuntime(
+  account: QwenAccount,
+  getAccountCredentials: (accountId: string) => QwenAccount | undefined,
+  initPlaywrightForAccount: (
+    account: QwenAccount,
+    headless: boolean,
+    browserType?: "chromium" | "chrome" | "edge",
+  ) => Promise<void>,
+  disableNativeTools: (accountId?: string) => Promise<void>,
+  warmQwenChatPool: (
+    accountId: string | undefined,
+    modelId: string,
+  ) => Promise<void>,
+): Promise<boolean> {
+  return prepareQwenRuntime({
+    accountId: account.id,
+    successMessage: `[Server] Account ready: ${maskEmail(account.email)}`,
+    failureMessage: `[Server] Account init failed ${maskEmail(account.email)}:`,
+    initAuth: () => {
+      const credentials = getAccountCredentials(account.id);
+      if (!credentials) {
+        throw new Error(`Account ${account.id} credentials not found`);
+      }
+      return initPlaywrightForAccount(
+        credentials,
+        config.playwright.headless,
+        config.playwright.browser,
+      );
+    },
+    disableNativeTools,
+    warmQwenChatPool,
+  });
+}
+
+async function prepareRemainingAccountsInBackground(params: {
+  accounts: QwenAccount[];
+  batchSize: number;
+  getAccountCredentials: (accountId: string) => QwenAccount | undefined;
+  initPlaywrightForAccount: (
+    account: QwenAccount,
+    headless: boolean,
+    browserType?: "chromium" | "chrome" | "edge",
+  ) => Promise<void>;
+  disableNativeTools: (accountId?: string) => Promise<void>;
+  warmQwenChatPool: (
+    accountId: string | undefined,
+    modelId: string,
+  ) => Promise<void>;
+}): Promise<void> {
+  const remaining = params.accounts;
+  if (remaining.length === 0) return;
+
+  console.log(
+    `🔄 [Server] Preparing ${remaining.length} additional account(s) in background...`,
+  );
+
+  let ready = 0;
+  for (let i = 0; i < remaining.length; i += params.batchSize) {
+    const batch = remaining.slice(i, i + params.batchSize);
+    const results = await Promise.all(
+      batch.map((account) =>
+        prepareAccountRuntime(
+          account,
+          params.getAccountCredentials,
+          params.initPlaywrightForAccount,
+          params.disableNativeTools,
+          params.warmQwenChatPool,
+        ),
+      ),
+    );
+    ready += results.filter(Boolean).length;
+  }
+
+  console.log(
+    `✅ [Server] Background preparation complete: ${ready}/${remaining.length} ready`,
+  );
 }
 
 async function cleanupServerResources(): Promise<void> {
@@ -207,11 +298,11 @@ async function cleanupServerResources(): Promise<void> {
         await import("../services/chat-cleanup.ts");
       const result = await deleteChatsForConfiguredAccounts();
       console.log(
-        `[Server] Deleted Qwen chats on shutdown: ${result.succeeded}/${result.attempted} scope(s).`,
+        `🗑️  [Server] Deleted Qwen chats on shutdown: ${result.succeeded}/${result.attempted} scope(s)`,
       );
     } catch (error) {
       console.error(
-        "[Server] Failed to delete Qwen chats on shutdown:",
+        `❌ [Server] Failed to delete Qwen chats on shutdown:`,
         error instanceof Error ? error.message : String(error),
       );
     }
@@ -242,7 +333,7 @@ async function cleanupServerResources(): Promise<void> {
 }
 
 async function handleSignal(signal: string): Promise<never> {
-  console.log(`[Server] Shutdown | ${signal}`);
+  console.log(`🛑 [Server] Shutdown | ${signal}`);
   await stopServer();
   process.exit(0);
 }
@@ -293,9 +384,7 @@ export async function startServer(options?: {
     await cache.connect();
 
     if (!config.apiKey && config.server.host === "0.0.0.0") {
-      logger.warn(
-        "API_KEY is empty and HOST is 0.0.0.0; the API is reachable without authentication.",
-      );
+      console.warn("⚠️  [Server] API is unauthenticated on 0.0.0.0");
     }
 
     const { loadAccounts, getAccountCredentials } =
@@ -309,7 +398,7 @@ export async function startServer(options?: {
     }
     if (accounts.length > 0) {
       console.log(
-        `[Server] Cleared stale cooldowns for ${accounts.length} account(s).`,
+        `🧹 [Server] Cleared stale cooldowns for ${accounts.length} account(s)`,
       );
     }
 
@@ -321,46 +410,45 @@ export async function startServer(options?: {
     const BATCH_SIZE = config.playwright.initBatchSize;
 
     if (accounts.length > 0) {
-      console.log(
-        `[Server] Preparing ${accounts.length} account(s) with Playwright (batch size: ${BATCH_SIZE})...`,
-      );
-
-      for (let i = 0; i < accounts.length; i += BATCH_SIZE) {
-        const batch = accounts.slice(i, i + BATCH_SIZE);
-        const batchNum = Math.floor(i / BATCH_SIZE) + 1;
-        const totalBatches = Math.ceil(accounts.length / BATCH_SIZE);
-        console.log(
-          `[Server] Batch ${batchNum}/${totalBatches}: initializing ${batch.length} account(s)...`,
+      console.log(`🔐 [Server] Preparing first available Qwen account...`);
+      let readyAccountIndex = -1;
+      for (let i = 0; i < accounts.length; i++) {
+        const ok = await prepareAccountRuntime(
+          accounts[i],
+          getAccountCredentials,
+          initPlaywrightForAccount,
+          disableNativeTools,
+          warmQwenChatPool,
         );
+        if (ok) {
+          readyAccountIndex = i;
+          break;
+        }
+      }
 
-        await Promise.all(
-          batch.map((account: QwenAccount) =>
-            prepareQwenRuntime({
-              accountId: account.id,
-              successMessage: `[Server] Account ready (Playwright): ${maskEmail(account.email)}`,
-              failureMessage: `[Server] Failed to initialize account ${maskEmail(account.email)}:`,
-              initAuth: () => {
-                const credentials = getAccountCredentials(account.id);
-                if (!credentials) {
-                  throw new Error(
-                    `Account ${account.id} credentials not found`,
-                  );
-                }
-                return initPlaywrightForAccount(
-                  credentials,
-                  config.playwright.headless,
-                  config.playwright.browser,
-                );
-              },
-              disableNativeTools,
-              warmQwenChatPool,
-            }),
-          ),
+      const remainingAccounts = accounts.filter(
+        (_account, index) => index !== readyAccountIndex,
+      );
+      if (readyAccountIndex === -1) {
+        console.warn(
+          `⚠️  [Server] No account ready during startup; continuing in background`,
         );
       }
+      void prepareRemainingAccountsInBackground({
+        accounts: remainingAccounts,
+        batchSize: BATCH_SIZE,
+        getAccountCredentials,
+        initPlaywrightForAccount,
+        disableNativeTools,
+        warmQwenChatPool,
+      }).catch((error) => {
+        console.warn(
+          `❌ [Server] Background account preparation failed: ${getErrorMessage(error)}`,
+        );
+      });
     } else {
       console.warn(
-        "[Server] No Qwen accounts configured. Add accounts with npm run login before sending requests.",
+        `⚠️  [Server] No Qwen accounts configured. Add accounts with npm run login before sending requests.`,
       );
     }
 
@@ -384,7 +472,7 @@ export async function startServer(options?: {
     }
 
     const started = buildStartedServerInfo();
-    console.log(`[Server] Listening on ${started.url}/v1`);
+    console.log(`\n🚀✨ [Server] Listening on ${started.url}/v1 ✨🚀\n`);
     return started;
   })();
 

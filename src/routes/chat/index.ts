@@ -62,7 +62,7 @@ async function reducePromptForRetry(
           result.summary,
         );
         console.log(
-          `[Chat] Reduced prompt via summarization: ${result.originalChars} → ${result.summaryChars} chars`,
+          `📝 [Chat] Reduced prompt via summarization: ${result.originalChars} → ${result.summaryChars} chars`,
         );
         return prompt;
       }
@@ -87,11 +87,13 @@ async function reducePromptForRetry(
       ? `${systemPrompt}\n\n${truncatedText}`
       : truncatedText;
     console.warn(
-      `[Chat] Reduced prompt via truncation: ${messages.length} messages → ${prompt.length} chars`,
+      `⚠️  [Chat] Reduced prompt via truncation: ${messages.length} messages → ${prompt.length} chars`,
     );
     return prompt;
   } catch (err) {
-    console.warn(`[Chat] Failed to reduce prompt: ${(err as Error).message}`);
+    console.warn(
+      `❌ [Chat] Failed to reduce prompt: ${(err as Error).message}`,
+    );
     return null;
   }
 }
@@ -203,7 +205,7 @@ export async function chatCompletions(c: Context) {
     const personalizationChars =
       ctx.requestPersonalizationInstruction?.length ?? 0;
     console.log(
-      `[Chat] Request | ${body.model} | ${msgCount} msg(s) | ${finalPrompt.length} chars${declaredTools.length ? ` | ${declaredTools.length} tool(s)` : ""}${files.length ? ` | ${files.length} file(s)` : ""}`,
+      `📤 [Chat] Request | ${body.model} | ${msgCount} msg(s) | ${finalPrompt.length} chars${declaredTools.length ? ` | ${declaredTools.length} tool(s)` : ""}${files.length ? ` | ${files.length} file(s)` : ""}`,
     );
     logger.debug("[chat] request routing details", {
       model: body.model,
@@ -322,7 +324,7 @@ export async function chatCompletions(c: Context) {
     }
 
     console.log(
-      `[Chat] Request routed | ${streamResult.activeAccountLabel} | ${body.model} | ${msgCount} msg(s) | ${finalPrompt.length} chars${declaredTools.length ? ` | ${declaredTools.length} tool(s)` : ""}${files.length ? ` | ${files.length} file(s)` : ""}`,
+      `🚀 [Chat] Request routed | ${streamResult.activeAccountLabel} | ${body.model} | ${msgCount} msg(s) | ${finalPrompt.length} chars${declaredTools.length ? ` | ${declaredTools.length} tool(s)` : ""}${files.length ? ` | ${files.length} file(s)` : ""}`,
     );
 
     if (activeRolloverPlan) {
@@ -458,12 +460,33 @@ export async function chatCompletions(c: Context) {
             releaseChatLock = null;
           }
 
-          // Re-acquire stream with different account
+          const fullPromptForRetry = ctx.requestPersonalizationInstruction
+            ? parsed.prompt
+            : parsed.systemPrompt + parsed.prompt;
+          const forceRetryNewChat = Boolean(
+            (streamErr as { forceNewChat?: boolean }).forceNewChat,
+          );
+          const retryFinalPrompt = (
+            streamErr as { retryWithFullPrompt?: boolean }
+          ).retryWithFullPrompt
+            ? fullPromptForRetry
+            : finalPrompt;
+          const retryMessageCount = (
+            streamErr as { retryWithFullPrompt?: boolean }
+          ).retryWithFullPrompt
+            ? parsed.messageCount
+            : msgCount;
+
+          if (forceRetryNewChat) {
+            console.warn(
+              `[Chat] Retry will force a new upstream chat and resend full context | ${streamErr.message?.substring(0, 150)}`,
+            );
+          }
+
+          // Re-acquire stream with different account or a fresh upstream chat
           const newStreamResult = await acquireUpstreamStream({
-            finalPrompt,
-            fullPrompt: ctx.requestPersonalizationInstruction
-              ? parsed.prompt
-              : parsed.systemPrompt + parsed.prompt,
+            finalPrompt: retryFinalPrompt,
+            fullPrompt: fullPromptForRetry,
             isThinkingModel: ctx.isThinkingModel,
             model: body.model,
             shouldResetUpstreamThread: ctx.shouldResetUpstreamThread,
@@ -474,9 +497,11 @@ export async function chatCompletions(c: Context) {
             updateLogicalThread: ctx.updateLogicalThread,
             allowThreadReuse: ctx.allowThreadReuse,
             forceNewChat:
-              activeRolloverPlan !== null || isInternalSummarizationRequest,
+              forceRetryNewChat ||
+              activeRolloverPlan !== null ||
+              isInternalSummarizationRequest,
             preferredAccountId: activeRolloverPlan?.preferredAccountId ?? null,
-            messageCount: msgCount,
+            messageCount: retryMessageCount,
             fullMessageCount: parsed.messageCount,
             toolsCount: declaredTools.length || undefined,
             requestPersonalizationInstruction:
@@ -489,7 +514,7 @@ export async function chatCompletions(c: Context) {
           }
 
           console.log(
-            `[Chat] Request routed | ${newStreamResult.activeAccountLabel} | ${body.model} | ${msgCount} msg(s) | ${finalPrompt.length} chars${declaredTools.length ? ` | ${declaredTools.length} tool(s)` : ""}${files.length ? ` | ${files.length} file(s)` : ""} | retry`,
+            `🔄 [Chat] Request routed | ${newStreamResult.activeAccountLabel} | ${body.model} | ${retryMessageCount} msg(s) | ${retryFinalPrompt.length} chars${declaredTools.length ? ` | ${declaredTools.length} tool(s)` : ""}${files.length ? ` | ${files.length} file(s)` : ""} | retry`,
           );
 
           // Re-acquire chat lock for new stream
@@ -511,7 +536,7 @@ export async function chatCompletions(c: Context) {
             activeAccountLabel: newStreamResult.activeAccountLabel,
             logicalSessionId: newStreamResult.logicalSessionId,
             body,
-            finalPrompt,
+            finalPrompt: retryFinalPrompt,
             userPrompt: currentPrompt || prompt,
             shouldParseToolCalls,
             declaredTools,
