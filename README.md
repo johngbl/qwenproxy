@@ -241,6 +241,11 @@ Fingerprint estável por conta (UA, locale, viewport, hardware/WebGL) é aplicad
 | `RETRY_MAX_DELAY_MS` | `10000` | Cap do backoff |
 | `ANTI_BOT_BASE_DELAY_MS` | `5000` | Base anti-bot |
 | `ANTI_BOT_MAX_DELAY_MS` | `30000` | Cap anti-bot |
+| `CAPTCHA_SOLVER_ENABLED` | `true` | Recovery anti-bot/TMD no Playwright |
+| `CAPTCHA_SOLVER_TIMEOUT_MS` | `25000` | Orçamento total por tentativa de solve |
+| `CAPTCHA_SOLVER_MAX_SLIDER_ATTEMPTS` | `2` | Tentativas de drag do slider |
+| `CAPTCHA_SOLVER_MIN_INTERVAL_MS` | `20000` | Evita thrash de solve na mesma conta |
+| `CAPTCHA_SOLVER_FAIL_COOLDOWN_MS` | `600000` | Cooldown se o solve falhar (10 min) |
 
 ### Timeouts
 
@@ -321,7 +326,15 @@ Detecta, entre outros:
 
 Com Playwright, cada conta usa fingerprint e headers capturados do browser real.
 
-**Captcha automático (solver full):** conscientemente **não portado**. O fluxo atual de cooldown + profile reset + rotação de conta é o caminho suportado; solvers de captcha de forks externos (alto risco de ban/instabilidade) ficam fora do escopo.
+**Captcha auto solver (opt-out):** habilitado por padrão (`CAPTCHA_SOLVER_ENABLED=true`). Em anti-bot/TMD (`FAIL_SYS_USER_VALIDATE`, `RGV587`, punish page sufei), o proxy:
+
+1. Reaquece a sessão no Playwright da conta e recaptura `bx-*`
+2. Detecta a punish page / `#nocaptcha` (capturas em `network/captcha`)
+3. Tenta o slider NoCaptcha de forma humanizada
+4. Se limpar o challenge → limpa cooldown e **reusa a mesma conta**
+5. Se falhar → cooldown (`CAPTCHA_SOLVER_FAIL_COOLDOWN_MS`) + profile reset + rotação
+
+Não resolve 100% de todos os tipos de captcha visual (puzzle/click complexos), mas cobre o fluxo TMD/sufei-punish mais comum do Qwen/Alibaba.
 
 ---
 
@@ -540,7 +553,7 @@ QwenBridge/
 
 | Problema | Solução |
 |---|---|
-| Anti-bot / captcha | Aguarde retry/rotação; confira captura de headers Playwright |
+| Anti-bot / captcha | Solver tenta slider/TMD no browser; se falhar → rotação/profile reset. Desligue com `CAPTCHA_SOLVER_ENABLED=false` |
 | Quota exceeded | Mais contas ou esperar cooldown |
 | `502 Bad Gateway` / `fetch failed` | Normalmente upstream/rede; o proxy faz retry automático |
 | `invalid_input` (anexo inválido) | Retry com chat novo; settings `largeTextAsFile=false` ajudam |

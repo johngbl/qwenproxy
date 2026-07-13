@@ -866,6 +866,29 @@ export async function refreshHeaders(accountId: string): Promise<void> {
   }
 }
 
+/**
+ * Run work against the account Playwright page under the per-account mutex.
+ * Used by captcha recovery so it cannot race header capture / login.
+ */
+export async function withAccountPage<T>(
+  accountId: string,
+  fn: (page: Page) => Promise<T>,
+): Promise<T> {
+  const page = accountPages.get(accountId);
+  if (!page || page.isClosed()) {
+    throw new Error(`Playwright page unavailable for account: ${accountId}`);
+  }
+  const release = await getAccountMutex(accountId).acquire();
+  try {
+    touchAccountActivity(accountId);
+    const result = await fn(page);
+    touchAccountActivity(accountId);
+    return result;
+  } finally {
+    release();
+  }
+}
+
 function isPlaywrightProfileCorruptedError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return (

@@ -176,11 +176,47 @@ function isAntiBotError(err: any): boolean {
     err?.upstreamCode === "RGV587_ERROR" ||
     message.includes("fail_sys_user_validate") ||
     message.includes("rgv587_error") ||
+    message.includes("_____tmd_____") ||
+    message.includes("tmd anti-bot") ||
     message.includes("captcha") ||
     message.includes("security verification") ||
     message.includes("verify you are human") ||
-    message.includes("human verification")
+    message.includes("human verification") ||
+    message.includes("denyfromx5")
   );
+}
+
+async function tryRecoverAntiBot(
+  accountId: string,
+  accountEmail: string,
+): Promise<boolean> {
+  try {
+    const { recoverAntiBotChallenge, isCaptchaSolverEnabled } =
+      await import("../../services/captcha-solver.ts");
+    if (!isCaptchaSolverEnabled()) return false;
+
+    console.log(
+      `🧩 [Captcha] Starting anti-bot recovery for ${accountEmail}...`,
+    );
+    const result = await recoverAntiBotChallenge(accountId);
+    if (result.success) {
+      clearAccountCooldown(accountId);
+      console.log(
+        `✅ [Captcha] Recovery ok for ${accountEmail} | method=${result.method} | ${result.durationMs}ms`,
+      );
+      return true;
+    }
+    console.warn(
+      `⚠️  [Captcha] Recovery failed for ${accountEmail} | method=${result.method} | ${result.detail || ""}`,
+    );
+    return false;
+  } catch (error) {
+    console.warn(
+      `❌ [Captcha] Recovery error for ${accountEmail}:`,
+      error instanceof Error ? error.message : String(error),
+    );
+    return false;
+  }
 }
 
 async function attemptRelogin(
@@ -398,9 +434,20 @@ export async function acquireUpstreamStream(
       }
     }
 
-    // Mark anti-bot blocked accounts for cooldown and reset profile in background
+    // Anti-bot: try in-browser captcha recovery first; only then cooldown + profile reset
     if (isAntiBotError(lastError)) {
-      markAccountRateLimited(accountId, 10 * 60 * 1000, "AntiBot");
+      const recovered = await tryRecoverAntiBot(accountId, accountEmail);
+      if (recovered) {
+        // Give the same account one more chance with fresh tokens/session
+        triedAccountIds.delete(accountId);
+        continue;
+      }
+
+      markAccountRateLimited(
+        accountId,
+        config.captchaSolver.failCooldownMs,
+        "AntiBot",
+      );
       void (async () => {
         try {
           const { schedulePlaywrightProfileReset } =
@@ -658,6 +705,21 @@ async function tryCreateStreamWithRetry(
       const reLoginOk = await attemptRelogin(accountId, accountEmail);
       if (reLoginOk) continue;
       return { success: false, error: err };
+    }
+
+    // In-request captcha recovery before burning remaining retries / rotating
+    if (isAntiBotError(err) && retries > 0) {
+      const recovered = await tryRecoverAntiBot(accountId, accountEmail);
+      await new Promise((resolve) =>
+        setTimeout(
+          resolve,
+          recovered
+            ? Math.min(config.antiBot.baseDelayMs, 2500)
+            : Math.min(config.antiBot.baseDelayMs, 4000),
+        ),
+      );
+      // Always continue once for anti-bot so a fresh header/token set can land
+      continue;
     }
 
     if (isAccountUnavailableError(err)) {
