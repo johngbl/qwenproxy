@@ -1,5 +1,6 @@
 import { EventEmitter } from "events";
 import { config } from "./config.js";
+import { getHeapUsageSnapshot } from "./memory-usage.js";
 
 interface MetricPoint {
   value: number;
@@ -40,6 +41,17 @@ export class Metrics extends EventEmitter {
       // Memory metrics
       ["memory.heap.used", "gauge", "Heap memory used (bytes)"],
       ["memory.heap.total", "gauge", "Heap memory total (bytes)"],
+      [
+        "memory.heap.limit",
+        "gauge",
+        "V8 heap_size_limit used for RAM pressure (bytes)",
+      ],
+      [
+        "memory.heap.usage_percent",
+        "gauge",
+        "Heap used percent vs heap_size_limit",
+      ],
+      ["memory.rss", "gauge", "Resident set size (bytes)"],
 
       // Cache metrics
       ["cache.set", "counter", "Cache set operations"],
@@ -183,9 +195,12 @@ export class Metrics extends EventEmitter {
   }
 
   private collectSystemMetrics(): void {
-    const mem = process.memoryUsage();
-    this.gauge("memory.heap.used", mem.heapUsed);
-    this.gauge("memory.heap.total", mem.heapTotal);
+    const heap = getHeapUsageSnapshot();
+    this.gauge("memory.heap.used", heap.heapUsed);
+    this.gauge("memory.heap.total", heap.heapTotal);
+    this.gauge("memory.heap.limit", heap.heapSizeLimit);
+    this.gauge("memory.heap.usage_percent", heap.usagePercent);
+    this.gauge("memory.rss", heap.rss);
   }
 
   get(name: string, labels?: Record<string, string>): MetricPoint | null {

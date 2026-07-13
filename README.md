@@ -1,6 +1,6 @@
 # QwenBridge
 
-API compatível com OpenAI que conecta clientes ao **Qwen (`chat.qwen.ai`)** com suporte a múltiplas contas, tool calling robusto, uploads multimodais e sessões persistentes. Inclui modo Playwright com stealth para evasão de anti-bot, rotação com cooldown, variantes `-no-thinking`, sumarização de contexto, cache comprimido e observabilidade.
+API compatível com OpenAI/Anthropic que conecta clientes ao **Qwen (`chat.qwen.ai`)** com suporte a múltiplas contas, tool calling robusto, thread-native, uploads multimodais e sessões persistentes. Inclui Playwright com stealth, retries para erros transitórios, variantes `-no-thinking`/`-thinking`, sumarização de contexto, cache comprimido e observabilidade.
 
 [![CI](https://github.com/johngbl/QwenBridge/actions/workflows/ci.yml/badge.svg)](https://github.com/johngbl/QwenBridge/actions/workflows/ci.yml)
 [![TypeScript](https://img.shields.io/badge/TypeScript-6.0-blue)](https://www.typescriptlang.org/)
@@ -11,20 +11,18 @@ API compatível com OpenAI que conecta clientes ao **Qwen (`chat.qwen.ai`)** com
 
 ## Principais funcionalidades
 
-- **Compatibilidade OpenAI** — Endpoints `/v1/chat/completions`, `/v1/models`, `/v1/chat/completions/stop` e `/v1/upload`.
-- **Compatibilidade Anthropic** — Endpoint `/v1/messages` para SDKs Anthropic.
-- **Playwright com stealth** — Captura de headers reais (`bx-ua`, `bx-umidtoken`) por conta com `playwright-extra` e `puppeteer-extra-plugin-stealth`.
-- **Anti-bot retry** — Detecção automática de `FAIL_SYS_USER_VALIDATE`/`RGV587_ERROR` com retry e rotação de conta.
-- **Dynamic timeouts** — Timeout baseado no tamanho do payload (`120s + 30s/MB`).
-- **Payload size limit** — Validação de tamanho (10MB) antes de enviar ao Qwen.
-- **Modelos Qwen atuais** — Funciona com a família `qwen3.x` e expõe variantes sintéticas `-no-thinking`.
-- **Múltiplas contas** — Rotação round-robin, cooldown automático e inicialização paralela.
-- **Persistência de sessão** — Cookies/JWT do Qwen persistidos por conta no SQLite.
-- **Uploads multimodais** — Imagens, vídeo, áudio e documentos enviados ao OSS do Qwen.
-- **Tool calling robusto** — Parser tolerante a stream fragmentado, JSON malformado e blocos XML/Hermes-style.
-- **Gerenciamento de contexto** — Truncamento, sumarização, detecção de tópico e preservação de sessão.
-- **Cache com compressão Brotli** — TTL em memória, métricas e serialização segura.
-- **Observabilidade** — `/health`, `/metrics`, watchdog e métricas Prometheus.
+- **Compatibilidade OpenAI** — `/v1/chat/completions`, `/v1/models`, `/v1/chat/completions/stop`, `/v1/upload` e **Responses API** `/v1/responses`.
+- **Compatibilidade Anthropic** — `/v1/messages` e `/v1/messages/count_tokens`.
+- **Thread-native** — Reutiliza sessão/pai no Qwen, com sumarização e rollover de contexto.
+- **Playwright + stealth** — Headers reais (`bx-ua`, `bx-umidtoken`, `bx-v`) por conta; fingerprint estável e cleanup de processos.
+- **Startup rápido multi-conta** — Sobe com a **primeira conta pronta**; as demais continuam preparando em background.
+- **Retries resilientes** — 502/503/504, erros de rede (`fetch failed`), anti-bot, quota e `invalid_input` com recriação de chat.
+- **Parser de tools robusto** — stream fragmentado, JSON malformado, fuzzy de nomes (`readFile` → `read_file`), JSON duplamente escapado e `</tool_call>` case-insensitive.
+- **Personalization sync** — system/tools podem ir por personalization; aplica settings seguras (`largeTextAsFile=false`, memory off, tools internas off).
+- **Senhas criptografadas at-rest** no SQLite.
+- **Uploads multimodais** — imagens, vídeo, áudio e documentos via OSS do Qwen.
+- **Modelos atuais** — família `qwen3.x` + variantes sintéticas `-no-thinking` e `-thinking`.
+- **Observabilidade** — `/health`, `/metrics` (Prometheus), watchdog e logs com emojis.
 - **Deploy simples** — `npm`, Docker e graceful shutdown.
 
 ---
@@ -33,27 +31,35 @@ API compatível com OpenAI que conecta clientes ao **Qwen (`chat.qwen.ai`)** com
 
 ```mermaid
 flowchart TD
-    Client["Cliente OpenAI/SDK"] -->|HTTP| Proxy["QwenBridge - Hono"]
+    Client["Cliente OpenAI/Anthropic/SDK"] -->|HTTP| Proxy["QwenBridge - Hono"]
     Proxy --> Chat["/v1/chat/completions"]
+    Proxy --> Responses["/v1/responses"]
     Proxy --> Models["/v1/models"]
     Proxy --> Upload["/v1/upload"]
     Proxy --> Anthropic["/v1/messages"]
-    Chat --> Context["Thread-native context manager"]
-    Context --> Summary["Context summarizer"]
+    Chat --> Context["Thread-native context"]
+    Responses --> Chat
+    Context --> Summary["Summarizer + rollover"]
     Chat --> Accounts["Account manager"]
-    Accounts --> DB[("SQLite")]
+    Accounts --> DB[("SQLite encrypted")]
     Accounts --> Playwright["Playwright + Stealth"]
-    Playwright --> Qwen
+    Playwright --> Fingerprint["Fingerprint / session keeper"]
     Chat --> Parser["Tool-call parser"]
+    Chat --> Personalization["Settings + personalization sync"]
     Chat --> Qwen["chat.qwen.ai"]
-    Upload --> OSS["Qwen OSS upload"]
+    Upload --> OSS["Qwen OSS"]
 ```
 
 ---
 
 ## Autenticação
 
-QwenBridge usa Playwright por padrão e de forma exclusiva. Cada conta configurada abre uma sessão real de browser para capturar cookies e headers anti-bot (`bx-ua`, `bx-umidtoken`, `bx-v`).
+Se `API_KEY` estiver definido, as rotas `/v1/*` (e `/metrics`) exigem uma das formas:
+
+- `Authorization: Bearer <API_KEY>` (OpenAI / Responses)
+- `x-api-key: <API_KEY>` (Anthropic e clientes mistos)
+
+QwenBridge usa **Playwright por padrão**. Cada conta abre uma sessão real de browser para capturar cookies e headers anti-bot.
 
 ```env
 PLAYWRIGHT_HEADLESS=true
@@ -61,19 +67,21 @@ PLAYWRIGHT_BROWSER=chromium
 ```
 
 **Requisitos:**
+
 ```bash
 npx playwright install chromium
 ```
+
+Senhas das contas são armazenadas **criptografadas** no SQLite (`data/`).
 
 ---
 
 ## Modelos e contexto
 
-Os modelos e janelas de contexto são sincronizados automaticamente via `/v1/models`.
-Valores hardcoded como fallback antes da primeira chamada à API:
+Modelos e janelas de contexto são sincronizados via `/v1/models`. Fallbacks hardcoded antes da primeira sincronização:
 
 | Modelo | Contexto | Divisor de tokens |
-|---|---|---|
+|---|---:|---:|
 | `qwen3.7-plus` | 1.000.000 | 2.0 |
 | `qwen3.7-max` | 1.000.000 | 2.2 |
 | `qwen3.6-plus` | 1.000.000 | 2.0 |
@@ -89,10 +97,12 @@ Valores hardcoded como fallback antes da primeira chamada à API:
 | `qwen-plus-2025-07-28` | 131.072 | 2.0 |
 | **Fallback** | **131.072** | **2.0** |
 
-### Variantes `-no-thinking`
+### Variantes sintéticas
 
-Todos os modelos acima possuem variantes `-no-thinking` (ex: `qwen3.7-plus-no-thinking`).
-Usa a mesma janela de contexto do modelo base.
+- `-no-thinking` — ex.: `qwen3.7-plus-no-thinking`
+- `-thinking` — ex.: `qwen3.7-plus-thinking`
+
+Ambas usam a mesma janela de contexto do modelo base.
 
 ---
 
@@ -100,10 +110,10 @@ Usa a mesma janela de contexto do modelo base.
 
 | Dependência | Versão mínima | Observação |
 |---|---:|---|
-| Node.js | 20+ | Recomendado usar LTS |
+| Node.js | 20+ | LTS recomendado |
 | npm | 9+ | Incluído com Node |
-| Playwright | - | Para modo Playwright (`npx playwright install chromium`) |
-| Docker | opcional | Para deploy em container |
+| Playwright | - | `npx playwright install chromium` |
+| Docker | opcional | Deploy em container |
 
 ---
 
@@ -115,7 +125,7 @@ Usa a mesma janela de contexto do modelo base.
 git clone https://github.com/johngbl/QwenBridge.git
 cd QwenBridge
 npm install
-npx playwright install chromium  # Se usar Playwright
+npx playwright install chromium
 ```
 
 ### Via Docker
@@ -128,17 +138,18 @@ docker-compose up -d
 
 ## Início rápido
 
-Crie um `.env` na raiz. O `.env.example` contém a lista completa das opções suportadas pelo fork.
+Crie um `.env` na raiz (use `.env.example` como base).
 
 ### Exemplo mínimo
 
 ```env
 QWEN_ACCOUNTS=user1@example.com:senha1;user2@example.com:senha2
+API_KEY=sua-chave-local
+HOST=127.0.0.1
 ```
 
-> **Dica:** Use `;` como separador preferencial de contas para evitar conflito com `,` em senhas.
-> O formato legado com `,` continua aceito.
-> Senhas com `:`, `#`, espaços e outros caracteres especiais funcionam normalmente.
+> **Dica:** use `;` como separador de contas (`,` legado ainda funciona).  
+> Senhas com `:`, `#` e espaços são aceitas.
 
 ### Iniciar
 
@@ -146,14 +157,31 @@ QWEN_ACCOUNTS=user1@example.com:senha1;user2@example.com:senha2
 npm start
 ```
 
+### Startup multi-conta
+
+1. Prepara contas em ordem.
+2. Quando a **primeira conta** autentica, warm-up ok e **sem cooldown**, o server sobe.
+3. As demais continuam em **background** (batch = `PLAYWRIGHT_INIT_BATCH_SIZE`).
+
+Exemplo de log:
+
+```text
+🔐 [Server] Preparing first available Qwen account...
+✅ [Server] Account ready: us***@example.com
+🔄 [Server] Preparing 3 additional account(s) in background...
+
+🚀✨ [Server] Listening on http://127.0.0.1:3000/v1 ✨🚀
+```
+
 ---
 
 ## Testes
 
 ```bash
-npm test           # Todos
-npm run test:mock  # Só mocks
-npm run test:live  # Só reais/live
+npm test           # mock + live
+npm run test:mock  # suite mock (sem browser real de contas)
+npm run test:live  # stress/concurrency reais
+npm run typecheck  # tipos
 ```
 
 ---
@@ -164,98 +192,146 @@ npm run test:live  # Só reais/live
 
 | Variável | Default | Descrição |
 |---|---|---|
-| `PORT` | `3000` | Porta HTTP do proxy. |
-| `HOST` | `0.0.0.0` | Host de bind. Para uso local, `127.0.0.1`. |
-| `API_KEY` | vazio | Protege rotas `/v1/*` com `Authorization: Bearer ...`. |
+| `PORT` | `3000` | Porta HTTP |
+| `HOST` | `0.0.0.0` | Bind host. Local: `127.0.0.1` |
+| `API_KEY` | vazio | Protege `/v1/*` com Bearer token |
 
-### Autenticação e sessão
-
-| Variável | Default | Descrição |
-|---|---|---|
-| `QWEN_ACCOUNTS` | vazio | Contas no formato `email1:senha1;email2:senha2`. Use `;` como separador (`,` como fallback legacy). Senhas com `:`, `#`, espaços funcionam normalmente. |
-| `DELETE_ALL_CHATS_ON_SHUTDOWN` | `false` | Limpa chats no shutdown. |
-
-### Playwright
+### Contas e sessão
 
 | Variável | Default | Descrição |
 |---|---|---|
-| `PLAYWRIGHT_HEADLESS` | `true` | Browser headless (sem janela). |
-| `PLAYWRIGHT_BROWSER` | `chromium` | Navegador: `chromium`, `chrome`, `edge`. |
-| `PLAYWRIGHT_INIT_BATCH_SIZE` | `1` | Quantas contas inicializar em paralelo no startup. Use baixo para evitar pico de RAM. |
-| `PLAYWRIGHT_CONTEXT_CLOSE_TIMEOUT_MS` | `10000` | Timeout para fechar contexto/browser antes do kill best-effort. |
-| `PLAYWRIGHT_IDLE_CONTEXT_TTL_MS` | `600000` | Fecha contextos Playwright ociosos após esse tempo (`0` desativa). |
-| `SESSION_KEEP_ALIVE_ENABLED` | `false` | Mantém sessões ativas com atividade leve apenas quando a conta está ociosa. Opt-in para evitar Chromes permanentes. |
-| `SESSION_KEEP_ALIVE_INTERVAL_MS` | `180000` | Intervalo entre ciclos de keep-alive/limpeza. |
-| `SESSION_KEEP_ALIVE_IDLE_MS` | `120000` | Tempo mínimo sem uso antes de uma conta ser elegível ao keep-alive. |
-| `SESSION_KEEP_ALIVE_NAVIGATION_INTERVAL_MS` | `480000` | Intervalo mínimo para navegação leve de validação durante keep-alive. |
+| `QWEN_ACCOUNTS` | vazio | `email1:senha1;email2:senha2` |
+| `DELETE_ALL_CHATS_ON_SHUTDOWN` | `false` | Limpa chats no shutdown |
+| `QWEN_PERSONALIZATION_FROM_REQUEST` | `true` | Envia system/tools via personalization |
+| `QWEN_PERSONALIZATION_VERIFY_GET` | `true` | Confirma personalization com GET |
+| `QWEN_CHAT_POOL_SIZE` | `1` | Warm pool de chats por modelo |
+| `QWEN_CHAT_POOL_MODELS` | `qwen3.7-plus` | Modelos aquecidos no warm pool |
+
+### Playwright / processos
+
+| Variável | Default | Descrição |
+|---|---|---|
+| `PLAYWRIGHT_HEADLESS` | `true` | Browser sem janela |
+| `PLAYWRIGHT_BROWSER` | `chromium` | `chromium` / `chrome` / `edge` |
+| `PLAYWRIGHT_INIT_BATCH_SIZE` | `1` | Contas em paralelo no background init |
+| `PLAYWRIGHT_CONTEXT_CLOSE_TIMEOUT_MS` | `10000` | Timeout de close antes do kill |
+| `PLAYWRIGHT_IDLE_CONTEXT_TTL_MS` | `600000` | Fecha contextos idle (`0` desativa) |
+| `PLAYWRIGHT_JS_HEAP_MB` | `512` | Cap V8 do Chromium (`--max-old-space-size`) |
+| `PLAYWRIGHT_LOW_MEMORY_FLAGS` | `true` | Flags de baixa RAM (heap cap, cache mínimo, renderer limit) |
+| `OSS_MULTIPART_THRESHOLD_MB` | `5` | Acima disso usa multipart OSS; abaixo `putStream` |
+| `SESSION_KEEP_ALIVE_ENABLED` | `false` | Keep-alive opt-in (evita Chromes permanentes) |
+| `SESSION_KEEP_ALIVE_INTERVAL_MS` | `180000` | Intervalo do ciclo de keep-alive/cleanup |
+| `SESSION_KEEP_ALIVE_IDLE_MS` | `120000` | Idle mínimo para keep-alive |
+| `SESSION_KEEP_ALIVE_NAVIGATION_INTERVAL_MS` | `480000` | Intervalo de navegação leve |
 
 ### Headers anti-bot
 
 | Variável | Default | Descrição |
 |---|---|---|
-| `USER_AGENT` | Chrome 149 Windows | User-Agent fallback para Playwright/downloads. |
-| `QWEN_BX_V` | `2.5.36` | Versão `bx-v` fallback; `bx-ua` e `bx-umidtoken` são capturados do browser. |
+| `USER_AGENT` | Chrome 149 Windows | UA fallback |
+| `QWEN_BX_V` | `2.5.36` | `bx-v` fallback; `bx-ua`/`bx-umidtoken` vêm do browser |
 
-O Playwright também aplica um fingerprint estável por conta (UA Chrome 149, locale, viewport, hardware e WebGL coerentes) para reduzir inconsistências sem trocar a arquitetura thread-native/tools do fork.
+Fingerprint estável por conta (UA, locale, viewport, hardware/WebGL) é aplicado automaticamente.
 
 ### Delays e retry
 
 | Variável | Default | Descrição |
 |---|---|---|
-| `RETRY_BASE_DELAY_MS` | `1000` | Delay base para retries (exponential backoff). |
-| `RETRY_MAX_DELAY_MS` | `10000` | Cap do exponential backoff. |
-| `ANTI_BOT_BASE_DELAY_MS` | `5000` | Delay base para erros anti-bot. |
-| `ANTI_BOT_MAX_DELAY_MS` | `30000` | Cap do exponential backoff anti-bot. |
-| `ACCOUNT_COOLDOWN_MS` | `60000` | Cooldown padrão (Qwen sobrescreve quando informa tempo). |
+| `RETRY_BASE_DELAY_MS` | `1000` | Base do exponential backoff |
+| `RETRY_MAX_DELAY_MS` | `10000` | Cap do backoff |
+| `ANTI_BOT_BASE_DELAY_MS` | `5000` | Base anti-bot |
+| `ANTI_BOT_MAX_DELAY_MS` | `30000` | Cap anti-bot |
 
 ### Timeouts
 
 | Variável | Default | Descrição |
 |---|---|---|
-| `HTTP_TIMEOUT` | `10000` | Timeout HTTP genérico. |
-| `TOTAL_REQUEST_TIMEOUT` | `300000` | Timeout máximo de geração. |
-| `REASONING_MODEL_TIMEOUT` | `600000` | Timeout para modelos com reasoning. |
+| `HTTP_TIMEOUT` | `10000` | HTTP genérico |
+| `CHAT_TIMEOUT` | `120000` | Timeout de chat |
+| `NAVIGATION_TIMEOUT` | `45000` | Navegação Playwright |
+| `HEADERS_TIMEOUT` | `60000` | Captura de headers |
+| `IDLE_STREAM_TIMEOUT` | `60000` | Stream sem dados |
+| `TOTAL_REQUEST_TIMEOUT` | `300000` | Teto de geração |
+| `REASONING_MODEL_TIMEOUT` | `600000` | Modelos com reasoning |
 
-**Nota:** Timeouts são dinâmicos: `120s + 30s por MB de payload`.
+**Nota:** timeouts dinâmicos de payload: `120s + 30s por MB`.
 
-### Cache
-
-| Variável | Default | Descrição |
-|---|---|---|
-| `CACHE_TTL` | `3600` | TTL do cache em segundos. |
-| `CACHE_COMPRESSION_ENABLED` | `true` | Compressão Brotli. |
-
-### Contexto
+### Cache e contexto
 
 | Variável | Default | Descrição |
 |---|---|---|
-| `CONTEXT_SUMMARIZATION_ENABLED` | `true` | Sumarização do contexto thread-native. |
-| `CONTEXT_SUMMARIZATION_MODEL` | `qwen3.5-flash` | Modelo para sumarização. |
+| `CACHE_TTL` | `3600` | TTL do cache (s) |
+| `CACHE_COMPRESSION_ENABLED` | `true` | Compressão Brotli |
+| `CONTEXT_SUMMARIZATION_ENABLED` | `true` | Sumarização thread-native |
+| `CONTEXT_SUMMARIZATION_MODEL` | `qwen3.5-flash` | Modelo de sumarização |
+| `CONTEXT_ROLLOVER_ENABLED` | `true` | Rollover de contexto longo |
 
 ### Observabilidade
 
 | Variável | Default | Descrição |
 |---|---|---|
-| `METRICS_INTERVAL` | `10000` | Intervalo de métricas. |
-| `WATCHDOG_INTERVAL` | `5000` | Intervalo do watchdog. |
-| `RAM_WARNING` | `80` | % RAM para warning. |
-| `RAM_CRITICAL` | `95` | % RAM para critical. |
+| `CHAT_REQUEST_LOG` | `false` | Logs detalhados de request |
+| `METRICS_INTERVAL` | `10000` | Intervalo de métricas |
+| `WATCHDOG_INTERVAL` | `5000` | Intervalo do watchdog |
+| `RAM_WARNING` | `80` | % heap warning (`heapUsed / heap_size_limit`) |
+| `RAM_CRITICAL` | `95` | % heap critical (`heap_size_limit`, não `heapTotal`) |
+
+---
+
+## Retries e resiliência
+
+O proxy tenta recuperar erros transitórios sem quebrar thread-native/tools:
+
+| Situação | Comportamento |
+|---|---|
+| `502` / `503` / `504` | Retry com delay curto |
+| `fetch failed`, `ECONNREFUSED`, `ETIMEDOUT`, `ENOTFOUND` | Retry de rede |
+| Anti-bot (`FAIL_SYS_USER_VALIDATE`, captcha, etc.) | Cooldown + rotação + profile reset em background |
+| Quota / rate limit | Cooldown categorizado (`RateLimited`, `RateLimitTemporary`, …) |
+| `invalid_input` (“entrada ou anexo inválido”) | Retry forçando **novo chat** + contexto completo |
+| Chat not exist / session stale | Força novo chat na sessão lógica |
+
+Settings seguras aplicadas no sync de personalization (sem reescrever tudo da conta):
+
+```json
+{
+  "ui": { "autoTags": false, "largeTextAsFile": false, "splitLargeChunks": false },
+  "mcp_remind": false,
+  "memory": { "enable_memory": false, "enable_history_memory": false },
+  "tools_enabled": { "web_search": false, "code_interpreter": false }
+}
+```
 
 ---
 
 ## Anti-bot
 
-O QwenBridge detecta automaticamente erros de anti-bot:
+Detecta, entre outros:
 
 - `FAIL_SYS_USER_VALIDATE`
 - `RGV587_ERROR`
+- mensagens de captcha / human verification
 
 **Fluxo:**
-1. Erro detectado → retry com delay exponencial + jitter
-2. Retry falha → rotação para próxima conta
-3. Todas falham → erro retornado ao cliente
 
-**Com Playwright:** Cada conta tem seu próprio fingerprint (`bx-ua`, `bx-umidtoken`) capturado do browser real.
+1. Erro detectado → retry com delay
+2. Marca cooldown / reseta profile se necessário
+3. Rotaciona conta quando faz sentido
+4. Se todas falharem → erro ao cliente
+
+Com Playwright, cada conta usa fingerprint e headers capturados do browser real.
+
+**Captcha automático (solver full):** conscientemente **não portado**. O fluxo atual de cooldown + profile reset + rotação de conta é o caminho suportado; solvers de captcha de forks externos (alto risco de ban/instabilidade) ficam fora do escopo.
+
+---
+
+## Compatibilidade real das rotas
+
+O README descreve o uso operacional. Para detalhes técnicos da API (schemas, exemplos, headers), veja:
+
+- [`docs/openapi.yaml`](docs/openapi.yaml) — OpenAPI 3.1 spec com todas as rotas (Chat, Responses, Anthropic, Models, Upload, Health)
+
+> **Nota:** A spec OpenAPI é mantida atualizada com as mudanças recentes (aliases GPT/Claude, auth Bearer + x-api-key, health heap detalhado, endpoints Responses/Anthropic).
 
 ---
 
@@ -265,10 +341,13 @@ O QwenBridge detecta automaticamente erros de anti-bot:
 
 | Rota | Método | Descrição |
 |---|---|---|
-| `/v1/chat/completions` | POST | Chat completions (streaming + non-streaming) |
-| `/v1/chat/completions/stop` | POST | Abortar geração ativa |
+| `/v1/chat/completions` | POST | Chat completions (stream + non-stream) |
+| `/v1/chat/completions/stop` | POST | Abortar geração |
 | `/v1/models` | GET | Listar modelos |
 | `/v1/models/:id` | GET | Modelo específico |
+| `/v1/responses` | POST | OpenAI Responses API |
+| `/v1/responses/:id` | GET | Recuperar response armazenada |
+| `/v1/responses/:id` | DELETE | Deletar response |
 
 ### Anthropic Compatible
 
@@ -282,8 +361,8 @@ O QwenBridge detecta automaticamente erros de anti-bot:
 | Rota | Método | Descrição |
 |---|---|---|
 | `/health` | GET | Health check |
-| `/metrics` | GET | Métricas Prometheus |
-| `/v1/upload` | POST | Upload de arquivos |
+| `/metrics` | GET | Prometheus (protegido por API key se configurada) |
+| `/v1/upload` | POST | Upload multimodal |
 
 ---
 
@@ -344,16 +423,24 @@ curl http://localhost:3000/v1/chat/completions \
 ## Tool calling
 
 O parser suporta:
-- Tags `<tool_call>` XML
-- Formato Hermes-style
-- JSON malformado (strings sem aspas, quotes escapadas)
-- Stream fragmentado
+
+- tags `<tool_call>...</tool_call>` (close case-insensitive: `</TOOL_CALL>`)
+- formato Hermes/XML (`<parameter name="...">`)
+- JSON malformado / recovery (aspas/braces faltando)
+- JSON **duplamente escapado** em arguments
+- stream fragmentado / tool call sem open tag
+- **fuzzy match** seguro de nomes (`readFile` → `read_file`) quando há match único
+- tool names não declarados: podem ser preservados como texto literal (evita quebrar exemplos)
+
+Tools internas da conta Qwen (web_search, code interpreter, etc.) ficam desligadas; o proxy usa as tools do cliente.
 
 ---
 
-## Anthropic Model Mapping
+## Model mapping
 
-| Claude Model | Qwen Model |
+### Anthropic (Claude → Qwen)
+
+| Claude | Qwen |
 |---|---|
 | `claude-opus-4-*` | `qwen3.7-max` |
 | `claude-sonnet-4-*` | `qwen3.7-plus` |
@@ -362,6 +449,19 @@ O parser suporta:
 | `claude-3-opus` | `qwen3.7-max` |
 | `claude-3-sonnet` | `qwen3.6-plus` |
 | `claude-3-haiku` | `qwen3.5-flash` |
+
+### Responses API (GPT → Qwen)
+
+| GPT | Qwen |
+|---|---|
+| `gpt-5` / `gpt-5.5` | `qwen3.7-max` |
+| `gpt-5-turbo` | `qwen3.7-plus` |
+| `gpt-4.1` / `gpt-4o` | `qwen3.7-plus` |
+| `gpt-4.1-mini` / `gpt-4o-mini` | `qwen3.5-flash` |
+| `gpt-4` / `gpt-4-turbo` | `qwen3.6-plus` |
+| `gpt-3.5-turbo` | `qwen3.5-flash` |
+
+> Modelos **não mapeados** (ex.: `gpt-5-mini` se não existir na tabela) passam “as-is” e o Qwen pode responder `Model not found`. Prefira modelos `qwen*` ou amplie o mapping.
 
 ---
 
@@ -386,7 +486,7 @@ services:
         max-file: "3"
 ```
 
-O container ajusta permissões no startup para `data/db` e `data/qwen_profiles`, evitando falhas comuns com volumes bind-mounted.
+O container ajusta permissões de `data/db` e `data/qwen_profiles` no startup.
 
 ---
 
@@ -395,19 +495,25 @@ O container ajusta permissões no startup para `data/db` e `data/qwen_profiles`,
 ```
 QwenBridge/
 ├── src/
-│   ├── api/              # Server, models, error helpers
-│   ├── cache/            # Memory cache com Brotli
-│   ├── core/             # Config, accounts, database, metrics
+│   ├── api/                 # Server Hono, models, errors
+│   ├── benchmarks/          # Baseline de latência do proxy
+│   ├── cache/               # Memory cache + Brotli
+│   ├── core/                # Config, accounts, DB, metrics, cooldowns
 │   ├── routes/
-│   │   ├── anthropic/    # Anthropic API compatible
-│   │   └── chat/         # Chat completions, streaming
+│   │   ├── anthropic/       # API Anthropic
+│   │   ├── chat/            # Completions, streaming, account acquire
+│   │   └── responses/       # OpenAI Responses API
 │   ├── services/
-│   │   ├── auth-playwright.ts # Headers Playwright + mock de testes
-│   │   ├── playwright.ts      # Playwright + stealth
-│   │   └── qwen.ts            # Qwen API integration
-│   ├── tools/                 # Tool-call instructions, parser e schema
-│   └── utils/                 # JSON parser, token estimation, context summary
-├── data/                 # SQLite, encryption key e profiles (gitignored)
+│   │   ├── playwright.ts    # Browser + headers + cleanup
+│   │   ├── qwen.ts          # Upstream Qwen + personalization
+│   │   ├── session-keeper.ts
+│   │   ├── fingerprint.ts
+│   │   ├── human-behavior.ts
+│   │   └── thread-context-*.ts
+│   ├── tools/               # Parser e instruções de tools
+│   ├── tests/
+│   └── utils/
+├── data/                    # SQLite, key e profiles (gitignored)
 ├── Dockerfile
 ├── docker-compose.yml
 └── package.json
@@ -421,11 +527,12 @@ QwenBridge/
 |---|---|
 | `npm start` | Iniciar servidor |
 | `npm run login` | Gerenciar contas |
-| `npm test` | Rodar todos os testes |
-| `npm run test:mock` | Testes com mock |
-| `npm run test:live` | Testes reais |
+| `npm run delete-chats` | Limpar chats Qwen das contas |
+| `npm test` | mock + live |
+| `npm run test:mock` | Testes mock |
+| `npm run test:live` | Testes live/stress |
 | `npm run typecheck` | Verificar tipos |
-
+| `npm run benchmark:proxy` | Benchmark de latência |
 
 ---
 
@@ -433,12 +540,18 @@ QwenBridge/
 
 | Problema | Solução |
 |---|---|
-| Anti-bot bloqueando | Refaça login da conta e verifique se o Playwright está capturando headers |
-| Quota exceeded | Adicione mais contas ou espere cooldown |
-| Timeout em requests grandes | Aumente `TOTAL_REQUEST_TIMEOUT` |
-| Playwright não inicia | Execute `npx playwright install chromium` |
+| Anti-bot / captcha | Aguarde retry/rotação; confira captura de headers Playwright |
+| Quota exceeded | Mais contas ou esperar cooldown |
+| `502 Bad Gateway` / `fetch failed` | Normalmente upstream/rede; o proxy faz retry automático |
+| `invalid_input` (anexo inválido) | Retry com chat novo; settings `largeTextAsFile=false` ajudam |
+| `Model not found` com `gpt-*` | Aliases (`gpt-5-mini`→flash, `gpt-5`→max, etc.) em Chat/Responses/Anthropic; confira mapping |
+| Vários Chromes abertos / RAM alta | `SESSION_KEEP_ALIVE_ENABLED=false`, idle cleanup on, `PLAYWRIGHT_INIT_BATCH_SIZE=1`, `PLAYWRIGHT_JS_HEAP_MB` |
+| Watchdog “RAM critical” falso | Já corrigido: usa `heap_size_limit`; confira `/health.heap.usagePercent` |
+| Timeout em requests grandes | Aumente `TOTAL_REQUEST_TIMEOUT` / `REASONING_MODEL_TIMEOUT` |
+| Playwright não inicia | `npx playwright install chromium` |
 | Porta em uso | Altere `PORT` no `.env` |
-| Sessão expirada | Execute `npm run login` para renovar |
+| Sessão expirada | `npm run login` ou deixe o refresh automático reautenticar |
+| API aberta em `0.0.0.0` sem key | Defina `API_KEY` e/ou `HOST=127.0.0.1` |
 
 ---
 

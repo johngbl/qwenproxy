@@ -62,6 +62,31 @@ test("models endpoint returns ETag and supports 304", async () => {
   }
 });
 
+test("models endpoint returns Anthropic format with thinking variants when anthropic-version is set", async () => {
+  const originalFetch = installModelsFetchMock();
+  try {
+    const res = await app.fetch(
+      new Request("http://localhost/v1/models", {
+        headers: { "anthropic-version": "2023-06-01" },
+      }),
+    );
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as any;
+    assert.equal(body.has_more, false);
+    assert.ok(body.data.some((m: any) => m.id === "qwen-test-model"));
+    assert.ok(
+      body.data.some((m: any) => m.id === "qwen-test-model-thinking"),
+      "Anthropic models list should include thinking variants",
+    );
+    assert.equal(
+      body.data.find((m: any) => m.id === "qwen-test-model").type,
+      "model",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("models endpoint returns a single model and 404 for missing model", async () => {
   const originalFetch = installModelsFetchMock();
   try {

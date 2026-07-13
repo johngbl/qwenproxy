@@ -603,6 +603,17 @@ test("API Key protection", async () => {
         200,
         "Should return 200 OK with correct API Key",
       );
+
+      // 4. Anthropic-style x-api-key also authenticates
+      const req4 = new Request("http://localhost/v1/models", {
+        headers: { "x-api-key": "test-api-key" },
+      });
+      const res4 = await app.fetch(req4);
+      assert.strictEqual(
+        res4.status,
+        200,
+        "Should return 200 OK with correct x-api-key",
+      );
     } finally {
       globalThis.fetch = originalFetch;
     }

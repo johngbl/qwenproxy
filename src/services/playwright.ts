@@ -59,6 +59,48 @@ function resolveBrowserEngine(browserType: BrowserType): BrowserEngineConfig {
   }
 }
 
+/**
+ * Chromium launch args tuned for multi-account proxy use.
+ * Low-memory flags cap V8 old-space in renderer processes (fork-safe RAM fix).
+ */
+export function buildChromiumLaunchArgs(viewport: {
+  width: number;
+  height: number;
+}): string[] {
+  const args = [
+    "--disable-blink-features=AutomationControlled",
+    "--disable-features=IsolateOrigins,site-per-process,TranslateUI",
+    "--disable-infobars",
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--no-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-gpu",
+    `--window-size=${viewport.width},${viewport.height}`,
+    "--disable-extensions",
+    "--disable-background-networking",
+    "--disable-sync",
+    "--metrics-recording-only",
+    "--mute-audio",
+    "--disable-default-apps",
+    "--disable-component-extensions-with-background-pages",
+  ];
+
+  if (config.playwright.lowMemoryFlags) {
+    const heapMb = config.playwright.jsHeapMb;
+    args.push(
+      `--js-flags=--max-old-space-size=${heapMb}`,
+      "--renderer-process-limit=2",
+      "--disk-cache-size=1",
+      "--media-cache-size=1",
+      "--disable-hang-monitor",
+      "--disable-ipc-flooding-protection",
+    );
+  }
+
+  return args;
+}
+
 // Per-account mutexes for browser access
 const accountMutexes = new Map<string, Mutex>();
 
@@ -420,22 +462,7 @@ export async function initPlaywrightForAccount(
         "sec-ch-ua-platform": '"Windows"',
       },
       ignoreDefaultArgs: ["--enable-automation"],
-      args: [
-        "--disable-blink-features=AutomationControlled",
-        "--disable-features=IsolateOrigins,site-per-process",
-        "--disable-infobars",
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--no-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-gpu",
-        `--window-size=${fingerprint.viewport.width},${fingerprint.viewport.height}`,
-        "--disable-extensions",
-        "--disable-background-networking",
-        "--disable-sync",
-        "--metrics-recording-only",
-        "--mute-audio",
-      ],
+      args: buildChromiumLaunchArgs(fingerprint.viewport),
     });
 
     try {

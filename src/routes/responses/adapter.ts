@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import { mapClientModelToQwen } from "../../core/model-alias.ts";
 import type {
   ResponsesRequest,
   ResponsesResponse,
@@ -86,38 +87,7 @@ export function generateCallId(): string {
  * Qwen models pass through as-is.
  */
 export function mapResponsesModel(model: string): string {
-  if (model.startsWith("qwen")) return model;
-
-  const gptToQwen: Record<string, string> = {
-    // GPT-5.x
-    "gpt-5.5": "qwen3.7-max",
-    "gpt-5.5-turbo": "qwen3.7-max",
-    "gpt-5": "qwen3.7-max",
-    "gpt-5-turbo": "qwen3.7-plus",
-    // GPT-4.1
-    "gpt-4.1": "qwen3.7-plus",
-    "gpt-4.1-mini": "qwen3.5-flash",
-    "gpt-4.1-nano": "qwen3.5-flash",
-    // GPT-4o
-    "gpt-4o": "qwen3.7-plus",
-    "gpt-4o-mini": "qwen3.5-flash",
-    "gpt-4o-2024-11-20": "qwen3.7-plus",
-    "gpt-4o-2024-08-06": "qwen3.7-plus",
-    // GPT-4
-    "gpt-4": "qwen3.6-plus",
-    "gpt-4-turbo": "qwen3.6-plus",
-    "gpt-4-turbo-preview": "qwen3.6-plus",
-    // GPT-3.5
-    "gpt-3.5-turbo": "qwen3.5-flash",
-    // o-series
-    o3: "qwen3.7-max",
-    "o3-mini": "qwen3.7-plus",
-    "o4-mini": "qwen3.7-plus",
-    o1: "qwen3.7-max",
-    "o1-mini": "qwen3.7-plus",
-  };
-
-  return gptToQwen[model] || model;
+  return mapClientModelToQwen(model);
 }
 
 // ============ Request conversion ============

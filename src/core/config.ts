@@ -25,6 +25,9 @@ const envSchema = z
     PLAYWRIGHT_INIT_BATCH_SIZE: z.string().default("1"),
     PLAYWRIGHT_CONTEXT_CLOSE_TIMEOUT_MS: z.string().default("10000"),
     PLAYWRIGHT_IDLE_CONTEXT_TTL_MS: z.string().default("600000"),
+    PLAYWRIGHT_JS_HEAP_MB: z.string().default("512"),
+    PLAYWRIGHT_LOW_MEMORY_FLAGS: z.string().default("true"),
+    OSS_MULTIPART_THRESHOLD_MB: z.string().default("5"),
     CHAT_REQUEST_LOG: z.string().default("false"),
     HTTP_TIMEOUT: z.string().default("10000"),
     CHAT_TIMEOUT: z.string().default("120000"),
@@ -72,7 +75,6 @@ const envSchema = z
     RAM_CRITICAL: z.string().default("95"),
     WS_WARNING: z.string().default("50"),
     WS_CRITICAL: z.string().default("100"),
-    ACCOUNT_COOLDOWN_MS: z.string().default("60000"),
     RETRY_BASE_DELAY_MS: z.string().default("1000"),
     RETRY_MAX_DELAY_MS: z.string().default("10000"),
     ANTI_BOT_BASE_DELAY_MS: z.string().default("5000"),
@@ -152,6 +154,14 @@ export const config = {
       parseInt(env.PLAYWRIGHT_CONTEXT_CLOSE_TIMEOUT_MS),
     ),
     idleContextTtlMs: Math.max(0, parseInt(env.PLAYWRIGHT_IDLE_CONTEXT_TTL_MS)),
+    jsHeapMb: Math.max(64, parseInt(env.PLAYWRIGHT_JS_HEAP_MB)),
+    lowMemoryFlags: env.PLAYWRIGHT_LOW_MEMORY_FLAGS !== "false",
+  },
+  oss: {
+    multipartThresholdBytes: Math.max(
+      1 * 1024 * 1024,
+      parseInt(env.OSS_MULTIPART_THRESHOLD_MB) * 1024 * 1024,
+    ),
   },
   timeouts: {
     http: parseInt(env.HTTP_TIMEOUT),

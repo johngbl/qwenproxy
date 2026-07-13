@@ -60,22 +60,39 @@ function constantTimeStringEqual(provided: string, expected: string): boolean {
   );
 }
 
+/**
+ * Accept OpenAI-style Bearer and Anthropic-style x-api-key.
+ * Either may authenticate when API_KEY is configured.
+ */
+function extractProvidedApiKeys(c: Context): string[] {
+  const keys: string[] = [];
+  const auth = c.req.header("Authorization");
+  if (auth?.startsWith("Bearer ")) {
+    const token = auth.slice(7).trim();
+    if (token) keys.push(token);
+  }
+  const xApiKey = c.req.header("x-api-key")?.trim();
+  if (xApiKey) keys.push(xApiKey);
+  return keys;
+}
+
 function verifyApiKey(c: Context): Response | null {
   const apiKey = process.env.API_KEY || config.apiKey;
   if (!apiKey) return null;
 
-  const auth = c.req.header("Authorization");
-  if (!auth?.startsWith("Bearer ")) {
+  const candidates = extractProvidedApiKeys(c);
+  if (candidates.length === 0) {
     return sendOpenAIError(
       c,
-      new AuthError("Missing or invalid Authorization header"),
+      new AuthError(
+        "Missing or invalid credentials (Authorization Bearer or x-api-key)",
+      ),
     );
   }
-  const token = auth.slice(7);
-  if (!constantTimeStringEqual(token, apiKey)) {
-    return sendOpenAIError(c, new AuthError("Invalid API key"));
+  if (candidates.some((token) => constantTimeStringEqual(token, apiKey))) {
+    return null;
   }
-  return null;
+  return sendOpenAIError(c, new AuthError("Invalid API key"));
 }
 
 app.use("/v1/*", async (c, next) => {
@@ -100,6 +117,17 @@ app.get("/health", async (c) => {
   const status = await watchdog?.getStatus();
   return c.json({
     status: status?.overall || "unknown",
+    ram: status?.ram || "unknown",
+    streams: status?.streams || "unknown",
+    heap: status?.heap
+      ? {
+          used: status.heap.heapUsed,
+          total: status.heap.heapTotal,
+          limit: status.heap.heapSizeLimit,
+          rss: status.heap.rss,
+          usagePercent: Number(status.heap.usagePercent.toFixed(2)),
+        }
+      : undefined,
     timestamp: Date.now(),
     metrics: {
       cache: await cache?.getStats(),

@@ -21,10 +21,108 @@ function getPreferredModelsAccountId(): string | undefined {
   }
 }
 
+type PublicModel = {
+  id: string;
+  object?: string;
+  created?: number;
+  owned_by?: string;
+  context_window?: number;
+  [key: string]: unknown;
+};
+
+/** Expand base models with synthetic -thinking / -no-thinking variants. */
+export function expandModelVariants(models: PublicModel[]): PublicModel[] {
+  return [
+    ...models,
+    ...models.map((m) => ({
+      ...m,
+      id: `${m.id}-no-thinking`,
+      object: "model",
+    })),
+    ...models.map((m) => ({
+      ...m,
+      id: `${m.id}-thinking`,
+      object: "model",
+    })),
+  ];
+}
+
+function toAnthropicModel(model: PublicModel) {
+  return {
+    id: model.id,
+    display_name: model.id,
+    created_at: new Date(
+      typeof model.created === "number" ? model.created * 1000 : Date.now(),
+    ).toISOString(),
+    max_input_tokens: model.context_window ?? 200000,
+    max_tokens: 8192,
+    type: "model" as const,
+    capabilities: {
+      batch: { supported: false },
+      citations: { supported: false },
+      code_execution: { supported: false },
+      image_input: { supported: true },
+      pdf_input: { supported: false },
+      structured_outputs: { supported: true },
+      thinking: {
+        supported: true,
+        types: { enabled: { supported: true } },
+      },
+    },
+  };
+}
+
+function wantsAnthropicModelsFormat(
+  anthropicVersion: string | undefined | null,
+): boolean {
+  return !!anthropicVersion;
+}
+
+async function loadModelsWithVariants(): Promise<PublicModel[]> {
+  const models = (await fetchQwenModels(
+    getPreferredModelsAccountId(),
+  )) as unknown as PublicModel[];
+  syncModelContextWindows(models);
+  return expandModelVariants(models);
+}
+
+function findModel(
+  models: PublicModel[],
+  modelId: string,
+): PublicModel | undefined {
+  let model = models.find((entry) => entry.id === modelId);
+  if (model) return model;
+
+  const isNoThinkingVariant = modelId.endsWith("-no-thinking");
+  const isThinkingVariant = modelId.endsWith("-thinking");
+  if (!isNoThinkingVariant && !isThinkingVariant) return undefined;
+
+  const baseId = isNoThinkingVariant
+    ? modelId.slice(0, -"-no-thinking".length)
+    : modelId.slice(0, -"-thinking".length);
+  const baseModel = models.find((entry) => entry.id === baseId);
+  if (!baseModel) return undefined;
+
+  return {
+    ...baseModel,
+    id: modelId,
+    object: "model",
+  };
+}
+
 app.get("/v1/models", async (c) => {
   try {
-    const models = await fetchQwenModels(getPreferredModelsAccountId());
-    const etag = `"${createHash("md5").update(JSON.stringify(models)).digest("hex")}"`;
+    const allModels = await loadModelsWithVariants();
+    const anthropic = wantsAnthropicModelsFormat(c.req.header("anthropic-version"));
+
+    if (anthropic) {
+      return c.json({
+        data: allModels.map(toAnthropicModel),
+        has_more: false,
+      });
+    }
+
+    const etag = `"${createHash("md5").update(JSON.stringify(allModels)).digest("hex")}"`;
 
     if (c.req.header("if-none-match") === etag) {
       return c.body(null, 304);
@@ -32,23 +130,6 @@ app.get("/v1/models", async (c) => {
 
     c.header("Cache-Control", "public, max-age=3600");
     c.header("ETag", etag);
-
-    syncModelContextWindows(models);
-
-    // Generate variants with -no-thinking and -thinking suffixes (upstream: a63f054)
-    const allModels = [
-      ...models,
-      ...models.map((m) => ({
-        ...m,
-        id: `${m.id}-no-thinking`,
-        object: "model",
-      })),
-      ...models.map((m) => ({
-        ...m,
-        id: `${m.id}-thinking`,
-        object: "model",
-      })),
-    ];
 
     return c.json({
       object: "list",
@@ -63,35 +144,31 @@ app.get("/v1/models", async (c) => {
 app.get("/v1/models/:model", async (c) => {
   try {
     const modelId = c.req.param("model");
-    const models = await fetchQwenModels(getPreferredModelsAccountId());
-    syncModelContextWindows(models);
+    const allModels = await loadModelsWithVariants();
+    const model = findModel(allModels, modelId);
 
-    // Check for exact match first
-    let model = models.find((entry) => entry.id === modelId);
+    const anthropic = wantsAnthropicModelsFormat(
+      c.req.header("anthropic-version"),
+    );
 
-    // If not found, check if it's a -no-thinking or -thinking variant (upstream: a63f054)
     if (!model) {
-      const isNoThinkingVariant = modelId.endsWith("-no-thinking");
-      const isThinkingVariant = modelId.endsWith("-thinking");
-
-      if (isNoThinkingVariant || isThinkingVariant) {
-        const baseId = isNoThinkingVariant
-          ? modelId.replace("-no-thinking", "")
-          : modelId.replace("-thinking", "");
-        const baseModel = models.find((entry) => entry.id === baseId);
-
-        if (baseModel) {
-          model = {
-            ...baseModel,
-            id: modelId,
-            object: "model",
-          };
-        }
+      if (anthropic) {
+        return c.json(
+          {
+            type: "error",
+            error: {
+              type: "not_found_error",
+              message: `Model '${modelId}' not found`,
+            },
+          },
+          404,
+        );
       }
+      return sendOpenAIError(c, new NotFoundError("Model not found"));
     }
 
-    if (!model) {
-      return sendOpenAIError(c, new NotFoundError("Model not found"));
+    if (anthropic) {
+      return c.json(toAnthropicModel(model));
     }
 
     return c.json(model);

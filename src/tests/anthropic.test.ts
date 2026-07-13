@@ -24,8 +24,10 @@ test("Anthropic: mapAnthropicModel maps correctly", () => {
   assert.equal(mapAnthropicModel("claude-haiku-4-5-20251001"), "qwen3.5-flash");
   assert.equal(mapAnthropicModel("claude-3-5-sonnet"), "qwen3.7-plus");
 
+  // GPT aliases map to Qwen
+  assert.equal(mapAnthropicModel("gpt-4"), "qwen3.6-plus");
+  assert.equal(mapAnthropicModel("gpt-5-mini"), "qwen3.5-flash");
   // Unknown models pass through
-  assert.equal(mapAnthropicModel("gpt-4"), "gpt-4");
   assert.equal(mapAnthropicModel("custom-model"), "custom-model");
 });
 

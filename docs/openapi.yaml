@@ -16,6 +16,7 @@ servers:
 
 security:
   - bearerAuth: []
+  - apiKeyAuth: []
 
 paths:
   /v1/chat/completions:
@@ -152,15 +153,23 @@ paths:
     get:
       operationId: listModels
       summary: Lists the currently available models
+      description: |
+        OpenAI list format by default. When `anthropic-version` is present,
+        returns Anthropic-compatible model objects (same underlying catalog,
+        including synthetic `-thinking` / `-no-thinking` variants).
       tags:
         - Models
-      security: []
       parameters:
         - name: If-None-Match
           in: header
           schema:
             type: string
-          description: ETag value for conditional GET. Returns 304 if unchanged.
+          description: ETag value for conditional GET (OpenAI format only). Returns 304 if unchanged.
+        - name: anthropic-version
+          in: header
+          schema:
+            type: string
+          description: When set, response uses Anthropic model list shape.
       responses:
         "200":
           description: List of models
@@ -168,7 +177,7 @@ paths:
             ETag:
               schema:
                 type: string
-              description: MD5-based entity tag
+              description: MD5-based entity tag (OpenAI format)
             Cache-Control:
               schema:
                 type: string
@@ -179,6 +188,8 @@ paths:
                 $ref: "#/components/schemas/ModelList"
         "304":
           description: Not modified (ETag match)
+        "401":
+          $ref: "#/components/responses/Unauthorized"
 
   /v1/models/{model}:
     get:
@@ -186,7 +197,6 @@ paths:
       summary: Retrieves a model instance by ID
       tags:
         - Models
-      security: []
       parameters:
         - name: model
           in: path
@@ -194,6 +204,11 @@ paths:
           schema:
             type: string
           description: The ID of the model to retrieve
+        - name: anthropic-version
+          in: header
+          schema:
+            type: string
+          description: When set, response uses Anthropic model object shape.
       responses:
         "200":
           description: The model object
@@ -201,8 +216,93 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Model"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+
+  /v1/responses:
+    post:
+      operationId: createResponse
+      summary: OpenAI Responses API compatible endpoint
+      description: |
+        Translates Responses API requests to chat completions. GPT model aliases
+        (e.g. `gpt-5-mini`) are mapped to Qwen equivalents.
+      tags:
+        - Responses
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [model]
+              properties:
+                model:
+                  type: string
+                  example: gpt-5-mini
+                input:
+                  description: String or array of input items
+                stream:
+                  type: boolean
+                  default: false
+                tools:
+                  type: array
+                  items:
+                    type: object
+      responses:
+        "200":
+          description: Responses API object or SSE stream
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /v1/messages:
+    post:
+      operationId: createAnthropicMessage
+      summary: Anthropic Messages API compatible endpoint
+      tags:
+        - Anthropic
+      parameters:
+        - name: anthropic-version
+          in: header
+          required: true
+          schema:
+            type: string
+          description: Anthropic API version header (required)
+        - name: x-api-key
+          in: header
+          schema:
+            type: string
+          description: Anthropic-style API key (alternative to Bearer)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [model, max_tokens, messages]
+              properties:
+                model:
+                  type: string
+                  example: claude-sonnet-4-6
+                max_tokens:
+                  type: integer
+                  example: 1024
+                messages:
+                  type: array
+                  items:
+                    type: object
+                stream:
+                  type: boolean
+      responses:
+        "200":
+          description: Anthropic message object or SSE stream
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
 
   /health:
     get:
@@ -223,9 +323,9 @@ paths:
     get:
       operationId: getMetrics
       summary: Returns Prometheus-format metrics
+      description: Requires API key auth when `API_KEY` is configured.
       tags:
         - Operations
-      security: []
       responses:
         "200":
           description: Prometheus metrics
@@ -243,7 +343,12 @@ components:
     bearerAuth:
       type: http
       scheme: bearer
-      description: "API key passed as `Authorization: Bearer <key>`"
+      description: "OpenAI-style API key: `Authorization: Bearer <key>`"
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-api-key
+      description: "Anthropic-style API key header (same secret as `API_KEY`)"
 
   schemas:
     CreateChatCompletionRequest:
@@ -646,6 +751,28 @@ components:
         status:
           type: string
           enum: [healthy, degraded, unhealthy, unknown]
+        ram:
+          type: string
+          enum: [ok, warning, critical, unknown]
+          description: Heap pressure vs V8 heap_size_limit
+        streams:
+          type: string
+          enum: [ok, congested, blocked, unknown]
+        heap:
+          type: object
+          properties:
+            used:
+              type: integer
+            total:
+              type: integer
+            limit:
+              type: integer
+              description: V8 heap_size_limit (bytes)
+            rss:
+              type: integer
+            usagePercent:
+              type: number
+              description: heapUsed / heap_size_limit * 100
         timestamp:
           type: integer
           format: int64
@@ -781,9 +908,13 @@ components:
 tags:
   - name: Chat
     description: Chat completion operations (OpenAI-compatible)
+  - name: Responses
+    description: OpenAI Responses API compatibility layer
+  - name: Anthropic
+    description: Anthropic Messages API compatibility layer
   - name: Models
-    description: Model listing and retrieval
+    description: Model listing and retrieval (OpenAI or Anthropic shape)
   - name: Files
-    description: Multimodal file upload
+    description: Multimodal file upload (OSS putStream / multipart)
   - name: Operations
     description: Health and metrics endpoints

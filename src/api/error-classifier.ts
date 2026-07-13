@@ -13,7 +13,6 @@ import {
   QwenUpstreamError,
   QwenSessionExpiredError,
 } from "../services/qwen.js";
-import { SchemaValidationError } from "../tools/schema.js";
 
 /**
  * Classifies unknown errors into standard QwenBridgeError hierarchy.
@@ -32,10 +31,6 @@ export function classifyError(err: unknown): QwenBridgeError {
   }
 
   if (err instanceof QwenSessionExpiredError) {
-    return err;
-  }
-
-  if (err instanceof SchemaValidationError) {
     return err;
   }
 

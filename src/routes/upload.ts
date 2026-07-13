@@ -4,6 +4,7 @@
  */
 
 import { Context } from "hono";
+import { Readable } from "stream";
 import {
   getBasicHeaders,
   isAuthMockEnabled,
@@ -360,6 +361,59 @@ async function getSTSToken(
   return data.data;
 }
 
+/** Minimal OSS client surface used by upload helpers (easy to mock in tests). */
+export interface OssUploadClient {
+  putStream: (
+    name: string,
+    stream: Readable,
+    options?: {
+      contentLength?: number;
+      headers?: Record<string, string>;
+    },
+  ) => Promise<unknown>;
+  multipartUpload: (
+    name: string,
+    file: Buffer | string,
+    options?: {
+      partSize?: number;
+      headers?: Record<string, string>;
+    },
+  ) => Promise<unknown>;
+}
+
+/**
+ * Stream-friendly OSS body upload:
+ * - small/medium: putStream (avoids ali-oss put() extra buffering path)
+ * - large: multipartUpload (better reliability for big media)
+ */
+export async function uploadBufferToOssClient(
+  client: OssUploadClient,
+  filePath: string,
+  buffer: Buffer,
+  contentType: string,
+  multipartThresholdBytes: number = config.oss.multipartThresholdBytes,
+): Promise<"putStream" | "multipart"> {
+  const headers = { "Content-Type": contentType };
+
+  if (buffer.length >= multipartThresholdBytes) {
+    const partSize = Math.min(
+      5 * 1024 * 1024,
+      Math.max(256 * 1024, Math.floor(buffer.length / 4)),
+    );
+    await client.multipartUpload(filePath, buffer, {
+      partSize,
+      headers,
+    });
+    return "multipart";
+  }
+
+  await client.putStream(filePath, Readable.from(buffer), {
+    contentLength: buffer.length,
+    headers,
+  });
+  return "putStream";
+}
+
 /**
  * Upload file to Alibaba Cloud OSS using STS credentials
  */
@@ -397,16 +451,14 @@ async function uploadToOSS(
       stsToken: security_token,
     }),
     refreshSTSTokenInterval: 300000,
-  });
+  }) as unknown as OssUploadClient;
 
   const buffer = Buffer.isBuffer(fileBuffer)
     ? fileBuffer
     : Buffer.from(fileBuffer);
   const contentType = detectFileType(filename).mime;
 
-  await client.put(file_path, buffer, {
-    headers: { "Content-Type": contentType },
-  });
+  await uploadBufferToOssClient(client, file_path, buffer, contentType);
 
   return file_url.split("?")[0];
 }

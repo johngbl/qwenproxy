@@ -20,6 +20,11 @@ test("config exposes only Playwright/thread-native current auth and context sett
   assert.equal(typeof config.playwright.initBatchSize, "number");
   assert.equal(typeof config.playwright.contextCloseTimeoutMs, "number");
   assert.equal(typeof config.playwright.idleContextTtlMs, "number");
+  assert.equal(typeof config.playwright.jsHeapMb, "number");
+  assert.equal(typeof config.playwright.lowMemoryFlags, "boolean");
+  assert.equal(typeof config.oss.multipartThresholdBytes, "number");
+  assert.ok(config.playwright.jsHeapMb >= 64);
+  assert.ok(config.oss.multipartThresholdBytes >= 1024 * 1024);
   assert.equal(typeof config.sessionKeeper.enabled, "boolean");
   assert.equal(typeof config.sessionKeeper.intervalMs, "number");
   assert.equal(typeof config.sessionKeeper.idleMs, "number");

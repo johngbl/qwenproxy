@@ -11,6 +11,10 @@ import { logger, isToolcallDebugEnabled } from "../../core/logger.js";
 import { config } from "../../core/config.ts";
 import { getBasicHeaders } from "../../services/auth-playwright.ts";
 import { buildToolInstructions } from "../../tools/instructions.ts";
+import {
+  mapClientModelToQwen,
+  stripThinkingSuffix,
+} from "../../core/model-alias.ts";
 
 // Tag literals split to avoid proxy parser misinterpretation
 const TOOL_CALL_OPEN = "<" + "tool_call>";
@@ -65,11 +69,9 @@ export async function parseRequestBody(c: Context): Promise<ParsedRequest> {
   const prompt = promptParts.join("");
   const currentPrompt = currentPromptParts.join("");
 
-  // Support both -no-thinking and -thinking suffixes (upstream: a63f054)
-  const modelId = body.model
-    .replace("-no-thinking", "")
-    .replace("-thinking", "");
-  const enableThinking = !body.model.endsWith("-no-thinking");
+  // Thinking suffixes + GPT/Claude aliases → Qwen ids (shared with Responses/Anthropic)
+  const { baseModel, enableThinking } = stripThinkingSuffix(body.model);
+  const modelId = mapClientModelToQwen(baseModel);
 
   return {
     body,

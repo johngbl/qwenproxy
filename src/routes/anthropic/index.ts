@@ -64,96 +64,20 @@ function verifyAnthropicApiKey(c: Context): boolean {
   const apiKey = process.env.API_KEY || config.apiKey;
   if (!apiKey) return true; // No key configured = open access
 
-  const providedKey = c.req.header("x-api-key");
-  if (!providedKey) return false;
+  const candidates: string[] = [];
+  const auth = c.req.header("Authorization");
+  if (auth?.startsWith("Bearer ")) {
+    const token = auth.slice(7).trim();
+    if (token) candidates.push(token);
+  }
+  const xApiKey = c.req.header("x-api-key")?.trim();
+  if (xApiKey) candidates.push(xApiKey);
 
-  return constantTimeStringEqual(providedKey, apiKey);
+  if (candidates.length === 0) return false;
+  return candidates.some((key) => constantTimeStringEqual(key, apiKey));
 }
 
-/**
- * GET /v1/models - List available models (Anthropic format)
- */
-app.get("/v1/models", async (c) => {
-  try {
-    const { fetchQwenModels } = await import("../../services/qwen.js");
-
-    // Check if we should return Anthropic format
-    const anthropicVersion = c.req.header("anthropic-version");
-    const isAnthropicFormat = !!anthropicVersion;
-
-    const models = await fetchQwenModels();
-
-    if (isAnthropicFormat) {
-      // Return Anthropic format
-      return c.json({
-        data: models.map((m: any) => ({
-          id: m.id,
-          display_name: m.id,
-          created_at: new Date().toISOString(),
-          max_input_tokens: 200000,
-          max_tokens: 8192,
-          type: "model" as const,
-          capabilities: {
-            batch: { supported: false },
-            citations: { supported: false },
-            code_execution: { supported: false },
-            image_input: { supported: true },
-            pdf_input: { supported: false },
-            structured_outputs: { supported: true },
-            thinking: {
-              supported: true,
-              types: { enabled: { supported: true } },
-            },
-          },
-        })),
-        has_more: false,
-      });
-    } else {
-      // Return OpenAI format (existing behavior)
-      return c.json({
-        object: "list",
-        data: models,
-      });
-    }
-  } catch (error) {
-    console.error("❌ [Anthropic] Error fetching models:", error);
-    return anthropicError(c, "api_error", "Failed to fetch models", 500);
-  }
-});
-
-/**
- * GET /v1/models/:model_id - Get specific model
- */
-app.get("/v1/models/:model_id", async (c) => {
-  const modelId = c.req.param("model_id");
-
-  try {
-    const { fetchQwenModels } = await import("../../services/qwen.js");
-    const models = await fetchQwenModels();
-    const model = models.find((m: any) => m.id === modelId);
-
-    if (!model) {
-      return anthropicError(
-        c,
-        "not_found_error",
-        `Model '${modelId}' not found`,
-        404,
-      );
-    }
-
-    return c.json({
-      id: model.id,
-      display_name: model.id,
-      created_at: new Date().toISOString(),
-      max_input_tokens: 200000,
-      max_tokens: 8192,
-      type: "model" as const,
-    });
-  } catch (error) {
-    console.error("❌ [Anthropic] Error fetching model:", error);
-    return anthropicError(c, "api_error", "Failed to fetch model", 500);
-  }
-});
+// /v1/models is owned by api/models.ts (OpenAI + Anthropic dual format).
 
 /**
  * POST /v1/messages - Create a message (Anthropic format)

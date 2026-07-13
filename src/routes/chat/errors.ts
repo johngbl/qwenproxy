@@ -4,10 +4,10 @@
  * Description: Error handling utilities for chat completions
  */
 
-import { Context } from "hono";
-import { sendOpenAIError, createError } from "../../api/error-helpers.js";
-import type { QwenBridgeStatusCode } from "../../core/errors.js";
-
+/**
+ * Parse a non-SSE upstream body that may contain a Qwen error payload.
+ * Returns null when the body is not a recognized error document.
+ */
 export function parseQwenErrorPayload(
   raw: string,
 ): { message: string; status: number } | null {
@@ -47,23 +47,4 @@ export function parseQwenErrorPayload(
   }
 
   return null;
-}
-
-export function sendUpstreamError(c: Context, status: number, message: string) {
-  return sendOpenAIError(
-    c,
-    createError(status as QwenBridgeStatusCode, message),
-  );
-}
-
-export function sendValidationError(
-  c: Context,
-  message: string,
-  field?: string,
-) {
-  return sendOpenAIError(c, createError(400, message, field));
-}
-
-export function sendNotFoundError(c: Context, message: string) {
-  return sendOpenAIError(c, createError(404, message));
 }

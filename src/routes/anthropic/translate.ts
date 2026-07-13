@@ -11,47 +11,16 @@ import type {
   OpenAIResponse,
 } from "./types.ts";
 
+import { mapClientModelToQwen } from "../../core/model-alias.ts";
+
 /**
  * Map model names for Qwen compatibility
  * - Qwen models pass through as-is
- * - Claude models are mapped to equivalent Qwen models
+ * - Claude/GPT aliases map to equivalent Qwen models
  * - Unknown models pass through (Qwen will handle the error)
  */
 export function mapAnthropicModel(model: string): string {
-  // If it's already a Qwen model, use it directly
-  if (model.startsWith("qwen")) {
-    return model;
-  }
-
-  // Map Claude models to Qwen equivalents
-  const claudeToQwen: Record<string, string> = {
-    // Claude 4.x
-    "claude-opus-4-8": "qwen3.7-max",
-    "claude-opus-4-7": "qwen3.7-max",
-    "claude-opus-4-6": "qwen3.7-max",
-    "claude-opus-4-5": "qwen3.7-max",
-    "claude-sonnet-4-6": "qwen3.7-plus",
-    "claude-sonnet-4-5": "qwen3.7-plus",
-    "claude-haiku-4-5": "qwen3.5-flash",
-    // Claude 4.x with dates
-    "claude-opus-4-8-20250918": "qwen3.7-max",
-    "claude-sonnet-4-6-20250514": "qwen3.7-plus",
-    "claude-haiku-4-5-20251001": "qwen3.5-flash",
-    // Claude 3.5
-    "claude-3-5-sonnet-20241022": "qwen3.7-plus",
-    "claude-3-5-sonnet": "qwen3.7-plus",
-    "claude-3-5-haiku-20241022": "qwen3.5-flash",
-    "claude-3-5-haiku": "qwen3.5-flash",
-    // Claude 3
-    "claude-3-opus-20240229": "qwen3.7-max",
-    "claude-3-opus": "qwen3.7-max",
-    "claude-3-sonnet-20240229": "qwen3.6-plus",
-    "claude-3-sonnet": "qwen3.6-plus",
-    "claude-3-haiku-20240307": "qwen3.5-flash",
-    "claude-3-haiku": "qwen3.5-flash",
-  };
-
-  return claudeToQwen[model] || model;
+  return mapClientModelToQwen(model);
 }
 
 /**
