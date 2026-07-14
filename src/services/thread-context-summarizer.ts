@@ -5,7 +5,10 @@
 
 import { config } from "../core/config.ts";
 import { logger } from "../core/logger.ts";
-import { summarizeMessages } from "../utils/context-summarizer.ts";
+import {
+  summarizeMessages,
+  type SummarizationResult,
+} from "../utils/context-summarizer.ts";
 import type { Message } from "../utils/types.ts";
 import {
   getLatestThreadContextSummary,
@@ -17,6 +20,10 @@ import {
   type ThreadContextSummary,
   type ThreadContextTurn,
 } from "./thread-context-store.ts";
+
+const MAX_CHUNK_CHARS = 80_000; // 80KB max per chunk (matches payload-summarizer)
+const MIN_TIMEOUT_PER_CHUNK_MS = 30_000; // 30s minimum per chunk
+const TIMEOUT_PER_100KB_MS = 15_000; // +15s per 100KB of content
 
 const CONTINUATION_SUMMARY_PROMPT = `You are creating a continuation summary for a long-running coding assistant conversation.
 
@@ -138,12 +145,69 @@ export async function runThreadContextSummary(
     anchorTurns,
   });
 
+  // Estimate total content size for chunking decision
+  const totalChars = messages.reduce(
+    (sum, m) => sum + (typeof m.content === "string" ? m.content.length : 0),
+    0,
+  );
+  const needsChunking = totalChars > MAX_CHUNK_CHARS;
+
+  // Dynamic timeout: base + proportional to content size
+  const dynamicTimeout = needsChunking
+    ? Math.max(
+        config.context.threadNative.summaryTimeout,
+        MIN_TIMEOUT_PER_CHUNK_MS * Math.ceil(totalChars / MAX_CHUNK_CHARS) +
+          Math.floor((totalChars / 100_000) * TIMEOUT_PER_100KB_MS),
+      )
+    : config.context.threadNative.summaryTimeout;
+
   try {
+    // Chunked summarization for very large contexts
+    if (needsChunking) {
+      console.log(
+        `[ThreadContext] Chunked summary | ${totalChars} chars -> ${Math.ceil(totalChars / MAX_CHUNK_CHARS)} chunks | timeout ${dynamicTimeout}ms`,
+      );
+      const result = await summarizeChunked(messages, {
+        model: config.context.summarization.model,
+        timeout: dynamicTimeout,
+        systemPromptOverride: CONTINUATION_SUMMARY_PROMPT,
+      });
+
+      if (!isUsableSummary(result.summary)) {
+        const errorMessage = result.error ?? "Chunked summary unusable";
+        setThreadContextStatus(
+          sessionId,
+          session.status === "rollover_required" ||
+            session.status === "hard_limit"
+            ? session.status
+            : "summary_stale",
+          errorMessage,
+        );
+        console.warn(`[ThreadContext] Summary unavailable | ${errorMessage}`);
+        return null;
+      }
+
+      const summary = insertThreadContextSummary({
+        sessionId,
+        summary: result.summary.trim(),
+        summaryTokens: result.summaryTokens,
+        sourceTurnStart,
+        sourceTurnEnd,
+        model: config.context.summarization.model,
+        compressionRatio: result.compressionRatio,
+      });
+
+      console.log(
+        `[ThreadContext] Summary completed (chunked) | ${summary.summaryTokens} tokens`,
+      );
+      return summary;
+    }
+
     const summarizeWithModel = (model: string) =>
       summarizeMessages(messages, {
         model,
         maxSummaryTokens: 0, // no limit - let model generate as much as needed
-        timeout: config.context.threadNative.summaryTimeout,
+        timeout: dynamicTimeout,
         systemPromptOverride: CONTINUATION_SUMMARY_PROMPT,
         purpose: "rollover",
       });
@@ -226,6 +290,124 @@ export async function runThreadContextSummary(
     });
     return null;
   }
+}
+
+/**
+ * Chunked summarization for very large contexts.
+ * Truncates old turns to fit within MAX_CHUNK_CHARS, keeping recent turns and previous summary.
+ */
+async function summarizeChunked(
+  messages: Message[],
+  options: {
+    model: string;
+    timeout: number;
+    systemPromptOverride: string;
+  },
+): Promise<SummarizationResult> {
+  // Extract the conversation content from the user message
+  const userMessage = messages.find((m) => m.role === "user");
+  if (!userMessage || typeof userMessage.content !== "string") {
+    return {
+      summary: "",
+      originalTokens: 0,
+      summaryTokens: 0,
+      compressionRatio: 0,
+      latencyMs: 0,
+      error: "No user message found",
+    };
+  }
+
+  const fullContent = userMessage.content;
+  const truncatedContent = truncateForSummarization(fullContent);
+
+  logger.debug("[thread-context] chunked summarization", {
+    originalChars: fullContent.length,
+    truncatedChars: truncatedContent.length,
+    reductionPercent: Math.round(
+      ((fullContent.length - truncatedContent.length) / fullContent.length) *
+        100,
+    ),
+  });
+
+  // Build truncated messages
+  const truncatedMessages: Message[] = [
+    {
+      role: "user",
+      content: truncatedContent,
+    },
+  ];
+
+  // Use the provided model with dynamic timeout
+  return summarizeMessages(truncatedMessages, {
+    model: options.model,
+    maxSummaryTokens: 0,
+    timeout: options.timeout,
+    systemPromptOverride: options.systemPromptOverride,
+    purpose: "rollover",
+  });
+}
+
+/**
+ * Truncate conversation content to fit within MAX_CHUNK_CHARS.
+ * Preserves previous summary and recent turns, drops older turns.
+ */
+function truncateForSummarization(content: string): string {
+  if (content.length <= MAX_CHUNK_CHARS) {
+    return content;
+  }
+
+  // Parse the structured content
+  const previousSummaryMatch = content.match(
+    /<previous_cumulative_summary>\n([\s\S]*?)\n<\/previous_cumulative_summary>/,
+  );
+  const turnsMatch = content.match(
+    /<conversation_turns_to_fold>\n([\s\S]*?)\n<\/conversation_turns_to_fold>/,
+  );
+  const instructionMatch = content.match(
+    /Create a new cumulative continuation summary[\s\S]*$/,
+  );
+
+  const previousSummary = previousSummaryMatch?.[1] || "None yet.";
+  const turnsText = turnsMatch?.[1] || "";
+  const instruction =
+    instructionMatch?.[0] ||
+    "Create a new cumulative continuation summary that contains everything important from the previous summary plus the new turns. The result must be self-contained. If any turn was compacted, preserve the visible important facts and explicitly mention that raw detail was compacted.";
+
+  // Split turns by double newline
+  const turns = turnsText.split("\n\n").filter((t) => t.trim().length > 0);
+
+  // Calculate available space for turns
+  const summarySection = `<previous_cumulative_summary>\n${previousSummary}\n</previous_cumulative_summary>`;
+  const instructionSection = instruction;
+  const overhead = summarySection.length + instructionSection.length + 100; // +100 for structure
+  const availableForTurns = MAX_CHUNK_CHARS - overhead;
+
+  // Keep recent turns, drop old ones
+  const keptTurns: string[] = [];
+  let currentSize = 0;
+
+  // Iterate from newest to oldest
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const turn = turns[i];
+    const turnSize = turn.length + 2; // +2 for \n\n
+
+    if (currentSize + turnSize > availableForTurns) {
+      break;
+    }
+
+    keptTurns.unshift(turn);
+    currentSize += turnSize;
+  }
+
+  const droppedCount = turns.length - keptTurns.length;
+  const truncationNote =
+    droppedCount > 0
+      ? `\n\n[Note: ${droppedCount} older turn(s) were truncated to fit context limits. Focus on the most recent conversation state and any critical information from the previous summary.]`
+      : "";
+
+  // Rebuild content
+  const truncatedTurnsText = keptTurns.join("\n\n");
+  return `${summarySection}\n\n<conversation_turns_to_fold>\n${truncatedTurnsText}${truncationNote}\n</conversation_turns_to_fold>\n\n${instructionSection}`;
 }
 
 export async function ensureThreadContextSummary(
