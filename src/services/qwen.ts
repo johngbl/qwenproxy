@@ -1682,10 +1682,25 @@ export async function createQwenStream(
       });
     }
 
+    // Dynamic idle timeout based on payload size
+    // Base: 60s + 30s per MB of payload
+    const payloadMB = payloadSize / (1024 * 1024);
+    const dynamicIdleTimeoutMs =
+      config.timeouts.idleStreamTimeout + Math.ceil(payloadMB * 30_000);
+
+    if (dynamicIdleTimeoutMs > config.timeouts.idleStreamTimeout) {
+      logger.debug("[Qwen] dynamic idle timeout", {
+        chatId: chatSessionId || "new",
+        payloadMB: payloadMB.toFixed(2),
+        baseTimeout: config.timeouts.idleStreamTimeout,
+        dynamicTimeout: dynamicIdleTimeoutMs,
+      });
+    }
+
     return addIdleTimeoutToStream(
       stream,
       controller,
-      config.timeouts.idleStreamTimeout,
+      dynamicIdleTimeoutMs,
       `Qwen stream ${chatSessionId || "unknown"}`,
       releaseLeasedWarmChat,
       releaseLeasedWarmChat,
