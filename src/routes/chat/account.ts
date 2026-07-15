@@ -824,6 +824,10 @@ async function tryCreateStreamWithRetry(
         );
         continue;
       }
+      // No other account available - fall through to normal retry logic
+      console.warn(
+        `⚠️  [Chat] Critical error | No other account available | Retrying on same account`,
+      );
     }
 
     if (isChatNotExistError && params.useThreadNative && params.sessionId) {
