@@ -92,9 +92,7 @@ export async function buildFinalContext(
   const isAuxiliaryRequest =
     isInternalSummarizationRequest || isTitleGenerationRequest;
   const useRequestPersonalization =
-    config.qwen.personalizationFromRequest &&
-    !isAuxiliaryRequest &&
-    systemPrompt.trim().length > 0;
+    config.qwen.personalizationFromRequest && !isAuxiliaryRequest;
   const estimatedTokens = estimateTokenCount(
     systemPrompt + activePrompt,
     modelId,
@@ -128,7 +126,7 @@ export async function buildFinalContext(
     isAuxiliaryRequest,
     isTitleGenerationRequest,
     requestPersonalizationInstruction: useRequestPersonalization
-      ? systemPrompt
+      ? systemPrompt.trim()
       : null,
     hasExplicitConversationKey,
     allowThreadReuse,

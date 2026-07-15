@@ -580,9 +580,9 @@ async function tryCreateStreamWithRetry(
         : null;
       let result: Awaited<ReturnType<typeof createQwenStream>>;
       try {
-        if (params.requestPersonalizationInstruction) {
+        if (params.requestPersonalizationInstruction !== null) {
           await syncQwenRequestPersonalization(
-            params.requestPersonalizationInstruction,
+            params.requestPersonalizationInstruction ?? "",
             accountId === "global" ? undefined : accountId,
             {
               model: params.model,

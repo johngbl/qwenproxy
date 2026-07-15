@@ -651,7 +651,7 @@ export async function syncQwenRequestPersonalization(
   } = {},
 ): Promise<void> {
   if (isAuthMockEnabled()) return;
-  if (!instruction.trim()) return;
+  // instruction pode ser vazia para limpar personalization
 
   const cacheKey = accountId || "global";
   const { headers } = await getQwenHeaders(false, accountId);
@@ -687,6 +687,7 @@ export async function syncQwenRequestPersonalization(
   let existing = { chars: null, bytes: null, hash: null } as ReturnType<
     typeof textSize
   >;
+  // Verifica GET apenas se temos um hash válido
   if (syncHash && !cachedHash && config.qwen.personalizationVerifyGet) {
     try {
       const existingResponse = await fetch(
