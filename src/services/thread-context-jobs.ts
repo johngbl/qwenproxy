@@ -19,13 +19,19 @@ interface SummaryJob {
   reason: string;
   priority: boolean;
   queuedAt: number;
+  attempt: number;
+  maxAttempts: number;
 }
 
 const queue: SummaryJob[] = [];
 const queuedSessions = new Set<string>();
 const runningSessions = new Set<string>();
 const lastStartedAt = new Map<string, number>();
+const failedSessions = new Map<string, number>(); // Track failure counts
 let activeWorkers = 0;
+
+const MAX_JOB_ATTEMPTS = 3;
+const JOB_RETRY_BACKOFF_MS = 5000;
 
 function shouldRunSummary(sessionId: string, force: boolean): boolean {
   const session = getThreadContextSession(sessionId);
@@ -74,6 +80,8 @@ export function enqueueThreadContextSummary(
     reason,
     priority,
     queuedAt: Date.now(),
+    attempt: 1,
+    maxAttempts: MAX_JOB_ATTEMPTS,
   };
 
   if (priority) queue.unshift(job);
@@ -114,23 +122,95 @@ async function processSummaryQueue(): Promise<void> {
 
     void (async () => {
       try {
-        console.log(`🔄 [ThreadContext] Summary started | ${job.reason}`);
+        console.log(
+          `🔄 [ThreadContext] Summary started | ${job.reason} | attempt ${job.attempt}/${job.maxAttempts}`,
+        );
         logger.debug("[thread-context] summary job started", {
           sessionId: job.sessionId,
           reason: job.reason,
           waitMs: Date.now() - job.queuedAt,
+          attempt: job.attempt,
         });
-        await runThreadContextSummary(job.sessionId);
+        
+        const result = await runThreadContextSummary(job.sessionId);
+        
+        if (result) {
+          // Success - clear failure tracking
+          failedSessions.delete(job.sessionId);
+          console.log(`✅ [ThreadContext] Summary completed | ${job.reason}`);
+        } else {
+          // Summary returned null - might be a soft failure
+          console.warn(
+            `[ThreadContext] Summary returned null | ${job.reason} | attempt ${job.attempt}/${job.maxAttempts}`,
+          );
+          
+          // Retry if we have attempts left
+          if (job.attempt < job.maxAttempts) {
+            const backoffMs = JOB_RETRY_BACKOFF_MS * Math.pow(2, job.attempt - 1);
+            console.log(
+              `[ThreadContext] Scheduling retry | ${job.reason} | waiting ${backoffMs}ms`,
+            );
+            
+            // Re-queue with incremented attempt
+            const retryJob: SummaryJob = {
+              ...job,
+              attempt: job.attempt + 1,
+              queuedAt: Date.now(),
+            };
+            
+            setTimeout(() => {
+              queue.push(retryJob);
+              queuedSessions.add(retryJob.sessionId);
+              void processSummaryQueue();
+            }, backoffMs);
+          } else {
+            // Max attempts reached - track failure
+            const failureCount = (failedSessions.get(job.sessionId) ?? 0) + 1;
+            failedSessions.set(job.sessionId, failureCount);
+            console.warn(
+              `[ThreadContext] Summary failed after ${job.maxAttempts} attempts | ${job.reason} | total failures: ${failureCount}`,
+            );
+          }
+        }
       } catch (error) {
         const errMsg = error instanceof Error ? error.message : String(error);
         console.warn(
-          `[ThreadContext] Summary failed | ${job.reason} | ${errMsg}`,
+          `[ThreadContext] Summary failed | ${job.reason} | attempt ${job.attempt}/${job.maxAttempts} | ${errMsg}`,
         );
         logger.debug("[thread-context] summary job failed", {
           sessionId: job.sessionId,
           reason: job.reason,
+          attempt: job.attempt,
           error: error instanceof Error ? error.message : String(error),
         });
+        
+        // Retry if we have attempts left
+        if (job.attempt < job.maxAttempts) {
+          const backoffMs = JOB_RETRY_BACKOFF_MS * Math.pow(2, job.attempt - 1);
+          console.log(
+            `[ThreadContext] Scheduling retry after error | ${job.reason} | waiting ${backoffMs}ms`,
+          );
+          
+          // Re-queue with incremented attempt
+          const retryJob: SummaryJob = {
+            ...job,
+            attempt: job.attempt + 1,
+            queuedAt: Date.now(),
+          };
+          
+          setTimeout(() => {
+            queue.push(retryJob);
+            queuedSessions.add(retryJob.sessionId);
+            void processSummaryQueue();
+          }, backoffMs);
+        } else {
+          // Max attempts reached - track failure
+          const failureCount = (failedSessions.get(job.sessionId) ?? 0) + 1;
+          failedSessions.set(job.sessionId, failureCount);
+          console.warn(
+            `[ThreadContext] Summary failed after ${job.maxAttempts} attempts | ${job.reason} | total failures: ${failureCount}`,
+          );
+        }
       } finally {
         runningSessions.delete(job.sessionId);
         activeWorkers--;
@@ -144,10 +224,19 @@ export function getThreadContextJobStats(): {
   queued: number;
   running: number;
   activeWorkers: number;
+  failedSessions: number;
+  totalFailures: number;
 } {
+  let totalFailures = 0;
+  for (const count of failedSessions.values()) {
+    totalFailures += count;
+  }
+  
   return {
     queued: queue.length,
     running: runningSessions.size,
     activeWorkers,
+    failedSessions: failedSessions.size,
+    totalFailures,
   };
 }

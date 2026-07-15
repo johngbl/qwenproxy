@@ -10,7 +10,7 @@ import {
   decideThreadContextThresholds,
   estimateThreadTextTokens,
 } from "./thread-context-estimator.ts";
-import { enqueueThreadContextSummary } from "./thread-context-jobs.ts";
+import { enqueueThreadContextSummary, getThreadContextJobStats } from "./thread-context-jobs.ts";
 import { recoverThreadContextFromQwenHistory } from "./thread-context-recovery.ts";
 import {
   ensureThreadContextSummary,
@@ -99,6 +99,8 @@ function rolloverReason(
   return "rollover_ready";
 }
 
+const RECOVERY_TIMEOUT_MS = 30_000; // 30s timeout for recovery operations
+
 export async function prepareThreadContextRollover(
   input: PrepareThreadContextRolloverInput,
 ): Promise<PreparedThreadContextPrompt> {
@@ -144,12 +146,33 @@ export async function prepareThreadContextRollover(
   }
 
   if (!summary && (decision.rolloverRequired || decision.hardLimit)) {
-    await recoverThreadContextFromQwenHistory({
-      sessionId: input.sessionId,
-      accountId: session.accountId,
-      chatId: session.activeChatSessionId,
-    });
-    summary = await ensureThreadContextSummary(input.sessionId);
+    // Add timeout to recovery operation
+    try {
+      const recoveryPromise = recoverThreadContextFromQwenHistory({
+        sessionId: input.sessionId,
+        accountId: session.accountId,
+        chatId: session.activeChatSessionId,
+      });
+      
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(
+          () => reject(new Error(`Recovery timeout after ${RECOVERY_TIMEOUT_MS}ms`)),
+          RECOVERY_TIMEOUT_MS,
+        );
+      });
+      
+      await Promise.race([recoveryPromise, timeoutPromise]);
+      summary = await ensureThreadContextSummary(input.sessionId);
+    } catch (error) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      console.warn(
+        `[ThreadContext] Recovery failed or timed out | ${errMsg}`,
+      );
+      logger.debug("[thread-context] recovery failed", {
+        sessionId: input.sessionId,
+        error: errMsg,
+      });
+    }
   }
 
   if (!summary) {
@@ -162,6 +185,18 @@ export async function prepareThreadContextRollover(
       throw new Error(
         "QwenBridge context hard limit reached and no continuation summary is available yet. Retry after summary generation completes.",
       );
+    }
+
+    // Check if we've already tried multiple times
+    const jobStats = getThreadContextJobStats();
+    const sessionFailures = jobStats.failedSessions;
+    
+    if (sessionFailures > 3) {
+      console.warn(
+        `[ThreadContext] Summary generation failed multiple times | skipping rollover | failures: ${sessionFailures}`,
+      );
+      // Continue with original prompt instead of blocking
+      return { finalPrompt: input.finalPrompt, rollover: null };
     }
 
     enqueueThreadContextSummary(input.sessionId, "rollover_summary_missing", {

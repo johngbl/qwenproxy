@@ -24,6 +24,9 @@ import {
 const MAX_CHUNK_CHARS = 80_000; // 80KB max per chunk (matches payload-summarizer)
 const MIN_TIMEOUT_PER_CHUNK_MS = 30_000; // 30s minimum per chunk
 const TIMEOUT_PER_100KB_MS = 15_000; // +15s per 100KB of content
+const MIN_SUMMARY_CHARS = 100; // Minimum valid summary length
+const MAX_RETRY_ATTEMPTS = 2; // Maximum retry attempts for summarization
+const RETRY_BACKOFF_MS = 2000; // Base backoff for retries
 
 const CONTINUATION_SUMMARY_PROMPT = `You are creating a continuation summary for a long-running coding assistant conversation.
 
@@ -111,7 +114,21 @@ function buildSummaryInputMessages(params: {
 
 function isUsableSummary(summary: string): boolean {
   const trimmed = summary.trim();
-  return !!trimmed && !trimmed.startsWith("[Summary unavailable");
+  if (!trimmed || trimmed.length < MIN_SUMMARY_CHARS) return false;
+  if (trimmed.startsWith("[Summary unavailable")) return false;
+  
+  // Detect common error patterns
+  const errorPatterns = [
+    /^i (cannot|can't|am unable to)/i,
+    /^sorry,? (i |i'm )?(cannot|can't|unable)/i,
+    /^error:/i,
+    /^failed to/i,
+    /^apologies,?/i,
+    /i apologize.*cannot/i,
+    /i'm sorry.*cannot/i,
+  ];
+  
+  return !errorPatterns.some(pattern => pattern.test(trimmed));
 }
 
 export async function runThreadContextSummary(
@@ -167,11 +184,31 @@ export async function runThreadContextSummary(
       console.log(
         `[ThreadContext] Chunked summary | ${totalChars} chars -> ${Math.ceil(totalChars / MAX_CHUNK_CHARS)} chunks | timeout ${dynamicTimeout}ms`,
       );
-      const result = await summarizeChunked(messages, {
+      
+      let result = await summarizeChunked(messages, {
         model: config.context.summarization.model,
         timeout: dynamicTimeout,
         systemPromptOverride: CONTINUATION_SUMMARY_PROMPT,
       });
+
+      // Retry with backoff if first attempt fails
+      if (!isUsableSummary(result.summary) && MAX_RETRY_ATTEMPTS > 1) {
+        for (let attempt = 1; attempt < MAX_RETRY_ATTEMPTS; attempt++) {
+          const backoffMs = RETRY_BACKOFF_MS * Math.pow(2, attempt - 1);
+          console.warn(
+            `[ThreadContext] Chunked summary attempt ${attempt + 1}/${MAX_RETRY_ATTEMPTS} | waiting ${backoffMs}ms | ${result.error || "unusable summary"}`,
+          );
+          await new Promise((resolve) => setTimeout(resolve, backoffMs));
+          
+          result = await summarizeChunked(messages, {
+            model: config.context.summarization.model,
+            timeout: dynamicTimeout,
+            systemPromptOverride: CONTINUATION_SUMMARY_PROMPT,
+          });
+          
+          if (isUsableSummary(result.summary)) break;
+        }
+      }
 
       if (!isUsableSummary(result.summary)) {
         const errorMessage = result.error ?? "Chunked summary unusable";
@@ -203,7 +240,7 @@ export async function runThreadContextSummary(
       return summary;
     }
 
-    const summarizeWithModel = (model: string) =>
+    const summarizeWithModel = async (model: string) =>
       summarizeMessages(messages, {
         model,
         maxSummaryTokens: 0, // no limit - let model generate as much as needed
@@ -215,6 +252,22 @@ export async function runThreadContextSummary(
     const primaryModel = config.context.summarization.model;
     let result = await summarizeWithModel(primaryModel);
 
+    // Retry with backoff if primary model fails
+    if (!isUsableSummary(result.summary) && MAX_RETRY_ATTEMPTS > 1) {
+      for (let attempt = 1; attempt < MAX_RETRY_ATTEMPTS; attempt++) {
+        const backoffMs = RETRY_BACKOFF_MS * Math.pow(2, attempt - 1);
+        console.warn(
+          `[ThreadContext] Summary attempt ${attempt + 1}/${MAX_RETRY_ATTEMPTS} with ${primaryModel} | waiting ${backoffMs}ms | ${result.error || "unusable summary"}`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, backoffMs));
+        
+        result = await summarizeWithModel(primaryModel);
+        
+        if (isUsableSummary(result.summary)) break;
+      }
+    }
+
+    // Try fallback model if primary still fails
     if (!isUsableSummary(result.summary) && primaryModel !== session.model) {
       console.warn(
         `[ThreadContext] Summary retry | ${primaryModel} -> ${session.model}`,
@@ -228,6 +281,21 @@ export async function runThreadContextSummary(
         error: result.error ?? null,
       });
       result = await summarizeWithModel(session.model);
+      
+      // Retry fallback model too
+      if (!isUsableSummary(result.summary) && MAX_RETRY_ATTEMPTS > 1) {
+        for (let attempt = 1; attempt < MAX_RETRY_ATTEMPTS; attempt++) {
+          const backoffMs = RETRY_BACKOFF_MS * Math.pow(2, attempt - 1);
+          console.warn(
+            `[ThreadContext] Fallback attempt ${attempt + 1}/${MAX_RETRY_ATTEMPTS} with ${session.model} | waiting ${backoffMs}ms`,
+          );
+          await new Promise((resolve) => setTimeout(resolve, backoffMs));
+          
+          result = await summarizeWithModel(session.model);
+          
+          if (isUsableSummary(result.summary)) break;
+        }
+      }
     }
 
     if (!isUsableSummary(result.summary)) {
@@ -356,31 +424,42 @@ function truncateForSummarization(content: string): string {
     return content;
   }
 
-  // Parse the structured content
+  // Parse the structured content with more robust regex
   const previousSummaryMatch = content.match(
-    /<previous_cumulative_summary>\n([\s\S]*?)\n<\/previous_cumulative_summary>/,
+    /<previous_cumulative_summary>\s*\n([\s\S]*?)\n\s*<\/previous_cumulative_summary>/,
   );
   const turnsMatch = content.match(
-    /<conversation_turns_to_fold>\n([\s\S]*?)\n<\/conversation_turns_to_fold>/,
+    /<conversation_turns_to_fold>\s*\n([\s\S]*?)\n\s*<\/conversation_turns_to_fold>/,
   );
   const instructionMatch = content.match(
     /Create a new cumulative continuation summary[\s\S]*$/,
   );
 
-  const previousSummary = previousSummaryMatch?.[1] || "None yet.";
-  const turnsText = turnsMatch?.[1] || "";
+  const previousSummary = previousSummaryMatch?.[1]?.trim() || "None yet.";
+  const turnsText = turnsMatch?.[1]?.trim() || "";
   const instruction =
     instructionMatch?.[0] ||
     "Create a new cumulative continuation summary that contains everything important from the previous summary plus the new turns. The result must be self-contained. If any turn was compacted, preserve the visible important facts and explicitly mention that raw detail was compacted.";
 
-  // Split turns by double newline
-  const turns = turnsText.split("\n\n").filter((t) => t.trim().length > 0);
+  // Split turns by double newline and filter empty
+  const turns = turnsText
+    .split("\n\n")
+    .map((t) => t.trim())
+    .filter((t) => t.length > 0);
 
   // Calculate available space for turns
   const summarySection = `<previous_cumulative_summary>\n${previousSummary}\n</previous_cumulative_summary>`;
   const instructionSection = instruction;
   const overhead = summarySection.length + instructionSection.length + 100; // +100 for structure
-  const availableForTurns = MAX_CHUNK_CHARS - overhead;
+  const availableForTurns = Math.max(0, MAX_CHUNK_CHARS - overhead);
+
+  // If no space available, return just the structure with a note
+  if (availableForTurns === 0) {
+    console.warn(
+      `[ThreadContext] No space available for turns after overhead (${overhead} chars). Using previous summary only.`,
+    );
+    return `${summarySection}\n\n<conversation_turns_to_fold>\n[Note: All conversation turns were removed due to size constraints. Rely on the previous summary for context.]\n</conversation_turns_to_fold>\n\n${instructionSection}`;
+  }
 
   // Keep recent turns, drop old ones
   const keptTurns: string[] = [];
@@ -392,6 +471,15 @@ function truncateForSummarization(content: string): string {
     const turnSize = turn.length + 2; // +2 for \n\n
 
     if (currentSize + turnSize > availableForTurns) {
+      // If we haven't kept any turns yet and this one is too large,
+      // truncate it to fit instead of skipping it entirely
+      if (keptTurns.length === 0 && turnSize > availableForTurns) {
+        const truncatedTurn =
+          turn.substring(0, availableForTurns - 100) +
+          `\n\n[Note: This turn was truncated from ${turn.length} to ${availableForTurns - 100} characters due to size constraints.]`;
+        keptTurns.unshift(truncatedTurn);
+        break;
+      }
       break;
     }
 
