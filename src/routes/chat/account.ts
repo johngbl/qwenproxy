@@ -557,6 +557,9 @@ async function tryCreateStreamWithRetry(
   let quotaRetried = false;
   const accounts = loadAccounts();
   const isSingleAccount = accounts.length <= 1;
+  let currentAccountId = accountId;
+  let currentAccountEmail = accountEmail;
+  const triedAccounts = new Set<string>([accountId]);
 
   while (retries > 0) {
     attempt++;
@@ -794,6 +797,34 @@ async function tryCreateStreamWithRetry(
       err.message?.includes("is not exist") ||
       err.message?.includes("not exist") ||
       err.message?.includes("does not exist");
+
+    // Critical errors: try switching to another account if available
+    const isCriticalError =
+      err?.upstreamCode === "quota_limit" ||
+      err?.upstreamCode === "rate_limit_exceeded" ||
+      err.message?.includes("quota_limit") ||
+      err.message?.includes("rate_limit_exceeded") ||
+      err.message?.includes("in progress") ||
+      err.message?.includes("alta demanda") ||
+      err.message?.includes("high demand");
+
+    if (isCriticalError && !isSingleAccount) {
+      const nextAccount = getNextAvailableAccount(triedAccounts);
+      if (nextAccount && nextAccount.id !== currentAccountId) {
+        console.warn(
+          `🔄 [Chat] Critical error | Switching from ${currentAccountEmail} to ${nextAccount.email}`,
+        );
+        triedAccounts.add(currentAccountId);
+        currentAccountId = nextAccount.id;
+        currentAccountEmail = nextAccount.email;
+        accountId = nextAccount.id;
+        accountEmail = nextAccount.email;
+        await new Promise((resolve) =>
+          setTimeout(resolve, Math.min(config.retry.baseDelayMs, 1000)),
+        );
+        continue;
+      }
+    }
 
     if (isChatNotExistError && params.useThreadNative && params.sessionId) {
       console.warn(`🔄 [Chat] Session expired | forcing new chat`);
