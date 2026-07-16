@@ -151,6 +151,81 @@ function isRetryableUpstreamError(errCode: string, errDetails: string): boolean 
   );
 }
 
+function throwSseUpstreamError(errCode: string, errDetails: string): never {
+  console.error(
+    `[Upstream] Error | ${errCode} | ${errDetails.substring(0, 200)}`,
+  );
+
+  // Anti-bot: FAIL_SYS_USER_VALIDATE / RGV587_ERROR — retryable
+  if (
+    errDetails.includes("FAIL_SYS_USER_VALIDATE") ||
+    errDetails.includes("RGV587_ERROR") ||
+    errDetails.includes("user validate")
+  ) {
+    throw new RetryableQwenStreamError(
+      `Qwen anti-bot: ${errCode}: ${errDetails}`,
+      config.antiBot.baseDelayMs,
+    );
+  }
+
+  if (
+    errCode === "quota_limit" ||
+    errDetails.includes("Allocated quota exceeded") ||
+    errDetails.includes("quota exceeded") ||
+    errDetails.includes("token-limit") ||
+    errDetails.includes("alta demanda") ||
+    errDetails.includes("high demand")
+  ) {
+    throw createRetryableUpstreamError(errCode, errDetails, {
+      switchAccount: true,
+    });
+  }
+
+  if (isRetryableInvalidInputError(errCode, errDetails)) {
+    throw createRetryableInvalidInputError(errCode, errDetails);
+  }
+
+  if (isRetryableUpstreamError(errCode, errDetails)) {
+    throw createRetryableUpstreamError(errCode, errDetails, {
+      switchAccount: true,
+      forceNewChat: true,
+    });
+  }
+
+  throw new QwenUpstreamError(
+    `Qwen upstream error: ${errCode}: ${errDetails}`,
+    errCode,
+    502,
+  );
+}
+
+function parseSseErrorFromBuffer(
+  buffer: string,
+): { code: string; details: string } | null {
+  const lines = buffer.split("\n");
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("data: ")) continue;
+    const dataStr = trimmed.slice(6);
+    if (!dataStr || dataStr === "[DONE]") continue;
+    try {
+      const chunk = JSON.parse(dataStr);
+      if (chunk?.error) {
+        return {
+          code: chunk.error.code || "upstream_error",
+          details:
+            chunk.error.details ||
+            chunk.error.message ||
+            JSON.stringify(chunk.error),
+        };
+      }
+    } catch {
+      // ignore non-JSON SSE lines in the pre-read buffer
+    }
+  }
+  return null;
+}
+
 export interface AssistantCompleteEvent {
   sessionId: string | null;
   accountId: string;
@@ -712,20 +787,29 @@ export async function processStreamingResponse(
   }
 
   const upstreamError = parseQwenErrorPayload(initialStreamBuffer);
-  if (upstreamError) {
-    await streamReader.cancel().catch(() => undefined);
-    removeStream(completionId);
-    if (onStreamComplete) onStreamComplete();
-    return sendOpenAIError(
-      c,
-      createError(
-        upstreamError.status as QwenBridgeStatusCode,
-        upstreamError.message,
-      ),
-    );
-  }
+    if (upstreamError) {
+      await streamReader.cancel().catch(() => undefined);
+      removeStream(completionId);
+      if (onStreamComplete) onStreamComplete();
+      return sendOpenAIError(
+        c,
+        createError(
+          upstreamError.status as QwenBridgeStatusCode,
+          upstreamError.message,
+        ),
+      );
+    }
 
-  c.header("Content-Type", "text/event-stream");
+    // Detect first-chunk SSE error BEFORE committing to SSE so outer retry loop can run
+    const earlySseError = parseSseErrorFromBuffer(initialStreamBuffer);
+    if (earlySseError) {
+      await streamReader.cancel().catch(() => undefined);
+      removeStream(completionId);
+      if (onStreamComplete) onStreamComplete();
+      throwSseUpstreamError(earlySseError.code, earlySseError.details);
+    }
+
+    c.header("Content-Type", "text/event-stream");
   c.header("Cache-Control", "no-cache");
   c.header("Connection", "keep-alive");
 
