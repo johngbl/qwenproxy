@@ -443,65 +443,84 @@ export async function chatCompletions(c: Context) {
             `[Chat] Stream processing error, retrying with new stream | ${streamErr.message?.substring(0, 150)} | retries left: ${streamProcessingRetries}`,
           );
 
-          // Mark current account for cooldown if it's a quota error
-          if (streamErr.message?.includes("quota")) {
-            const { markAccountRateLimited } =
-              await import("../../core/account-manager.ts");
-            markAccountRateLimited(
-              currentStreamResult.activeAccountId,
-              undefined,
-              "QuotaExceeded",
-            );
-          }
+          const switchAccount = Boolean(
+                      (streamErr as { switchAccount?: boolean }).switchAccount,
+                    );
+                    const errCode =
+                      (streamErr as { upstreamCode?: string }).upstreamCode || "";
 
-          // Release current chat lock
-          if (releaseChatLock) {
-            releaseChatLock();
-            releaseChatLock = null;
-          }
+                    // Mark current account for cooldown on account-scoped errors
+                    if (
+                      streamErr.message?.includes("quota") ||
+                      errCode === "quota_limit" ||
+                      streamErr.message?.includes("alta demanda") ||
+                      streamErr.message?.includes("high demand")
+                    ) {
+                      const { markAccountRateLimited } =
+                        await import("../../core/account-manager.ts");
+                      markAccountRateLimited(
+                        currentStreamResult.activeAccountId,
+                        undefined,
+                        errCode === "quota_limit" ? "QuotaLimit" : "QuotaExceeded",
+                      );
+                    }
 
-          const fullPromptForRetry = ctx.requestPersonalizationInstruction
-            ? parsed.prompt
-            : parsed.systemPrompt + parsed.prompt;
-          const forceRetryNewChat = Boolean(
-            (streamErr as { forceNewChat?: boolean }).forceNewChat,
-          );
-          const retryFinalPrompt = (
-            streamErr as { retryWithFullPrompt?: boolean }
-          ).retryWithFullPrompt
-            ? fullPromptForRetry
-            : finalPrompt;
-          const retryMessageCount = (
-            streamErr as { retryWithFullPrompt?: boolean }
-          ).retryWithFullPrompt
-            ? parsed.messageCount
-            : msgCount;
+                    // Release current chat lock
+                    if (releaseChatLock) {
+                      releaseChatLock();
+                      releaseChatLock = null;
+                    }
 
-          if (forceRetryNewChat) {
-            console.warn(
-              `[Chat] Retry will force a new upstream chat and resend full context | ${streamErr.message?.substring(0, 150)}`,
-            );
-          }
+                    const fullPromptForRetry = ctx.requestPersonalizationInstruction
+                      ? parsed.prompt
+                      : parsed.systemPrompt + parsed.prompt;
+                    const forceRetryNewChat = Boolean(
+                      (streamErr as { forceNewChat?: boolean }).forceNewChat,
+                    );
+                    const retryFinalPrompt = (
+                      streamErr as { retryWithFullPrompt?: boolean }
+                    ).retryWithFullPrompt
+                      ? fullPromptForRetry
+                      : finalPrompt;
+                    const retryMessageCount = (
+                      streamErr as { retryWithFullPrompt?: boolean }
+                    ).retryWithFullPrompt
+                      ? parsed.messageCount
+                      : msgCount;
 
-          // Re-acquire stream with different account or a fresh upstream chat
-          const newStreamResult = await acquireUpstreamStream({
-            finalPrompt: retryFinalPrompt,
-            fullPrompt: fullPromptForRetry,
-            isThinkingModel: ctx.isThinkingModel,
-            model: body.model,
-            shouldResetUpstreamThread: ctx.shouldResetUpstreamThread,
-            allFiles: files,
-            isNewSession: ctx.isNewSession,
-            sessionId: ctx.sessionId,
-            useThreadNative: ctx.useThreadNative,
-            updateLogicalThread: ctx.updateLogicalThread,
-            allowThreadReuse: ctx.allowThreadReuse,
-            forceNewChat:
-              forceRetryNewChat ||
-              activeRolloverPlan !== null ||
-              isInternalSummarizationRequest,
-            preferredAccountId: activeRolloverPlan?.preferredAccountId ?? null,
-            messageCount: retryMessageCount,
+                    if (forceRetryNewChat) {
+                      console.warn(
+                        `[Chat] Retry will force a new upstream chat and resend full context | ${streamErr.message?.substring(0, 150)}`,
+                      );
+                    }
+                    if (switchAccount) {
+                      console.warn(
+                        `[Chat] Retry will prefer another account when available | ${streamErr.message?.substring(0, 150)}`,
+                      );
+                    }
+
+                    // Re-acquire stream with different account or a fresh upstream chat
+                    const newStreamResult = await acquireUpstreamStream({
+                      finalPrompt: retryFinalPrompt,
+                      fullPrompt: fullPromptForRetry,
+                      isThinkingModel: ctx.isThinkingModel,
+                      model: body.model,
+                      shouldResetUpstreamThread: ctx.shouldResetUpstreamThread,
+                      allFiles: files,
+                      isNewSession: ctx.isNewSession,
+                      sessionId: ctx.sessionId,
+                      useThreadNative: ctx.useThreadNative,
+                      updateLogicalThread: ctx.updateLogicalThread,
+                      allowThreadReuse: ctx.allowThreadReuse,
+                      forceNewChat:
+                        forceRetryNewChat ||
+                        activeRolloverPlan !== null ||
+                        isInternalSummarizationRequest,
+                      // null => rotate away from sticky account when possible
+                      preferredAccountId: switchAccount
+                        ? null
+                        : (activeRolloverPlan?.preferredAccountId ?? null),
+                      messageCount: retryMessageCount,
             fullMessageCount: parsed.messageCount,
             toolsCount: declaredTools.length || undefined,
             requestPersonalizationInstruction:

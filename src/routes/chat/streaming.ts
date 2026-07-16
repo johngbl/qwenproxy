@@ -44,6 +44,7 @@ import {
   getIncrementalDelta,
   formatThinkingSummaryContent,
   shouldSuppressStreamAbort,
+  isAbortError,
   createUsageAccumulator,
   applyUpstreamUsage,
   buildUsage,
@@ -105,6 +106,49 @@ function createRetryableInvalidInputError(
   error.forceNewChat = true;
   error.retryWithFullPrompt = true;
   return error;
+}
+
+function createRetryableUpstreamError(
+  errCode: string,
+  errDetails: string,
+  options?: {
+    forceNewChat?: boolean;
+    retryWithFullPrompt?: boolean;
+    switchAccount?: boolean;
+    retryAfterMs?: number;
+  },
+): RetryableQwenStreamError {
+  const error = new RetryableQwenStreamError(
+    `Qwen retryable upstream error: ${errCode}: ${errDetails.substring(0, 200)}`,
+    options?.retryAfterMs ?? config.retry.baseDelayMs,
+  ) as RetryableQwenStreamError & {
+    upstreamCode?: string;
+    forceNewChat?: boolean;
+    retryWithFullPrompt?: boolean;
+    switchAccount?: boolean;
+  };
+  error.upstreamCode = errCode;
+  error.forceNewChat = options?.forceNewChat === true;
+  error.retryWithFullPrompt = options?.retryWithFullPrompt === true;
+  error.switchAccount = options?.switchAccount !== false;
+  return error;
+}
+
+function isRetryableUpstreamError(errCode: string, errDetails: string): boolean {
+  const normalizedCode = errCode.toLowerCase();
+  const details = errDetails.toLowerCase();
+  return (
+    normalizedCode === "internal_error" ||
+    normalizedCode === "quota_limit" ||
+    details.includes("internal_error") ||
+    details.includes("ocorreu um erro inesperado") ||
+    details.includes("unexpected error") ||
+    details.includes("try again later") ||
+    details.includes("tente novamente mais tarde") ||
+    details.includes("service temporarily unavailable") ||
+    details.includes("alta demanda") ||
+    details.includes("high demand")
+  );
 }
 
 export interface AssistantCompleteEvent {
@@ -344,36 +388,46 @@ export async function processNonStreamingResponse(
             }
 
             // Quota exceeded in SSE chunk — retryable (try other account)
-            if (
-              errDetails.includes("Allocated quota exceeded") ||
-              errDetails.includes("quota exceeded") ||
-              errDetails.includes("token-limit")
-            ) {
-              throw new RetryableQwenStreamError(
-                `Qwen quota: ${errCode}: ${errDetails.substring(0, 200)}`,
-                config.retry.baseDelayMs,
-              );
-            }
+                        if (
+                          errCode === "quota_limit" ||
+                          errDetails.includes("Allocated quota exceeded") ||
+                          errDetails.includes("quota exceeded") ||
+                          errDetails.includes("token-limit") ||
+                          errDetails.includes("alta demanda") ||
+                          errDetails.includes("high demand")
+                        ) {
+                          throw createRetryableUpstreamError(errCode, errDetails, {
+                            switchAccount: true,
+                          });
+                        }
 
-            if (isRetryableInvalidInputError(errCode, errDetails)) {
-              throw createRetryableInvalidInputError(errCode, errDetails);
-            }
+                        if (isRetryableInvalidInputError(errCode, errDetails)) {
+                          throw createRetryableInvalidInputError(errCode, errDetails);
+                        }
 
-            throw new QwenUpstreamError(
-              `Qwen upstream error: ${errCode}: ${errDetails}`,
-              errCode,
-              502,
-            );
-          }
+                        // Transient upstream failures mid-stream — switch account / retry
+                        if (isRetryableUpstreamError(errCode, errDetails)) {
+                          throw createRetryableUpstreamError(errCode, errDetails, {
+                            switchAccount: true,
+                            forceNewChat: true,
+                          });
+                        }
 
-          if (
-            chunk["response.created"] &&
-            chunk["response.created"].response_id
-          ) {
-            if (!targetResponseId) {
-              targetResponseId = chunk["response.created"].response_id;
-            }
-            rememberParent(chunk["response.created"].response_id);
+                        throw new QwenUpstreamError(
+                          `Qwen upstream error: ${errCode}: ${errDetails}`,
+                          errCode,
+                          502,
+                        );
+                      }
+
+                      if (
+                        chunk["response.created"] &&
+                        chunk["response.created"].response_id
+                      ) {
+                        if (!targetResponseId) {
+                          targetResponseId = chunk["response.created"].response_id;
+                        }
+                        rememberParent(chunk["response.created"].response_id);
           } else if (chunk.response_id && !targetResponseId) {
             targetResponseId = chunk.response_id;
             rememberParent(chunk.response_id);
@@ -1086,58 +1140,64 @@ export async function processStreamingResponse(
               );
 
               // Anti-bot: FAIL_SYS_USER_VALIDATE / RGV587_ERROR — retryable
-              if (
-                errDetails.includes("FAIL_SYS_USER_VALIDATE") ||
-                errDetails.includes("RGV587_ERROR") ||
-                errDetails.includes("user validate")
-              ) {
-                throw new RetryableQwenStreamError(
-                  `Qwen anti-bot: ${errCode}: ${errDetails}`,
-                  config.antiBot.baseDelayMs,
-                );
-              }
+                            if (
+                              errDetails.includes("FAIL_SYS_USER_VALIDATE") ||
+                              errDetails.includes("RGV587_ERROR") ||
+                              errDetails.includes("user validate")
+                            ) {
+                              throw new RetryableQwenStreamError(
+                                `Qwen anti-bot: ${errCode}: ${errDetails}`,
+                                config.antiBot.baseDelayMs,
+                              );
+                            }
 
-              // Quota exceeded in SSE chunk — retryable (try other account)
-              if (
-                errDetails.includes("Allocated quota exceeded") ||
-                errDetails.includes("quota exceeded") ||
-                errDetails.includes("token-limit")
-              ) {
-                throw new RetryableQwenStreamError(
-                  `Qwen quota: ${errCode}: ${errDetails.substring(0, 200)}`,
-                  config.retry.baseDelayMs,
-                );
-              }
+                            // Quota exceeded in SSE chunk — retryable (try other account)
+                            if (
+                              errCode === "quota_limit" ||
+                              errDetails.includes("Allocated quota exceeded") ||
+                              errDetails.includes("quota exceeded") ||
+                              errDetails.includes("token-limit") ||
+                              errDetails.includes("alta demanda") ||
+                              errDetails.includes("high demand")
+                            ) {
+                              throw createRetryableUpstreamError(errCode, errDetails, {
+                                switchAccount: true,
+                              });
+                            }
 
-              if (isRetryableInvalidInputError(errCode, errDetails)) {
-                throw createRetryableInvalidInputError(errCode, errDetails);
-              }
+                            if (isRetryableInvalidInputError(errCode, errDetails)) {
+                              throw createRetryableInvalidInputError(errCode, errDetails);
+                            }
 
-              throw new QwenUpstreamError(
-                `Qwen upstream error: ${errCode}: ${errDetails}`,
-                errCode,
-                502,
-              );
-            }
+                            // Transient upstream failures mid-stream — switch account / retry
+                            if (isRetryableUpstreamError(errCode, errDetails)) {
+                              throw createRetryableUpstreamError(errCode, errDetails, {
+                                switchAccount: true,
+                                forceNewChat: true,
+                              });
+                            }
 
-            if (
-              chunk["response.created"] &&
-              chunk["response.created"].response_id
-            ) {
-              if (!targetResponseId) {
-                targetResponseId = chunk["response.created"].response_id;
-                if (targetResponseId) {
-                  updateStreamTargetResponseId(completionId, targetResponseId);
-                }
-              }
-              rememberParent(chunk["response.created"].response_id);
-            } else if (chunk.response_id && !targetResponseId) {
-              targetResponseId = chunk.response_id;
-              if (targetResponseId) {
-                updateStreamTargetResponseId(completionId, targetResponseId);
-              }
-              rememberParent(chunk.response_id);
-            }
+                            throw new QwenUpstreamError(
+                              `Qwen upstream error: ${errCode}: ${errDetails}`,
+                              errCode,
+                              502,
+                            );
+                          }
+
+                          if (
+                            chunk["response.created"] &&
+                            chunk["response.created"].response_id
+                          ) {
+                            if (!targetResponseId) {
+                              targetResponseId = chunk["response.created"].response_id;
+                              if (targetResponseId) {
+                                updateStreamTargetResponseId(completionId, targetResponseId);
+                              }
+                            }
+                            if (chunk["response.created"].chat_id) {
+                              rememberSession(chunk["response.created"].chat_id);
+                            }
+                          }
 
             applyUpstreamUsage(usageAccumulator, chunk.usage);
 
@@ -1492,26 +1552,43 @@ export async function processStreamingResponse(
     } catch (err: any) {
       const streamStillRegistered = Boolean(getStream(completionId));
       if (
-        shouldSuppressStreamAbort(
-          err,
-          clientDisconnected,
-          c.req.raw.signal.aborted,
-          streamStillRegistered,
-        )
-      ) {
-        if (isToolcallDebugEnabled()) {
-          logger.debug("[chat] stream: suppressed expected abort", {
-            completionId,
-            clientDisconnected,
-            requestAborted: c.req.raw.signal.aborted,
-            streamStillRegistered,
-            errorName: err?.name,
-            errorMessage: err?.message,
-          });
-        }
-        return;
-      }
-      throw err;
+              shouldSuppressStreamAbort(
+                err,
+                clientDisconnected,
+                c.req.raw.signal.aborted,
+                streamStillRegistered,
+              )
+            ) {
+              if (isToolcallDebugEnabled()) {
+                logger.debug("[chat] stream: suppressed expected abort", {
+                  completionId,
+                  clientDisconnected,
+                  requestAborted: c.req.raw.signal.aborted,
+                  streamStillRegistered,
+                  errorName: err?.name,
+                  errorMessage: err?.message,
+                });
+              }
+              return;
+            }
+
+            // Idle/upstream aborts are retryable when the client is still connected
+            if (
+              isAbortError(err) &&
+              !clientDisconnected &&
+              !c.req.raw.signal.aborted
+            ) {
+              throw createRetryableUpstreamError(
+                "stream_aborted",
+                err?.message || "This operation was aborted",
+                {
+                  switchAccount: true,
+                  forceNewChat: true,
+                  retryAfterMs: Math.min(config.retry.baseDelayMs * 2, 3000),
+                },
+              );
+            }
+            throw err;
     } finally {
       if (isToolcallDebugEnabled()) {
         logger.debug("[chat] stream: cleanup started", {

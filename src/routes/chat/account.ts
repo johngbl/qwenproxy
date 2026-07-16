@@ -799,14 +799,22 @@ async function tryCreateStreamWithRetry(
       err.message?.includes("does not exist");
 
     // Critical errors: try switching to another account if available
-    const isCriticalError =
-      err?.upstreamCode === "quota_limit" ||
-      err?.upstreamCode === "rate_limit_exceeded" ||
-      err.message?.includes("quota_limit") ||
-      err.message?.includes("rate_limit_exceeded") ||
-      err.message?.includes("in progress") ||
-      err.message?.includes("alta demanda") ||
-      err.message?.includes("high demand");
+        const isCriticalError =
+          err?.upstreamCode === "quota_limit" ||
+          err?.upstreamCode === "rate_limit_exceeded" ||
+          err?.upstreamCode === "internal_error" ||
+          err?.upstreamCode === "stream_aborted" ||
+          err?.upstreamCode === "invalid_input" ||
+          err.message?.includes("quota_limit") ||
+          err.message?.includes("rate_limit_exceeded") ||
+          err.message?.includes("internal_error") ||
+          err.message?.includes("stream_aborted") ||
+          err.message?.includes("invalid_input") ||
+          err.message?.includes("in progress") ||
+          err.message?.includes("alta demanda") ||
+          err.message?.includes("high demand") ||
+          err.message?.includes("This operation was aborted") ||
+          err.message?.includes("ocorreu um erro inesperado");
 
     if (isCriticalError && !isSingleAccount) {
       const nextAccount = getNextAvailableAccount(triedAccounts);
