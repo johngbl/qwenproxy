@@ -170,7 +170,7 @@ test("stream: quota_limit mid-stream retries instead of hard fail", async () => 
 });
 
 test("RetryableQwenStreamError carries switchAccount semantics for critical failures", () => {
-  // Mirrors createRetryableUpstreamError defaults used by streaming retries.
+  // Mirrors toRetryableStreamError defaults used by streaming retries.
   const err = new RetryableQwenStreamError(
     "Qwen retryable upstream error: internal_error: unexpected",
     1000,
@@ -187,4 +187,32 @@ test("RetryableQwenStreamError carries switchAccount semantics for critical fail
   assert.equal(err.forceNewChat, true);
   assert.equal(err.switchAccount, true);
   assert.equal(err.retryAfterMs, 1000);
+});
+
+test("stream: unknown upstream SSE code still retries (generic policy)", async () => {
+  const mock = setupQwenFetchMock((callIndex) => {
+    if (callIndex === 1) {
+      return sseResponse(
+        'data: {"error":{"code":"brand_new_qwen_failure","details":"never seen before today"}}\n\n',
+      );
+    }
+    return sseResponse(
+      'data: {"response.created":{"chat_id":"chat-unknown-ok","response_id":"resp-unknown-ok"}}\n\n',
+      'data: {"response_id":"resp-unknown-ok","choices":[{"delta":{"phase":"answer","content":"unknown-recovered"}}]}\n\n',
+      "data: [DONE]\n\n",
+    );
+  });
+
+  try {
+    const res = await postChat(
+      [{ role: "user", content: "unknown code please" }],
+      true,
+    );
+    assert.equal(res.status, 200);
+    const text = await res.text();
+    assert.match(text, /unknown-recovered/);
+    assert.ok(mock.getCompletionCalls() >= 2);
+  } finally {
+    mock.restore();
+  }
 });

@@ -6,8 +6,6 @@ import {
   updateLogicalThreadState,
   deleteQwenChat,
   QwenSessionExpiredError,
-  QwenUpstreamUnavailableError,
-  QwenNetworkError,
   RetryableQwenStreamError,
   syncQwenRequestPersonalization,
   type LogicalThreadEntry,
@@ -33,6 +31,12 @@ import {
 import { config } from "../../core/config.ts";
 import { UpstreamRateLimit } from "../../core/errors.ts";
 import { QwenFileEntry } from "../upload.ts";
+import {
+  classifyRetryAction,
+  isAntiBotError as isAntiBotPolicyError,
+  isChatInProgressError,
+  isQuotaLikeError,
+} from "./retry-policy.ts";
 
 // Per-chat lock: serializes requests to the same Qwen chat session
 const chatLocks = new Map<string, Mutex>();
@@ -150,40 +154,18 @@ function resolveInitialAccount(preferredAccountId?: string): {
 }
 
 function isAccountUnavailableError(err: any): boolean {
-  const message = String(err?.message || err || "").toLowerCase();
+  // Quota/rate-limit style failures that should cool the account and rotate.
+  if (isQuotaLikeError(err)) return true;
   return (
     (err instanceof UpstreamRateLimit &&
       !(err instanceof RetryableQwenStreamError)) ||
     err?.upstreamCode === "RateLimited" ||
-    err?.upstreamStatus === 429 ||
-    message.includes("allocated quota exceeded") ||
-    message.includes("quota exceeded") ||
-    message.includes("increase your quota") ||
-    message.includes("token-limit") ||
-    message.includes("insufficient quota") ||
-    message.includes("request rate increased too quickly") ||
-    message.includes("rate increased too quickly")
+    err?.upstreamStatus === 429
   );
 }
 
 function isAntiBotError(err: any): boolean {
-  if (err instanceof RetryableQwenStreamError) {
-    return err.message?.includes("anti-bot") || false;
-  }
-  const message = String(err?.message || err || "").toLowerCase();
-  return (
-    err?.upstreamCode === "FAIL_SYS_USER_VALIDATE" ||
-    err?.upstreamCode === "RGV587_ERROR" ||
-    message.includes("fail_sys_user_validate") ||
-    message.includes("rgv587_error") ||
-    message.includes("_____tmd_____") ||
-    message.includes("tmd anti-bot") ||
-    message.includes("captcha") ||
-    message.includes("security verification") ||
-    message.includes("verify you are human") ||
-    message.includes("human verification") ||
-    message.includes("denyfromx5")
-  );
+  return isAntiBotPolicyError(err);
 }
 
 async function tryRecoverAntiBot(
@@ -551,21 +533,24 @@ async function tryCreateStreamWithRetry(
   accountId: string,
   accountEmail: string,
 ): Promise<CreateStreamSuccess | CreateStreamFailure> {
-  let retries = 3;
+  const maxAttempts = Math.max(1, config.retry.maxAttempts);
+  const maxAccountSwitches = Math.max(0, config.retry.maxAccountSwitches);
+  let attemptsLeft = maxAttempts;
   let retryDelay = config.retry.baseDelayMs;
   let attempt = 0;
   let quotaRetried = false;
+  let accountSwitches = 0;
   const accounts = loadAccounts();
   const isSingleAccount = accounts.length <= 1;
   let currentAccountId = accountId;
   let currentAccountEmail = accountEmail;
   const triedAccounts = new Set<string>([accountId]);
 
-  while (retries > 0) {
+  while (attemptsLeft > 0) {
     attempt++;
     if (attempt > 1) {
       console.log(
-        `🔄 [Chat] Retrying request | ${accountEmail} | ${params.model} | ${params.messageCount ?? "?"} msg(s) | ${params.finalPrompt.length} chars${params.toolsCount ? ` | ${params.toolsCount} tool(s)` : ""} | attempt ${attempt}`,
+        `🔄 [Chat] Retrying request | ${currentAccountEmail} | ${params.model} | ${params.messageCount ?? "?"} msg(s) | ${params.finalPrompt.length} chars${params.toolsCount ? ` | ${params.toolsCount} tool(s)` : ""} | attempt ${attempt}`,
       );
     }
     let attemptError: any = null;
@@ -579,14 +564,14 @@ async function tryCreateStreamWithRetry(
           ? null
           : undefined;
       const releasePersonalization = params.requestPersonalizationInstruction
-        ? await acquirePersonalizationLock(accountId)
+        ? await acquirePersonalizationLock(currentAccountId)
         : null;
       let result: Awaited<ReturnType<typeof createQwenStream>>;
       try {
         if (params.requestPersonalizationInstruction !== null) {
           await syncQwenRequestPersonalization(
             params.requestPersonalizationInstruction ?? "",
-            accountId === "global" ? undefined : accountId,
+            currentAccountId === "global" ? undefined : currentAccountId,
             {
               model: params.model,
               toolsCount: params.toolsCount ?? 0,
@@ -601,7 +586,7 @@ async function tryCreateStreamWithRetry(
           params.isThinkingModel,
           params.model,
           threadParentId,
-          accountId === "global" ? undefined : accountId,
+          currentAccountId === "global" ? undefined : currentAccountId,
           params.allFiles.length > 0 ? params.allFiles : undefined,
           params.forceNewChat || params.useThreadNative
             ? {
@@ -642,8 +627,8 @@ async function tryCreateStreamWithRetry(
 
       if (isToolcallDebugEnabled()) {
         logger.debug("[chat] stream created successfully", {
-          accountId,
-          accountEmail,
+          accountId: currentAccountId,
+          accountEmail: currentAccountEmail,
           uiSessionId: result.uiSessionId,
         });
       }
@@ -653,7 +638,7 @@ async function tryCreateStreamWithRetry(
       attemptError = err;
     }
 
-    retries--;
+    attemptsLeft--;
     const err = attemptError;
 
     // Log the error details for debugging
@@ -661,7 +646,7 @@ async function tryCreateStreamWithRetry(
     if (err) {
       const errCode = err.upstreamCode || err.code || "unknown";
       console.warn(
-        `❌ [Chat] Request failed | ${accountEmail} | ${errCode} | ${errMsg.substring(0, 200)}`,
+        `❌ [Chat] Request failed | ${currentAccountEmail} | ${errCode} | ${errMsg.substring(0, 200)}`,
       );
     }
 
@@ -678,12 +663,12 @@ async function tryCreateStreamWithRetry(
           err.chatSessionId,
           err.accountId && err.accountId !== "global"
             ? err.accountId
-            : accountId === "global"
+            : currentAccountId === "global"
               ? undefined
-              : accountId,
+              : currentAccountId,
         );
         console.log(
-          `🗑️  [ThreadContext] Deleted failed chat | ${err.chatSessionId} | account=${accountId}`,
+          `🗑️  [ThreadContext] Deleted failed chat | ${err.chatSessionId} | account=${currentAccountId}`,
         );
       } catch (deleteErr) {
         const msg =
@@ -701,18 +686,27 @@ async function tryCreateStreamWithRetry(
       };
     }
 
-    if (err.name === "QwenSessionExpiredError") {
+    if (
+      err instanceof QwenSessionExpiredError ||
+      err.name === "QwenSessionExpiredError"
+    ) {
       console.warn(
-        `🔄 [Chat] Session expired for ${accountEmail} (${accountId}). Attempting re-login...`,
+        `🔄 [Chat] Session expired for ${currentAccountEmail} (${currentAccountId}). Attempting re-login...`,
       );
-      const reLoginOk = await attemptRelogin(accountId, accountEmail);
+      const reLoginOk = await attemptRelogin(
+        currentAccountId,
+        currentAccountEmail,
+      );
       if (reLoginOk) continue;
       return { success: false, error: err };
     }
 
     // In-request captcha recovery before burning remaining retries / rotating
-    if (isAntiBotError(err) && retries > 0) {
-      const recovered = await tryRecoverAntiBot(accountId, accountEmail);
+    if (isAntiBotError(err) && attemptsLeft > 0) {
+      const recovered = await tryRecoverAntiBot(
+        currentAccountId,
+        currentAccountEmail,
+      );
       await new Promise((resolve) =>
         setTimeout(
           resolve,
@@ -725,14 +719,16 @@ async function tryCreateStreamWithRetry(
       continue;
     }
 
+    // Account-scoped quota/rate-limit: cool this account and stop local retries
+    // so outer account rotation can pick another one immediately.
     if (isAccountUnavailableError(err)) {
       const quotaMsg = err.message || "Unknown quota error";
       console.warn(
-        `⚠️  [Chat] Quota exceeded | ${accountEmail} | ${quotaMsg.substring(0, 200)}`,
+        `⚠️  [Chat] Quota exceeded | ${currentAccountEmail} | ${quotaMsg.substring(0, 200)}`,
       );
 
       // Single account: retry once after delay before giving up
-      if (isSingleAccount && !quotaRetried && retries > 1) {
+      if (isSingleAccount && !quotaRetried && attemptsLeft > 0) {
         quotaRetried = true;
         console.warn(
           `🔄 [Chat] Single account mode | Retrying in ${config.retry.baseDelayMs}ms...`,
@@ -743,189 +739,121 @@ async function tryCreateStreamWithRetry(
         continue;
       }
 
-      const hourHint = err.message?.match(/Wait about (\d+) hour/);
-      let cooldownMs: number | undefined;
-      let cooldownReason = "RateLimited";
-
-      if (hourHint) {
-        cooldownMs = parseInt(hourHint[1]) * 60 * 60 * 1000;
-      } else if (
-        errMsg.toLowerCase().includes("request rate increased too quickly") ||
-        errMsg.toLowerCase().includes("rate increased too quickly")
-      ) {
-        // Temporary rate limit — shorter cooldown (5 min)
-        cooldownMs = 5 * 60 * 1000;
-        cooldownReason = "RateLimitTemporary";
-      }
-
-      markAccountRateLimited(accountId, cooldownMs, cooldownReason);
+      const policy = classifyRetryAction(err);
+      markAccountRateLimited(
+        currentAccountId,
+        policy.accountCooldownMs,
+        policy.accountCooldownReason || "QuotaExceeded",
+      );
       return { success: false, error: err };
     }
 
-    const isRetryableInvalidInputError =
-      err?.upstreamCode === "invalid_input" ||
-      err.message?.includes("invalid_input") ||
-      err.message?.includes("Entrada ou anexo inválido") ||
-      err.message?.includes("invalid input") ||
-      err.message?.includes("invalid attachment");
+    const policy = classifyRetryAction(err);
 
+    // Prefer switching account for any retryable upstream error when possible
     if (
-      isRetryableInvalidInputError &&
+      policy.retryable &&
+      policy.switchAccount &&
+      !isSingleAccount &&
+      accountSwitches < maxAccountSwitches
+    ) {
+      const nextAccount = getNextAvailableAccount(triedAccounts);
+      if (nextAccount && nextAccount.id !== currentAccountId) {
+        console.warn(
+          `🔄 [Chat] Switching account after ${policy.reason} | ${currentAccountEmail} -> ${maskEmail(nextAccount.email)}`,
+        );
+        if (policy.accountCooldownMs || policy.accountCooldownReason) {
+          markAccountRateLimited(
+            currentAccountId,
+            policy.accountCooldownMs,
+            policy.accountCooldownReason || "RetrySwitch",
+          );
+        }
+        triedAccounts.add(currentAccountId);
+        currentAccountId = nextAccount.id;
+        currentAccountEmail = maskEmail(nextAccount.email);
+        accountSwitches++;
+
+        // Switching accounts invalidates sticky thread/chat state
+        if (params.useThreadNative && params.sessionId) {
+          params.existingThread = null;
+          params.finalPrompt = params.fullPrompt;
+          params.messageCount =
+            params.fullMessageCount ?? params.messageCount;
+          params.forceNewChat = true;
+          updateLogicalThreadState(params.sessionId, {
+            accountId: currentAccountId,
+            chatSessionId: "",
+            parentId: null,
+            instructionsSent: false,
+          });
+        }
+
+        await new Promise((resolve) =>
+          setTimeout(
+            resolve,
+            Math.min(policy.retryAfterMs || config.retry.baseDelayMs, 1000),
+          ),
+        );
+        continue;
+      }
+
+      console.warn(
+        `⚠️  [Chat] No other account available after ${policy.reason} | Retrying on same account`,
+      );
+    }
+
+    // Force new chat / full context when policy requests it (invalid_input, chat gone, etc.)
+    if (
+      policy.retryable &&
+      (policy.forceNewChat || policy.retryWithFullPrompt) &&
       params.useThreadNative &&
       params.sessionId
     ) {
       console.warn(
-        `⚠️  [Chat] Upstream invalid_input | forcing new chat with full context`,
+        `🔄 [Chat] Forcing new chat/full context | reason=${policy.reason}`,
       );
       params.existingThread = null;
       params.finalPrompt = params.fullPrompt;
       params.messageCount = params.fullMessageCount ?? params.messageCount;
+      params.forceNewChat = true;
       updateLogicalThreadState(params.sessionId, {
-        accountId,
+        accountId: currentAccountId,
         chatSessionId: "",
         parentId: null,
         instructionsSent: false,
       });
-      await new Promise((resolve) =>
-        setTimeout(resolve, Math.min(config.retry.baseDelayMs, 2000)),
-      );
-      continue;
     }
 
-    // Detect "chat not exist" error and force new chat creation on retry
-    const isChatNotExistError =
-      err.message?.includes("is not exist") ||
-      err.message?.includes("not exist") ||
-      err.message?.includes("does not exist");
-
-    // Critical errors: try switching to another account if available
-        const isCriticalError =
-          err?.upstreamCode === "quota_limit" ||
-          err?.upstreamCode === "rate_limit_exceeded" ||
-          err?.upstreamCode === "internal_error" ||
-          err?.upstreamCode === "stream_aborted" ||
-          err?.upstreamCode === "invalid_input" ||
-          err.message?.includes("quota_limit") ||
-          err.message?.includes("rate_limit_exceeded") ||
-          err.message?.includes("internal_error") ||
-          err.message?.includes("stream_aborted") ||
-          err.message?.includes("invalid_input") ||
-          err.message?.includes("in progress") ||
-          err.message?.includes("alta demanda") ||
-          err.message?.includes("high demand") ||
-          err.message?.includes("This operation was aborted") ||
-          err.message?.includes("ocorreu um erro inesperado");
-
-    if (isCriticalError && !isSingleAccount) {
-      const nextAccount = getNextAvailableAccount(triedAccounts);
-      if (nextAccount && nextAccount.id !== currentAccountId) {
-        console.warn(
-          `🔄 [Chat] Critical error | Switching from ${currentAccountEmail} to ${nextAccount.email}`,
-        );
-        triedAccounts.add(currentAccountId);
-        currentAccountId = nextAccount.id;
-        currentAccountEmail = nextAccount.email;
-        accountId = nextAccount.id;
-        accountEmail = nextAccount.email;
-        await new Promise((resolve) =>
-          setTimeout(resolve, Math.min(config.retry.baseDelayMs, 1000)),
-        );
-        continue;
-      }
-      // No other account available - fall through to normal retry logic
-      console.warn(
-        `⚠️  [Chat] Critical error | No other account available | Retrying on same account`,
-      );
-    }
-
-    if (isChatNotExistError && params.useThreadNative && params.sessionId) {
-      console.warn(`🔄 [Chat] Session expired | forcing new chat`);
-      // Clear the stale chat session ID from logical thread state
-      // so the next attempt creates a fresh chat
-      params.existingThread = null;
-      params.finalPrompt = params.fullPrompt;
-      params.messageCount = params.fullMessageCount ?? params.messageCount;
-      updateLogicalThreadState(params.sessionId, {
-        accountId,
-        chatSessionId: "", // Empty forces new chat creation
-        parentId: null,
-        instructionsSent: false,
-      });
-      // Retry immediately without delay — the session just needs to be recreated
-      continue;
-    }
-
-    if (retries === 0) {
-      // Only mark account for cooldown on actual account-specific errors
-      // Qwen internal errors (Bad_Request, server issues) are not the account's fault
-      const isQwenInternalError =
-        err.message?.includes("Bad_Request") ||
-        err.message?.includes("internal_error") ||
-        err.message?.includes("Internal error");
-
-      if (
-        err.upstreamStatus &&
-        err.upstreamStatus >= 500 &&
-        !isQwenInternalError
-      ) {
-        markAccountRateLimited(accountId, undefined, "ServerError");
-        console.warn(
-          `⚠️  [Chat] Account ${accountEmail} (${accountId}) returned server error. Marked for cooldown.`,
+    if (!policy.retryable || attemptsLeft <= 0) {
+      if (policy.accountCooldownMs || policy.accountCooldownReason) {
+        markAccountRateLimited(
+          currentAccountId,
+          policy.accountCooldownMs,
+          policy.accountCooldownReason || "RetryExhausted",
         );
       }
 
       if (
         err instanceof RetryableQwenStreamError ||
-        err.message?.includes("in progress")
+        isChatInProgressError(err)
       ) {
         console.warn(
-          `🧹 [Chat] Clearing session state for ${accountEmail} (${accountId}) due to persistent 'chat in progress'`,
+          `🧹 [Chat] Clearing session state for ${currentAccountEmail} (${currentAccountId}) after exhausted retries`,
         );
-        clearAllSessionsForAccount(accountId);
+        clearAllSessionsForAccount(currentAccountId);
       }
 
       return { success: false, error: err };
     }
 
-    let useDelay = retryDelay;
-    if (
-      err instanceof RetryableQwenStreamError &&
-      err.retryAfterMs !== undefined
-    ) {
-      useDelay = err.retryAfterMs;
-    }
-    const isRetryable =
-      err instanceof RetryableQwenStreamError ||
-      err instanceof QwenUpstreamUnavailableError ||
-      err instanceof QwenNetworkError ||
-      err.message?.includes("in progress") ||
-      err.message?.includes("Bad_Request") ||
-      err.message?.includes("internal_error") ||
-      err.message?.includes("Internal error") ||
-      err.message?.includes("502 Bad Gateway") ||
-      err.message?.includes("503 Service Unavailable") ||
-      err.message?.includes("504 Gateway Timeout") ||
-      err.message?.includes("fetch failed") ||
-      err.message?.includes("ECONNREFUSED") ||
-      err.message?.includes("ETIMEDOUT") ||
-      err.message?.includes("ENOTFOUND") ||
-      err?.upstreamCode === "internal_error";
-    if (!isRetryable) {
-      return { success: false, error: err };
-    }
-
-    // For upstream unavailability (502/503/504), use shorter retry delay
-    if (err instanceof QwenUpstreamUnavailableError) {
-      useDelay = 2000; // 2 seconds for upstream issues
-    }
-
-    // For network errors (fetch failed, etc.), use shorter retry delay
-    if (err instanceof QwenNetworkError) {
-      useDelay = 3000; // 3 seconds for network issues
-    }
+    const useDelay = Math.max(
+      0,
+      policy.retryAfterMs || retryDelay || config.retry.baseDelayMs,
+    );
 
     console.warn(
-      `🔄 [Chat] Qwen request failed for ${accountEmail}, retrying in ${useDelay}ms... (${retries} left). Error: ${err.message?.slice(0, 200) || err}`,
+      `🔄 [Chat] Qwen request failed for ${currentAccountEmail}, retrying in ${useDelay}ms... (${attemptsLeft} left). reason=${policy.reason} error=${errMsg.slice(0, 200)}`,
     );
     await new Promise((r) => setTimeout(r, useDelay));
     retryDelay = Math.min(retryDelay * 2, config.retry.maxDelayMs);

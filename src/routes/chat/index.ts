@@ -26,6 +26,7 @@ import {
   getLogicalThreadState,
   RetryableQwenStreamError,
 } from "../../services/qwen.ts";
+import { classifyRetryAction } from "./retry-policy.ts";
 import { isAuthMockEnabled } from "../../services/auth-playwright.ts";
 import { enqueueThreadContextSummary } from "../../services/thread-context-jobs.ts";
 import {
@@ -422,159 +423,155 @@ export async function chatCompletions(c: Context) {
       },
     };
 
-    // Retry loop for stream processing errors (quota/anti-bot during SSE)
-    let streamProcessingRetries = 2;
-    let currentStreamResult = streamResult;
-    let currentParams = params;
+    // Retry loop for mid-stream/create-stream failures (generic policy)
+        let streamProcessingRetries = Math.max(0, config.retry.maxAttempts - 1);
+        let currentStreamResult = streamResult;
+        let currentParams = params;
 
-    while (true) {
-      try {
-        return isStream
-          ? await processStreamingResponse(currentParams)
-          : await processNonStreamingResponse(currentParams);
-      } catch (streamErr: any) {
-        // Only retry RetryableQwenStreamError (quota/anti-bot during stream)
-        if (
-          streamProcessingRetries > 0 &&
-          streamErr instanceof RetryableQwenStreamError
-        ) {
-          streamProcessingRetries--;
-          console.warn(
-            `[Chat] Stream processing error, retrying with new stream | ${streamErr.message?.substring(0, 150)} | retries left: ${streamProcessingRetries}`,
-          );
+        while (true) {
+          try {
+            return isStream
+              ? await processStreamingResponse(currentParams)
+              : await processNonStreamingResponse(currentParams);
+          } catch (streamErr: any) {
+            const policy = classifyRetryAction(streamErr);
 
-          const switchAccount = Boolean(
-                      (streamErr as { switchAccount?: boolean }).switchAccount,
-                    );
-                    const errCode =
-                      (streamErr as { upstreamCode?: string }).upstreamCode || "";
+            // Prefer explicit RetryableQwenStreamError OR generic retryable policy
+            const canRetry =
+              streamProcessingRetries > 0 &&
+              policy.retryable &&
+              (streamErr instanceof RetryableQwenStreamError ||
+                config.retry.onUnknownUpstream !== false);
 
-                    // Mark current account for cooldown on account-scoped errors
-                    if (
-                      streamErr.message?.includes("quota") ||
-                      errCode === "quota_limit" ||
-                      streamErr.message?.includes("alta demanda") ||
-                      streamErr.message?.includes("high demand")
-                    ) {
-                      const { markAccountRateLimited } =
-                        await import("../../core/account-manager.ts");
-                      markAccountRateLimited(
-                        currentStreamResult.activeAccountId,
-                        undefined,
-                        errCode === "quota_limit" ? "QuotaLimit" : "QuotaExceeded",
-                      );
-                    }
-
-                    // Release current chat lock
-                    if (releaseChatLock) {
-                      releaseChatLock();
-                      releaseChatLock = null;
-                    }
-
-                    const fullPromptForRetry = ctx.requestPersonalizationInstruction
-                      ? parsed.prompt
-                      : parsed.systemPrompt + parsed.prompt;
-                    const forceRetryNewChat = Boolean(
-                      (streamErr as { forceNewChat?: boolean }).forceNewChat,
-                    );
-                    const retryFinalPrompt = (
-                      streamErr as { retryWithFullPrompt?: boolean }
-                    ).retryWithFullPrompt
-                      ? fullPromptForRetry
-                      : finalPrompt;
-                    const retryMessageCount = (
-                      streamErr as { retryWithFullPrompt?: boolean }
-                    ).retryWithFullPrompt
-                      ? parsed.messageCount
-                      : msgCount;
-
-                    if (forceRetryNewChat) {
-                      console.warn(
-                        `[Chat] Retry will force a new upstream chat and resend full context | ${streamErr.message?.substring(0, 150)}`,
-                      );
-                    }
-                    if (switchAccount) {
-                      console.warn(
-                        `[Chat] Retry will prefer another account when available | ${streamErr.message?.substring(0, 150)}`,
-                      );
-                    }
-
-                    // Re-acquire stream with different account or a fresh upstream chat
-                    const newStreamResult = await acquireUpstreamStream({
-                      finalPrompt: retryFinalPrompt,
-                      fullPrompt: fullPromptForRetry,
-                      isThinkingModel: ctx.isThinkingModel,
-                      model: body.model,
-                      shouldResetUpstreamThread: ctx.shouldResetUpstreamThread,
-                      allFiles: files,
-                      isNewSession: ctx.isNewSession,
-                      sessionId: ctx.sessionId,
-                      useThreadNative: ctx.useThreadNative,
-                      updateLogicalThread: ctx.updateLogicalThread,
-                      allowThreadReuse: ctx.allowThreadReuse,
-                      forceNewChat:
-                        forceRetryNewChat ||
-                        activeRolloverPlan !== null ||
-                        isInternalSummarizationRequest,
-                      // null => rotate away from sticky account when possible
-                      preferredAccountId: switchAccount
-                        ? null
-                        : (activeRolloverPlan?.preferredAccountId ?? null),
-                      messageCount: retryMessageCount,
-            fullMessageCount: parsed.messageCount,
-            toolsCount: declaredTools.length || undefined,
-            requestPersonalizationInstruction:
-              ctx.requestPersonalizationInstruction,
-          });
-
-          if ("error" in newStreamResult) {
-            // Can't get new stream, fail with original error
-            throw streamErr;
-          }
-
-          console.log(
-            `🔄 [Chat] Request routed | ${newStreamResult.activeAccountLabel} | ${body.model} | ${retryMessageCount} msg(s) | ${retryFinalPrompt.length} chars${declaredTools.length ? ` | ${declaredTools.length} tool(s)` : ""}${files.length ? ` | ${files.length} file(s)` : ""} | retry`,
-          );
-
-          // Re-acquire chat lock for new stream
-          if (ctx.allowThreadReuse && ctx.sessionId) {
-            const existingThread = getLogicalThreadState(ctx.sessionId);
-            const chatId = existingThread?.chatSessionId;
-            if (chatId) {
-              releaseChatLock = await acquireChatLock(chatId);
+            if (!canRetry) {
+              throw streamErr;
             }
-          }
 
-          currentStreamResult = newStreamResult;
-          currentParams = {
-            c,
-            completionId: newStreamResult.completionId,
-            stream: newStreamResult.stream,
-            uiSessionId: newStreamResult.uiSessionId,
-            activeAccountId: newStreamResult.activeAccountId,
-            activeAccountLabel: newStreamResult.activeAccountLabel,
-            logicalSessionId: newStreamResult.logicalSessionId,
-            body,
-            finalPrompt: retryFinalPrompt,
-            userPrompt: currentPrompt || prompt,
-            shouldParseToolCalls,
-            declaredTools,
-            tokenEstimationContext: newStreamResult.tokenEstimationContext,
-            onAssistantComplete,
-            onStreamComplete: () => {
-              if (releaseChatLock) {
-                releaseChatLock();
-                releaseChatLock = null;
+            streamProcessingRetries--;
+            console.warn(
+              `[Chat] Stream processing error, retrying with new stream | reason=${policy.reason} | ${streamErr.message?.substring(0, 150)} | retries left: ${streamProcessingRetries}`,
+            );
+
+            const switchAccount = policy.switchAccount;
+            const forceRetryNewChat = policy.forceNewChat;
+            const retryWithFullPrompt = policy.retryWithFullPrompt;
+
+            // Mark current account for cooldown when policy requests it
+            if (policy.accountCooldownMs || policy.accountCooldownReason) {
+              const { markAccountRateLimited } =
+                await import("../../core/account-manager.ts");
+              markAccountRateLimited(
+                currentStreamResult.activeAccountId,
+                policy.accountCooldownMs,
+                policy.accountCooldownReason || "StreamRetry",
+              );
+            }
+
+            // Release current chat lock
+            if (releaseChatLock) {
+              releaseChatLock();
+              releaseChatLock = null;
+            }
+
+            const fullPromptForRetry = ctx.requestPersonalizationInstruction
+              ? parsed.prompt
+              : parsed.systemPrompt + parsed.prompt;
+            const retryFinalPrompt = retryWithFullPrompt
+              ? fullPromptForRetry
+              : finalPrompt;
+            const retryMessageCount = retryWithFullPrompt
+              ? parsed.messageCount
+              : msgCount;
+
+            if (forceRetryNewChat) {
+              console.warn(
+                `[Chat] Retry will force a new upstream chat and resend full context | ${streamErr.message?.substring(0, 150)}`,
+              );
+            }
+            if (switchAccount) {
+              console.warn(
+                `[Chat] Retry will prefer another account when available | ${streamErr.message?.substring(0, 150)}`,
+              );
+            }
+
+            if (policy.retryAfterMs > 0) {
+              await new Promise((resolve) =>
+                setTimeout(resolve, Math.min(policy.retryAfterMs, 3000)),
+              );
+            }
+
+            // Re-acquire stream with different account or a fresh upstream chat
+            const newStreamResult = await acquireUpstreamStream({
+              finalPrompt: retryFinalPrompt,
+              fullPrompt: fullPromptForRetry,
+              isThinkingModel: ctx.isThinkingModel,
+              model: body.model,
+              shouldResetUpstreamThread: ctx.shouldResetUpstreamThread,
+              allFiles: files,
+              isNewSession: ctx.isNewSession,
+              sessionId: ctx.sessionId,
+              useThreadNative: ctx.useThreadNative,
+              updateLogicalThread: ctx.updateLogicalThread,
+              allowThreadReuse: ctx.allowThreadReuse,
+              forceNewChat:
+                forceRetryNewChat ||
+                activeRolloverPlan !== null ||
+                isInternalSummarizationRequest,
+              // null => rotate away from sticky account when possible
+              preferredAccountId: switchAccount
+                ? null
+                : (activeRolloverPlan?.preferredAccountId ?? null),
+              messageCount: retryMessageCount,
+              fullMessageCount: parsed.messageCount,
+              toolsCount: declaredTools.length || undefined,
+              requestPersonalizationInstruction:
+                ctx.requestPersonalizationInstruction,
+            });
+
+            if ("error" in newStreamResult) {
+              // Can't get new stream, fail with original error
+              throw streamErr;
+            }
+
+            console.log(
+              `🔄 [Chat] Request routed | ${newStreamResult.activeAccountLabel} | ${body.model} | ${retryMessageCount} msg(s) | ${retryFinalPrompt.length} chars${declaredTools.length ? ` | ${declaredTools.length} tool(s)` : ""}${files.length ? ` | ${files.length} file(s)` : ""} | retry`,
+            );
+
+            // Re-acquire chat lock for new stream
+            if (ctx.allowThreadReuse && ctx.sessionId) {
+              const existingThread = getLogicalThreadState(ctx.sessionId);
+              const chatId = existingThread?.chatSessionId;
+              if (chatId) {
+                releaseChatLock = await acquireChatLock(chatId);
               }
-            },
-          };
-          continue;
-        }
+            }
 
-        // Not retryable or retries exhausted — propagate error
-        throw streamErr;
-      }
-    }
+            currentStreamResult = newStreamResult;
+            currentParams = {
+              c,
+              completionId: newStreamResult.completionId,
+              stream: newStreamResult.stream,
+              uiSessionId: newStreamResult.uiSessionId,
+              activeAccountId: newStreamResult.activeAccountId,
+              activeAccountLabel: newStreamResult.activeAccountLabel,
+              logicalSessionId: newStreamResult.logicalSessionId,
+              body,
+              finalPrompt: retryFinalPrompt,
+              userPrompt: currentPrompt || prompt,
+              shouldParseToolCalls,
+              declaredTools,
+              tokenEstimationContext: newStreamResult.tokenEstimationContext,
+              onAssistantComplete,
+              onStreamComplete: () => {
+                if (releaseChatLock) {
+                  releaseChatLock();
+                  releaseChatLock = null;
+                }
+              },
+            };
+            continue;
+          }
+        }
   } catch (err) {
     timings.preResponse = Date.now() - startedAt;
     c.header("X-QwenBridge-Timing", formatTimingHeader(timings));

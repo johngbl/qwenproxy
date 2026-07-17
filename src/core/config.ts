@@ -77,6 +77,9 @@ const envSchema = z
     WS_CRITICAL: z.string().default("100"),
     RETRY_BASE_DELAY_MS: z.string().default("1000"),
     RETRY_MAX_DELAY_MS: z.string().default("10000"),
+    RETRY_MAX_ATTEMPTS: z.string().default("3"),
+    RETRY_MAX_ACCOUNT_SWITCHES: z.string().default("2"),
+    RETRY_ON_UNKNOWN_UPSTREAM: z.string().default("true"),
     ANTI_BOT_BASE_DELAY_MS: z.string().default("5000"),
     ANTI_BOT_MAX_DELAY_MS: z.string().default("30000"),
     CAPTCHA_SOLVER_ENABLED: z.string().default("true"),
@@ -246,6 +249,9 @@ export const config = {
   retry: {
     baseDelayMs: parseInt(env.RETRY_BASE_DELAY_MS),
     maxDelayMs: parseInt(env.RETRY_MAX_DELAY_MS),
+    maxAttempts: Math.max(1, parseInt(env.RETRY_MAX_ATTEMPTS)),
+    maxAccountSwitches: Math.max(0, parseInt(env.RETRY_MAX_ACCOUNT_SWITCHES)),
+    onUnknownUpstream: env.RETRY_ON_UNKNOWN_UPSTREAM !== "false",
   },
   antiBot: {
     baseDelayMs: parseInt(env.ANTI_BOT_BASE_DELAY_MS),

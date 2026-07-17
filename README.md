@@ -239,6 +239,9 @@ Fingerprint estável por conta (UA, locale, viewport, hardware/WebGL) é aplicad
 |---|---|---|
 | `RETRY_BASE_DELAY_MS` | `1000` | Base do exponential backoff |
 | `RETRY_MAX_DELAY_MS` | `10000` | Cap do backoff |
+| `RETRY_MAX_ATTEMPTS` | `3` | Tentativas por request (create-stream + mid-stream) |
+| `RETRY_MAX_ACCOUNT_SWITCHES` | `2` | Máximo de trocas de conta por request |
+| `RETRY_ON_UNKNOWN_UPSTREAM` | `true` | Retry/troca automática em erros upstream desconhecidos (denylist só para erros locais terminais) |
 | `ANTI_BOT_BASE_DELAY_MS` | `5000` | Base anti-bot |
 | `ANTI_BOT_MAX_DELAY_MS` | `30000` | Cap anti-bot |
 | `CAPTCHA_SOLVER_ENABLED` | `true` | Recovery anti-bot/TMD no Playwright |

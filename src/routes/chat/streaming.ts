@@ -13,7 +13,6 @@ import { buildQwenRequestHeaders } from "../../services/qwen-headers.ts";
 import {
   updateLogicalThreadParent,
   updateSessionParent,
-  QwenUpstreamError,
   RetryableQwenStreamError,
 } from "../../services/qwen.ts";
 import type { OpenAIRequest, Usage } from "../../utils/types.ts";
@@ -36,6 +35,11 @@ import { classifyError } from "../../api/error-classifier.js";
 import type { QwenBridgeStatusCode } from "../../core/errors.js";
 import { config } from "../../core/config.js";
 import { parseQwenErrorPayload } from "./errors.ts";
+import {
+  parseSseErrorFromBuffer,
+  throwFromSseUpstreamError,
+  toRetryableStreamError,
+} from "./retry-policy.ts";
 import {
   logTokenEstimationSample,
   type TokenEstimationContext,
@@ -76,155 +80,7 @@ function extractChatSessionId(chunk: any): string | null {
   );
 }
 
-function isRetryableInvalidInputError(
-  errCode: string,
-  errDetails: string,
-): boolean {
-  const normalizedCode = errCode.toLowerCase();
-  const details = errDetails.toLowerCase();
-  return (
-    normalizedCode === "invalid_input" &&
-    (details.includes("entrada ou anexo inválido") ||
-      details.includes("invalid input") ||
-      details.includes("invalid attachment"))
-  );
-}
-
-function createRetryableInvalidInputError(
-  errCode: string,
-  errDetails: string,
-): RetryableQwenStreamError {
-  const error = new RetryableQwenStreamError(
-    `Qwen retryable invalid input: ${errCode}: ${errDetails.substring(0, 200)}`,
-    config.retry.baseDelayMs,
-  ) as RetryableQwenStreamError & {
-    upstreamCode?: string;
-    forceNewChat?: boolean;
-    retryWithFullPrompt?: boolean;
-  };
-  error.upstreamCode = errCode;
-  error.forceNewChat = true;
-  error.retryWithFullPrompt = true;
-  return error;
-}
-
-function createRetryableUpstreamError(
-  errCode: string,
-  errDetails: string,
-  options?: {
-    forceNewChat?: boolean;
-    retryWithFullPrompt?: boolean;
-    switchAccount?: boolean;
-    retryAfterMs?: number;
-  },
-): RetryableQwenStreamError {
-  const error = new RetryableQwenStreamError(
-    `Qwen retryable upstream error: ${errCode}: ${errDetails.substring(0, 200)}`,
-    options?.retryAfterMs ?? config.retry.baseDelayMs,
-  ) as RetryableQwenStreamError & {
-    upstreamCode?: string;
-    forceNewChat?: boolean;
-    retryWithFullPrompt?: boolean;
-    switchAccount?: boolean;
-  };
-  error.upstreamCode = errCode;
-  error.forceNewChat = options?.forceNewChat === true;
-  error.retryWithFullPrompt = options?.retryWithFullPrompt === true;
-  error.switchAccount = options?.switchAccount !== false;
-  return error;
-}
-
-function isRetryableUpstreamError(errCode: string, errDetails: string): boolean {
-  const normalizedCode = errCode.toLowerCase();
-  const details = errDetails.toLowerCase();
-  return (
-    normalizedCode === "internal_error" ||
-    normalizedCode === "quota_limit" ||
-    details.includes("internal_error") ||
-    details.includes("ocorreu um erro inesperado") ||
-    details.includes("unexpected error") ||
-    details.includes("try again later") ||
-    details.includes("tente novamente mais tarde") ||
-    details.includes("service temporarily unavailable") ||
-    details.includes("alta demanda") ||
-    details.includes("high demand")
-  );
-}
-
-function throwSseUpstreamError(errCode: string, errDetails: string): never {
-  console.error(
-    `[Upstream] Error | ${errCode} | ${errDetails.substring(0, 200)}`,
-  );
-
-  // Anti-bot: FAIL_SYS_USER_VALIDATE / RGV587_ERROR — retryable
-  if (
-    errDetails.includes("FAIL_SYS_USER_VALIDATE") ||
-    errDetails.includes("RGV587_ERROR") ||
-    errDetails.includes("user validate")
-  ) {
-    throw new RetryableQwenStreamError(
-      `Qwen anti-bot: ${errCode}: ${errDetails}`,
-      config.antiBot.baseDelayMs,
-    );
-  }
-
-  if (
-    errCode === "quota_limit" ||
-    errDetails.includes("Allocated quota exceeded") ||
-    errDetails.includes("quota exceeded") ||
-    errDetails.includes("token-limit") ||
-    errDetails.includes("alta demanda") ||
-    errDetails.includes("high demand")
-  ) {
-    throw createRetryableUpstreamError(errCode, errDetails, {
-      switchAccount: true,
-    });
-  }
-
-  if (isRetryableInvalidInputError(errCode, errDetails)) {
-    throw createRetryableInvalidInputError(errCode, errDetails);
-  }
-
-  if (isRetryableUpstreamError(errCode, errDetails)) {
-    throw createRetryableUpstreamError(errCode, errDetails, {
-      switchAccount: true,
-      forceNewChat: true,
-    });
-  }
-
-  throw new QwenUpstreamError(
-    `Qwen upstream error: ${errCode}: ${errDetails}`,
-    errCode,
-    502,
-  );
-}
-
-function parseSseErrorFromBuffer(
-  buffer: string,
-): { code: string; details: string } | null {
-  const lines = buffer.split("\n");
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith("data: ")) continue;
-    const dataStr = trimmed.slice(6);
-    if (!dataStr || dataStr === "[DONE]") continue;
-    try {
-      const chunk = JSON.parse(dataStr);
-      if (chunk?.error) {
-        return {
-          code: chunk.error.code || "upstream_error",
-          details:
-            chunk.error.details ||
-            chunk.error.message ||
-            JSON.stringify(chunk.error),
-        };
-      }
-    } catch {
-      // ignore non-JSON SSE lines in the pre-read buffer
-    }
-  }
-  return null;
-}
+// Retry/switch policy lives in ./retry-policy.ts (generic by default).
 
 export interface AssistantCompleteEvent {
   sessionId: string | null;
@@ -436,74 +292,28 @@ export async function processNonStreamingResponse(
         }
 
         try {
-          const chunk = JSON.parse(dataStr);
-          rememberSession(extractChatSessionId(chunk));
+                  const chunk = JSON.parse(dataStr);
+                  rememberSession(extractChatSessionId(chunk));
 
-          // Check for upstream error in chunk
-          if (chunk.error) {
-            const errDetails =
-              chunk.error.details ||
-              chunk.error.message ||
-              JSON.stringify(chunk.error);
-            const errCode = chunk.error.code || "upstream_error";
-            console.error(
-              `[Upstream] Error | ${errCode} | ${errDetails.substring(0, 200)}`,
-            );
+                  // Generic upstream SSE error handling (retry/switch via policy)
+                  if (chunk.error) {
+                    const errDetails =
+                      chunk.error.details ||
+                      chunk.error.message ||
+                      JSON.stringify(chunk.error);
+                    const errCode = chunk.error.code || "upstream_error";
+                    throwFromSseUpstreamError(errCode, errDetails);
+                  }
 
-            // Anti-bot: FAIL_SYS_USER_VALIDATE / RGV587_ERROR — retryable
-            if (
-              errDetails.includes("FAIL_SYS_USER_VALIDATE") ||
-              errDetails.includes("RGV587_ERROR") ||
-              errDetails.includes("user validate")
-            ) {
-              throw new RetryableQwenStreamError(
-                `Qwen anti-bot: ${errCode}: ${errDetails}`,
-                config.antiBot.baseDelayMs,
-              );
-            }
-
-            // Quota exceeded in SSE chunk — retryable (try other account)
-                        if (
-                          errCode === "quota_limit" ||
-                          errDetails.includes("Allocated quota exceeded") ||
-                          errDetails.includes("quota exceeded") ||
-                          errDetails.includes("token-limit") ||
-                          errDetails.includes("alta demanda") ||
-                          errDetails.includes("high demand")
-                        ) {
-                          throw createRetryableUpstreamError(errCode, errDetails, {
-                            switchAccount: true,
-                          });
-                        }
-
-                        if (isRetryableInvalidInputError(errCode, errDetails)) {
-                          throw createRetryableInvalidInputError(errCode, errDetails);
-                        }
-
-                        // Transient upstream failures mid-stream — switch account / retry
-                        if (isRetryableUpstreamError(errCode, errDetails)) {
-                          throw createRetryableUpstreamError(errCode, errDetails, {
-                            switchAccount: true,
-                            forceNewChat: true,
-                          });
-                        }
-
-                        throw new QwenUpstreamError(
-                          `Qwen upstream error: ${errCode}: ${errDetails}`,
-                          errCode,
-                          502,
-                        );
-                      }
-
-                      if (
-                        chunk["response.created"] &&
-                        chunk["response.created"].response_id
-                      ) {
-                        if (!targetResponseId) {
-                          targetResponseId = chunk["response.created"].response_id;
-                        }
-                        rememberParent(chunk["response.created"].response_id);
-          } else if (chunk.response_id && !targetResponseId) {
+                  if (
+                    chunk["response.created"] &&
+                    chunk["response.created"].response_id
+                  ) {
+                    if (!targetResponseId) {
+                      targetResponseId = chunk["response.created"].response_id;
+                    }
+                    rememberParent(chunk["response.created"].response_id);
+                  } else if (chunk.response_id && !targetResponseId) {
             targetResponseId = chunk.response_id;
             rememberParent(chunk.response_id);
           }
@@ -571,21 +381,18 @@ export async function processNonStreamingResponse(
             }
           }
         } catch (_e) {
-          // Re-throw known errors for retry logic in index.ts
-          if (
-            _e instanceof RetryableQwenStreamError ||
-            _e instanceof QwenUpstreamError
-          ) {
-            throw _e;
-          }
-          // Log warning for large chunks that fail to parse
-          if (dataStr.length > 10) {
-            console.warn(
-              `[Chat] SSE parse error for chunk (${dataStr.length} chars):`,
-              (_e as Error).message,
-            );
-          }
-        }
+                  // Re-throw policy-driven retry errors for outer retry loop
+                  if (_e instanceof RetryableQwenStreamError) {
+                    throw _e;
+                  }
+                  // Log warning for large chunks that fail to parse
+                  if (dataStr.length > 10) {
+                    console.warn(
+                      `[Chat] SSE parse error for chunk (${dataStr.length} chars):`,
+                      (_e as Error).message,
+                    );
+                  }
+                }
       }
 
       buffer = lineStart > 0 ? buffer.slice(lineStart) : buffer;
@@ -806,12 +613,12 @@ export async function processStreamingResponse(
       await streamReader.cancel().catch(() => undefined);
       removeStream(completionId);
       if (onStreamComplete) onStreamComplete();
-      throwSseUpstreamError(earlySseError.code, earlySseError.details);
+      throwFromSseUpstreamError(earlySseError.code, earlySseError.details);
     }
 
     c.header("Content-Type", "text/event-stream");
-  c.header("Cache-Control", "no-cache");
-  c.header("Connection", "keep-alive");
+    c.header("Cache-Control", "no-cache");
+    c.header("Connection", "keep-alive");
 
   return honoStream(c, async (streamWriter: any) => {
     let heartbeatTimeout: NodeJS.Timeout | undefined;
@@ -1209,79 +1016,33 @@ export async function processStreamingResponse(
           }
 
           try {
-            const chunk = JSON.parse(dataStr);
-            rememberSession(extractChatSessionId(chunk));
+                      const chunk = JSON.parse(dataStr);
+                      rememberSession(extractChatSessionId(chunk));
 
-            // Check for upstream error in chunk
-            if (chunk.error) {
-              const errDetails =
-                chunk.error.details ||
-                chunk.error.message ||
-                JSON.stringify(chunk.error);
-              const errCode = chunk.error.code || "upstream_error";
-              console.error(
-                `[Upstream] Error | ${errCode} | ${errDetails.substring(0, 200)}`,
-              );
+                      // Generic upstream SSE error handling (retry/switch via policy)
+                      if (chunk.error) {
+                        const errDetails =
+                          chunk.error.details ||
+                          chunk.error.message ||
+                          JSON.stringify(chunk.error);
+                        const errCode = chunk.error.code || "upstream_error";
+                        throwFromSseUpstreamError(errCode, errDetails);
+                      }
 
-              // Anti-bot: FAIL_SYS_USER_VALIDATE / RGV587_ERROR — retryable
-                            if (
-                              errDetails.includes("FAIL_SYS_USER_VALIDATE") ||
-                              errDetails.includes("RGV587_ERROR") ||
-                              errDetails.includes("user validate")
-                            ) {
-                              throw new RetryableQwenStreamError(
-                                `Qwen anti-bot: ${errCode}: ${errDetails}`,
-                                config.antiBot.baseDelayMs,
-                              );
-                            }
-
-                            // Quota exceeded in SSE chunk — retryable (try other account)
-                            if (
-                              errCode === "quota_limit" ||
-                              errDetails.includes("Allocated quota exceeded") ||
-                              errDetails.includes("quota exceeded") ||
-                              errDetails.includes("token-limit") ||
-                              errDetails.includes("alta demanda") ||
-                              errDetails.includes("high demand")
-                            ) {
-                              throw createRetryableUpstreamError(errCode, errDetails, {
-                                switchAccount: true,
-                              });
-                            }
-
-                            if (isRetryableInvalidInputError(errCode, errDetails)) {
-                              throw createRetryableInvalidInputError(errCode, errDetails);
-                            }
-
-                            // Transient upstream failures mid-stream — switch account / retry
-                            if (isRetryableUpstreamError(errCode, errDetails)) {
-                              throw createRetryableUpstreamError(errCode, errDetails, {
-                                switchAccount: true,
-                                forceNewChat: true,
-                              });
-                            }
-
-                            throw new QwenUpstreamError(
-                              `Qwen upstream error: ${errCode}: ${errDetails}`,
-                              errCode,
-                              502,
-                            );
+                      if (
+                        chunk["response.created"] &&
+                        chunk["response.created"].response_id
+                      ) {
+                        if (!targetResponseId) {
+                          targetResponseId = chunk["response.created"].response_id;
+                          if (targetResponseId) {
+                            updateStreamTargetResponseId(completionId, targetResponseId);
                           }
-
-                          if (
-                            chunk["response.created"] &&
-                            chunk["response.created"].response_id
-                          ) {
-                            if (!targetResponseId) {
-                              targetResponseId = chunk["response.created"].response_id;
-                              if (targetResponseId) {
-                                updateStreamTargetResponseId(completionId, targetResponseId);
-                              }
-                            }
-                            if (chunk["response.created"].chat_id) {
-                              rememberSession(chunk["response.created"].chat_id);
-                            }
-                          }
+                        }
+                        if (chunk["response.created"].chat_id) {
+                          rememberSession(chunk["response.created"].chat_id);
+                        }
+                      }
 
             applyUpstreamUsage(usageAccumulator, chunk.usage);
 
@@ -1354,15 +1115,12 @@ export async function processStreamingResponse(
               }
             }
           } catch (_e) {
-            // Re-throw known errors for retry logic in index.ts
-            if (
-              _e instanceof RetryableQwenStreamError ||
-              _e instanceof QwenUpstreamError
-            ) {
-              throw _e;
-            }
-            // Ignore partial chunk parse errors
-          }
+                      // Re-throw policy-driven retry errors for outer retry loop
+                      if (_e instanceof RetryableQwenStreamError) {
+                        throw _e;
+                      }
+                      // Ignore partial chunk parse errors
+                    }
         }
 
         buffer = lineStart > 0 ? buffer.slice(lineStart) : buffer;
@@ -1635,7 +1393,7 @@ export async function processStreamingResponse(
       }
     } catch (err: any) {
       const streamStillRegistered = Boolean(getStream(completionId));
-      if (
+            if (
               shouldSuppressStreamAbort(
                 err,
                 clientDisconnected,
@@ -1662,13 +1420,14 @@ export async function processStreamingResponse(
               !clientDisconnected &&
               !c.req.raw.signal.aborted
             ) {
-              throw createRetryableUpstreamError(
+              throw toRetryableStreamError(
                 "stream_aborted",
                 err?.message || "This operation was aborted",
                 {
                   switchAccount: true,
                   forceNewChat: true,
                   retryAfterMs: Math.min(config.retry.baseDelayMs * 2, 3000),
+                  reason: "stream_aborted",
                 },
               );
             }
