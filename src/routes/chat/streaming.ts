@@ -634,7 +634,7 @@ export async function processStreamingResponse(
       clientDisconnected = true;
 
       console.log(
-        `[Chat] Client disconnected for ${completionId}, stopping Qwen generation...`,
+        `🔌 [Chat] Client disconnected | ${completionId} | stopping Qwen generation`,
       );
 
       if (isToolcallDebugEnabled()) {
@@ -650,7 +650,7 @@ export async function processStreamingResponse(
           const targetResponseId = streamData.targetResponseId;
           if (targetResponseId) {
             console.log(
-              `[Chat] Calling Qwen stop for session=${currentUiSessionId}, response=${targetResponseId}`,
+              `🛑 [Chat] Stopping Qwen generation | session=${currentUiSessionId} | response=${targetResponseId}`,
             );
             await fetch(
               `https://chat.qwen.ai/api/v2/chat/completions/stop?chat_id=${currentUiSessionId}`,
@@ -671,12 +671,12 @@ export async function processStreamingResponse(
               },
             ).catch((err) => {
               console.error(
-                `❌ [Chat] Error calling Qwen stop: ${err.message}`,
+                `❌ [Chat] Stop failed | ${err.message}`,
               );
             });
           } else {
             console.log(
-              `[Chat] No targetResponseId yet for ${completionId}, skipping Qwen stop`,
+              `⏭️  [Chat] Skip Qwen stop | ${completionId} | no response_id yet`,
             );
           }
         }
@@ -686,13 +686,13 @@ export async function processStreamingResponse(
         } catch (abortErr: any) {
           if (abortErr.name !== "AbortError") {
             console.error(
-              `❌ [Chat] Error aborting stream: ${abortErr.message}`,
+              `❌ [Chat] Abort stream failed | ${abortErr.message}`,
             );
           }
         }
       } catch (err: any) {
         console.error(
-          `❌ [Chat] Error during disconnect cleanup: ${err.message}`,
+          `❌ [Chat] Disconnect cleanup failed | ${err.message}`,
         );
       }
 
