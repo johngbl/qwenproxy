@@ -231,11 +231,15 @@ export async function chatCompletions(c: Context) {
     });
 
     stepStartedAt = Date.now();
+    // fullPrompt always carries system + full conversation history so account
+    // failover / forceNewChat can rebuild upstream context without deltas only.
+    const fullPromptForRequest = ctx.requestPersonalizationInstruction
+      ? parsed.prompt
+      : parsed.systemPrompt + parsed.prompt;
+
     let streamResult = await acquireUpstreamStream({
       finalPrompt,
-      fullPrompt: ctx.requestPersonalizationInstruction
-        ? parsed.prompt
-        : parsed.systemPrompt + parsed.prompt,
+      fullPrompt: fullPromptForRequest,
       isThinkingModel: ctx.isThinkingModel,
       model: body.model,
       shouldResetUpstreamThread: ctx.shouldResetUpstreamThread,
@@ -247,7 +251,10 @@ export async function chatCompletions(c: Context) {
       allowThreadReuse: ctx.allowThreadReuse,
       forceNewChat:
         activeRolloverPlan !== null || isInternalSummarizationRequest,
-      preferredAccountId: activeRolloverPlan?.preferredAccountId ?? null,
+      // undefined keeps sticky account; only null means "rotate away"
+      preferredAccountId: activeRolloverPlan
+        ? activeRolloverPlan.preferredAccountId
+        : undefined,
       messageCount: msgCount,
       fullMessageCount: parsed.messageCount,
       toolsCount: declaredTools.length || undefined,
@@ -282,7 +289,8 @@ export async function chatCompletions(c: Context) {
           updateLogicalThread: ctx.updateLogicalThread,
           allowThreadReuse: ctx.allowThreadReuse,
           forceNewChat: true,
-          preferredAccountId: null,
+          // Keep sticky owner if possible; reduced prompt already rebuilds full context.
+          preferredAccountId: undefined,
           messageCount: msgCount,
           fullMessageCount: parsed.messageCount,
           toolsCount: declaredTools.length || undefined,
@@ -473,17 +481,18 @@ export async function chatCompletions(c: Context) {
               releaseChatLock = null;
             }
 
-            const fullPromptForRetry = ctx.requestPersonalizationInstruction
-              ? parsed.prompt
-              : parsed.systemPrompt + parsed.prompt;
-            const retryFinalPrompt = retryWithFullPrompt
-              ? fullPromptForRetry
+            // Account switch always rebuilds full history; same-account retry
+            // only does so when the policy asks for forceNewChat/full prompt.
+            const needsFullPromptOnRetry =
+              retryWithFullPrompt || switchAccount || forceRetryNewChat;
+            const retryFinalPrompt = needsFullPromptOnRetry
+              ? fullPromptForRequest
               : finalPrompt;
-            const retryMessageCount = retryWithFullPrompt
+            const retryMessageCount = needsFullPromptOnRetry
               ? parsed.messageCount
               : msgCount;
 
-            if (forceRetryNewChat) {
+            if (forceRetryNewChat || switchAccount) {
               console.warn(
                 `[Chat] Retry will force a new upstream chat and resend full context | ${streamErr.message?.substring(0, 150)}`,
               );
@@ -503,7 +512,7 @@ export async function chatCompletions(c: Context) {
             // Re-acquire stream with different account or a fresh upstream chat
             const newStreamResult = await acquireUpstreamStream({
               finalPrompt: retryFinalPrompt,
-              fullPrompt: fullPromptForRetry,
+              fullPrompt: fullPromptForRequest,
               isThinkingModel: ctx.isThinkingModel,
               model: body.model,
               shouldResetUpstreamThread: ctx.shouldResetUpstreamThread,
@@ -515,12 +524,18 @@ export async function chatCompletions(c: Context) {
               allowThreadReuse: ctx.allowThreadReuse,
               forceNewChat:
                 forceRetryNewChat ||
+                switchAccount ||
                 activeRolloverPlan !== null ||
                 isInternalSummarizationRequest,
               // null => rotate away from sticky account when possible
               preferredAccountId: switchAccount
                 ? null
-                : (activeRolloverPlan?.preferredAccountId ?? null),
+                : activeRolloverPlan
+                  ? activeRolloverPlan.preferredAccountId
+                  : currentStreamResult.activeAccountId,
+              excludeAccountIds: switchAccount
+                ? [currentStreamResult.activeAccountId]
+                : undefined,
               messageCount: retryMessageCount,
               fullMessageCount: parsed.messageCount,
               toolsCount: declaredTools.length || undefined,
