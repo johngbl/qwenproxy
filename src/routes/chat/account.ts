@@ -660,10 +660,19 @@ async function tryCreateStreamWithRetry(
 				params.sessionId &&
 				result.uiSessionId
 			) {
+				// Bind chat/account immediately. Do NOT write the request parent as the
+				// sticky parent — that is the *previous* assistant id we attached to.
+				// Streaming will rememberParent(response_id) with the new assistant id
+				// so the next turn appends (user_action=chat + parent_id=last response).
+				// Preserve any existing sticky parent until the stream updates it.
+				const priorParent =
+					params.existingThread?.parentId ??
+					getLogicalThreadState(params.sessionId)?.parentId ??
+					null;
 				updateLogicalThreadState(params.sessionId, {
 					accountId: result.accountId,
 					chatSessionId: result.uiSessionId,
-					parentId: threadParentId ?? null,
+					parentId: params.forceNewChat ? null : priorParent,
 					instructionsSent: true,
 				});
 
@@ -672,7 +681,8 @@ async function tryCreateStreamWithRetry(
 						sessionId: params.sessionId,
 						accountId: result.accountId,
 						chatSessionId: result.uiSessionId,
-						parentId: threadParentId ?? null,
+						requestParentId: threadParentId ?? null,
+						stickyParentId: params.forceNewChat ? null : priorParent,
 						createdNewChat: !params.existingThread,
 					});
 				}

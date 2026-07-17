@@ -309,14 +309,18 @@ export async function processNonStreamingResponse(
                     chunk["response.created"] &&
                     chunk["response.created"].response_id
                   ) {
+                    if (chunk["response.created"].chat_id) {
+                      rememberSession(chunk["response.created"].chat_id);
+                    }
                     if (!targetResponseId) {
                       targetResponseId = chunk["response.created"].response_id;
                     }
+                    // Next turn appends with parent_id = this assistant response
                     rememberParent(chunk["response.created"].response_id);
                   } else if (chunk.response_id && !targetResponseId) {
-            targetResponseId = chunk.response_id;
-            rememberParent(chunk.response_id);
-          }
+                    targetResponseId = chunk.response_id;
+                    rememberParent(chunk.response_id);
+                  }
 
           applyUpstreamUsage(usageAccumulator, chunk.usage);
 
@@ -1033,15 +1037,24 @@ export async function processStreamingResponse(
                         chunk["response.created"] &&
                         chunk["response.created"].response_id
                       ) {
+                        // chat_id first so rememberParent can bind sticky state
+                        if (chunk["response.created"].chat_id) {
+                          rememberSession(chunk["response.created"].chat_id);
+                        }
                         if (!targetResponseId) {
                           targetResponseId = chunk["response.created"].response_id;
                           if (targetResponseId) {
                             updateStreamTargetResponseId(completionId, targetResponseId);
                           }
                         }
-                        if (chunk["response.created"].chat_id) {
-                          rememberSession(chunk["response.created"].chat_id);
+                        // Next turn must parent to this assistant response (append, not edit)
+                        rememberParent(chunk["response.created"].response_id);
+                      } else if (chunk.response_id && !targetResponseId) {
+                        targetResponseId = chunk.response_id;
+                        if (targetResponseId) {
+                          updateStreamTargetResponseId(completionId, targetResponseId);
                         }
+                        rememberParent(chunk.response_id);
                       }
 
             applyUpstreamUsage(usageAccumulator, chunk.usage);
