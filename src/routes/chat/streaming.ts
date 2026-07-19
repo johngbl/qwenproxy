@@ -100,6 +100,76 @@ export type AssistantCompleteHandler = (
   event: AssistantCompleteEvent,
 ) => Promise<void> | void;
 
+function hasToolCallOutsideMarkdownCode(text: string): boolean {
+  let markdownDelimiterLength = 0;
+
+  for (let index = 0; index < text.length;) {
+    if (text[index] === "`") {
+      let runLength = 1;
+      while (index + runLength < text.length && text[index + runLength] === "`") {
+        runLength++;
+      }
+      if (markdownDelimiterLength === 0) {
+        markdownDelimiterLength = runLength;
+      } else if (runLength >= markdownDelimiterLength) {
+        markdownDelimiterLength = 0;
+      }
+      index += runLength;
+      continue;
+    }
+
+    if (
+      markdownDelimiterLength === 0 &&
+      /^<tool_call\b[^>]*>/i.test(text.substring(index))
+    ) {
+      return true;
+    }
+    index++;
+  }
+
+  return false;
+}
+
+function shouldBypassReasoningSanitizerForToolText(
+  text: string,
+  toolParser: StreamingToolParser | null,
+): boolean {
+  if (!toolParser) return false;
+  if (toolParser.isInsideTool()) return true;
+
+  const toolOpen = text.search(/<tool_call\b[^>]*>/i);
+    const thinkOpen = text.search(/<think\b[^>]*>/i);
+    return toolOpen !== -1 && thinkOpen !== -1 && toolOpen < thinkOpen;
+}
+
+function logReasoningTagSanitization(
+  completionId: string,
+  mode: "stream" | "non-stream",
+  model: string,
+  result: {
+    hadMalformedTag: boolean;
+    hadUnclosedTag: boolean;
+  },
+): void {
+  const data = {
+    completionId,
+    mode,
+    model,
+    hadMalformedTag: result.hadMalformedTag,
+    hadUnclosedTag: result.hadUnclosedTag,
+  };
+  const message =
+    "[chat] Detected <think> tags in answer content; sanitizing output";
+
+  // A balanced leak was fully recovered and is informational. Reserve WARN for
+  // malformed/unclosed upstream markup that required fail-closed recovery.
+  if (result.hadMalformedTag || result.hadUnclosedTag) {
+    logger.warn(message, data);
+  } else {
+    logger.info(message, data);
+  }
+}
+
 export interface StreamProcessingParams {
   c: Context;
   completionId: string;
@@ -181,8 +251,8 @@ export async function processNonStreamingResponse(
       ? new StreamingReasoningTagSanitizer()
       : null;
     const toolCallsOut: any[] = [];
-    let loggedThinkTagLeak = false;
-    let buffer = "";
+        let loggedThinkTagLeak = false;
+            let buffer = "";
     const usageAccumulator = createUsageAccumulator(
       Math.ceil(finalPrompt.length / 3.5),
     );
@@ -244,31 +314,34 @@ export async function processNonStreamingResponse(
     };
 
     const consumeSanitizedAnswerChunk = (textChunk: string) => {
-      if (!reasoningTagSanitizer) {
-        consumeAnswerText(textChunk);
-        return;
-      }
-      const sanitized = reasoningTagSanitizer.feed(textChunk);
-      if (sanitized.detectedThinkTag && !loggedThinkTagLeak) {
-        logger.warn(
-          "[chat] Detected <think> tags in answer content; sanitizing output",
-          {
-            completionId,
-            mode: "non-stream",
-            model: body.model,
-            hadMalformedTag: sanitized.hadMalformedTag,
-            hadUnclosedTag: sanitized.hadUnclosedTag,
-          },
-        );
-        loggedThinkTagLeak = true;
-      }
-      if (sanitized.reasoning) {
-        reasoningBuffer += sanitized.reasoning;
-      }
-      if (sanitized.text) {
-        consumeAnswerText(sanitized.text);
-      }
-    };
+          if (
+            !reasoningTagSanitizer ||
+            shouldBypassReasoningSanitizerForToolText(textChunk, toolParser)
+          ) {
+            consumeAnswerText(textChunk);
+            return;
+          }
+          const sanitized = reasoningTagSanitizer.feed(textChunk);
+            if (sanitized.detectedThinkTag && !loggedThinkTagLeak) {
+              logReasoningTagSanitization(
+                completionId,
+                "non-stream",
+                body.model,
+                sanitized,
+              );
+              loggedThinkTagLeak = true;
+            }
+            if (sanitized.reasoning) {
+                    if (toolParser && hasToolCallOutsideMarkdownCode(sanitized.reasoning)) {
+                      consumeAnswerText(sanitized.reasoning);
+                    } else {
+                      reasoningBuffer += sanitized.reasoning;
+                    }
+                  }
+                  if (sanitized.text) {
+                    consumeAnswerText(sanitized.text);
+                  }
+          };
 
     while (true) {
       const { done, value } = await reader.read();
@@ -416,26 +489,29 @@ export async function processNonStreamingResponse(
 
     if (reasoningTagSanitizer) {
       const remainingSanitized = reasoningTagSanitizer.flush();
-      if (remainingSanitized.detectedThinkTag && !loggedThinkTagLeak) {
-        logger.warn(
-          "[chat] Detected <think> tags in answer content; sanitizing output",
-          {
-            completionId,
-            mode: "non-stream",
-            model: body.model,
-            hadMalformedTag: remainingSanitized.hadMalformedTag,
-            hadUnclosedTag: remainingSanitized.hadUnclosedTag,
-          },
-        );
-        loggedThinkTagLeak = true;
-      }
-      if (remainingSanitized.reasoning) {
-        reasoningBuffer += remainingSanitized.reasoning;
-      }
-      if (remainingSanitized.text) {
-        consumeAnswerText(remainingSanitized.text);
-      }
-    }
+            if (remainingSanitized.detectedThinkTag && !loggedThinkTagLeak) {
+              logReasoningTagSanitization(
+                completionId,
+                "non-stream",
+                body.model,
+                remainingSanitized,
+              );
+              loggedThinkTagLeak = true;
+            }
+            if (remainingSanitized.reasoning) {
+                    if (
+                      toolParser &&
+                      hasToolCallOutsideMarkdownCode(remainingSanitized.reasoning)
+                    ) {
+                      consumeAnswerText(remainingSanitized.reasoning);
+                    } else {
+                      reasoningBuffer += remainingSanitized.reasoning;
+                    }
+                  }
+                  if (remainingSanitized.text) {
+                    consumeAnswerText(remainingSanitized.text);
+                  }
+          }
 
     const remainingParsed = toolParser
       ? toolParser.flush()
@@ -773,9 +849,9 @@ export async function processStreamingResponse(
       // Skip sanitizer allocation for no-thinking model variants
       const enableThinking = !body.model.endsWith("-no-thinking");
       const reasoningTagSanitizer = enableThinking
-        ? new StreamingReasoningTagSanitizer()
-        : null;
-      let loggedThinkTagLeak = false;
+              ? new StreamingReasoningTagSanitizer()
+              : null;
+            let loggedThinkTagLeak = false;
 
       let buffer = initialStreamBuffer;
       const usageAccumulator = createUsageAccumulator(
@@ -918,40 +994,43 @@ export async function processStreamingResponse(
       };
 
       const emitSanitizedAnswerChunk = async (textChunk: string) => {
-        if (!reasoningTagSanitizer) {
-          await emitAnswerText(textChunk);
-          return;
-        }
-        const sanitized = reasoningTagSanitizer.feed(textChunk);
+              if (
+                !reasoningTagSanitizer ||
+                shouldBypassReasoningSanitizerForToolText(textChunk, toolParser)
+              ) {
+                await emitAnswerText(textChunk);
+                return;
+              }
+              const sanitized = reasoningTagSanitizer.feed(textChunk);
         if (sanitized.detectedThinkTag && !loggedThinkTagLeak) {
-          logger.warn(
-            "[chat] Detected <think> tags in answer content; sanitizing output",
-            {
-              completionId,
-              mode: "stream",
-              model: body.model,
-              hadMalformedTag: sanitized.hadMalformedTag,
-              hadUnclosedTag: sanitized.hadUnclosedTag,
-            },
-          );
-          loggedThinkTagLeak = true;
-        }
+                  logReasoningTagSanitization(
+                    completionId,
+                    "stream",
+                    body.model,
+                    sanitized,
+                  );
+                  loggedThinkTagLeak = true;
+                }
 
         if (sanitized.reasoning) {
-          reasoningBuffer += sanitized.reasoning;
-          await writeEvent({
-            id: completionId,
-            object: "chat.completion.chunk",
-            created: createdTimestamp,
-            model: body.model,
-            choices: [makeChoice({ reasoning_content: sanitized.reasoning })],
-          });
-        }
+                  if (toolParser && hasToolCallOutsideMarkdownCode(sanitized.reasoning)) {
+                    await emitAnswerText(sanitized.reasoning);
+                  } else {
+                    reasoningBuffer += sanitized.reasoning;
+                    await writeEvent({
+                      id: completionId,
+                      object: "chat.completion.chunk",
+                      created: createdTimestamp,
+                      model: body.model,
+                      choices: [makeChoice({ reasoning_content: sanitized.reasoning })],
+                    });
+                  }
+                }
 
-        if (sanitized.text) {
-          await emitAnswerText(sanitized.text);
-        }
-      };
+                if (sanitized.text) {
+                  await emitAnswerText(sanitized.text);
+                }
+              };
 
       // Main SSE reader loop
       while (true) {
@@ -1165,35 +1244,38 @@ export async function processStreamingResponse(
 
       if (reasoningTagSanitizer) {
         const remainingSanitized = reasoningTagSanitizer.flush();
-        if (remainingSanitized.detectedThinkTag && !loggedThinkTagLeak) {
-          logger.warn(
-            "[chat] Detected <think> tags in answer content; sanitizing output",
-            {
-              completionId,
-              mode: "stream",
-              model: body.model,
-              hadMalformedTag: remainingSanitized.hadMalformedTag,
-              hadUnclosedTag: remainingSanitized.hadUnclosedTag,
-            },
-          );
-          loggedThinkTagLeak = true;
-        }
-        if (remainingSanitized.reasoning) {
-          reasoningBuffer += remainingSanitized.reasoning;
-          await writeEvent({
-            id: completionId,
-            object: "chat.completion.chunk",
-            created: createdTimestamp,
-            model: body.model,
-            choices: [
-              makeChoice({ reasoning_content: remainingSanitized.reasoning }),
-            ],
-          });
-        }
-        if (remainingSanitized.text) {
-          await emitAnswerText(remainingSanitized.text);
-        }
-      }
+                if (remainingSanitized.detectedThinkTag && !loggedThinkTagLeak) {
+                  logReasoningTagSanitization(
+                    completionId,
+                    "stream",
+                    body.model,
+                    remainingSanitized,
+                  );
+                  loggedThinkTagLeak = true;
+                }
+                if (remainingSanitized.reasoning) {
+                          if (
+                            toolParser &&
+                            hasToolCallOutsideMarkdownCode(remainingSanitized.reasoning)
+                          ) {
+                            await emitAnswerText(remainingSanitized.reasoning);
+                          } else {
+                            reasoningBuffer += remainingSanitized.reasoning;
+                            await writeEvent({
+                              id: completionId,
+                              object: "chat.completion.chunk",
+                              created: createdTimestamp,
+                              model: body.model,
+                              choices: [
+                                makeChoice({ reasoning_content: remainingSanitized.reasoning }),
+                              ],
+                            });
+                          }
+                        }
+                        if (remainingSanitized.text) {
+                          await emitAnswerText(remainingSanitized.text);
+                        }
+              }
 
       const remainingParsed = toolParser
         ? toolParser.flush()
