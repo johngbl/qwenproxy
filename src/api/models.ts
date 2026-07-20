@@ -5,7 +5,10 @@ import { loadAccounts } from "../core/accounts.ts";
 import { getAccountCooldownInfo } from "../core/account-manager.ts";
 import { NotFoundError } from "../core/errors.js";
 import { sendOpenAIError } from "./error-helpers.js";
-import { syncModelContextWindows } from "../core/model-registry.ts";
+import {
+  syncModelContextWindows,
+  getModelCapabilities,
+} from "../core/model-registry.ts";
 
 const app = new Hono();
 
@@ -48,6 +51,11 @@ export function expandModelVariants(models: PublicModel[]): PublicModel[] {
 }
 
 function toAnthropicModel(model: PublicModel) {
+  const capabilities = getModelCapabilities(model.id);
+  const hasVision = capabilities.supportsVision;
+  const hasThinking = capabilities.supportsThinking;
+  const canSkipThinking = capabilities.canSkipThinking;
+
   return {
     id: model.id,
     display_name: model.id,
@@ -55,18 +63,18 @@ function toAnthropicModel(model: PublicModel) {
       typeof model.created === "number" ? model.created * 1000 : Date.now(),
     ).toISOString(),
     max_input_tokens: model.context_window ?? 200000,
-    max_tokens: 8192,
+    max_tokens: capabilities.maxOutputTokens,
     type: "model" as const,
     capabilities: {
       batch: { supported: false },
       citations: { supported: false },
       code_execution: { supported: false },
-      image_input: { supported: true },
+      image_input: { supported: hasVision },
       pdf_input: { supported: false },
       structured_outputs: { supported: true },
       thinking: {
-        supported: true,
-        types: { enabled: { supported: true } },
+        supported: hasThinking,
+        types: { enabled: { supported: canSkipThinking } },
       },
     },
   };
