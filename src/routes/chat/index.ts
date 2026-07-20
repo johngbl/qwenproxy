@@ -22,82 +22,12 @@ import {
 import { config } from "../../core/config.ts";
 import { logger } from "../../core/logger.ts";
 import {
-  deleteQwenChat,
   getLogicalThreadState,
   RetryableQwenStreamError,
 } from "../../services/qwen.ts";
 import { classifyRetryAction } from "./retry-policy.ts";
-import { isAuthMockEnabled } from "../../services/auth-playwright.ts";
-import { enqueueThreadContextSummary } from "../../services/thread-context-jobs.ts";
-import {
-  finalizeThreadContextRolloverSuccess,
-  markThreadContextRolloverStarted,
-  prepareThreadContextRollover,
-  type ThreadContextRolloverPlan,
-} from "../../services/thread-context-rollover.ts";
-import {
-  saveThreadContextCompletion,
-  setThreadContextStatus,
-  upsertThreadContextSession,
-} from "../../services/thread-context-store.ts";
-import {
-  summarizeLargePayload,
-  rebuildPromptWithSummary,
-  truncateMessages,
-} from "../../services/payload-summarizer.ts";
 
-async function reducePromptForRetry(
-  messages: Array<{ role: string; content: any }>,
-  systemPrompt: string,
-  model: string,
-): Promise<string | null> {
-  try {
-    if (messages.length > 2) {
-      const result = await summarizeLargePayload(messages, model);
-      if (result) {
-        const keepCount = Math.min(2, messages.length);
-        const recentMessages = messages.slice(messages.length - keepCount);
-        const prompt = rebuildPromptWithSummary(
-          systemPrompt,
-          recentMessages,
-          result.summary,
-        );
-        console.log(
-          `📝 [Chat] Reduced prompt via summarization: ${result.originalChars} → ${result.summaryChars} chars`,
-        );
-        return prompt;
-      }
-    }
 
-    // Fallback: truncate individual messages
-    const truncated = truncateMessages(messages);
-    const truncatedText = truncated
-      .map((msg: any) => {
-        const content =
-          typeof msg.content === "string"
-            ? msg.content
-            : Array.isArray(msg.content)
-              ? msg.content
-                  .map((p: any) => p.text || JSON.stringify(p))
-                  .join("\n")
-              : JSON.stringify(msg.content);
-        return `${msg.role}: ${content}`;
-      })
-      .join("\n\n");
-    const prompt = systemPrompt
-      ? `${systemPrompt}\n\n${truncatedText}`
-      : truncatedText;
-    console.warn(
-      `⚠️  [Chat] Reduced prompt via truncation: ${messages.length} messages → ${prompt.length} chars`,
-    );
-    return prompt;
-  } catch (err) {
-    console.warn(
-      `❌ [Chat] Failed to reduce prompt: ${(err as Error).message}`,
-    );
-    return null;
-  }
-}
 
 function formatTimingHeader(timings: Record<string, number>): string {
   return Object.entries(timings)
@@ -129,7 +59,6 @@ export async function chatCompletions(c: Context) {
       currentFiles,
       shouldParseToolCalls,
       conversationKey,
-      isInternalSummarizationRequest,
     } = parsed;
 
     const messages = body.messages || [];
@@ -147,7 +76,6 @@ export async function chatCompletions(c: Context) {
       enableThinking,
       conversationKey,
       hasExplicitConversationKey: parsed.hasExplicitConversationKey,
-      isInternalSummarizationRequest,
     });
     mark("context", stepStartedAt);
 
@@ -163,37 +91,7 @@ export async function chatCompletions(c: Context) {
     }
     mark("lock", stepStartedAt);
 
-    // Thread context management should run for ALL requests in thread-native mode
-    // This ensures the first turn is saved and thread context is properly managed
-    const shouldManageThreadContext =
-      ctx.useThreadNative &&
-      !ctx.isAuxiliaryRequest &&
-      !!ctx.sessionId &&
-      config.context.threadNative.persistenceEnabled &&
-      !isAuthMockEnabled();
-
     let finalPrompt = ctx.finalPrompt;
-    let activeRolloverPlan: ThreadContextRolloverPlan | null = null;
-
-    stepStartedAt = Date.now();
-    if (shouldManageThreadContext && ctx.sessionId) {
-      upsertThreadContextSession({
-        sessionId: ctx.sessionId,
-        model: body.model,
-        modelContextWindow: ctx.modelContextWindow,
-        systemPrompt,
-      });
-
-      const prepared = await prepareThreadContextRollover({
-        sessionId: ctx.sessionId,
-        finalPrompt,
-        currentPrompt: currentPrompt || prompt,
-        systemPrompt,
-        skipRollover: ctx.isAuxiliaryRequest,
-      });
-      finalPrompt = prepared.finalPrompt;
-      activeRolloverPlan = prepared.rollover;
-    }
     mark("thread", stepStartedAt);
 
     const files = ctx.useThreadNative ? currentFiles : allFiles;
@@ -249,56 +147,15 @@ export async function chatCompletions(c: Context) {
       useThreadNative: ctx.useThreadNative,
       updateLogicalThread: ctx.updateLogicalThread,
       allowThreadReuse: ctx.allowThreadReuse,
-      forceNewChat:
-        activeRolloverPlan !== null || isInternalSummarizationRequest,
-      // undefined keeps sticky account; only null means "rotate away"
-      preferredAccountId: activeRolloverPlan
-        ? activeRolloverPlan.preferredAccountId
-        : undefined,
+      forceNewChat: false,
+      preferredAccountId: undefined,
       messageCount: msgCount,
       fullMessageCount: parsed.messageCount,
       toolsCount: declaredTools.length || undefined,
       requestPersonalizationInstruction: ctx.requestPersonalizationInstruction,
     });
 
-    // TMD retry: if all accounts failed with anti-bot, summarize/truncate and retry
-    if (
-      "error" in streamResult &&
-      streamResult.error?.upstreamCode === "FAIL_SYS_USER_VALIDATE"
-    ) {
-      console.warn(
-        `[Chat] TMD on all accounts; summarizing/truncating prompt and retrying...`,
-      );
-      const reducedPrompt = await reducePromptForRetry(
-        messages,
-        systemPrompt,
-        body.model,
-      );
-      if (reducedPrompt && reducedPrompt.length < finalPrompt.length) {
-        finalPrompt = reducedPrompt;
-        streamResult = await acquireUpstreamStream({
-          finalPrompt,
-          fullPrompt: finalPrompt,
-          isThinkingModel: ctx.isThinkingModel,
-          model: body.model,
-          shouldResetUpstreamThread: ctx.shouldResetUpstreamThread,
-          allFiles: files,
-          isNewSession: ctx.isNewSession,
-          sessionId: ctx.sessionId,
-          useThreadNative: ctx.useThreadNative,
-          updateLogicalThread: ctx.updateLogicalThread,
-          allowThreadReuse: ctx.allowThreadReuse,
-          forceNewChat: true,
-          // Keep sticky owner if possible; reduced prompt already rebuilds full context.
-          preferredAccountId: undefined,
-          messageCount: msgCount,
-          fullMessageCount: parsed.messageCount,
-          toolsCount: declaredTools.length || undefined,
-          requestPersonalizationInstruction:
-            ctx.requestPersonalizationInstruction,
-        });
-      }
-    }
+
 
     mark("upstream", stepStartedAt);
     timings.preResponse = Date.now() - startedAt;
@@ -320,15 +177,6 @@ export async function chatCompletions(c: Context) {
         err.upstreamStatus = 429;
         throw err;
       }
-      if (activeRolloverPlan) {
-        setThreadContextStatus(
-          activeRolloverPlan.sessionId,
-          "error",
-          streamResult.error instanceof Error
-            ? streamResult.error.message
-            : "Rollover stream acquisition failed",
-        );
-      }
       throw streamResult.error || new Error("All accounts failed");
     }
 
@@ -336,77 +184,7 @@ export async function chatCompletions(c: Context) {
       `🚀 [Chat] Request routed | ${streamResult.activeAccountLabel} | ${body.model} | ${msgCount} msg(s) | ${finalPrompt.length} chars${declaredTools.length ? ` | ${declaredTools.length} tool(s)` : ""}${files.length ? ` | ${files.length} file(s)` : ""}`,
     );
 
-    if (activeRolloverPlan) {
-      activeRolloverPlan = markThreadContextRolloverStarted({
-        plan: activeRolloverPlan,
-        toAccountId: streamResult.activeAccountId,
-        toChatId: streamResult.uiSessionId,
-      });
-    }
-
-    const onAssistantComplete = shouldManageThreadContext
-      ? async (event: AssistantCompleteEvent) => {
-          if (!event.sessionId || !event.chatSessionId) return;
-
-          const savedSession = saveThreadContextCompletion({
-            sessionId: event.sessionId,
-            model: body.model,
-            modelContextWindow: ctx.modelContextWindow,
-            accountId: event.accountId,
-            chatSessionId: event.chatSessionId,
-            parentId: event.parentId,
-            responseId: event.responseId,
-            userPrompt: event.userPrompt,
-            finalPrompt: event.finalPrompt,
-            assistantContent: event.assistantContent,
-            usage: event.usage,
-            finishReason: event.finishReason,
-            resetThreadEstimate: activeRolloverPlan !== null,
-            metadata: {
-              rolloverId: activeRolloverPlan?.rolloverId ?? null,
-              rolloverReason: activeRolloverPlan?.reason ?? null,
-              reasoningCharacters: event.reasoningContent?.length ?? 0,
-            },
-          });
-
-          if (
-            activeRolloverPlan &&
-            (event.responseId || event.assistantContent.trim().length > 0)
-          ) {
-            await finalizeThreadContextRolloverSuccess(activeRolloverPlan);
-          }
-
-          // Background summaries disabled — only summarize at rollover limit
-          // enqueueThreadContextSummary(
-          //   savedSession.sessionId,
-          //   "assistant_complete",
-          // );
-        }
-      : isInternalSummarizationRequest
-        ? async (event: AssistantCompleteEvent) => {
-            if (!event.chatSessionId) return;
-            try {
-              await deleteQwenChat(
-                event.chatSessionId,
-                event.accountId && event.accountId !== "global"
-                  ? event.accountId
-                  : undefined,
-              );
-              console.log(
-                `[ThreadContext] Summary chat deleted | ${event.chatSessionId}`,
-              );
-            } catch (error) {
-              logger.warn(
-                "[thread-context] failed to delete auxiliary summary chat",
-                {
-                  chatSessionId: event.chatSessionId,
-                  accountId: event.accountId,
-                  error: error instanceof Error ? error.message : String(error),
-                },
-              );
-            }
-          }
-        : undefined;
+    const onAssistantComplete: ((event: AssistantCompleteEvent) => Promise<void> | void) | undefined = undefined;
 
     const params = {
       c,
@@ -523,16 +301,10 @@ export async function chatCompletions(c: Context) {
               updateLogicalThread: ctx.updateLogicalThread,
               allowThreadReuse: ctx.allowThreadReuse,
               forceNewChat:
-                forceRetryNewChat ||
-                switchAccount ||
-                activeRolloverPlan !== null ||
-                isInternalSummarizationRequest,
-              // null => rotate away from sticky account when possible
+                forceRetryNewChat || switchAccount,
               preferredAccountId: switchAccount
                 ? null
-                : activeRolloverPlan
-                  ? activeRolloverPlan.preferredAccountId
-                  : currentStreamResult.activeAccountId,
+                : currentStreamResult.activeAccountId,
               excludeAccountIds: switchAccount
                 ? [currentStreamResult.activeAccountId]
                 : undefined,

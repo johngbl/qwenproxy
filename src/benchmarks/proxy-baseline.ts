@@ -981,10 +981,6 @@ async function run(): Promise<void> {
   const effectiveBaseUrl = serverTarget.baseUrl;
   let startedManagedServer = false;
 
-  // Keep benchmark samples isolated from background summarization noise.
-  // This must be set before importing modules that read core/config.ts.
-  process.env.CONTEXT_SUMMARIZATION_ENABLED = "false";
-
   const { loadAccounts } = await import("../core/accounts.ts");
   const configuredAccounts = loadAccounts().length;
   const runtimeConfig: BenchmarkConfig = {

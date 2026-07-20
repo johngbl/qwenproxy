@@ -648,6 +648,8 @@ export async function syncQwenRequestPersonalization(
     toolsCount?: number;
     sessionId?: string | null;
     promptChars?: number;
+    /** Bypass memory/DB/GET caches and always POST. Used on new chat creation. */
+    forceSync?: boolean;
   } = {},
 ): Promise<void> {
   if (isAuthMockEnabled()) return;
@@ -664,17 +666,18 @@ export async function syncQwenRequestPersonalization(
 
   const sent = textSize(instruction);
   const syncHash = sent.hash ? `${sent.hash}:${QWEN_SAFE_SETTINGS_HASH}` : null;
+  const bypassCache = metadata.forceSync === true;
 
-  // 1. Check memory cache
+  // 1. Check memory cache (skipped on forceSync)
   const cachedHash = lastSyncedPersonalizationHashes.get(cacheKey);
-  if (syncHash && cachedHash === syncHash) {
+  if (!bypassCache && syncHash && cachedHash === syncHash) {
     rememberActivePersonalization(cacheKey, instruction, metadata, "memory");
     // Personalization unchanged - no log needed
     return;
   }
 
-  // 2. Check DB cache (survives restarts)
-  if (syncHash && !cachedHash) {
+  // 2. Check DB cache (survives restarts) (skipped on forceSync)
+  if (!bypassCache && syncHash && !cachedHash) {
     const dbHash = getPersonalizationHashFromDb(cacheKey);
     if (dbHash === syncHash) {
       lastSyncedPersonalizationHashes.set(cacheKey, syncHash);
@@ -687,8 +690,8 @@ export async function syncQwenRequestPersonalization(
   let existing = { chars: null, bytes: null, hash: null } as ReturnType<
     typeof textSize
   >;
-  // Verifica GET apenas se temos um hash válido
-  if (syncHash && !cachedHash && config.qwen.personalizationVerifyGet) {
+  // Verifica GET apenas se temos um hash válido (skipped on forceSync)
+  if (!bypassCache && syncHash && !cachedHash && config.qwen.personalizationVerifyGet) {
     try {
       const existingResponse = await fetch(
         `${config.qwen.baseUrl}/api/v2/users/user/settings`,

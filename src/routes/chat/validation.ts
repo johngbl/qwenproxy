@@ -23,7 +23,6 @@ const TOOL_CALL_CLOSE = "</" + "tool_call>";
 export interface ParsedRequest {
   body: OpenAIRequest;
   isStream: boolean;
-  isInternalSummarizationRequest: boolean;
   conversationKey: string | null;
   hasExplicitConversationKey: boolean;
   systemPrompt: string;
@@ -42,8 +41,6 @@ export async function parseRequestBody(c: Context): Promise<ParsedRequest> {
   const body: OpenAIRequest = await c.req.json();
   logIncomingChatRequest(c, body);
   const isStream = body.stream ?? false;
-  const isInternalSummarizationRequest =
-    c.req.header("X-Internal-Summarization") === "true";
   const conversationKey =
     typeof body.session_id === "string" && body.session_id.trim().length > 0
       ? body.session_id.trim()
@@ -76,7 +73,6 @@ export async function parseRequestBody(c: Context): Promise<ParsedRequest> {
   return {
     body,
     isStream,
-    isInternalSummarizationRequest,
     conversationKey,
     hasExplicitConversationKey: conversationKey !== null,
     systemPrompt,

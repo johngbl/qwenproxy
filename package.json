@@ -8,7 +8,7 @@
     "login": "npx tsx src/login.ts",
     "delete-chats": "npx tsx src/delete-chats.ts",
     "test": "npm run test:mock && npm run test:live",
-    "test:mock": "tsx --test src/tests/account-stickiness.test.ts src/tests/accounts-security.test.ts src/tests/advanced.test.ts src/tests/anthropic.test.ts src/tests/auth-playwright.test.ts src/tests/cache-scan-regex.test.ts src/tests/captcha-solver.test.ts src/tests/chat-cleanup.test.ts src/tests/chromium-args.test.ts src/tests/config-current.test.ts src/tests/concurrency.test.ts src/tests/context-summarizer.test.ts src/tests/delta.test.ts src/tests/fingerprint.test.ts src/tests/human-behavior.test.ts src/tests/index.test.ts src/tests/json-recovery.test.ts src/tests/jsonFix.test.ts src/tests/memory-cache.test.ts src/tests/model-alias.test.ts src/tests/model-registry-thinking.test.ts src/tests/models-endpoint.test.ts src/tests/multimodal.test.ts src/tests/oss-upload.test.ts src/tests/parser.test.ts src/tests/payload-summarizer.test.ts src/tests/personalization-flow.test.ts src/tests/reasoning-tags.test.ts src/tests/retry-policy.test.ts src/tests/rotation.test.ts src/tests/server-lifecycle.test.ts src/tests/session-keeper.test.ts src/tests/session-state.test.ts src/tests/single-account-mode.test.ts src/tests/stream-retry.test.ts src/tests/thread-context.test.ts src/tests/tool-calls-endpoint.test.ts src/tests/tool-instructions-cache.test.ts src/tests/session-id.test.ts src/tests/watchdog-ram.test.ts",
+    "test:mock": "tsx --test src/tests/account-stickiness.test.ts src/tests/accounts-security.test.ts src/tests/advanced.test.ts src/tests/anthropic.test.ts src/tests/auth-playwright.test.ts src/tests/cache-scan-regex.test.ts src/tests/captcha-solver.test.ts src/tests/chat-cleanup.test.ts src/tests/chromium-args.test.ts src/tests/config-current.test.ts src/tests/concurrency.test.ts src/tests/delta.test.ts src/tests/fingerprint.test.ts src/tests/human-behavior.test.ts src/tests/index.test.ts src/tests/json-recovery.test.ts src/tests/jsonFix.test.ts src/tests/memory-cache.test.ts src/tests/model-alias.test.ts src/tests/model-registry-thinking.test.ts src/tests/models-endpoint.test.ts src/tests/multimodal.test.ts src/tests/oss-upload.test.ts src/tests/parser.test.ts src/tests/personalization-flow.test.ts src/tests/retry-policy.test.ts src/tests/rotation.test.ts src/tests/server-lifecycle.test.ts src/tests/session-keeper.test.ts src/tests/session-state.test.ts src/tests/single-account-mode.test.ts src/tests/stream-retry.test.ts src/tests/tool-calls-endpoint.test.ts src/tests/tool-instructions-cache.test.ts src/tests/session-id.test.ts src/tests/watchdog-ram.test.ts",
     "test:live": "tsx --test src/tests/concurrentChat.test.ts src/tests/agenticStress.test.ts",
     "benchmark:proxy": "npx tsx src/benchmarks/proxy-baseline.ts",
     "typecheck": "tsc --noEmit"
@@ -17,22 +17,22 @@
   "author": "Pedro Farias",
   "license": "ISC",
   "dependencies": {
-    "@hono/node-server": "^2.0.4",
+    "@hono/node-server": "^2.0.10",
     "ali-oss": "^6.23.0",
-    "better-sqlite3": "^12.10.0",
+    "better-sqlite3": "^12.11.1",
     "dotenv": "^17.4.2",
-    "hono": "^4.12.25",
-    "playwright": "^1.60.0",
+    "hono": "^4.12.31",
+    "playwright": "^1.61.1",
     "playwright-extra": "^4.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
-    "tsx": "^4.22.4",
-    "uuid": "^14.0.0",
+    "tsx": "^4.23.1",
+    "uuid": "^14.0.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
-    "@types/node": "^25.9.3",
-    "typescript": "^6.0.3"
+    "@types/node": "^26.1.1",
+    "typescript": "^7.0.2"
   },
   "type": "module"
 }

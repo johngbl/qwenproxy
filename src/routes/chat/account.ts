@@ -622,16 +622,19 @@ async function tryCreateStreamWithRetry(
 			let result: Awaited<ReturnType<typeof createQwenStream>>;
 			try {
 				if (params.requestPersonalizationInstruction !== null) {
-					await syncQwenRequestPersonalization(
-						params.requestPersonalizationInstruction ?? "",
-						currentAccountId === "global" ? undefined : currentAccountId,
-						{
-							model: params.model,
-							toolsCount: params.toolsCount ?? 0,
-							sessionId: params.sessionId,
-							promptChars: params.finalPrompt.length,
-						},
-					);
+						// Detect new chat scenarios to force personalization sync
+						const isNewChat = params.forceNewChat || !params.existingThread || params.shouldResetUpstreamThread;
+						await syncQwenRequestPersonalization(
+							params.requestPersonalizationInstruction ?? "",
+							currentAccountId === "global" ? undefined : currentAccountId,
+							{
+								model: params.model,
+								toolsCount: params.toolsCount ?? 0,
+								sessionId: params.sessionId,
+								promptChars: params.finalPrompt.length,
+								forceSync: isNewChat,
+							},
+						);
 				}
 
 				result = await createQwenStream(
@@ -713,34 +716,7 @@ async function tryCreateStreamWithRetry(
 			);
 		}
 
-		if (
-			err?.createdNewChat === true &&
-			typeof err.chatSessionId === "string" &&
-			err.chatSessionId &&
-			config.context.threadNative.deleteFailedNewChats &&
-			// Don't delete chat for temporary errors (anti-bot, retryable)
-			!(err instanceof RetryableQwenStreamError)
-		) {
-			try {
-				await deleteQwenChat(
-					err.chatSessionId,
-					err.accountId && err.accountId !== "global"
-						? err.accountId
-						: currentAccountId === "global"
-							? undefined
-							: currentAccountId,
-				);
-				console.log(
-					`🗑️  [ThreadContext] Deleted failed chat | ${err.chatSessionId} | account=${currentAccountId}`,
-				);
-			} catch (deleteErr) {
-				const msg =
-					deleteErr instanceof Error ? deleteErr.message : String(deleteErr);
-				console.error(
-					`❌ [ThreadContext] Delete failed chat error | ${err.chatSessionId} | ${msg}`,
-				);
-			}
-		}
+
 
 		if (!err) {
 			return {

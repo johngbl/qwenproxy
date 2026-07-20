@@ -18,7 +18,6 @@ export interface FinalContext {
   isThinkingModel: boolean;
   estimatedTokens: number;
   modelContextWindow: number;
-  isAuxiliaryRequest: boolean;
   isTitleGenerationRequest: boolean;
   requestPersonalizationInstruction: string | null;
   hasExplicitConversationKey: boolean;
@@ -34,7 +33,6 @@ export interface BuildContextParams {
   enableThinking: boolean;
   conversationKey: string | null;
   hasExplicitConversationKey: boolean;
-  isInternalSummarizationRequest: boolean;
 }
 
 export async function buildFinalContext(
@@ -49,11 +47,10 @@ export async function buildFinalContext(
     enableThinking,
     conversationKey,
     hasExplicitConversationKey,
-    isInternalSummarizationRequest,
   } = params;
 
   const modelContextWindow = getModelContextWindow(modelId);
-  const useThreadNative = !isInternalSummarizationRequest;
+  const useThreadNative = true;
   const isNewSession = !messages.some((m) => m.role === "assistant");
 
   // Thread reuse is allowed when:
@@ -68,14 +65,13 @@ export async function buildFinalContext(
   // Compute sessionId: only generate a persistent session ID when we have
   // an explicit conversation key. Otherwise, generate an ephemeral ID for
   // logging/metrics only (not used for thread reuse).
-  const sessionId =
-    !isInternalSummarizationRequest && (conversationKey || useThreadNative)
-      ? deriveSessionId(
-          messages,
-          conversationKey ? systemPrompt : "",
-          conversationKey ?? "implicit-thread",
-        )
-      : null;
+  const sessionId = (conversationKey || useThreadNative)
+    ? deriveSessionId(
+        messages,
+        conversationKey ? systemPrompt : "",
+        conversationKey ?? "implicit-thread",
+      )
+    : null;
 
   // Only load existing thread when reuse is allowed
   const existingThread = allowThreadReuse
@@ -89,10 +85,8 @@ export async function buildFinalContext(
     (!existingThread && !hasTrailingToolResult ? prompt : currentPrompt) ||
     prompt;
   const isTitleGenerationRequest = detectTitleGenerationRequest(messages);
-  const isAuxiliaryRequest =
-    isInternalSummarizationRequest || isTitleGenerationRequest;
   const useRequestPersonalization =
-    config.qwen.personalizationFromRequest && !isAuxiliaryRequest;
+    config.qwen.personalizationFromRequest && !isTitleGenerationRequest;
   const estimatedTokens = estimateTokenCount(
     systemPrompt + activePrompt,
     modelId,
@@ -119,11 +113,10 @@ export async function buildFinalContext(
     useThreadNative,
     // Always update logical thread in thread-native mode (except title generation)
     // This ensures the thread state is saved even for new sessions
-    updateLogicalThread: useThreadNative && !isTitleGenerationRequest,
+    updateLogicalThread: useThreadNative,
     isThinkingModel,
     estimatedTokens,
     modelContextWindow,
-    isAuxiliaryRequest,
     isTitleGenerationRequest,
     requestPersonalizationInstruction: useRequestPersonalization
       ? systemPrompt.trim()

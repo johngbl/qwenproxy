@@ -159,7 +159,6 @@ test("thread-native continuation reuses sticky account binding from logical stat
 		enableThinking: false,
 		conversationKey: "stick-session-1",
 		hasExplicitConversationKey: true,
-		isInternalSummarizationRequest: false,
 	});
 
 	assert.equal(ctx.allowThreadReuse, true);
