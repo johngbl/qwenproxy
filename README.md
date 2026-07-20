@@ -1,9 +1,9 @@
 # QwenBridge
 
-API compatível com OpenAI/Anthropic que conecta clientes ao **Qwen (`chat.qwen.ai`)** com suporte a múltiplas contas, tool calling robusto, thread-native, uploads multimodais e sessões persistentes. Inclui Playwright com stealth, retries para erros transitórios, variantes `-no-thinking`/`-thinking`, sumarização de contexto, cache comprimido e observabilidade.
+API compatível com OpenAI/Anthropic que conecta clientes ao **Qwen (`chat.qwen.ai`)** com suporte a múltiplas contas, tool calling robusto, thread-native, uploads multimodais e sessões persistentes. Inclui Playwright com stealth, retries para erros transitórios, variantes `-no-thinking`/`-thinking`, cache comprimido, registro de capabilities por modelo e observabilidade.
 
 [![CI](https://github.com/johngbl/QwenBridge/actions/workflows/ci.yml/badge.svg)](https://github.com/johngbl/QwenBridge/actions/workflows/ci.yml)
-[![TypeScript](https://img.shields.io/badge/TypeScript-6.0-blue)](https://www.typescriptlang.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-7.0-blue)](https://www.typescriptlang.org/)
 [![Hono](https://img.shields.io/badge/Hono-4.12-green)](https://hono.dev/)
 [![License: ISC](https://img.shields.io/badge/License-ISC-yellow.svg)](LICENSE)
 
@@ -13,15 +13,16 @@ API compatível com OpenAI/Anthropic que conecta clientes ao **Qwen (`chat.qwen.
 
 - **Compatibilidade OpenAI** — `/v1/chat/completions`, `/v1/models`, `/v1/chat/completions/stop`, `/v1/upload` e **Responses API** `/v1/responses`.
 - **Compatibilidade Anthropic** — `/v1/messages` e `/v1/messages/count_tokens`.
-- **Thread-native** — Reutiliza sessão/pai no Qwen, com sumarização e rollover de contexto.
+- **Thread-native** — Reutiliza sessão/pai no Qwen; preservação de contexto entre turns
 - **Playwright + stealth** — Headers reais (`bx-ua`, `bx-umidtoken`, `bx-v`) por conta; fingerprint estável e cleanup de processos.
 - **Startup rápido multi-conta** — Sobe com a **primeira conta pronta**; as demais continuam preparando em background.
 - **Retries resilientes** — 502/503/504, erros de rede (`fetch failed`), anti-bot, quota e `invalid_input` com recriação de chat.
 - **Parser de tools robusto** — stream fragmentado, JSON malformado, fuzzy de nomes (`readFile` → `read_file`), JSON duplamente escapado e `</tool_call>` case-insensitive.
-- **Personalization sync** — system/tools podem ir por personalization; aplica settings seguras (`largeTextAsFile=false`, memory off, tools internas off).
+- **Personalization sync** — system/tools vão por personalization; em novos chats o sync é forçado (ignora cache) garantindo Critical Rules + AGENTS.md + tools sempre atualizadas; aplica settings seguras (`largeTextAsFile=false`, memory off, tools internas off)
 - **Senhas criptografadas at-rest** no SQLite.
 - **Uploads multimodais** — imagens, vídeo, áudio e documentos via OSS do Qwen.
-- **Modelos atuais** — família `qwen3.x` + variantes sintéticas `-no-thinking` e `-thinking`.
+- **Modelos atuais** — família `qwen3.x` (incluindo `qwen3.8-max-preview`) + variantes sintéticas `-no-thinking` e `-thinking` + registro de capabilities (vision, thinking, modalities)
+- **Thinking nativo** — raciocínio chega via `phase: thinking_summary` do upstream, sem sanitização de tags; o modelo é instruído a nunca emitir `<think>` no conteúdo visível
 - **Observabilidade** — `/health`, `/metrics` (Prometheus), watchdog e logs com emojis.
 - **Deploy simples** — `npm`, Docker e graceful shutdown.
 
@@ -39,7 +40,6 @@ flowchart TD
     Proxy --> Anthropic["/v1/messages"]
     Chat --> Context["Thread-native context"]
     Responses --> Chat
-    Context --> Summary["Summarizer + rollover"]
     Chat --> Accounts["Account manager"]
     Accounts --> DB[("SQLite encrypted")]
     Accounts --> Playwright["Playwright + Stealth"]
@@ -80,26 +80,49 @@ Senhas das contas são armazenadas **criptografadas** no SQLite (`data/`).
 
 Modelos e janelas de contexto são sincronizados via `/v1/models`. Fallbacks hardcoded antes da primeira sincronização:
 
-| Modelo | Contexto | Divisor de tokens |
-|---|---:|---:|
-| `qwen3.7-plus` | 1.000.000 | 2.0 |
-| `qwen3.7-max` | 1.000.000 | 2.2 |
-| `qwen3.6-plus` | 1.000.000 | 2.0 |
-| `qwen3.6-plus-preview` | 1.000.000 | 2.0 |
-| `qwen3.5-plus` | 1.000.000 | 2.0 |
-| `qwen3.5-flash` | 1.000.000 | 1.8 |
-| `qwen3-coder-plus` | 1.048.576 | 2.3 |
-| `qwen3.6-max-preview` | 262.144 | 2.2 |
-| `qwen3.5-max-2026-03-08` | 262.144 | 2.2 |
-| `qwen3-vl-plus` | 262.144 | 2.1 |
-| `qwen3.5-omni-plus` | 262.144 | 1.8 |
-| `qwen3-omni-flash-2025-12-01` | 65.536 | 1.7 |
-| `qwen-plus-2025-07-28` | 131.072 | 2.0 |
-| **Fallback** | **131.072** | **2.0** |
+| Modelo | Contexto | Divisor | Thinking | Vision |
+|---|---:|---:|:---:|:---:|
+| `qwen3.8-max-preview` | 1.000.000 | 2.2 | ✅ | ✅ |
+| `qwen3.7-max` | 1.000.000 | 2.2 | ✅ | ❌ |
+| `qwen3.7-plus` | 1.000.000 | 2.0 | ✅ | ✅ |
+| `qwen3.6-plus` | 1.000.000 | 2.0 | ✅ | ✅ |
+| `qwen3.6-max-preview` | 262.144 | 2.2 | ✅ | ❌ |
+| `qwen3.6-27b` | 262.144 | 1.9 | ✅ | ✅ |
+| `qwen3.6-35b-a3b` | 262.144 | 1.9 | ✅ | ✅ |
+| `qwen3.5-plus` | 1.000.000 | 2.0 | ✅ | ✅ |
+| `qwen3.5-flash` | 1.000.000 | 1.8 | ✅ | ✅ |
+| `qwen3.5-397b-a17b` | 262.144 | 1.9 | ✅ | ✅ |
+| `qwen3.5-omni-plus` | 262.144 | 1.8 | ❌ | ✅ |
+| `qwen3.5-omni-flash` | 262.144 | 1.7 | ❌ | ✅ |
+| `qwen3-coder-plus` | 1.048.576 | 2.3 | ❌ | ✅ |
+| `qwen3-vl-plus` | 262.144 | 2.1 | ✅ | ✅ |
+| `qwen3-omni-flash-2025-12-01` | 65.536 | 1.7 | ✅ | ✅ |
+| `qwen3-max-2026-01-23` | 262.144 | 2.2 | ✅ | ✅ |
+| `qwen-plus-2025-07-28` | 131.072 | 2.0 | ✅ | ✅ |
+| **Fallback** | **131.072** | **2.0** | — | — |
+
+> **Nota:** O endpoint `/v1/models` retorna capabilities dinâmicas (via formato Anthropic: `max_tokens`, `image_input`, `thinking.supported`).
+
+### Capabilities
+
+Cada modelo tem um registro `ModelCapabilities` em `src/core/model-registry.ts`:
+
+```ts
+interface ModelCapabilities {
+  maxOutputTokens: number;    // ex: 65536
+  maxThinkingTokens: number;  // ex: 81920 (apenas reasoning models)
+  supportsThinking: boolean;  // suporta thinking_summary
+  supportsVision: boolean;    // suporta imagens
+  canSkipThinking: boolean;   // permite sufixo -no-thinking
+  modalities: string[];       // ex: ["text", "image", "video"]
+}
+```
+
+**Destaque `qwen3.8-max-preview`**: único modelo flagship com suporte a visão (o `qwen3.7-max` não suporta). **Não permite desativar thinking** (`canSkipThinking: false`).
 
 ### Variantes sintéticas
 
-- `-no-thinking` — ex.: `qwen3.7-plus-no-thinking`
+- `-no-thinking` — ex.: `qwen3.7-plus-no-thinking` (apenas modelos com `canSkipThinking: true`)
 - `-thinking` — ex.: `qwen3.7-plus-thinking`
 
 Ambas usam a mesma janela de contexto do modelo base.
@@ -262,7 +285,7 @@ Fingerprint estável por conta (UA, locale, viewport, hardware/WebGL) é aplicad
 | `TOTAL_REQUEST_TIMEOUT` | `300000` | Teto de geração |
 | `REASONING_MODEL_TIMEOUT` | `600000` | Modelos com reasoning |
 
-**Nota:** timeouts dinâmicos de payload: `120s + 30s por MB`.
+**Nota:** timeouts dinâmicos de payload: **modelos reasoning** usam `REASONING_MODEL_TIMEOUT` (600s default) + 30s por MB; **modelos não-reasoning** usam `IDLE_STREAM_TIMEOUT` (60s default) + 30s por MB.
 
 ### Cache e contexto
 
@@ -270,9 +293,6 @@ Fingerprint estável por conta (UA, locale, viewport, hardware/WebGL) é aplicad
 |---|---|---|
 | `CACHE_TTL` | `3600` | TTL do cache (s) |
 | `CACHE_COMPRESSION_ENABLED` | `true` | Compressão Brotli |
-| `CONTEXT_SUMMARIZATION_ENABLED` | `true` | Sumarização thread-native |
-| `CONTEXT_SUMMARIZATION_MODEL` | `qwen3.5-flash` | Modelo de sumarização |
-| `CONTEXT_ROLLOVER_ENABLED` | `true` | Rollover de contexto longo |
 
 ### Observabilidade
 
@@ -458,11 +478,11 @@ Tools internas da conta Qwen (web_search, code interpreter, etc.) ficam desligad
 
 | Claude | Qwen |
 |---|---|
-| `claude-opus-4-*` | `qwen3.7-max` |
+| `claude-opus-4-*` | `qwen3.8-max-preview` |
 | `claude-sonnet-4-*` | `qwen3.7-plus` |
 | `claude-haiku-4-*` | `qwen3.5-flash` |
 | `claude-3-5-sonnet` | `qwen3.7-plus` |
-| `claude-3-opus` | `qwen3.7-max` |
+| `claude-3-opus` | `qwen3.8-max-preview` |
 | `claude-3-sonnet` | `qwen3.6-plus` |
 | `claude-3-haiku` | `qwen3.5-flash` |
 
@@ -470,8 +490,9 @@ Tools internas da conta Qwen (web_search, code interpreter, etc.) ficam desligad
 
 | GPT | Qwen |
 |---|---|
-| `gpt-5` / `gpt-5.5` | `qwen3.7-max` |
+| `gpt-5` / `gpt-5.5` | `qwen3.8-max-preview` |
 | `gpt-5-turbo` | `qwen3.7-plus` |
+| `gpt-5-mini` | `qwen3.5-flash` |
 | `gpt-4.1` / `gpt-4o` | `qwen3.7-plus` |
 | `gpt-4.1-mini` / `gpt-4o-mini` | `qwen3.5-flash` |
 | `gpt-4` / `gpt-4-turbo` | `qwen3.6-plus` |
@@ -514,18 +535,17 @@ QwenBridge/
 │   ├── api/                 # Server Hono, models, errors
 │   ├── benchmarks/          # Baseline de latência do proxy
 │   ├── cache/               # Memory cache + Brotli
-│   ├── core/                # Config, accounts, DB, metrics, cooldowns
+│   ├── core/                # Config, accounts, DB, metrics, cooldowns, model-registry
 │   ├── routes/
 │   │   ├── anthropic/       # API Anthropic
-│   │   ├── chat/            # Completions, streaming, account acquire
+│   │   ├── chat/            # Completions, streaming, account acquire, retry-policy
 │   │   └── responses/       # OpenAI Responses API
 │   ├── services/
 │   │   ├── playwright.ts    # Browser + headers + cleanup
-│   │   ├── qwen.ts          # Upstream Qwen + personalization
+│   │   ├── qwen.ts          # Upstream Qwen + personalization + idle timeout
 │   │   ├── session-keeper.ts
 │   │   ├── fingerprint.ts
-│   │   ├── human-behavior.ts
-│   │   └── thread-context-*.ts
+│   │   └── human-behavior.ts
 │   ├── tools/               # Parser e instruções de tools
 │   ├── tests/
 │   └── utils/
@@ -564,6 +584,8 @@ QwenBridge/
 | Vários Chromes abertos / RAM alta | `SESSION_KEEP_ALIVE_ENABLED=false`, idle cleanup on, `PLAYWRIGHT_INIT_BATCH_SIZE=1`, `PLAYWRIGHT_JS_HEAP_MB` |
 | Watchdog “RAM critical” falso | Já corrigido: usa `heap_size_limit`; confira `/health.heap.usagePercent` |
 | Timeout em requests grandes | Aumente `TOTAL_REQUEST_TIMEOUT` / `REASONING_MODEL_TIMEOUT` |
+| `stream_aborted` em modelo reasoning | Idle timeout: modelos reasoning usam `REASONING_MODEL_TIMEOUT` (600s default); aumente se necessário |
+| `canSkipThinking: false` | `qwen3.8-max-preview` não permite `-no-thinking`; use sem sufixo |
 | Playwright não inicia | `npx playwright install chromium` |
 | Porta em uso | Altere `PORT` no `.env` |
 | Sessão expirada | `npm run login` ou deixe o refresh automático reautenticar |
