@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/playwright:v1.60.0-jammy
+FROM mcr.microsoft.com/playwright:v1.61.1-jammy
 
 # Install dumb-init to handle process signals correctly and gosu for privilege drop
 RUN apt-get update && apt-get install -y --no-install-recommends dumb-init gosu && rm -rf /var/lib/apt/lists/*
