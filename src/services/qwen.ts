@@ -1685,20 +1685,24 @@ export async function createQwenStream(
       });
     }
 
-    // Dynamic idle timeout based on payload size
-    // Base: 60s + 30s per MB of payload
+    // Dynamic idle timeout based on model type and payload size
+    // Reasoning models (thinking enabled): use REASONING_MODEL_TIMEOUT as base (600s default)
+    // Non-reasoning models: use IDLE_STREAM_TIMEOUT as base (60s default)
+    // Both add 30s per MB of payload
+    const baseTimeoutMs = enableThinking
+      ? config.timeouts.reasoningModelTimeout
+      : config.timeouts.idleStreamTimeout;
     const payloadMB = payloadSize / (1024 * 1024);
-    const dynamicIdleTimeoutMs =
-      config.timeouts.idleStreamTimeout + Math.ceil(payloadMB * 30_000);
+    const dynamicIdleTimeoutMs = baseTimeoutMs + Math.ceil(payloadMB * 30_000);
 
-    if (dynamicIdleTimeoutMs > config.timeouts.idleStreamTimeout) {
-      logger.debug("[Qwen] dynamic idle timeout", {
-        chatId: chatSessionId || "new",
-        payloadMB: payloadMB.toFixed(2),
-        baseTimeout: config.timeouts.idleStreamTimeout,
-        dynamicTimeout: dynamicIdleTimeoutMs,
-      });
-    }
+    logger.debug("[Qwen] dynamic idle timeout", {
+      chatId: chatSessionId || "new",
+      model: modelId,
+      enableThinking,
+      payloadMB: payloadMB.toFixed(2),
+      baseTimeout: baseTimeoutMs,
+      dynamicTimeout: dynamicIdleTimeoutMs,
+    });
 
     return addIdleTimeoutToStream(
       stream,
