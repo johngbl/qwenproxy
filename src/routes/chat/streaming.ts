@@ -438,6 +438,26 @@ export async function processNonStreamingResponse(
 
     const finishReason = toolCallsOut.length ? "tool_calls" : "stop";
 
+    // Check for malformed tool calls and inject error feedback
+    if (toolParser && toolParser.getMalformedToolCalls().length > 0) {
+      const malformedCount = toolParser.getMalformedToolCalls().length;
+      const errorMessage = `\n\n⚠️ [ERROR] ${malformedCount} tool call(s) were malformed and could not be executed. The model generated invalid JSON. Please retry the request.\n\n`;
+      
+      finalContent += errorMessage;
+      if (message.content) {
+        message.content += errorMessage;
+      } else {
+        message.content = errorMessage;
+      }
+      
+      logger.warn("[chat] non-stream: injected malformed tool call error feedback", {
+        malformedCount,
+        completionId,
+      });
+      
+      toolParser.clearMalformedToolCalls();
+    }
+
     if (isToolcallDebugEnabled()) {
       logger.debug("[chat] non-stream: sending response", {
         completionId,
@@ -1246,6 +1266,27 @@ export async function processStreamingResponse(
       }
 
       if (!clientDisconnected) {
+        // Check for malformed tool calls and inject error feedback
+        if (toolParser && toolParser.getMalformedToolCalls().length > 0) {
+          const malformedCount = toolParser.getMalformedToolCalls().length;
+          const errorMessage = `\n\n⚠️ [ERROR] ${malformedCount} tool call(s) were malformed and could not be executed. The model generated invalid JSON. Please retry the request.\n\n`;
+          
+          await writeEvent({
+            id: completionId,
+            object: "chat.completion.chunk",
+            created: createdTimestamp,
+            model: body.model,
+            choices: [makeChoice({ content: errorMessage })],
+          });
+          
+          logger.warn("[chat] stream: injected malformed tool call error feedback", {
+            malformedCount,
+            completionId,
+          });
+          
+          toolParser.clearMalformedToolCalls();
+        }
+        
         // Single write: flush all accumulated events + [DONE] sentinel
         const donePayload = "data: [DONE]\n\n";
         const payload =

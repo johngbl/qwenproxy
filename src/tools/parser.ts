@@ -712,6 +712,12 @@ export class StreamingToolParser {
   private markdownCodeDelimiterLength = 0;
   private incrementalToolCalls = false;
   private activeIncrementalToolCall: ActiveIncrementalToolCall | null = null;
+  private malformedToolCalls: Array<{
+    contentPreview: string;
+    first100Chars: string;
+    contentLength: number;
+    timestamp: number;
+  }> = [];
 
   /**
    * @param tools - Optional array of tool definitions for name inference
@@ -729,6 +735,20 @@ export class StreamingToolParser {
         incrementalToolCalls: this.incrementalToolCalls,
       });
     }
+  }
+
+  /**
+   * Get malformed tool calls that were dropped (for error feedback).
+   */
+  getMalformedToolCalls() {
+    return this.malformedToolCalls;
+  }
+
+  /**
+   * Clear malformed tool calls tracking.
+   */
+  clearMalformedToolCalls() {
+    this.malformedToolCalls = [];
   }
 
   /**
@@ -1520,8 +1540,17 @@ export class StreamingToolParser {
     // 4) Tool call is malformed and unrecoverable.
     // Never leak internal XML to user-visible content.
     // Restore lead-in text if no tools were emitted.
-    logger.warn("[parser] Dropping malformed tool call block", {
+    const malformedInfo = {
       contentPreview: t.substring(0, 500),
+      first100Chars: t.substring(0, 100),
+      contentLength: t.length,
+      timestamp: Date.now(),
+    };
+    
+    this.malformedToolCalls.push(malformedInfo);
+    
+    logger.warn("[parser] Dropping malformed tool call block", {
+      contentPreview: malformedInfo.contentPreview,
       hasName:
         t.includes('"name"') || t.includes('"tool"') || t.includes("tool_name"),
       hasArgs:
@@ -1529,8 +1558,8 @@ export class StreamingToolParser {
         t.includes('"args"') ||
         t.includes('"parameters"') ||
         t.includes('"input"'),
-      first100Chars: t.substring(0, 100),
-      contentLength: t.length,
+      first100Chars: malformedInfo.first100Chars,
+      contentLength: malformedInfo.contentLength,
     });
     if (
       this.emittedToolCallCount === 0 &&
