@@ -7,6 +7,7 @@ import { metrics } from "../core/metrics.js";
 import { logger, maskEmail } from "../core/logger.js";
 import { MemoryCache } from "../cache/memory-cache.js";
 import { Watchdog } from "../core/watchdog.js";
+import { getAccountCooldownInfo } from "../core/account-manager.js";
 import { app as modelsApp } from "./models.js";
 import { chatCompletions, chatCompletionsStop } from "../routes/chat.js";
 import { uploadFile } from "../routes/upload.js";
@@ -216,7 +217,6 @@ async function prepareQwenRuntime(params: {
         return false;
       }
     }
-    console.log(`✅ ${params.successMessage}`);
     return true;
   } catch (error) {
     console.warn(`❌ ${params.failureMessage}`, getErrorMessage(error));
@@ -276,10 +276,6 @@ async function prepareRemainingAccountsInBackground(params: {
   const remaining = params.accounts;
   if (remaining.length === 0) return;
 
-  console.log(
-    `🔄 [Server] Preparing ${remaining.length} additional account(s) in background...`,
-  );
-
   let ready = 0;
   for (let i = 0; i < remaining.length; i += params.batchSize) {
     const batch = remaining.slice(i, i + params.batchSize);
@@ -297,9 +293,6 @@ async function prepareRemainingAccountsInBackground(params: {
     ready += results.filter(Boolean).length;
   }
 
-  console.log(
-    `✅ [Server] Background preparation complete: ${ready}/${remaining.length} ready`,
-  );
 }
 
 async function cleanupServerResources(): Promise<void> {
@@ -424,11 +417,6 @@ export async function startServer(options?: {
     for (const account of accounts) {
       clearAccountCooldown(account.id);
     }
-    if (accounts.length > 0) {
-      console.log(
-        `🧹 [Server] Cleared stale cooldowns for ${accounts.length} account(s)`,
-      );
-    }
 
     const { disableNativeTools, warmQwenChatPool } =
       await import("../services/qwen.ts");
@@ -438,7 +426,6 @@ export async function startServer(options?: {
     const BATCH_SIZE = config.playwright.initBatchSize;
 
     if (accounts.length > 0) {
-      console.log(`🔐 [Server] Preparing first available Qwen account...`);
       let readyAccountIndex = -1;
       for (let i = 0; i < accounts.length; i++) {
         const ok = await prepareAccountRuntime(
@@ -500,7 +487,24 @@ export async function startServer(options?: {
     }
 
     const started = buildStartedServerInfo();
-    console.log(`\n🚀✨ [Server] Listening on ${started.url}/v1 ✨🚀\n`);
+    const accountCount = accounts.length;
+    const readyCount = accounts.filter(acc => !getAccountCooldownInfo(acc.id)).length;
+
+    console.log(`
+╭────────────────────────────────────────────────────────────╮
+│                                                            │
+│                    ⚡ QwenBridge ⚡                         │
+│                   OpenAI-Compatible API                    │
+│                                                            │
+├────────────────────────────────────────────────────────────┤
+│                                                            │
+│  🌐 Endpoint    ${started.url.padEnd(40)}│
+│  🔌 Port        ${String(started.port).padEnd(40)}│
+│  👥 Accounts    ${String(readyCount).padEnd(2)}/${String(accountCount).padEnd(2)} ready${" ".repeat(30)}│
+│  📊 Status      ● Online${" ".repeat(36)}│
+│                                                            │
+╰────────────────────────────────────────────────────────────╯
+`);
     return started;
   })();
 

@@ -927,9 +927,6 @@ export async function disableNativeTools(accountId?: string): Promise<void> {
             `⚠️  [Qwen] Failed to disable native tools for ${cacheKey} (attempt ${attempt}/${DISABLE_TOOLS_MAX_RETRIES}): ${lastError}`,
           );
         } else {
-          console.log(
-            `✅ [Qwen] Native tools disabled successfully for ${cacheKey}.`,
-          );
           nativeToolsDisabled.add(cacheKey);
           return;
         }

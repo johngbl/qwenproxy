@@ -449,9 +449,6 @@ export async function processNonStreamingResponse(
       });
     }
 
-    console.log(
-      `✅ [Chat] Response sent | ${activeAccountLabel} | ${usage.prompt_tokens} prompt / ${usage.completion_tokens} completion / ${usage.total_tokens} total tokens`,
-    );
     logTokenEstimationSample({
       model: body.model,
       finalPrompt,
@@ -1290,9 +1287,6 @@ export async function processStreamingResponse(
           });
         }
 
-        console.log(
-          `✅ [Chat] Response sent | ${activeAccountLabel} | ${usage.prompt_tokens} prompt / ${usage.completion_tokens} completion / ${usage.total_tokens} total tokens`,
-        );
         logTokenEstimationSample({
           model: body.model,
           finalPrompt,

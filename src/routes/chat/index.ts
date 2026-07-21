@@ -180,10 +180,6 @@ export async function chatCompletions(c: Context) {
       throw streamResult.error || new Error("All accounts failed");
     }
 
-    console.log(
-      `🚀 [Chat] Request routed | ${streamResult.activeAccountLabel} | ${body.model} | ${msgCount} msg(s) | ${finalPrompt.length} chars${declaredTools.length ? ` | ${declaredTools.length} tool(s)` : ""}${files.length ? ` | ${files.length} file(s)` : ""}`,
-    );
-
     const onAssistantComplete: ((event: AssistantCompleteEvent) => Promise<void> | void) | undefined = undefined;
 
     const params = {

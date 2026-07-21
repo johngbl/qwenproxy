@@ -209,9 +209,6 @@ async function tryRecoverAntiBot(
 		const result = await recoverAntiBotChallenge(accountId);
 		if (result.success) {
 			clearAccountCooldown(accountId);
-			console.log(
-				`✅ [Captcha] Recovery ok for ${accountEmail} | method=${result.method} | ${result.durationMs}ms`,
-			);
 			return true;
 		}
 		console.warn(
