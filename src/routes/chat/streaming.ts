@@ -918,7 +918,7 @@ export async function processStreamingResponse(
             if (!clientDisconnected) {
               await streamWriter.write("data: [DONE]\n\n");
             }
-            continue;
+            break; // Exit loop immediately - no need to wait for connection close
           }
 
           if (upstreamDebugEnabled) {
