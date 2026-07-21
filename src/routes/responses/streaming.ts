@@ -51,6 +51,13 @@ export interface ResponsesStreamState {
     | ResponsesOutputReasoning
   )[];
   inputTokens: number;
+  /** Real usage from upstream (overwrites estimates) */
+  upstreamUsage: {
+    inputTokens: number | null;
+    outputTokens: number | null;
+    cachedTokens: number | null;
+    reasoningTokens: number | null;
+  };
 }
 
 export function createStreamState(
@@ -70,6 +77,12 @@ export function createStreamState(
     accumulatedToolCalls: new Map(),
     completedOutput: [],
     inputTokens: 0,
+    upstreamUsage: {
+      inputTokens: null,
+      outputTokens: null,
+      cachedTokens: null,
+      reasoningTokens: null,
+    },
   };
 }
 
@@ -83,9 +96,32 @@ export function processChatChunk(
 ): ResponsesStreamEvent[] {
   const events: ResponsesStreamEvent[] = [];
 
-  // Update token count if available
-  if (chunk.usage?.prompt_tokens !== undefined) {
-    state.inputTokens = chunk.usage.prompt_tokens;
+  // Update token count if available (real upstream usage overwrites)
+  if (chunk.usage) {
+    if (chunk.usage.prompt_tokens !== undefined) {
+      state.inputTokens = chunk.usage.prompt_tokens;
+      state.upstreamUsage.inputTokens = chunk.usage.prompt_tokens;
+    }
+    if (chunk.usage.input_tokens !== undefined) {
+      state.inputTokens = chunk.usage.input_tokens;
+      state.upstreamUsage.inputTokens = chunk.usage.input_tokens;
+    }
+    if (chunk.usage.completion_tokens !== undefined) {
+      state.upstreamUsage.outputTokens = chunk.usage.completion_tokens;
+    }
+    if (chunk.usage.output_tokens !== undefined) {
+      state.upstreamUsage.outputTokens = chunk.usage.output_tokens;
+    }
+    const cached = chunk.usage.prompt_tokens_details?.cached_tokens
+      ?? chunk.usage.input_tokens_details?.cached_tokens;
+    if (cached !== undefined) {
+      state.upstreamUsage.cachedTokens = cached;
+    }
+    const reasoning = chunk.usage.completion_tokens_details?.reasoning_tokens
+      ?? chunk.usage.output_tokens_details?.reasoning_tokens;
+    if (reasoning !== undefined) {
+      state.upstreamUsage.reasoningTokens = reasoning;
+    }
   }
 
   const choice = chunk.choices?.[0];
@@ -118,6 +154,13 @@ export function processChatChunk(
         type: "response.output_item.added",
         output_index: state.outputIndex,
         item: reasoningItem,
+      });
+      // Emit reasoning_summary_part.added
+      events.push({
+        type: "response.reasoning_summary_part.added",
+        item_id: state.reasoningId,
+        output_index: state.outputIndex,
+        part: { type: "summary_text", text: "" },
       });
       state.currentBlockType = "reasoning";
     }
@@ -365,6 +408,22 @@ function closeCurrentReasoning(
 
   if (state.currentBlockType !== "reasoning") return events;
 
+  // Emit reasoning_summary_text.done
+  events.push({
+    type: "response.reasoning_summary_text.done",
+    item_id: state.reasoningId,
+    output_index: state.outputIndex,
+    text: state.accumulatedReasoning,
+  });
+
+  // Emit reasoning_summary_part.done
+  events.push({
+    type: "response.reasoning_summary_part.done",
+    item_id: state.reasoningId,
+    output_index: state.outputIndex,
+    part: { type: "summary_text", text: state.accumulatedReasoning },
+  });
+
   const reasoningItem: ResponsesOutputReasoning = {
     type: "reasoning",
     id: state.reasoningId,
@@ -443,15 +502,23 @@ export function buildFinalOutput(
 }
 
 /**
- * Build final usage from stream state.
+ * Build final usage from stream state — always includes details (Grok/serde fix).
  */
 export function buildFinalUsage(
   state: ResponsesStreamState,
   completionTokens: number,
 ): ResponsesUsage {
+  const inputTokens = state.upstreamUsage.inputTokens ?? state.inputTokens;
+  const outputTokens = state.upstreamUsage.outputTokens ?? completionTokens;
   return {
-    input_tokens: state.inputTokens,
-    output_tokens: completionTokens,
-    total_tokens: state.inputTokens + completionTokens,
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
+    total_tokens: inputTokens + outputTokens,
+    input_tokens_details: {
+      cached_tokens: state.upstreamUsage.cachedTokens ?? 0,
+    },
+    output_tokens_details: {
+      reasoning_tokens: state.upstreamUsage.reasoningTokens ?? 0,
+    },
   };
 }

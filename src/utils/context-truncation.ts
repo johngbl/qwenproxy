@@ -1,6 +1,4 @@
-import { getModelTokenDivisor } from "../core/model-registry.ts";
-
-export function estimateTokenCount(text: string, modelId?: string): number {
+export function estimateTokenCount(text: string): number {
   if (!text) return 0;
 
   let tokens = 0;
@@ -64,13 +62,5 @@ export function estimateTokenCount(text: string, modelId?: string): number {
     }
   }
 
-  let result = Math.ceil(tokens);
-
-  if (modelId) {
-    const modelDivisor = getModelTokenDivisor(modelId);
-    const baselineDivisor = 2.0;
-    result = Math.ceil(result * (baselineDivisor / modelDivisor));
-  }
-
-  return result;
+  return Math.ceil(tokens);
 }

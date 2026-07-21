@@ -1,6 +1,6 @@
 # QwenBridge
 
-API compatível com OpenAI/Anthropic que conecta clientes ao **Qwen (`chat.qwen.ai`)** com suporte a múltiplas contas, tool calling robusto, thread-native, uploads multimodais e sessões persistentes. Inclui Playwright com stealth, retries para erros transitórios, variantes `-no-thinking`/`-thinking`, cache comprimido, registro de capabilities por modelo e observabilidade.
+API compatível com OpenAI/Anthropic que conecta clientes ao **Qwen (`chat.qwen.ai`)** com suporte a múltiplas contas, tool calling robusto, thread-native, uploads multimodais, **Responses API completa com memória persistente** e sessões persistentes. Inclui Playwright com stealth, retries para erros transitórios, variantes `-no-thinking`/`-thinking`, cache comprimido, registro de capabilities por modelo e observabilidade.
 
 [![CI](https://github.com/johngbl/QwenBridge/actions/workflows/ci.yml/badge.svg)](https://github.com/johngbl/QwenBridge/actions/workflows/ci.yml)
 [![TypeScript](https://img.shields.io/badge/TypeScript-7.0-blue)](https://www.typescriptlang.org/)
@@ -13,6 +13,7 @@ API compatível com OpenAI/Anthropic que conecta clientes ao **Qwen (`chat.qwen.
 
 - **Compatibilidade OpenAI** — `/v1/chat/completions`, `/v1/models`, `/v1/chat/completions/stop`, `/v1/upload` e **Responses API** `/v1/responses`.
 - **Compatibilidade Anthropic** — `/v1/messages` e `/v1/messages/count_tokens`.
+- **Responses API completa** — SSE com `event:` + `data:` + `sequence_number`, memória persistente via `previous_response_id` (SQLite durável), `last_response_id`, multimodal (`input_image`/`input_file`), reasoning effort normalization, lifecycle events de reasoning e usage real do upstream.
 - **Thread-native** — Reutiliza sessão/pai no Qwen; preservação de contexto entre turns
 - **Playwright + stealth** — Headers reais (`bx-ua`, `bx-umidtoken`, `bx-v`) por conta; fingerprint estável e cleanup de processos.
 - **Startup rápido multi-conta** — Sobe com a **primeira conta pronta**; as demais continuam preparando em background.
@@ -32,7 +33,7 @@ API compatível com OpenAI/Anthropic que conecta clientes ao **Qwen (`chat.qwen.
 
 ```mermaid
 flowchart TD
-    Client["Cliente OpenAI/Anthropic/SDK"] -->|HTTP| Proxy["QwenBridge - Hono"]
+    Client["Cliente OpenAI/Anthropic/Codex/Grok"] -->|HTTP| Proxy["QwenBridge - Hono"]
     Proxy --> Chat["/v1/chat/completions"]
     Proxy --> Responses["/v1/responses"]
     Proxy --> Models["/v1/models"]
@@ -40,6 +41,8 @@ flowchart TD
     Proxy --> Anthropic["/v1/messages"]
     Chat --> Context["Thread-native context"]
     Responses --> Chat
+    Responses --> Effort["Effort normalization"]
+    Responses --> State[("SQLite responses_store")]
     Chat --> Accounts["Account manager"]
     Accounts --> DB[("SQLite encrypted")]
     Accounts --> Playwright["Playwright + Stealth"]
@@ -80,26 +83,26 @@ Senhas das contas são armazenadas **criptografadas** no SQLite (`data/`).
 
 Modelos e janelas de contexto são sincronizados via `/v1/models`. Fallbacks hardcoded antes da primeira sincronização:
 
-| Modelo | Contexto | Divisor | Thinking | Vision |
-|---|---:|---:|:---:|:---:|
-| `qwen3.8-max-preview` | 1.000.000 | 2.2 | ✅ | ✅ |
-| `qwen3.7-max` | 1.000.000 | 2.2 | ✅ | ❌ |
-| `qwen3.7-plus` | 1.000.000 | 2.0 | ✅ | ✅ |
-| `qwen3.6-plus` | 1.000.000 | 2.0 | ✅ | ✅ |
-| `qwen3.6-max-preview` | 262.144 | 2.2 | ✅ | ❌ |
-| `qwen3.6-27b` | 262.144 | 1.9 | ✅ | ✅ |
-| `qwen3.6-35b-a3b` | 262.144 | 1.9 | ✅ | ✅ |
-| `qwen3.5-plus` | 1.000.000 | 2.0 | ✅ | ✅ |
-| `qwen3.5-flash` | 1.000.000 | 1.8 | ✅ | ✅ |
-| `qwen3.5-397b-a17b` | 262.144 | 1.9 | ✅ | ✅ |
-| `qwen3.5-omni-plus` | 262.144 | 1.8 | ❌ | ✅ |
-| `qwen3.5-omni-flash` | 262.144 | 1.7 | ❌ | ✅ |
-| `qwen3-coder-plus` | 1.048.576 | 2.3 | ❌ | ✅ |
-| `qwen3-vl-plus` | 262.144 | 2.1 | ✅ | ✅ |
-| `qwen3-omni-flash-2025-12-01` | 65.536 | 1.7 | ✅ | ✅ |
-| `qwen3-max-2026-01-23` | 262.144 | 2.2 | ✅ | ✅ |
-| `qwen-plus-2025-07-28` | 131.072 | 2.0 | ✅ | ✅ |
-| **Fallback** | **131.072** | **2.0** | — | — |
+| Modelo | Contexto | Thinking | Vision |
+|---|---:|:---:|:---:|
+| `qwen3.8-max-preview` | 1.000.000 | ✅ | ✅ |
+| `qwen3.7-max` | 1.000.000 | ✅ | ❌ |
+| `qwen3.7-plus` | 1.000.000 | ✅ | ✅ |
+| `qwen3.6-plus` | 1.000.000 | ✅ | ✅ |
+| `qwen3.6-max-preview` | 262.144 | ✅ | ❌ |
+| `qwen3.6-27b` | 262.144 | ✅ | ✅ |
+| `qwen3.6-35b-a3b` | 262.144 | ✅ | ✅ |
+| `qwen3.5-plus` | 1.000.000 | ✅ | ✅ |
+| `qwen3.5-flash` | 1.000.000 | ✅ | ✅ |
+| `qwen3.5-397b-a17b` | 262.144 | ✅ | ✅ |
+| `qwen3.5-omni-plus` | 262.144 | ❌ | ✅ |
+| `qwen3.5-omni-flash` | 262.144 | ❌ | ✅ |
+| `qwen3-coder-plus` | 1.048.576 | ❌ | ✅ |
+| `qwen3-vl-plus` | 262.144 | ✅ | ✅ |
+| `qwen3-omni-flash-2025-12-01` | 65.536 | ✅ | ✅ |
+| `qwen3-max-2026-01-23` | 262.144 | ✅ | ✅ |
+| `qwen-plus-2025-07-28` | 131.072 | ✅ | ✅ |
+| **Fallback** | **131.072** | — | — |
 
 > **Nota:** O endpoint `/v1/models` retorna capabilities dinâmicas (via formato Anthropic: `max_tokens`, `image_input`, `thinking.supported`).
 
@@ -126,6 +129,66 @@ interface ModelCapabilities {
 - `-thinking` — ex.: `qwen3.7-plus-thinking`
 
 Ambas usam a mesma janela de contexto do modelo base.
+
+---
+
+## Responses API (`/v1/responses`)
+
+Implementação completa da OpenAI Responses API com extensões para clientes agentic (Codex, Grok CLI, Cursor).
+
+### Features
+
+| Feature | Descrição |
+|---------|-----------|
+| **SSE fiel** | `event: <type>` + `data: {...}` com `sequence_number` incremental em todos os eventos |
+| **Memória persistente** | `previous_response_id` com store SQLite durável (sobrevive restarts, TTL 7 dias) |
+| **`last_response_id`** | Retornado em toda response para encadeamento pelo cliente |
+| **Reasoning effort** | `reasoning.effort` aceita qualquer string; normaliza `xhigh`/`max`/`fast`/`none`/numérico para thinking ON/OFF |
+| **Multimodal** | `input_image` → `image_url`, `input_file` → `file_url` no chat interno |
+| **Usage real** | `stream_options.include_usage: true`; upstream sobrescreve estimativas; `input_tokens_details` e `output_tokens_details` **sempre** presentes (fix Grok/serde) |
+| **Reasoning lifecycle** | `reasoning_summary_part.added` → `reasoning_summary_text.delta` → `reasoning_summary_text.done` → `reasoning_summary_part.done` |
+| **Error envelope** | Formato OpenAI: `{ error: { message, type, param, code } }` |
+| **Store** | `store: false` desativa persistência; GET/DELETE `/v1/responses/:id` para recuperar/remover |
+
+### Reasoning effort mapping
+
+| Client effort | Normalizado | Qwen `feature_config` |
+|---|---|---|
+| `max`, `high`, `xhigh`, `thinking`, `ultra`, `deep` | high | `thinking_enabled: true`, `thinking_mode: "Thinking"` |
+| `medium`, `med`, `default` | medium | thinking ON (mesmo que high) |
+| `fast`, `none`, `low`, `off`, `minimal`, `no-thinking` | low | `thinking_enabled: false`, `thinking_mode: "Fast"` |
+| numérico 0–33 | low | thinking OFF |
+| numérico 34–66 | medium | thinking ON |
+| numérico 67–100 | high | thinking ON |
+
+> **Nota:** `qwen3.8-max-preview` é always-thinking (`canSkipThinking: false`) — effort `low` não desativa thinking neste modelo.
+
+### Exemplo: Responses API com memória
+
+```bash
+# Primeira request
+curl http://localhost:3000/v1/responses \
+  -H "Authorization: Bearer local" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"qwen3.8-max-preview","input":"Meu nome é João","stream":true}'
+
+# Resposta inclui last_response_id: "resp_abc123..."
+
+# Segunda request com memória
+curl http://localhost:3000/v1/responses \
+  -H "Authorization: Bearer local" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"qwen3.8-max-preview","input":"Qual meu nome?","previous_response_id":"resp_abc123...","stream":true}'
+```
+
+### Exemplo: effort com Codex/Grok
+
+```bash
+curl http://localhost:3000/v1/responses \
+  -H "Authorization: Bearer local" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"qwen3.7-max","input":"hi","reasoning":{"effort":"xhigh"},"max_output_tokens":30}'
+```
 
 ---
 
@@ -422,6 +485,31 @@ const completion = await client.chat.completions.create({
 console.log(completion.choices[0].message.content);
 ```
 
+### OpenAI Responses API (Codex / Grok CLI)
+
+```typescript
+import OpenAI from "openai";
+
+const client = new OpenAI({
+  baseURL: "http://localhost:3000/v1",
+  apiKey: "sua-api-key",
+});
+
+// Streaming com reasoning effort
+const stream = await client.responses.create({
+  model: "qwen3.8-max-preview",
+  input: "Explique computação quântica",
+  reasoning: { effort: "high" },
+  stream: true,
+});
+
+for await (const event of stream) {
+  if (event.type === "response.output_text.delta") {
+    process.stdout.write(event.delta);
+  }
+}
+```
+
 ### Anthropic SDK
 
 ```typescript
@@ -442,6 +530,29 @@ console.log(message.content[0].text);
 ```
 
 ### cURL
+
+```bash
+curl http://localhost:3000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sua-api-key" \
+  -d '{
+    "model": "qwen3.7-plus",
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "stream": true
+  }'
+```
+
+### Grok CLI (config)
+
+```toml
+[model.qwen38-max-preview]
+api_backend = "responses"
+base_url = "http://127.0.0.1:3000/v1"
+```
+
+---
+
+## Tool calling
 
 ```bash
 curl http://localhost:3000/v1/chat/completions \
@@ -539,7 +650,7 @@ QwenBridge/
 │   ├── routes/
 │   │   ├── anthropic/       # API Anthropic
 │   │   ├── chat/            # Completions, streaming, account acquire, retry-policy
-│   │   └── responses/       # OpenAI Responses API
+│   │   └── responses/       # OpenAI Responses API (effort, state, streaming, adapter)
 │   ├── services/
 │   │   ├── playwright.ts    # Browser + headers + cleanup
 │   │   ├── qwen.ts          # Upstream Qwen + personalization + idle timeout
@@ -586,6 +697,8 @@ QwenBridge/
 | Timeout em requests grandes | Aumente `TOTAL_REQUEST_TIMEOUT` / `REASONING_MODEL_TIMEOUT` |
 | `stream_aborted` em modelo reasoning | Idle timeout: modelos reasoning usam `REASONING_MODEL_TIMEOUT` (600s default); aumente se necessário |
 | `canSkipThinking: false` | `qwen3.8-max-preview` não permite `-no-thinking`; use sem sufixo |
+| Grok CLI `missing field input_tokens_details` | Corrigido: usage sempre inclui `input_tokens_details` e `output_tokens_details` |
+| Responses `previous_response_id` not found | Store SQLite com TTL 7 dias; verifique se `store: false` não foi enviado |
 | Playwright não inicia | `npx playwright install chromium` |
 | Porta em uso | Altere `PORT` no `.env` |
 | Sessão expirada | `npm run login` ou deixe o refresh automático reautenticar |

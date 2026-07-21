@@ -57,13 +57,12 @@ export function logTokenEstimationSample(input: {
   const completionText = `${reasoningContent}${assistantContent}`;
   const estimatedPromptTokens = estimateTokenCount(
     input.finalPrompt,
-    input.model,
   );
   const estimatedUserPromptTokens = input.userPrompt
-    ? estimateTokenCount(input.userPrompt, input.model)
+    ? estimateTokenCount(input.userPrompt)
     : null;
   const estimatedCompletionTokens = completionText
-    ? estimateTokenCount(completionText, input.model)
+    ? estimateTokenCount(completionText)
     : 0;
   const personalization = input.context?.activePersonalization ?? null;
   const estimatedPersonalizationTokens = personalization?.estimatedTokens ?? 0;

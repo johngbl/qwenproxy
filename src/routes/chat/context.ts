@@ -89,7 +89,6 @@ export async function buildFinalContext(
     config.qwen.personalizationFromRequest && !isTitleGenerationRequest;
   const estimatedTokens = estimateTokenCount(
     systemPrompt + activePrompt,
-    modelId,
   );
   // Send instructions in prompt for NEW chats to establish context immediately,
   // even when personalization is active. For continuations, rely on account-level

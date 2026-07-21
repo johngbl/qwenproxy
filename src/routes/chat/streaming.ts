@@ -178,9 +178,7 @@ export async function processNonStreamingResponse(
       : null;
     const toolCallsOut: any[] = [];
             let buffer = "";
-    const usageAccumulator = createUsageAccumulator(
-      Math.ceil(finalPrompt.length / 3.5),
-    );
+    const usageAccumulator = createUsageAccumulator(0);
 
     const rememberSession = (sessionId: string | null) => {
       if (!sessionId || sessionId === currentUiSessionId) return;
@@ -450,7 +448,7 @@ export async function processNonStreamingResponse(
         message.content = errorMessage;
       }
       
-      logger.warn("[chat] non-stream: injected malformed tool call error feedback", {
+      logger.debug("[chat] non-stream: injected malformed tool call error feedback", {
         malformedCount,
         completionId,
       });
@@ -764,9 +762,7 @@ export async function processStreamingResponse(
         : null;
 
       let buffer = initialStreamBuffer;
-      const usageAccumulator = createUsageAccumulator(
-        Math.ceil(finalPrompt.length / 3.5),
-      );
+      const usageAccumulator = createUsageAccumulator(0);
       const rememberSession = (sessionId: string | null) => {
         if (!sessionId || sessionId === currentUiSessionId) return;
         currentUiSessionId = sessionId;
@@ -1279,7 +1275,7 @@ export async function processStreamingResponse(
             choices: [makeChoice({ content: errorMessage })],
           });
           
-          logger.warn("[chat] stream: injected malformed tool call error feedback", {
+          logger.debug("[chat] stream: injected malformed tool call error feedback", {
             malformedCount,
             completionId,
           });

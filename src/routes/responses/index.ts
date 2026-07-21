@@ -21,7 +21,6 @@ import {
   getStoredResponse,
   deleteStoredResponse,
 } from "./state.ts";
-import type { ResponsesRequest } from "./types.ts";
 
 const app = new Hono();
 
@@ -89,11 +88,17 @@ app.post("/v1/responses", async (c) => {
         async start(controller) {
           const encoder = new TextEncoder();
           let streamClosed = false;
+          let sequenceNumber = 0;
+
+          // Proper SSE: event: <type>\ndata: {...}\n\n
           const enqueue = (_event: string, data: any) => {
             if (streamClosed) return;
             try {
+              const payload = { ...data, sequence_number: sequenceNumber++ };
               controller.enqueue(
-                encoder.encode(`data: ${JSON.stringify(data)}\n\n`),
+                encoder.encode(
+                  `event: ${_event}\ndata: ${JSON.stringify(payload)}\n\n`,
+                ),
               );
             } catch {
               streamClosed = true;
@@ -118,6 +123,7 @@ app.post("/v1/responses", async (c) => {
             });
 
             // Make request to internal Chat Completions endpoint
+            // Always request usage in stream for real token counts
             const response = await fetch(
               `http://127.0.0.1:${config.server.port}/v1/chat/completions`,
               {
@@ -126,7 +132,11 @@ app.post("/v1/responses", async (c) => {
                   "Content-Type": "application/json",
                   Authorization: `Bearer ${process.env.API_KEY || config.apiKey || ""}`,
                 },
-                body: JSON.stringify({ ...chatRequest, stream: true }),
+                body: JSON.stringify({
+                  ...chatRequest,
+                  stream: true,
+                  stream_options: { include_usage: true },
+                }),
               },
             );
 
@@ -214,6 +224,9 @@ app.post("/v1/responses", async (c) => {
                   finalUsage,
                 );
 
+                // Attach last_response_id for client memory
+                finalResponse.last_response_id = responseId;
+
                 if (streamError) {
                   enqueue("response.failed", {
                     type: "response.failed",
@@ -298,6 +311,9 @@ app.post("/v1/responses", async (c) => {
         req,
       );
 
+      // Attach last_response_id for client memory
+      responsesResponse.last_response_id = responsesResponse.id;
+
       // Store response for stateful conversations
       if (req.store !== false) {
         storeResponse(responsesResponse.id, responsesResponse, [
@@ -353,7 +369,8 @@ app.delete("/v1/responses/:response_id", async (c) => {
 });
 
 /**
- * Responses API error response helper
+ * Responses API error response helper — OpenAI-shaped envelope.
+ * Format: { error: { message, type, param, code } }
  */
 function responsesError(
   c: Context,
@@ -363,8 +380,12 @@ function responsesError(
 ) {
   return c.json(
     {
-      type: "error",
-      error: { type, message },
+      error: {
+        message,
+        type,
+        param: null,
+        code: type === "invalid_request_error" ? "invalid_request" : type,
+      },
     },
     statusCode as any,
   );

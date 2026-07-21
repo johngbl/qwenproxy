@@ -3,6 +3,7 @@ import {
   loadAccounts,
   updateAccountCooldown,
 } from "./accounts.ts";
+import { getAccountsByPriority, markAccountSuccessful, markAccountFailed } from "./account-priority.ts";
 
 let currentIndex = 0;
 
@@ -14,6 +15,17 @@ interface CooldownEntry {
 const cooldowns = new Map<string, CooldownEntry>();
 
 const DEFAULT_COOLDOWN_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+export function formatDateTimeBR(timestamp: number): string {
+	const date = new Date(timestamp);
+	const day = String(date.getDate()).padStart(2, "0");
+	const month = String(date.getMonth() + 1).padStart(2, "0");
+	const year = date.getFullYear();
+	const hours = String(date.getHours()).padStart(2, "0");
+	const minutes = String(date.getMinutes()).padStart(2, "0");
+	const seconds = String(date.getSeconds()).padStart(2, "0");
+	return `${day}/${month}/${year} ${hours}:${minutes}:${seconds}`;
+}
 
 export function markAccountRateLimited(
   accountId: string,
@@ -41,9 +53,9 @@ export function markAccountRateLimited(
     }
   }
 
-  console.log(
-    `⏱️  [AccountManager] Cooldown set | ${accountId} | reason=${cooldownReason} | ${Math.round(duration / 1000)}s | until=${new Date(until).toISOString()}`,
-  );
+  	console.log(
+  		`⏱️  [AccountManager] Cooldown set | ${accountId} | reason=${cooldownReason} | ${Math.round(duration / 1000)}s | until=${formatDateTimeBR(until)}`,
+  	);
 }
 
 export function clearAccountCooldown(accountId: string): void {
@@ -113,9 +125,12 @@ export function getNextAccount(): QwenAccount | null {
 
   syncCooldownsFromDb(accounts);
 
-  for (let i = 0; i < accounts.length; i++) {
-    const account = accounts[currentIndex % accounts.length];
-    currentIndex = (currentIndex + 1) % accounts.length;
+  // Ordena por prioridade (contas que funcionaram bem vêm primeiro)
+  const prioritized = getAccountsByPriority(accounts);
+
+  for (let i = 0; i < prioritized.length; i++) {
+    const account = prioritized[currentIndex % prioritized.length];
+    currentIndex = (currentIndex + 1) % prioritized.length;
     if (!isAccountOnCooldown(account.id)) {
       return account;
     }
@@ -124,7 +139,7 @@ export function getNextAccount(): QwenAccount | null {
   // All accounts on cooldown — return the one with the shortest remaining cooldown.
   let best: QwenAccount | null = null;
   let bestRemaining = Infinity;
-  for (const account of accounts) {
+  for (const account of prioritized) {
     const info = getAccountCooldownInfo(account.id);
     if (info && info.remainingMs < bestRemaining) {
       bestRemaining = info.remainingMs;
@@ -142,6 +157,9 @@ export function getNextAvailableAccount(
 
   syncCooldownsFromDb(accounts);
 
+  // Ordena por prioridade (contas que funcionaram bem vêm primeiro)
+  const prioritized = getAccountsByPriority(accounts);
+
   let triedSet: Set<string>;
   if (triedAccountIds instanceof Set) {
     triedSet = triedAccountIds;
@@ -150,12 +168,12 @@ export function getNextAvailableAccount(
   }
 
   // 1. Try to find an untried account that is NOT on cooldown
-  for (let i = 0; i < accounts.length; i++) {
-    const idx = (currentIndex + i) % accounts.length;
-    const account = accounts[idx];
+  for (let i = 0; i < prioritized.length; i++) {
+    const idx = (currentIndex + i) % prioritized.length;
+    const account = prioritized[idx];
     if (triedSet.has(account.id)) continue;
     if (!isAccountOnCooldown(account.id)) {
-      currentIndex = (idx + 1) % accounts.length;
+      currentIndex = (idx + 1) % prioritized.length;
       return account;
     }
   }
@@ -163,7 +181,7 @@ export function getNextAvailableAccount(
   // 2. If all untried accounts are on cooldown, return the untried one with the shortest remaining cooldown
   let best: QwenAccount | null = null;
   let bestRemaining = Infinity;
-  for (const account of accounts) {
+  for (const account of prioritized) {
     if (triedSet.has(account.id)) continue;
     const info = getAccountCooldownInfo(account.id);
     if (info && info.remainingMs < bestRemaining) {

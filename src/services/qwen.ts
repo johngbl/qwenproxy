@@ -411,6 +411,7 @@ export interface QwenPayload {
   stream: boolean;
   version: string;
   incremental_output: boolean;
+  stream_options?: { include_usage: boolean };
   chat_id: string | null;
   chat_mode: string;
   model: string;
@@ -513,7 +514,7 @@ function rememberActivePersonalization(
     chars: size.chars,
     bytes: size.bytes,
     hash: size.hash,
-    estimatedTokens: estimateTokenCount(instruction, metadata.model),
+    estimatedTokens: estimateTokenCount(instruction),
     source,
     updatedAt: Date.now(),
   });

@@ -1,11 +1,13 @@
 import { v4 as uuidv4 } from "uuid";
 import {
 	clearAccountCooldown,
+	formatDateTimeBR,
 	getAccountCooldownInfo,
 	getNextAccount,
 	getNextAvailableAccount,
 	markAccountRateLimited,
 } from "../../core/account-manager.ts";
+import { markAccountSuccessful, markAccountFailed } from "../../core/account-priority.ts";
 import { loadAccounts } from "../../core/accounts.ts";
 import { config } from "../../core/config.ts";
 import { UpstreamRateLimit } from "../../core/errors.ts";
@@ -696,6 +698,7 @@ async function tryCreateStreamWithRetry(
 				});
 			}
 
+			markAccountSuccessful(currentAccountId);
 			return { success: true, ...result };
 		} catch (err: any) {
 			attemptError = err;
@@ -704,14 +707,14 @@ async function tryCreateStreamWithRetry(
 		attemptsLeft--;
 		const err = attemptError;
 
-		// Log the error details for debugging
-		const errMsg = err instanceof Error ? err.message : String(err || "");
-		if (err) {
-			const errCode = err.upstreamCode || err.code || "unknown";
-			console.warn(
-				`❌ [Chat] Request failed | ${currentAccountEmail} | ${errCode} | ${errMsg.substring(0, 200)}`,
-			);
-		}
+		// Log the error details for debugging (skip quota errors — logged separately below)
+			const errMsg = err instanceof Error ? err.message : String(err || "");
+			if (err && !isAccountUnavailableError(err)) {
+				const errCode = err.upstreamCode || err.code || "unknown";
+				console.warn(
+					`❌ [Chat] Request failed | ${currentAccountEmail} | ${errCode} | ${errMsg.substring(0, 200)}`,
+				);
+			}
 
 
 
@@ -756,33 +759,46 @@ async function tryCreateStreamWithRetry(
 		}
 
 		// Account-scoped quota/rate-limit: cool this account and stop local retries
-		// so outer account rotation can pick another one immediately.
-		if (isAccountUnavailableError(err)) {
-			const quotaMsg = err.message || "Unknown quota error";
-			console.warn(
-				`⚠️  [Chat] Quota exceeded | ${currentAccountEmail} | ${quotaMsg.substring(0, 200)}`,
-			);
+			// so outer account rotation can pick another one immediately.
+			if (isAccountUnavailableError(err)) {
+				const quotaMsg = err.message || "Unknown quota error";
+				const policy = classifyRetryAction(err);
+				
+				// Single account: retry once after delay before giving up
+				if (isSingleAccount && !quotaRetried && attemptsLeft > 0) {
+					quotaRetried = true;
+					console.warn(
+						`⚠️  [Chat] Quota exceeded | ${currentAccountEmail} | Retrying in ${config.retry.baseDelayMs}ms...`,
+					);
+					await new Promise((resolve) =>
+						setTimeout(resolve, config.retry.baseDelayMs),
+					);
+					continue;
+				}
 
-			// Single account: retry once after delay before giving up
-			if (isSingleAccount && !quotaRetried && attemptsLeft > 0) {
-				quotaRetried = true;
+				// Log consolidated quota error with cooldown info
+				const cooldownSeconds = policy.accountCooldownMs 
+					? Math.round(policy.accountCooldownMs / 1000)
+					: 0;
+				const cooldownUntil = policy.accountCooldownMs 
+					? new Date(Date.now() + policy.accountCooldownMs)
+					: null;
+				const untilStr = cooldownUntil 
+					? ` | until=${formatDateTimeBR(cooldownUntil.getTime())}`
+					: "";
+				
 				console.warn(
-					`🔄 [Chat] Single account mode | Retrying in ${config.retry.baseDelayMs}ms...`,
+					`⚠️  [Chat] Quota exceeded | ${currentAccountEmail} | cooldown=${cooldownSeconds}s${untilStr} | ${quotaMsg.substring(0, 150)}`,
 				);
-				await new Promise((resolve) =>
-					setTimeout(resolve, config.retry.baseDelayMs),
-				);
-				continue;
-			}
 
-			const policy = classifyRetryAction(err);
-			markAccountRateLimited(
-				currentAccountId,
-				policy.accountCooldownMs,
-				policy.accountCooldownReason || "QuotaExceeded",
-			);
-			return { success: false, error: err };
-		}
+				markAccountFailed(currentAccountId);
+				markAccountRateLimited(
+					currentAccountId,
+					policy.accountCooldownMs,
+					policy.accountCooldownReason || "QuotaExceeded",
+				);
+				return { success: false, error: err };
+			}
 
 		const policy = classifyRetryAction(err);
 

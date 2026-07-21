@@ -1,5 +1,6 @@
 import crypto from "crypto";
 import { mapClientModelToQwen } from "../../core/model-alias.ts";
+import { normalizeReasoningEffort, applyEffortToModel } from "./effort.ts";
 import type {
   ResponsesRequest,
   ResponsesResponse,
@@ -110,6 +111,32 @@ function extractText(content?: string | ResponsesContentPart[]): string {
 }
 
 /**
+ * Extract multimodal content parts (images/files) for chat completions.
+ */
+function extractMultimodalParts(
+  content: ResponsesContentPart[],
+): Array<{ type: string; image_url?: { url: string; detail?: string }; file_url?: { url: string; filename?: string } }> {
+  const parts: Array<{ type: string; image_url?: { url: string; detail?: string }; file_url?: { url: string; filename?: string } }> = [];
+  for (const p of content) {
+    if (p.type === "input_image" && p.image_url) {
+      parts.push({
+        type: "image_url",
+        image_url: { url: p.image_url, detail: p.detail || "auto" },
+      });
+    } else if (p.type === "input_file" && p.file) {
+      const fileData = p.file.file_data || p.file.file_id || "";
+      if (fileData) {
+        parts.push({
+          type: "file_url",
+          file_url: { url: fileData, filename: p.file.filename },
+        });
+      }
+    }
+  }
+  return parts;
+}
+
+/**
  * Convert Responses API request to OpenAI Chat Completions format.
  */
 type ResponsesRequestInput = {
@@ -168,7 +195,23 @@ export function responsesToChatCompletions(
       if (!("role" in msg)) continue;
 
       const msgRole = msg.role as string;
-      const content = extractText(msg.content as any);
+      const rawContent = msg.content as string | ResponsesContentPart[] | undefined;
+      const content = extractText(rawContent);
+
+      // Handle multimodal content (images/files)
+      if (Array.isArray(rawContent)) {
+        const multimodalParts = extractMultimodalParts(rawContent);
+        if (multimodalParts.length > 0) {
+          // Build content array with text + multimodal parts
+          const contentArray: Array<{ type: string; text?: string; image_url?: any; file_url?: any }> = [];
+          if (content) {
+            contentArray.push({ type: "text", text: content });
+          }
+          contentArray.push(...multimodalParts);
+          messages.push({ role: msgRole as any, content: contentArray as any });
+          continue;
+        }
+      }
 
       if (msgRole === "system" || msgRole === "developer") {
         messages.push({ role: "system", content });
@@ -219,6 +262,13 @@ export function responsesToChatCompletions(
     messages,
     stream: req.stream ?? false,
   };
+
+  // Apply reasoning effort to model selection
+  const rawEffort = req.reasoning?.effort ?? (req as any).reasoning_effort;
+  const normalizedEffort = normalizeReasoningEffort(rawEffort);
+  if (normalizedEffort) {
+    chatReq.model = applyEffortToModel(chatReq.model, normalizedEffort);
+  }
 
   if (tools) chatReq.tools = tools;
   if (toolChoice !== undefined) chatReq.tool_choice = toolChoice;
@@ -295,11 +345,17 @@ export function chatCompletionsToResponses(
     }
   }
 
-  // Build usage
+  // Build usage — always include details (Grok/serde requires them)
   const usage: ResponsesUsage = {
     input_tokens: chatRes.usage.prompt_tokens,
     output_tokens: chatRes.usage.completion_tokens,
     total_tokens: chatRes.usage.total_tokens,
+    input_tokens_details: {
+      cached_tokens: (chatRes.usage as any).prompt_tokens_details?.cached_tokens ?? 0,
+    },
+    output_tokens_details: {
+      reasoning_tokens: (chatRes.usage as any).completion_tokens_details?.reasoning_tokens ?? 0,
+    },
   };
 
   return {
@@ -317,6 +373,7 @@ export function chatCompletionsToResponses(
     top_p: originalRequest.top_p,
     max_output_tokens: originalRequest.max_output_tokens,
     previous_response_id: originalRequest.previous_response_id || null,
+    last_response_id: originalRequest.previous_response_id || null,
     metadata: originalRequest.metadata,
     user: originalRequest.user,
     error: null,
@@ -343,6 +400,8 @@ export function buildInProgressResponse(
       input_tokens: 0,
       output_tokens: 0,
       total_tokens: 0,
+      input_tokens_details: { cached_tokens: 0 },
+      output_tokens_details: { reasoning_tokens: 0 },
     },
     parallel_tool_calls: originalRequest.parallel_tool_calls,
     tool_choice: originalRequest.tool_choice ?? undefined,
@@ -351,6 +410,7 @@ export function buildInProgressResponse(
     top_p: originalRequest.top_p,
     max_output_tokens: originalRequest.max_output_tokens,
     previous_response_id: originalRequest.previous_response_id || null,
+    last_response_id: originalRequest.previous_response_id || null,
     metadata: originalRequest.metadata,
     user: originalRequest.user,
     error: null,

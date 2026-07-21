@@ -18,28 +18,7 @@ const modelContextWindows: Record<string, number> = {
   "qwen-plus-2025-07-28": 131072,
 };
 
-const modelTokenDivisors: Record<string, number> = {
-  "qwen3.8-max-preview": 2.2,
-  "qwen3.7-max": 2.2,
-  "qwen3.6-max-preview": 2.2,
-  "qwen3-max-2026-01-23": 2.2,
-  "qwen3.7-plus": 2.0,
-  "qwen3.6-plus": 2.0,
-  "qwen3.5-plus": 2.0,
-  "qwen-plus-2025-07-28": 2.0,
-  "qwen3.5-flash": 1.8,
-  "qwen3.5-omni-plus": 1.8,
-  "qwen3.5-omni-flash": 1.7,
-  "qwen3-omni-flash-2025-12-01": 1.7,
-  "qwen3.5-397b-a17b": 1.9,
-  "qwen3.6-35b-a3b": 1.9,
-  "qwen3.6-27b": 1.9,
-  "qwen3-coder-plus": 2.3,
-  "qwen3-vl-plus": 2.1,
-};
-
 const defaultContextWindow = 131072;
-const defaultTokenDivisor = 2.0;
 const defaultMaxOutputTokens = 8192;
 const defaultMaxThinkingTokens = 16384;
 export const MAX_PAYLOAD_SIZE = 50 * 1024 * 1024;
@@ -223,12 +202,6 @@ export function getModelContextWindow(modelId: string): number {
   return modelContextWindows[baseId] ?? defaultContextWindow;
 }
 
-export function getModelTokenDivisor(modelId: string): number {
-  // Remove both -thinking and -no-thinking suffixes to get base model ID
-  const baseId = modelId.replace("-no-thinking", "").replace("-thinking", "");
-  return modelTokenDivisors[baseId] ?? defaultTokenDivisor;
-}
-
 export function getModelCapabilities(modelId: string): ModelCapabilities {
   // Remove both -thinking and -no-thinking suffixes to get base model ID
   const baseId = modelId.replace("-no-thinking", "").replace("-thinking", "");
@@ -254,4 +227,21 @@ export function syncModelContextWindows(
       modelContextWindows[m.id] = m.context_window;
     }
   }
+}
+
+/**
+ * Strip -no-thinking suffix from a model ID.
+ */
+export function stripNoThinkingSuffix(modelId: string): string {
+  return modelId.replace(/-no-thinking$/, "");
+}
+
+/**
+ * Whether a model always has thinking enabled (cannot be disabled via effort).
+ * e.g. qwen3.8-max-preview has canSkipThinking: false.
+ */
+export function isAlwaysThinkingModel(modelId: string): boolean {
+  const base = modelId.replace(/-no-thinking$/, "").replace(/-thinking$/, "");
+  const caps = modelCapabilities[base];
+  return caps ? caps.canSkipThinking === false : false;
 }

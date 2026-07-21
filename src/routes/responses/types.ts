@@ -17,11 +17,12 @@ export interface ResponsesRequest {
   user?: string;
   metadata?: Record<string, string>;
   parallel_tool_calls?: boolean;
-  // Reasoning (optional, passthrough)
+  // Reasoning (optional, passthrough — accepts any string, normalized internally)
   reasoning?: {
-    effort?: "low" | "medium" | "high";
+    effort?: string;
     summary?: "auto" | "concise" | "detailed";
   } | null;
+  reasoning_effort?: string;
   text?: {
     verbosity?: "low" | "medium" | "high";
   } | null;
@@ -119,10 +120,12 @@ export interface ResponsesResponse {
   top_p?: number;
   max_output_tokens?: number;
   previous_response_id?: string | null;
+  /** ID of the last response in this conversation chain (for client memory) */
+  last_response_id?: string | null;
   metadata?: Record<string, string>;
   text?: { verbosity?: "low" | "medium" | "high"; format?: { type: "text" } };
   reasoning?: {
-    effort?: "low" | "medium" | "high";
+    effort?: string;
     summary?: "auto" | "concise" | "detailed";
   };
   truncation?: "auto" | "disabled";
@@ -133,11 +136,11 @@ export interface ResponsesUsage {
   input_tokens: number;
   output_tokens: number;
   total_tokens: number;
-  input_tokens_details?: {
-    cached_tokens?: number;
+  input_tokens_details: {
+    cached_tokens: number;
   };
-  output_tokens_details?: {
-    reasoning_tokens?: number;
+  output_tokens_details: {
+    reasoning_tokens: number;
   };
 }
 
@@ -178,12 +181,13 @@ export interface ResponsesOutputContentPart {
 // ============ Streaming event types ============
 
 export type ResponsesStreamEvent =
-  | { type: "response.created"; response: ResponsesResponse }
-  | { type: "response.in_progress"; response: ResponsesResponse }
+  | { type: "response.created"; response: ResponsesResponse; sequence_number?: number }
+  | { type: "response.in_progress"; response: ResponsesResponse; sequence_number?: number }
   | {
       type: "response.output_item.added";
       output_index: number;
       item: ResponsesOutputItem;
+      sequence_number?: number;
     }
   | {
       type: "response.content_part.added";
@@ -191,6 +195,7 @@ export type ResponsesStreamEvent =
       output_index: number;
       content_index: number;
       part: ResponsesOutputContentPart;
+      sequence_number?: number;
     }
   | {
       type: "response.output_text.delta";
@@ -198,6 +203,7 @@ export type ResponsesStreamEvent =
       output_index: number;
       content_index: number;
       delta: string;
+      sequence_number?: number;
     }
   | {
       type: "response.output_text.done";
@@ -205,6 +211,7 @@ export type ResponsesStreamEvent =
       output_index: number;
       content_index: number;
       text: string;
+      sequence_number?: number;
     }
   | {
       type: "response.content_part.done";
@@ -212,30 +219,56 @@ export type ResponsesStreamEvent =
       output_index: number;
       content_index: number;
       part: ResponsesOutputContentPart;
+      sequence_number?: number;
     }
   | {
       type: "response.output_item.done";
       output_index: number;
       item: ResponsesOutputItem;
+      sequence_number?: number;
     }
   | {
       type: "response.function_call_arguments.delta";
       item_id: string;
       output_index: number;
       delta: string;
+      sequence_number?: number;
     }
   | {
       type: "response.function_call_arguments.done";
       item_id: string;
       output_index: number;
       arguments: string;
+      sequence_number?: number;
+    }
+  | {
+      type: "response.reasoning_summary_part.added";
+      item_id: string;
+      output_index: number;
+      part: { type: "summary_text"; text: string };
+      sequence_number?: number;
     }
   | {
       type: "response.reasoning_summary_text.delta";
       item_id: string;
       output_index: number;
       delta: string;
+      sequence_number?: number;
     }
-  | { type: "response.completed"; response: ResponsesResponse }
-  | { type: "response.failed"; response: ResponsesResponse }
-  | { type: "error"; code: string; message: string };
+  | {
+      type: "response.reasoning_summary_text.done";
+      item_id: string;
+      output_index: number;
+      text: string;
+      sequence_number?: number;
+    }
+  | {
+      type: "response.reasoning_summary_part.done";
+      item_id: string;
+      output_index: number;
+      part: { type: "summary_text"; text: string };
+      sequence_number?: number;
+    }
+  | { type: "response.completed"; response: ResponsesResponse; sequence_number?: number }
+  | { type: "response.failed"; response: ResponsesResponse; sequence_number?: number }
+  | { type: "error"; code: string; message: string; sequence_number?: number };

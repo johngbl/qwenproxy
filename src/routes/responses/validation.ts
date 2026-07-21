@@ -115,11 +115,12 @@ const ResponsesRequestSchema = z.object({
   parallel_tool_calls: z.boolean().optional(),
   reasoning: z
     .object({
-      effort: z.enum(["low", "medium", "high"]).optional(),
+      effort: z.string().optional(),
       summary: z.enum(["auto", "concise", "detailed"]).optional(),
     })
     .nullable()
     .optional(),
+  reasoning_effort: z.string().optional(),
   text: z
     .object({
       verbosity: z.enum(["low", "medium", "high"]).optional(),

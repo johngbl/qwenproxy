@@ -714,7 +714,6 @@ export class StreamingToolParser {
   private activeIncrementalToolCall: ActiveIncrementalToolCall | null = null;
   private malformedToolCalls: Array<{
     contentPreview: string;
-    first100Chars: string;
     contentLength: number;
     timestamp: number;
   }> = [];
@@ -1541,26 +1540,14 @@ export class StreamingToolParser {
     // Never leak internal XML to user-visible content.
     // Restore lead-in text if no tools were emitted.
     const malformedInfo = {
-      contentPreview: t.substring(0, 500),
-      first100Chars: t.substring(0, 100),
+      contentPreview: t.substring(0, 150),
       contentLength: t.length,
       timestamp: Date.now(),
     };
     
     this.malformedToolCalls.push(malformedInfo);
     
-    logger.warn("[parser] Dropping malformed tool call block", {
-      contentPreview: malformedInfo.contentPreview,
-      hasName:
-        t.includes('"name"') || t.includes('"tool"') || t.includes("tool_name"),
-      hasArgs:
-        t.includes('"arguments"') ||
-        t.includes('"args"') ||
-        t.includes('"parameters"') ||
-        t.includes('"input"'),
-      first100Chars: malformedInfo.first100Chars,
-      contentLength: malformedInfo.contentLength,
-    });
+    logger.warn(`[parser] Dropping malformed tool call (${t.length} chars): ${t.substring(0, 80).replace(/\n/g, " ")}...`);
     if (
       this.emittedToolCallCount === 0 &&
       this.pendingLeadIn.trim().length > 0
