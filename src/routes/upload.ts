@@ -15,6 +15,15 @@ import { sendOpenAIError } from "../api/error-helpers.js";
 import { buildQwenRequestHeaders } from "../services/qwen-headers.ts";
 import { config } from "../core/config.ts";
 
+// Cache the heavy ali-oss module so we import it once, not on every upload.
+let cachedOSSModule: any = null;
+async function getOSSModule() {
+  if (!cachedOSSModule) {
+    cachedOSSModule = (await import("ali-oss")).default;
+  }
+  return cachedOSSModule;
+}
+
 interface STSResponse {
   success: boolean;
   request_id: string;
@@ -436,7 +445,7 @@ async function uploadToOSS(
     endpoint,
   } = stsData;
 
-  const OSS = (await import("ali-oss")).default;
+  const OSS = await getOSSModule();
   const client = new OSS({
     region,
     accessKeyId: access_key_id,

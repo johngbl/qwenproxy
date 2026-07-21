@@ -653,6 +653,23 @@ export async function processStreamingResponse(
 
     c.req.raw.signal.addEventListener("abort", abortHandler);
 
+    // Micro-buffer: coalesce many tiny SSE writes into fewer socket writes to cut
+    // syscall overhead on long responses. Ordering is preserved because EVERY write
+    // (content, reasoning, events, [DONE]) goes through this single buffer.
+    let writeBuffer = '';
+    let writeTimer: ReturnType<typeof setTimeout> | null = null;
+    const WRITE_FLUSH_BYTES = 8192;
+    const WRITE_FLUSH_MS = 3;
+
+    const flushWrites = () => {
+      if (writeTimer) { clearTimeout(writeTimer); writeTimer = null; }
+      if (writeBuffer) {
+        const data = writeBuffer;
+        writeBuffer = '';
+        streamWriter.write(data);
+      }
+    };
+
     try {
       await streamWriter.write(": heartbeat\n\n");
 
@@ -674,6 +691,15 @@ export async function processStreamingResponse(
 
       const createdTimestamp = Math.floor(Date.now() / 1000);
 
+      const bufferedWrite = (data: string) => {
+        writeBuffer += data;
+        if (writeBuffer.length >= WRITE_FLUSH_BYTES) {
+          flushWrites();
+        } else if (!writeTimer) {
+          writeTimer = setTimeout(flushWrites, WRITE_FLUSH_MS);
+        }
+      };
+
       // Batch buffer: when non-null, writeEvent accumulates instead of flushing
       let flushBuffer: string[] | null = null;
 
@@ -683,7 +709,7 @@ export async function processStreamingResponse(
           flushBuffer.push(serialized);
           return;
         }
-        await streamWriter.write(serialized);
+        bufferedWrite(serialized);
       };
 
       const makeChoice = (delta: any, finishReason: string | null = null) => ({
@@ -1236,6 +1262,7 @@ export async function processStreamingResponse(
           });
         }
 
+        flushWrites();
         await streamWriter.write(payload);
         flushBuffer = null;
 
@@ -1331,6 +1358,8 @@ export async function processStreamingResponse(
           clientDisconnected,
         });
       }
+
+      flushWrites();
 
       c.req.raw.signal.removeEventListener("abort", abortHandler);
       if (heartbeatTimeout) {

@@ -18,7 +18,7 @@ function buildDeltaResult(delta: string, matchedContent: string): DeltaResult {
     delta,
     matchedContent,
     contentLength: matchedContent.length,
-    contentSuffix: matchedContent.slice(-64),
+    contentSuffix: matchedContent.slice(-32),
   };
 }
 
@@ -26,7 +26,7 @@ export function getIncrementalDelta(
   oldStr: string,
   newStr: string,
   previousLength = oldStr.length,
-  previousSuffix = oldStr.slice(-64),
+  previousSuffix = oldStr.slice(-32),
 ): DeltaResult {
   if (!oldStr) {
     return buildDeltaResult(newStr, newStr);
@@ -37,8 +37,9 @@ export function getIncrementalDelta(
 
   // Fast path for cumulative Qwen chunks: validate the old boundary using a
   // short suffix instead of scanning the whole previous content with startsWith.
+  // Using 32-byte window (O(1)) since Qwen streams with incremental_output=true.
   if (newStr.length > previousLength && previousLength > 0) {
-    const checkLen = Math.min(64, previousLength, previousSuffix.length);
+    const checkLen = Math.min(32, previousLength, previousSuffix.length);
     const expectedSuffix = previousSuffix.slice(-checkLen);
     const actualSuffix = newStr.slice(
       previousLength - checkLen,
