@@ -505,13 +505,9 @@ export async function startServer(options?: {
     const accountCount = accounts.length;
     const readyCount = accounts.filter(acc => !getAccountCooldownInfo(acc.id)).length;
 
-    // API key display: mask middle chars for security
+    // API key display: just show if it's set or not
     const apiKey = process.env.API_KEY || config.apiKey;
-    const apiKeyDisplay = apiKey
-      ? apiKey.length > 8
-        ? `${apiKey.slice(0, 4)}${"*".repeat(Math.max(4, apiKey.length - 8))}${apiKey.slice(-4)}`
-        : "*".repeat(apiKey.length)
-      : "Not set";
+    const apiKeyDisplay = apiKey ? "Set" : "Not set";
 
     // Use only fixed-width chars (ASCII + ●) to guarantee perfect alignment
     // across all terminals (emojis vary between 1-2 cell widths unpredictably)
