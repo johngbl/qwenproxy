@@ -103,9 +103,6 @@ export async function chatCompletions(c: Context) {
 
     const personalizationChars =
       ctx.requestPersonalizationInstruction?.length ?? 0;
-    console.log(
-      `📤 [Chat] Request | ${body.model} | ${msgCount} msg(s) | ${finalPrompt.length} chars${declaredTools.length ? ` | ${declaredTools.length} tool(s)` : ""}${files.length ? ` | ${files.length} file(s)` : ""}`,
-    );
     logger.debug("[chat] request routing details", {
       model: body.model,
       messages: msgCount,
@@ -179,6 +176,10 @@ export async function chatCompletions(c: Context) {
       }
       throw streamResult.error || new Error("All accounts failed");
     }
+
+    console.log(
+      `📤 [Chat] Request | ${streamResult.activeAccountLabel} | ${body.model} | ${msgCount} msg(s) | ${finalPrompt.length} chars${declaredTools.length ? ` | ${declaredTools.length} tool(s)` : ""}${files.length ? ` | ${files.length} file(s)` : ""}`,
+    );
 
     const onAssistantComplete: ((event: AssistantCompleteEvent) => Promise<void> | void) | undefined = undefined;
 
