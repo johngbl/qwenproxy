@@ -509,10 +509,6 @@ export async function initPlaywrightForAccount(
       // Capture headers by navigating and intercepting
       await captureHeaders(account.id);
       touchAccountActivity(account.id);
-
-      if (didLogin) {
-        console.log(`✅ [Playwright] Login successful for ${maskEmail(account.email)}`);
-      }
     } catch (error) {
       await closePlaywrightContextBestEffort(account.id, acctContext);
       cleanupPlaywrightAccountState(account.id);

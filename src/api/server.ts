@@ -261,6 +261,7 @@ async function prepareAccountRuntime(
 async function prepareRemainingAccountsInBackground(params: {
   accounts: QwenAccount[];
   batchSize: number;
+  totalAccounts: number;
   getAccountCredentials: (accountId: string) => QwenAccount | undefined;
   initPlaywrightForAccount: (
     account: QwenAccount,
@@ -276,23 +277,34 @@ async function prepareRemainingAccountsInBackground(params: {
   const remaining = params.accounts;
   if (remaining.length === 0) return;
 
-  let ready = 0;
+  // First account was already prepared successfully (displayed as 1/N),
+  // so remaining accounts start at display index 2.
+  let nextDisplayIndex = 2;
   for (let i = 0; i < remaining.length; i += params.batchSize) {
     const batch = remaining.slice(i, i + params.batchSize);
-    const results = await Promise.all(
-      batch.map((account) =>
+    const batchDisplayStart = nextDisplayIndex;
+    nextDisplayIndex += batch.length;
+
+    await Promise.all(
+      batch.map((account, batchIndex) =>
         prepareAccountRuntime(
           account,
           params.getAccountCredentials,
           params.initPlaywrightForAccount,
           params.disableNativeTools,
           params.warmQwenChatPool,
-        ),
+        ).then((ok) => {
+          if (ok) {
+            const displayIndex = batchDisplayStart + batchIndex;
+            console.log(
+              `✅ [Server] Account ready (${displayIndex}/${params.totalAccounts}): ${maskEmail(account.email)}`,
+            );
+          }
+          return ok;
+        }),
       ),
     );
-    ready += results.filter(Boolean).length;
   }
-
 }
 
 async function cleanupServerResources(): Promise<void> {
@@ -405,7 +417,7 @@ export async function startServer(options?: {
     await cache.connect();
 
     if (!config.apiKey && config.server.host === "0.0.0.0") {
-      console.warn("⚠️  [Server] API is unauthenticated on 0.0.0.0");
+      // API key status will be shown in startup banner
     }
 
     const { loadAccounts, getAccountCredentials } =
@@ -427,6 +439,7 @@ export async function startServer(options?: {
 
     if (accounts.length > 0) {
       let readyAccountIndex = -1;
+      const totalAccounts = accounts.length;
       for (let i = 0; i < accounts.length; i++) {
         const ok = await prepareAccountRuntime(
           accounts[i],
@@ -436,6 +449,7 @@ export async function startServer(options?: {
           warmQwenChatPool,
         );
         if (ok) {
+          console.log(`✅ [Server] Account ready (${i + 1}/${totalAccounts}): ${maskEmail(accounts[i].email)}`);
           readyAccountIndex = i;
           break;
         }
@@ -452,6 +466,7 @@ export async function startServer(options?: {
       void prepareRemainingAccountsInBackground({
         accounts: remainingAccounts,
         batchSize: BATCH_SIZE,
+        totalAccounts,
         getAccountCredentials,
         initPlaywrightForAccount,
         disableNativeTools,
@@ -490,20 +505,46 @@ export async function startServer(options?: {
     const accountCount = accounts.length;
     const readyCount = accounts.filter(acc => !getAccountCooldownInfo(acc.id)).length;
 
+    // API key display: mask middle chars for security
+    const apiKey = process.env.API_KEY || config.apiKey;
+    const apiKeyDisplay = apiKey
+      ? apiKey.length > 8
+        ? `${apiKey.slice(0, 4)}${"*".repeat(Math.max(4, apiKey.length - 8))}${apiKey.slice(-4)}`
+        : "*".repeat(apiKey.length)
+      : "Not set";
+
+    // Use only fixed-width chars (ASCII + ●) to guarantee perfect alignment
+    // across all terminals (emojis vary between 1-2 cell widths unpredictably)
+    const W = 58; // inner width (60 minus 2 border chars)
+    const center = (text: string): string => {
+      const padLeft = Math.floor((W - text.length) / 2);
+      const padRight = W - text.length - padLeft;
+      return " ".repeat(padLeft) + text + " ".repeat(padRight);
+    };
+    const blank = () => " ".repeat(W);
+    const row = (label: string, value: string): string => {
+      const labelCol = (label + " ".repeat(Math.max(0, 12 - label.length)));
+      const valCol = value + " ".repeat(Math.max(0, W - 14 - value.length));
+      return "  " + labelCol + valCol;
+    };
+
+    const endpoint = `${started.url}/v1`;
+
     console.log(`
-╭────────────────────────────────────────────────────────────╮
-│                                                            │
-│                    ⚡ QwenBridge ⚡                         │
-│                   OpenAI-Compatible API                    │
-│                                                            │
-├────────────────────────────────────────────────────────────┤
-│                                                            │
-│  🌐 Endpoint    ${started.url.padEnd(40)}│
-│  🔌 Port        ${String(started.port).padEnd(40)}│
-│  👥 Accounts    ${String(readyCount).padEnd(2)}/${String(accountCount).padEnd(2)} ready${" ".repeat(30)}│
-│  📊 Status      ● Online${" ".repeat(36)}│
-│                                                            │
-╰────────────────────────────────────────────────────────────╯
++${"-".repeat(W)}+
+|${blank()}|
+|${center("QwenBridge")}|
+|${center("OpenAI-Compatible API")}|
+|${blank()}|
++${"-".repeat(W)}+
+|${blank()}|
+|${row("Endpoint", endpoint)}|
+|${row("Port", String(started.port))}|
+|${row("Accounts", `${readyCount}/${accountCount}`)}|
+|${row("API Key", apiKeyDisplay)}|
+|${row("Status", "● Online")}|
+|${blank()}|
++${"-".repeat(W)}+
 `);
     return started;
   })();
