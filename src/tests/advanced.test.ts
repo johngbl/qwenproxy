@@ -412,7 +412,7 @@ test("session-parent-tracking (stream): next turn parent is previous response_id
   }
 });
 
-test("thread-native: keeps system and tools out of chat content without replaying history", async () => {
+test("thread-native: includes system and tools in first message, excludes from continuations", async () => {
   const capturedPayloads: any[] = [];
 
   const restore = setupFetchMock((url, init) => {
@@ -490,10 +490,14 @@ test("thread-native: keeps system and tools out of chat content without replayin
     assert.equal(typeof capturedPayloads[0].chat_id, "string");
     assert.ok(capturedPayloads[0].chat_id.length > 0);
     assert.strictEqual(capturedPayloads[1].chat_id, "qwen-chat-first-only");
-    assert.strictEqual(firstContent, "User: Turn 1\n\n");
+    
+    // First message (new chat) includes system prompt and tools
+    assert.ok(firstContent.includes("FIRST_ONLY_SYSTEM_MARKER"), "First message should include system prompt");
+    assert.ok(firstContent.includes("first_only_tool_marker"), "First message should include tools");
+    assert.ok(firstContent.includes("User: Turn 1"), "First message should include user content");
+    
+    // Continuation message excludes system prompt, tools, and history replay
     assert.strictEqual(secondContent, "User: Turn 2\n\n");
-    assert.ok(!firstContent.includes("FIRST_ONLY_SYSTEM_MARKER"));
-    assert.ok(!firstContent.includes("first_only_tool_marker"));
     assert.ok(!secondContent.includes("FIRST_ONLY_SYSTEM_MARKER"));
     assert.ok(!secondContent.includes("first_only_tool_marker"));
     assert.ok(!secondContent.includes("User: Turn 1"));
