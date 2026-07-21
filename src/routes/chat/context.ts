@@ -91,10 +91,11 @@ export async function buildFinalContext(
     systemPrompt + activePrompt,
     modelId,
   );
-  // Normally, system/tool instructions are prepended to the chat prompt. In the
-  // experimental Qwen personalization mode, they are synced to the account-level
-  // personalization.instruction instead, so they do not appear as chat content.
-  const shouldSendInstructions = !useRequestPersonalization;
+  // Send instructions in prompt for NEW chats to establish context immediately,
+  // even when personalization is active. For continuations, rely on account-level
+  // personalization to avoid redundancy.
+  const isNewChat = !existingThread;
+  const shouldSendInstructions = !useRequestPersonalization || isNewChat;
 
   const finalPrompt =
     shouldSendInstructions && systemPrompt
