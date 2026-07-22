@@ -101,7 +101,6 @@ export function isTerminalLocalError(err: unknown): boolean {
 
   if (
     code === "invalid_api_key" ||
-    code === "bad_request" ||
     code === "authentication_error" ||
     message.includes("missing or invalid authorization") ||
     message.includes("invalid api key") ||
@@ -110,6 +109,21 @@ export function isTerminalLocalError(err: unknown): boolean {
     message.includes("no qwen accounts configured")
   ) {
     return true;
+  }
+
+  // bad_request from Qwen upstream is NOT terminal — it's a corrupted chat
+  // or invalid payload that can be recovered with a new chat + full prompt.
+  // Only treat as terminal when it's clearly a local proxy validation error.
+  if (code === "bad_request") {
+    const isQwenUpstream =
+      message.includes("qwen") ||
+      message.includes("upstream") ||
+      message.includes("invalid input") ||
+      message.includes("first message must not") ||
+      message.includes("entrada ou anexo");
+    if (!isQwenUpstream) {
+      return true;
+    }
   }
 
   return false;
@@ -232,6 +246,21 @@ export function isChatInProgressError(err: unknown): boolean {
 }
 
 /**
+ * Corrupted chat history: Qwen rejects because the first message in the
+ * upstream chat thread is an assistant message (broken parent_id chain).
+ * Recovery: force new chat + resend full prompt + switch account.
+ */
+export function isCorruptedChatHistoryError(err: unknown): boolean {
+  const message = errMessage(err).toLowerCase();
+  return (
+    message.includes("first message must not") ||
+    message.includes("first message must be") ||
+    message.includes("must not assistant message") ||
+    message.includes("must not be assistant")
+  );
+}
+
+/**
  * Generic recovery policy for create-stream + mid-stream failures.
  * Unknown upstream errors are retryable by default when enabled in config.
  */
@@ -275,6 +304,18 @@ export function classifyRetryAction(
   }
 
   // Specialized recoveries first (even if wrapped as RetryableQwenStreamError)
+    // Corrupted chat history must win over broad "invalid input" matches.
+    if (isCorruptedChatHistoryError(err)) {
+      return {
+        retryable: true,
+        switchAccount: true,
+        forceNewChat: true,
+        retryWithFullPrompt: true,
+        retryAfterMs: 0,
+        reason: "corrupted_chat_history",
+      };
+    }
+
     // Chat missing must win over broad "invalid input" substring matches.
     if (isChatNotExistError(err) || isChatInProgressError(err)) {
       const typed = err as RetryableStreamError;
