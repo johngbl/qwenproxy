@@ -772,7 +772,14 @@ test("stream: malformed nameless tool_call restores lead-in text", async () => {
     assert.strictEqual(res.status, 200);
 
     const result = await collectStreamResult(res);
-    assert.strictEqual(result.content, "Need tool result: ");
+    assert.ok(
+      result.content.startsWith("Need tool result: "),
+      `Expected content to start with lead-in text, got: ${result.content}`,
+    );
+    assert.ok(
+      result.content.includes("[ERROR]"),
+      `Expected error feedback for malformed tool call, got: ${result.content}`,
+    );
     assert.strictEqual(result.toolCalls.length, 0);
     assert.strictEqual(result.finishReason, "stop");
   } finally {
