@@ -637,21 +637,21 @@ async function tryCreateStreamWithRetry(
 				}
 
 				result = await createQwenStream(
-					params.finalPrompt,
-					params.isThinkingModel,
-					params.model,
-					threadParentId,
-					currentAccountId === "global" ? undefined : currentAccountId,
-					params.allFiles.length > 0 ? params.allFiles : undefined,
-					params.forceNewChat || params.useThreadNative
-						? {
-								chatSessionId: params.forceNewChat
-									? null
-									: (params.existingThread?.chatSessionId ?? null),
-								forceNewChat: false,
-							}
-						: undefined,
-				);
+						params.finalPrompt,
+						params.isThinkingModel,
+						params.model,
+						threadParentId,
+						currentAccountId === "global" ? undefined : currentAccountId,
+						params.allFiles.length > 0 ? params.allFiles : undefined,
+						params.forceNewChat || params.useThreadNative
+							? {
+									chatSessionId: params.forceNewChat
+										? null
+										: (params.existingThread?.chatSessionId ?? null),
+									forceNewChat: false,
+								}
+							: undefined,
+					);
 			} finally {
 				releasePersonalization?.();
 			}
@@ -863,6 +863,19 @@ async function tryCreateStreamWithRetry(
 			params.finalPrompt = params.fullPrompt;
 			params.messageCount = params.fullMessageCount ?? params.messageCount;
 			params.forceNewChat = true;
+		}
+
+		// Drop files on retry for invalid_input to isolate file-related errors
+		if (policy.dropFiles && params.allFiles.length > 0) {
+			console.warn(
+				`🗂️  [Chat] Dropping ${params.allFiles.length} file(s) on retry to isolate invalid_input error:`,
+				params.allFiles.map((f) => ({
+						name: f.name,
+						type: f.type,
+						size: f.size ?? "unknown",
+					})),
+			);
+			params.allFiles = [];
 		}
 
 		if (!policy.retryable || attemptsLeft <= 0) {

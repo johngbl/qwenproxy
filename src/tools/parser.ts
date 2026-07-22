@@ -716,6 +716,7 @@ export class StreamingToolParser {
     contentPreview: string;
     contentLength: number;
     timestamp: number;
+    undeclaredNames?: string[];
   }> = [];
 
   /**

@@ -28,6 +28,8 @@ export type RetryAction = {
   forceNewChat: boolean;
   /** Resend full conversation context (not just delta) */
   retryWithFullPrompt: boolean;
+  /** Drop attached files on retry (for invalid_input caused by bad attachments) */
+  dropFiles?: boolean;
   /** Suggested delay before next attempt */
   retryAfterMs: number;
   /** Optional short cooldown for the failing account */
@@ -43,6 +45,7 @@ export type RetryableStreamError = RetryableQwenStreamError & {
   forceNewChat?: boolean;
   retryWithFullPrompt?: boolean;
   switchAccount?: boolean;
+  dropFiles?: boolean;
 };
 
 function errMessage(err: unknown): string {
@@ -341,6 +344,7 @@ export function classifyRetryAction(
         retryWithFullPrompt: true,
         retryAfterMs: typed.retryAfterMs ?? baseDelayMs,
         reason: "invalid_input",
+        dropFiles: typed.dropFiles,
       };
     }
 
@@ -466,6 +470,7 @@ export function toRetryableStreamError(
   error.forceNewChat = merged.forceNewChat;
   error.retryWithFullPrompt = merged.retryWithFullPrompt;
   error.switchAccount = merged.switchAccount;
+  error.dropFiles = merged.dropFiles;
   return error;
 }
 
@@ -474,33 +479,68 @@ export function throwFromSseUpstreamError(
   errCode: string,
   errDetails: string,
 ): never {
-  console.error(
-    `[Upstream] Error | ${errCode} | ${errDetails.substring(0, 200)}`,
-  );
+  // Log full error details for debugging invalid_input errors
+  if (errCode.toLowerCase() === "invalid_input") {
+    console.error(
+      `[Upstream] invalid_input error details:`,
+      JSON.stringify(
+        {
+          code: errCode,
+          details: errDetails,
+          detailsLength: errDetails.length,
+          preview: errDetails.substring(0, 500),
+        },
+        null,
+        2,
+      ),
+    );
+  } else {
+    console.error(
+      `[Upstream] Error | ${errCode} | ${errDetails.substring(0, 200)}`,
+    );
+  }
 
   // invalid_input keeps dedicated wording for logs/tests (not "chat is not exist")
-    const detailsLower = errDetails.toLowerCase();
-    const isChatMissing =
-      detailsLower.includes("is not exist") ||
-      detailsLower.includes("does not exist") ||
-      /\bnot exist\b/.test(detailsLower);
-    if (
-      !isChatMissing &&
-      (errCode.toLowerCase() === "invalid_input" ||
-        detailsLower.includes("entrada ou anexo inválido") ||
-        detailsLower.includes("invalid input") ||
-        detailsLower.includes("invalid attachment"))
-    ) {
-      const error = new RetryableQwenStreamError(
-        `Qwen retryable invalid input: ${errCode}: ${errDetails.substring(0, 200)}`,
-        config.retry.baseDelayMs,
-      ) as RetryableStreamError;
-      error.upstreamCode = errCode;
-      error.forceNewChat = true;
-      error.retryWithFullPrompt = true;
-      error.switchAccount = true;
-      throw error;
-    }
+  const detailsLower = errDetails.toLowerCase();
+  const isChatMissing =
+    detailsLower.includes("is not exist") ||
+    detailsLower.includes("does not exist") ||
+    /\bnot exist\b/.test(detailsLower);
+  if (
+    !isChatMissing &&
+    (errCode.toLowerCase() === "invalid_input" ||
+      detailsLower.includes("entrada ou anexo inválido") ||
+      detailsLower.includes("invalid input") ||
+      detailsLower.includes("invalid attachment"))
+  ) {
+    // Detailed diagnostic logging for invalid_input errors
+    console.error(
+      `[Upstream] invalid_input mid-stream detected:`,
+      JSON.stringify(
+        {
+          code: errCode,
+          details: errDetails,
+          detailsLength: errDetails.length,
+          containsAttachment: detailsLower.includes("anexo") || detailsLower.includes("attachment"),
+          containsFile: detailsLower.includes("file") || detailsLower.includes("arquivo"),
+          timestamp: new Date().toISOString(),
+        },
+        null,
+        2,
+      ),
+    );
+
+    const error = new RetryableQwenStreamError(
+      `Qwen retryable invalid input: ${errCode}: ${errDetails.substring(0, 200)}`,
+      config.retry.baseDelayMs,
+    ) as RetryableStreamError;
+    error.upstreamCode = errCode;
+    error.forceNewChat = true;
+    error.retryWithFullPrompt = true;
+    error.switchAccount = true;
+    error.dropFiles = true; // Drop files on retry to isolate file-related errors
+    throw error;
+  }
 
   if (
     errDetails.includes("FAIL_SYS_USER_VALIDATE") ||

@@ -438,8 +438,20 @@ export async function processNonStreamingResponse(
 
     // Check for malformed tool calls and inject error feedback
     if (toolParser && toolParser.getMalformedToolCalls().length > 0) {
-      const malformedCount = toolParser.getMalformedToolCalls().length;
-      const errorMessage = `\n\n⚠️ [ERROR] ${malformedCount} tool call(s) were malformed and could not be executed. The model generated invalid JSON. Please retry the request.\n\n`;
+      const malformedCalls = toolParser.getMalformedToolCalls();
+      const malformedCount = malformedCalls.length;
+      
+      // Build detailed error message
+      const undeclaredNames = malformedCalls
+        .flatMap((mc) => mc.undeclaredNames || [])
+        .filter((name, index, self) => self.indexOf(name) === index);
+      
+      let errorMessage: string;
+      if (undeclaredNames.length > 0) {
+        errorMessage = `\n\n⚠️ [ERROR] ${malformedCount} tool call(s) used undeclared tool names: ${undeclaredNames.join(", ")}. Only declared tools can be executed. Please retry with valid tool names.\n\n`;
+      } else {
+        errorMessage = `\n\n⚠️ [ERROR] ${malformedCount} tool call(s) were malformed and could not be executed. The model generated invalid JSON. Please retry the request.\n\n`;
+      }
       
       finalContent += errorMessage;
       if (message.content) {
@@ -450,6 +462,7 @@ export async function processNonStreamingResponse(
       
       logger.debug("[chat] non-stream: injected malformed tool call error feedback", {
         malformedCount,
+        undeclaredNames,
         completionId,
       });
       
@@ -1264,8 +1277,20 @@ export async function processStreamingResponse(
       if (!clientDisconnected) {
         // Check for malformed tool calls and inject error feedback
         if (toolParser && toolParser.getMalformedToolCalls().length > 0) {
-          const malformedCount = toolParser.getMalformedToolCalls().length;
-          const errorMessage = `\n\n⚠️ [ERROR] ${malformedCount} tool call(s) were malformed and could not be executed. The model generated invalid JSON. Please retry the request.\n\n`;
+          const malformedCalls = toolParser.getMalformedToolCalls();
+          const malformedCount = malformedCalls.length;
+          
+          // Build detailed error message
+          const undeclaredNames = malformedCalls
+            .flatMap((mc) => mc.undeclaredNames || [])
+            .filter((name, index, self) => self.indexOf(name) === index);
+          
+          let errorMessage: string;
+          if (undeclaredNames.length > 0) {
+            errorMessage = `\n\n⚠️ [ERROR] ${malformedCount} tool call(s) used undeclared tool names: ${undeclaredNames.join(", ")}. Only declared tools can be executed. Please retry with valid tool names.\n\n`;
+          } else {
+            errorMessage = `\n\n⚠️ [ERROR] ${malformedCount} tool call(s) were malformed and could not be executed. The model generated invalid JSON. Please retry the request.\n\n`;
+          }
           
           await writeEvent({
             id: completionId,
@@ -1277,6 +1302,7 @@ export async function processStreamingResponse(
           
           logger.debug("[chat] stream: injected malformed tool call error feedback", {
             malformedCount,
+            undeclaredNames,
             completionId,
           });
           
