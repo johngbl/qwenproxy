@@ -14,8 +14,6 @@ import {
   updateLogicalThreadParent,
   updateSessionParent,
   RetryableQwenStreamError,
-  updateLogicalThreadState,
-  getLogicalThreadState,
 } from "../../services/qwen.ts";
 import { acquireUpstreamStream } from "./account.ts";
 import { markAccountRateLimited } from "../../core/account-manager.ts";
@@ -121,6 +119,21 @@ export interface StreamProcessingParams {
   shouldParseToolCalls: boolean;
   declaredTools: any[];
   tokenEstimationContext?: TokenEstimationContext;
+  midStreamRetry?: {
+    fullPrompt: string;
+    isThinkingModel: boolean;
+    allFiles: any[];
+    isNewSession: boolean;
+    sessionId: string | null;
+    useThreadNative: boolean;
+    updateLogicalThread: boolean;
+    allowThreadReuse: boolean;
+    messageCount: number;
+    fullMessageCount: number;
+    toolsCount?: number;
+    requestPersonalizationInstruction?: string | null;
+    releaseAccountLease: () => void;
+  };
   onAssistantComplete?: AssistantCompleteHandler;
   onStreamComplete?: () => void;
 }
@@ -446,32 +459,32 @@ export async function processNonStreamingResponse(
     if (toolParser && toolParser.getMalformedToolCalls().length > 0) {
       const malformedCalls = toolParser.getMalformedToolCalls();
       const malformedCount = malformedCalls.length;
-      
+
       // Build detailed error message
       const undeclaredNames = malformedCalls
         .flatMap((mc) => mc.undeclaredNames || [])
         .filter((name, index, self) => self.indexOf(name) === index);
-      
+
       let errorMessage: string;
       if (undeclaredNames.length > 0) {
         errorMessage = `\n\n⚠️ [ERROR] ${malformedCount} tool call(s) used undeclared tool names: ${undeclaredNames.join(", ")}. Only declared tools can be executed. Please retry with valid tool names.\n\n`;
       } else {
         errorMessage = `\n\n⚠️ [ERROR] ${malformedCount} tool call(s) were malformed and could not be executed. The model generated invalid JSON. Please retry the request.\n\n`;
       }
-      
+
       finalContent += errorMessage;
       if (message.content) {
         message.content += errorMessage;
       } else {
         message.content = errorMessage;
       }
-      
+
       logger.debug("[chat] non-stream: injected malformed tool call error feedback", {
         malformedCount,
         undeclaredNames,
         completionId,
       });
-      
+
       toolParser.clearMalformedToolCalls();
     }
 
@@ -554,6 +567,7 @@ export async function processStreamingResponse(
     shouldParseToolCalls,
     declaredTools,
     tokenEstimationContext,
+    midStreamRetry,
     onAssistantComplete,
     onStreamComplete,
   } = params;
@@ -612,9 +626,8 @@ export async function processStreamingResponse(
     activeAccountId,
     activeAccountLabel: activeAccountLabel || activeAccountId,
     uiSessionId,
-    stream,
     retriesLeft: Math.max(0, config.retry.maxAttempts - 1),
-    releaseAccountLease: null as (() => void) | null,
+    releaseAccountLease: midStreamRetry?.releaseAccountLease ?? null,
   };
 
   return honoStream(c, async (streamWriter: any) => {
@@ -785,6 +798,7 @@ export async function processStreamingResponse(
       let lastRawContentSuffix = "";
       let finalContent = "";
       let reasoningBuffer = "";
+      let emittedModelOutput = false;
       let targetResponseId: string | null = null;
       const toolParser = shouldParseToolCalls
         ? new StreamingToolParser(declaredTools, {
@@ -802,16 +816,17 @@ export async function processStreamingResponse(
 
       const rememberParent = (parentId: string) => {
         if (!currentUiSessionId) return;
-        updateSessionParent(currentUiSessionId, parentId, activeAccountId);
+        updateSessionParent(currentUiSessionId, parentId, currentAccountId);
         updateLogicalThreadParent(
           logicalSessionId,
           parentId,
-          activeAccountId,
+          currentAccountId,
           currentUiSessionId,
         );
       };
 
       const emitAnswerText = async (textChunk: string) => {
+        if (textChunk) emittedModelOutput = true;
         if (!toolParser) {
           finalContent += textChunk;
           await writeEvent({
@@ -825,6 +840,9 @@ export async function processStreamingResponse(
         }
 
         const { text, toolCalls, toolCallDeltas } = toolParser.feed(textChunk);
+        if (text || toolCalls.length > 0 || toolCallDeltas.length > 0) {
+          emittedModelOutput = true;
+        }
 
         if (
           isToolcallDebugEnabled() &&
@@ -1094,6 +1112,7 @@ export async function processStreamingResponse(
               if (vStr === "FINISHED") continue;
 
               if (isThinkingChunk) {
+                emittedModelOutput = true;
                 reasoningBuffer += vStr;
                 await writeEvent({
                   id: completionId,
@@ -1107,143 +1126,114 @@ export async function processStreamingResponse(
               }
             }
           } catch (_e) {
-                      // Transparent mid-stream retry: acquire new stream and continue
-                      if (_e instanceof RetryableQwenStreamError && retryContext.retriesLeft > 0) {
-                        const policy = classifyRetryAction(_e);
-                        if (policy.retryable) {
-                          retryContext.retriesLeft--;
-                          
-                          console.warn(
-                            `[Chat] Stream mid-stream error, retrying transparently | reason=${policy.reason} | ${_e.message?.substring(0, 150)} | retries left: ${retryContext.retriesLeft}`,
-                          );
+            if (
+              _e instanceof RetryableQwenStreamError &&
+              retryContext.retriesLeft > 0 &&
+              midStreamRetry &&
+              !emittedModelOutput
+            ) {
+              const policy = classifyRetryAction(_e);
+              if (policy.retryable) {
+                retryContext.retriesLeft--;
+                console.warn(
+                  `[Chat] Stream mid-stream error, retrying transparently | reason=${policy.reason} | ${_e.message?.substring(0, 150)} | retries left: ${retryContext.retriesLeft}`,
+                );
 
-                          // Mark account cooldown if policy requests it
-                          if (policy.accountCooldownMs || policy.accountCooldownReason) {
-                            markAccountRateLimited(
-                              currentAccountId,
-                              policy.accountCooldownMs || 0,
-                              policy.accountCooldownReason || "StreamRetry",
-                            );
-                          }
+                if (policy.accountCooldownMs || policy.accountCooldownReason) {
+                  markAccountRateLimited(
+                    currentAccountId,
+                    policy.accountCooldownMs,
+                    policy.accountCooldownReason || "StreamRetry",
+                  );
+                }
 
-                          // Release current account lease before switching
-                          if (retryContext.releaseAccountLease) {
-                            retryContext.releaseAccountLease();
-                            retryContext.releaseAccountLease = null;
-                          }
+                retryContext.releaseAccountLease?.();
+                retryContext.releaseAccountLease = null;
+                await reader.cancel().catch(() => undefined);
+                removeStream(completionId);
 
-                          // Wait for retry delay
-                          if (policy.retryAfterMs > 0) {
-                            await new Promise((resolve) =>
-                              setTimeout(resolve, Math.min(policy.retryAfterMs, 3000)),
-                            );
-                          }
+                if (policy.retryAfterMs > 0) {
+                  await new Promise((resolve) =>
+                    setTimeout(resolve, Math.min(policy.retryAfterMs, 3000)),
+                  );
+                }
 
-                          // Determine retry strategy
-                          const switchAccount = policy.switchAccount;
-                          const forceRetryNewChat = policy.forceNewChat;
-                          const needsFullPrompt = policy.retryWithFullPrompt || switchAccount || forceRetryNewChat;
-                          
-                          if (switchAccount) {
-                            console.warn(
-                              `[Chat] Transparent retry will switch account | ${currentAccountLabel}`,
-                            );
-                          }
-                          if (forceRetryNewChat) {
-                            console.warn(
-                              `[Chat] Transparent retry will force new chat`,
-                            );
-                          }
+                const switchAccount = policy.switchAccount;
+                const forceRetryNewChat = policy.forceNewChat;
+                const needsFullPrompt =
+                  policy.retryWithFullPrompt || switchAccount || forceRetryNewChat;
 
-                          try {
-                            // Acquire new stream
-                            const newStreamResult = await acquireUpstreamStream({
-                              finalPrompt: needsFullPrompt ? finalPrompt : userPrompt,
-                              fullPrompt: finalPrompt,
-                              isThinkingModel: body.model.includes("thinking"),
-                              model: body.model,
-                              shouldResetUpstreamThread: false,
-                              allFiles: [],
-                              isNewSession: logicalSessionId === null,
-                              sessionId: logicalSessionId,
-                              useThreadNative: logicalSessionId !== null,
-                              updateLogicalThread: logicalSessionId !== null,
-                              allowThreadReuse: logicalSessionId !== null,
-                              forceNewChat: forceRetryNewChat || switchAccount,
-                              preferredAccountId: switchAccount ? null : currentAccountId,
-                              excludeAccountIds: switchAccount ? [currentAccountId] : undefined,
-                              messageCount: needsFullPrompt ? 1 : undefined,
-                              fullMessageCount: undefined,
-                              toolsCount: declaredTools.length || undefined,
-                              requestPersonalizationInstruction: undefined,
-                            });
+                const newStreamResult = await acquireUpstreamStream({
+                  finalPrompt: needsFullPrompt
+                    ? midStreamRetry.fullPrompt
+                    : finalPrompt,
+                  fullPrompt: midStreamRetry.fullPrompt,
+                  isThinkingModel: midStreamRetry.isThinkingModel,
+                  model: body.model,
+                  shouldResetUpstreamThread: needsFullPrompt,
+                  allFiles: policy.dropFiles ? [] : midStreamRetry.allFiles,
+                  isNewSession: midStreamRetry.isNewSession,
+                  sessionId: midStreamRetry.sessionId,
+                  useThreadNative: midStreamRetry.useThreadNative,
+                  updateLogicalThread: midStreamRetry.updateLogicalThread,
+                  allowThreadReuse: midStreamRetry.allowThreadReuse,
+                  forceNewChat: forceRetryNewChat || switchAccount,
+                  preferredAccountId: switchAccount ? null : currentAccountId,
+                  excludeAccountIds: switchAccount
+                    ? [currentAccountId]
+                    : undefined,
+                  messageCount: needsFullPrompt
+                    ? midStreamRetry.fullMessageCount
+                    : midStreamRetry.messageCount,
+                  fullMessageCount: midStreamRetry.fullMessageCount,
+                  toolsCount: midStreamRetry.toolsCount,
+                  requestPersonalizationInstruction:
+                    midStreamRetry.requestPersonalizationInstruction,
+                  requestSignal: c.req.raw.signal,
+                  allowTemporarilyBusyAccountId: currentAccountId,
+                });
 
-                            if ("error" in newStreamResult) {
-                              console.warn(
-                                `[Chat] Transparent retry failed to acquire stream | ${newStreamResult.error?.message || "unknown error"}`,
-                              );
-                              throw _e; // Re-throw original error
-                            }
+                if ("error" in newStreamResult) {
+                  throw _e;
+                }
 
-                            console.log(
-                              `🔄 [Chat] Transparent retry acquired stream | ${newStreamResult.activeAccountLabel} | ${body.model}`,
-                            );
+                const newEntry = getStream(newStreamResult.completionId);
+                removeStream(newStreamResult.completionId);
+                if (newEntry) {
+                  registerStream(completionId, {
+                    ...newEntry,
+                    targetResponseId: "",
+                  });
+                }
 
-                            // Update retry context
-                            currentAccountId = newStreamResult.activeAccountId;
-                            currentAccountLabel = newStreamResult.activeAccountLabel;
-                            currentUiSessionId = newStreamResult.uiSessionId;
-                            retryContext.releaseAccountLease = newStreamResult.releaseAccountLease;
+                currentAccountId = newStreamResult.activeAccountId;
+                currentAccountLabel = newStreamResult.activeAccountLabel;
+                currentUiSessionId = newStreamResult.uiSessionId;
+                retryContext.releaseAccountLease =
+                  newStreamResult.releaseAccountLease;
+                targetResponseId = null;
+                lastThinkingSummary = "";
+                lastThinkingSummaryLength = 0;
+                lastThinkingSummarySuffix = "";
+                lastRawContent = "";
+                lastRawContentLength = 0;
+                lastRawContentSuffix = "";
+                Object.assign(usageAccumulator, createUsageAccumulator(0));
+                reader = newStreamResult.stream.getReader();
+                buffer = "";
 
-                            // Move the stream registry entry to our completionId.
-                            // acquireUpstreamStream registered with its own completionId.
-                            const newEntry = getStream(newStreamResult.completionId);
-                            removeStream(newStreamResult.completionId);
-                            if (newEntry) {
-                              registerStream(completionId, {
-                                abortController: newEntry.abortController,
-                                accountId: newEntry.accountId,
-                                uiSessionId: newEntry.uiSessionId,
-                                targetResponseId: "",
-                                headers: newEntry.headers,
-                              });
-                            }
+                console.log(
+                  `🔄 [Chat] Transparent retry acquired stream | ${currentAccountLabel} | ${body.model} | chat=${currentUiSessionId.substring(0, 12)}`,
+                );
+                continue;
+              }
+            }
 
-                            // Update thread state if using thread-native
-                            if (logicalSessionId && newStreamResult.uiSessionId) {
-                              updateLogicalThreadState(logicalSessionId, {
-                                accountId: newStreamResult.activeAccountId,
-                                chatSessionId: newStreamResult.uiSessionId,
-                                parentId: null,
-                                instructionsSent: true,
-                              });
-                            }
-
-                            // Cancel old reader and switch to new stream
-                            try {
-                              await reader.cancel();
-                            } catch (cancelErr) {
-                              // Ignore cancel errors
-                            }
-                            reader = newStreamResult.stream.getReader();
-                            buffer = "";
-                            
-                            // Continue the outer while loop with the new reader
-                            continue;
-                          } catch (retryErr) {
-                            console.warn(
-                              `[Chat] Transparent retry failed | ${(retryErr as Error).message}`,
-                            );
-                            throw _e; // Re-throw original error
-                          }
-                        }
-                      }
-                      // Re-throw if not a retryable error or retries exhausted
-                      if (_e instanceof RetryableQwenStreamError) {
-                        throw _e;
-                      }
-                      // Ignore partial chunk parse errors
-                    }
+            if (_e instanceof RetryableQwenStreamError) {
+              throw _e;
+            }
+            // Ignore partial chunk parse errors.
+          }
         }
 
         buffer = lineStart > 0 ? buffer.slice(lineStart) : buffer;
@@ -1428,19 +1418,19 @@ export async function processStreamingResponse(
         if (toolParser && toolParser.getMalformedToolCalls().length > 0) {
           const malformedCalls = toolParser.getMalformedToolCalls();
           const malformedCount = malformedCalls.length;
-          
+
           // Build detailed error message
           const undeclaredNames = malformedCalls
             .flatMap((mc) => mc.undeclaredNames || [])
             .filter((name, index, self) => self.indexOf(name) === index);
-          
+
           let errorMessage: string;
           if (undeclaredNames.length > 0) {
             errorMessage = `\n\n⚠️ [ERROR] ${malformedCount} tool call(s) used undeclared tool names: ${undeclaredNames.join(", ")}. Only declared tools can be executed. Please retry with valid tool names.\n\n`;
           } else {
             errorMessage = `\n\n⚠️ [ERROR] ${malformedCount} tool call(s) were malformed and could not be executed. The model generated invalid JSON. Please retry the request.\n\n`;
           }
-          
+
           await writeEvent({
             id: completionId,
             object: "chat.completion.chunk",
@@ -1448,16 +1438,16 @@ export async function processStreamingResponse(
             model: body.model,
             choices: [makeChoice({ content: errorMessage })],
           });
-          
+
           logger.debug("[chat] stream: injected malformed tool call error feedback", {
             malformedCount,
             undeclaredNames,
             completionId,
           });
-          
+
           toolParser.clearMalformedToolCalls();
         }
-        
+
         // Single write: flush all accumulated events + [DONE] sentinel
         const donePayload = "data: [DONE]\n\n";
         const payload =
@@ -1581,20 +1571,21 @@ export async function processStreamingResponse(
 
       // Release locks now that the stream is fully done
       if (onStreamComplete) onStreamComplete();
-      
+
       // Release account lease from transparent retry if active
       if (retryContext.releaseAccountLease) {
         retryContext.releaseAccountLease();
         retryContext.releaseAccountLease = null;
       }
     }
-  }, async (err: Error) => {
-    // Custom error handler for the Hono stream callback.
-    // Without this, Hono does console.error(e) which dumps the full stack trace.
-    // Retryable errors are expected and already logged at the point they occur.
-    if (err instanceof RetryableQwenStreamError) {
+  }, async (err: Error, errorStream: any) => {
+    const retryable = err instanceof RetryableQwenStreamError;
+    const errorCode = (err as any).upstreamCode || (err as any).code || "stream_error";
+    const errorType = (err as any).type || "upstream_error";
+
+    if (retryable) {
       logger.warn("[Chat] Stream ended after retryable error (no more retries)", {
-        code: (err as any).upstreamCode || "unknown",
+        code: errorCode,
         message: err.message?.substring(0, 200),
         completionId,
       });
@@ -1604,6 +1595,18 @@ export async function processStreamingResponse(
         completionId,
       });
     }
+
+    // The HTTP response is already committed at this point. Emit a terminal
+    // OpenAI-compatible SSE error instead of silently closing the connection.
+    await errorStream.write(
+      `data: ${JSON.stringify({
+        error: {
+          message: err.message,
+          type: errorType,
+          code: errorCode,
+        },
+      })}\n\ndata: [DONE]\n\n`,
+    );
   });
 }
 

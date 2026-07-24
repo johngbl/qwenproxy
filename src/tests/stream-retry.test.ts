@@ -23,6 +23,25 @@ function sseResponse(...chunks: string[]): Response {
   });
 }
 
+function delayedSseResponse(firstChunk: string, ...laterChunks: string[]): Response {
+  const stream = new ReadableStream({
+    start(controller) {
+      const encoder = new TextEncoder();
+      controller.enqueue(encoder.encode(firstChunk));
+      setTimeout(() => {
+        for (const chunk of laterChunks) {
+          controller.enqueue(encoder.encode(chunk));
+        }
+        controller.close();
+      }, 5);
+    },
+  });
+  return new Response(stream, {
+    status: 200,
+    headers: { "Content-Type": "text/event-stream" },
+  });
+}
+
 function setupQwenFetchMock(
   completionHandler: (
     callIndex: number,
@@ -163,6 +182,36 @@ test("stream: quota_limit mid-stream retries instead of hard fail", async () => 
     assert.equal(res.status, 200);
     const text = await res.text();
     assert.match(text, /quota-recovered/);
+    assert.ok(mock.getCompletionCalls() >= 2);
+  } finally {
+    mock.restore();
+  }
+});
+
+test("stream: quota_limit after response.created retries inside committed SSE", async () => {
+  const mock = setupQwenFetchMock((callIndex) => {
+    if (callIndex === 1) {
+      return delayedSseResponse(
+        'data: {"response.created":{"chat_id":"chat-before-quota","response_id":"resp-before-quota"}}\n\n',
+        'data: {"error":{"code":"quota_limit","details":"O serviço está com alta demanda no momento. Tente novamente mais tarde."}}\n\n',
+      );
+    }
+    return sseResponse(
+      'data: {"response.created":{"chat_id":"chat-after-quota","response_id":"resp-after-quota"}}\n\n',
+      'data: {"response_id":"resp-after-quota","choices":[{"delta":{"phase":"answer","content":"transparent-recovery-ok"}}]}\n\n',
+      "data: [DONE]\n\n",
+    );
+  });
+
+  try {
+    const res = await postChat(
+      [{ role: "user", content: "quota after stream commit" }],
+      true,
+    );
+    assert.equal(res.status, 200);
+    const text = await res.text();
+    assert.match(text, /transparent-recovery-ok/);
+    assert.match(text, /data: \[DONE\]/);
     assert.ok(mock.getCompletionCalls() >= 2);
   } finally {
     mock.restore();

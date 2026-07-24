@@ -135,6 +135,9 @@ export interface AcquireParams {
 	fullMessageCount?: number;
 	toolsCount?: number;
 	requestPersonalizationInstruction?: string | null;
+	requestSignal?: AbortSignal;
+	/** Allow this request to retry the account it just marked temporarily busy. */
+	allowTemporarilyBusyAccountId?: string;
 }
 
 /** Exported for unit tests — selects the first account for a request. */
@@ -322,7 +325,10 @@ export async function acquireUpstreamStream(
 		triedAccountIds.add(accountId);
 
 		// Skip accounts that recently returned chat_in_progress (temporary busy)
-		if (isAccountTemporarilyBusy(accountId)) {
+		if (
+			isAccountTemporarilyBusy(accountId) &&
+			params.allowTemporarilyBusyAccountId !== accountId
+		) {
 			console.log(
 				`⏭️  [Chat] Skipping account ${accountEmail} (${accountId}) temporarily busy (chat in progress)`,
 			);
@@ -438,6 +444,7 @@ export async function acquireUpstreamStream(
 					requestPersonalizationInstruction:
 						params.requestPersonalizationInstruction,
 					fullPrompt: params.fullPrompt,
+					requestSignal: params.requestSignal,
 				},
 				accountId,
 				accountEmail,
@@ -599,6 +606,7 @@ async function tryCreateStreamWithRetry(
 		fullMessageCount?: number;
 		toolsCount?: number;
 		requestPersonalizationInstruction?: string | null;
+		requestSignal?: AbortSignal;
 	},
 	accountId: string,
 	accountEmail: string,
@@ -638,10 +646,10 @@ async function tryCreateStreamWithRetry(
 			// Acquire account concurrency lease before personalization + stream creation.
 			// The lease is held for the entire stream lifetime and released by the caller
 			// via the returned releaseAccountLease function.
-			accountLease = await acquireAccountLease(
-				currentAccountId,
-				{ timeoutMs: config.concurrency.busyWaitMs },
-			);
+			accountLease = await acquireAccountLease(currentAccountId, {
+				timeoutMs: config.concurrency.busyWaitMs,
+				signal: params.requestSignal,
+			});
 			const releasePersonalization = params.requestPersonalizationInstruction
 				? await acquirePersonalizationLock(currentAccountId)
 				: null;

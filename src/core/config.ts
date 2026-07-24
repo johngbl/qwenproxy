@@ -57,7 +57,6 @@ const envSchema = z
     RETRY_ON_UNKNOWN_UPSTREAM: z.string().default("true"),
     ACCOUNT_MAX_CONCURRENT_STREAMS: z.string().default("1"),
     ACCOUNT_BUSY_WAIT_MS: z.string().default("30000"),
-    ACCOUNT_STICKY_BUSY_WAIT_MS: z.string().default("5000"),
     CHAT_IN_PROGRESS_RETRY_DELAY_MS: z.string().default("2000"),
     CHAT_IN_PROGRESS_BUSY_MS: z.string().default("5000"),
     ANTI_BOT_BASE_DELAY_MS: z.string().default("5000"),
@@ -162,7 +161,6 @@ export const config = {
   concurrency: {
     maxStreamsPerAccount: Math.max(1, parseInt(env.ACCOUNT_MAX_CONCURRENT_STREAMS)),
     busyWaitMs: Math.max(0, parseInt(env.ACCOUNT_BUSY_WAIT_MS)),
-    stickyBusyWaitMs: Math.max(0, parseInt(env.ACCOUNT_STICKY_BUSY_WAIT_MS)),
   },
   antiBot: {
     baseDelayMs: parseInt(env.ANTI_BOT_BASE_DELAY_MS),

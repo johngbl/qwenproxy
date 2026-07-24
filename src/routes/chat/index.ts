@@ -150,6 +150,7 @@ export async function chatCompletions(c: Context) {
       fullMessageCount: parsed.messageCount,
       toolsCount: declaredTools.length || undefined,
       requestPersonalizationInstruction: ctx.requestPersonalizationInstruction,
+      requestSignal: c.req.raw.signal,
     });
 
 
@@ -197,6 +198,22 @@ export async function chatCompletions(c: Context) {
       shouldParseToolCalls,
       declaredTools,
       tokenEstimationContext: streamResult.tokenEstimationContext,
+      midStreamRetry: {
+        fullPrompt: fullPromptForRequest,
+        isThinkingModel: ctx.isThinkingModel,
+        allFiles: files,
+        isNewSession: ctx.isNewSession,
+        sessionId: ctx.sessionId,
+        useThreadNative: ctx.useThreadNative,
+        updateLogicalThread: ctx.updateLogicalThread,
+        allowThreadReuse: ctx.allowThreadReuse,
+        messageCount: msgCount,
+        fullMessageCount: parsed.messageCount,
+        toolsCount: declaredTools.length || undefined,
+        requestPersonalizationInstruction:
+          ctx.requestPersonalizationInstruction,
+        releaseAccountLease: streamResult.releaseAccountLease,
+      },
       onAssistantComplete,
       onStreamComplete: () => {
         if (releaseChatLock) {
@@ -312,6 +329,7 @@ export async function chatCompletions(c: Context) {
               toolsCount: declaredTools.length || undefined,
               requestPersonalizationInstruction:
                 ctx.requestPersonalizationInstruction,
+              requestSignal: c.req.raw.signal,
             });
 
             if ("error" in newStreamResult) {
@@ -347,6 +365,22 @@ export async function chatCompletions(c: Context) {
               shouldParseToolCalls,
               declaredTools,
               tokenEstimationContext: newStreamResult.tokenEstimationContext,
+              midStreamRetry: {
+                fullPrompt: fullPromptForRequest,
+                isThinkingModel: ctx.isThinkingModel,
+                allFiles: files,
+                isNewSession: ctx.isNewSession,
+                sessionId: ctx.sessionId,
+                useThreadNative: ctx.useThreadNative,
+                updateLogicalThread: ctx.updateLogicalThread,
+                allowThreadReuse: ctx.allowThreadReuse,
+                messageCount: retryMessageCount,
+                fullMessageCount: parsed.messageCount,
+                toolsCount: declaredTools.length || undefined,
+                requestPersonalizationInstruction:
+                  ctx.requestPersonalizationInstruction,
+                releaseAccountLease: newStreamResult.releaseAccountLease,
+              },
               onAssistantComplete,
               onStreamComplete: () => {
                 if (releaseChatLock) {
