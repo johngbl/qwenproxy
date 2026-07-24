@@ -35,5 +35,8 @@
     "@types/node": "^26.1.1",
     "typescript": "^7.0.2"
   },
-  "type": "module"
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  }
 }
