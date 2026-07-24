@@ -6,6 +6,7 @@
  */
 
 import { config } from "../../core/config.ts";
+import { logger } from "../../core/logger.ts";
 import {
   QwenNetworkError,
   QwenUpstreamError,
@@ -325,11 +326,14 @@ export function classifyRetryAction(
       const inProgress = isChatInProgressError(err);
       return {
         retryable: true,
-        switchAccount: inProgress ? typed.switchAccount !== false : false,
-        forceNewChat: true,
-        retryWithFullPrompt: true,
+        // chat_in_progress: do NOT switch immediately — the account is just
+        // temporarily busy. Escalation to switch happens in tryCreateStreamWithRetry
+        // after repeated failures on the same account.
+        switchAccount: inProgress ? false : false,
+        forceNewChat: !inProgress, // chat_not_exist needs a new chat; in_progress retries same first
+        retryWithFullPrompt: !inProgress,
         retryAfterMs: inProgress
-          ? Math.min(typed.retryAfterMs ?? baseDelayMs, 1500)
+          ? (typed.retryAfterMs ?? config.retry.chatInProgressDelayMs)
           : (typed.retryAfterMs ?? 0),
         reason: inProgress ? "chat_in_progress" : "chat_not_exist",
       };
@@ -479,21 +483,17 @@ export function throwFromSseUpstreamError(
   errCode: string,
   errDetails: string,
 ): never {
-  // Log full error details for debugging invalid_input errors
-  if (errCode.toLowerCase() === "invalid_input") {
-    console.error(
-      `[Upstream] invalid_input error details:`,
-      JSON.stringify(
-        {
-          code: errCode,
-          details: errDetails,
-          detailsLength: errDetails.length,
-          preview: errDetails.substring(0, 500),
-        },
-        null,
-        2,
-      ),
-    );
+  // Log upstream errors. Expected retryable codes (quota, rate limit, chat
+  // state) use warn level to avoid noisy stderr stack traces in production.
+  const expectedCodes = new Set([
+    "quota_limit",
+    "rate_limit",
+    "rate_limit_exceeded",
+    "chat_in_progress",
+    "invalid_input",
+  ]);
+  if (expectedCodes.has(errCode.toLowerCase())) {
+    logger.warn(`[Upstream] Error | ${errCode} | ${errDetails.substring(0, 200)}`);
   } else {
     console.error(
       `[Upstream] Error | ${errCode} | ${errDetails.substring(0, 200)}`,
@@ -513,22 +513,12 @@ export function throwFromSseUpstreamError(
       detailsLower.includes("invalid input") ||
       detailsLower.includes("invalid attachment"))
   ) {
-    // Detailed diagnostic logging for invalid_input errors
-    console.error(
-      `[Upstream] invalid_input mid-stream detected:`,
-      JSON.stringify(
-        {
-          code: errCode,
-          details: errDetails,
-          detailsLength: errDetails.length,
-          containsAttachment: detailsLower.includes("anexo") || detailsLower.includes("attachment"),
-          containsFile: detailsLower.includes("file") || detailsLower.includes("arquivo"),
-          timestamp: new Date().toISOString(),
-        },
-        null,
-        2,
-      ),
-    );
+    logger.warn("[Upstream] invalid_input mid-stream detected", {
+      code: errCode,
+      detailsLength: errDetails.length,
+      containsAttachment: detailsLower.includes("anexo") || detailsLower.includes("attachment"),
+      containsFile: detailsLower.includes("file") || detailsLower.includes("arquivo"),
+    });
 
     const error = new RetryableQwenStreamError(
       `Qwen retryable invalid input: ${errCode}: ${errDetails.substring(0, 200)}`,

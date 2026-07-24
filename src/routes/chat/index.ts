@@ -203,6 +203,7 @@ export async function chatCompletions(c: Context) {
           releaseChatLock();
           releaseChatLock = null;
         }
+        streamResult.releaseAccountLease();
       },
     };
 
@@ -250,11 +251,12 @@ export async function chatCompletions(c: Context) {
               );
             }
 
-            // Release current chat lock
+            // Release current chat lock and account lease before retrying
             if (releaseChatLock) {
               releaseChatLock();
               releaseChatLock = null;
             }
+            currentStreamResult.releaseAccountLease();
 
             // Account switch always rebuilds full history; same-account retry
             // only does so when the policy asks for forceNewChat/full prompt.
@@ -351,6 +353,7 @@ export async function chatCompletions(c: Context) {
                   releaseChatLock();
                   releaseChatLock = null;
                 }
+                newStreamResult.releaseAccountLease();
               },
             };
             continue;

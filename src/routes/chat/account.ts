@@ -18,6 +18,12 @@ import {
 } from "../../core/logger.ts";
 import { Mutex } from "../../core/mutex.ts";
 import { registerStream, removeStream } from "../../core/stream-registry.ts";
+import {
+	acquireAccountLease,
+	isAccountTemporarilyBusy,
+	markAccountTemporarilyBusy,
+	type AccountLease,
+} from "../../core/account-concurrency.ts";
 import { isAuthMockEnabled } from "../../services/auth-playwright.ts";
 import { refreshHeaders } from "../../services/playwright.ts";
 import {
@@ -93,6 +99,7 @@ export interface StreamCreationResult {
 	logicalSessionId: string | null;
 	createdNewChat: boolean;
 	tokenEstimationContext: TokenEstimationContext;
+	releaseAccountLease: () => void;
 }
 
 export interface StreamCreationFailure {
@@ -314,6 +321,15 @@ export async function acquireUpstreamStream(
 		}
 		triedAccountIds.add(accountId);
 
+		// Skip accounts that recently returned chat_in_progress (temporary busy)
+		if (isAccountTemporarilyBusy(accountId)) {
+			console.log(
+				`⏭️  [Chat] Skipping account ${accountEmail} (${accountId}) temporarily busy (chat in progress)`,
+			);
+			account = getNextAvailableAccount(triedAccountIds);
+			continue;
+		}
+
 		const cooldownInfo = getAccountCooldownInfo(accountId);
 		if (cooldownInfo) {
 			const allConfiguredAccountsOnCooldown = configuredAccounts.every(
@@ -449,6 +465,7 @@ export async function acquireUpstreamStream(
 						...result.tokenEstimationContext,
 						requestDeclaredToolCount: params.toolsCount ?? 0,
 					},
+					releaseAccountLease: result.releaseAccountLease,
 				};
 			}
 
@@ -557,6 +574,7 @@ interface CreateStreamSuccess {
 	headers: Record<string, string>;
 	createdNewChat: boolean;
 	tokenEstimationContext: TokenEstimationContext;
+	releaseAccountLease: () => void;
 }
 
 interface CreateStreamFailure {
@@ -592,6 +610,7 @@ async function tryCreateStreamWithRetry(
 	let attempt = 0;
 	let quotaRetried = false;
 	let accountSwitches = 0;
+	let chatInProgressCount = 0;
 	const accounts = loadAccounts();
 	const isSingleAccount = accounts.length <= 1;
 	let currentAccountId = accountId;
@@ -606,6 +625,7 @@ async function tryCreateStreamWithRetry(
 			);
 		}
 		let attemptError: any = null;
+		let accountLease: AccountLease | null = null;
 
 		try {
 			const threadParentId = params.useThreadNative
@@ -615,14 +635,23 @@ async function tryCreateStreamWithRetry(
 				: params.shouldResetUpstreamThread
 					? null
 					: undefined;
+			// Acquire account concurrency lease before personalization + stream creation.
+			// The lease is held for the entire stream lifetime and released by the caller
+			// via the returned releaseAccountLease function.
+			accountLease = await acquireAccountLease(
+				currentAccountId,
+				{ timeoutMs: config.concurrency.busyWaitMs },
+			);
 			const releasePersonalization = params.requestPersonalizationInstruction
 				? await acquirePersonalizationLock(currentAccountId)
 				: null;
 			let result: Awaited<ReturnType<typeof createQwenStream>>;
 			try {
 				if (params.requestPersonalizationInstruction !== null) {
-						// Detect new chat scenarios to force personalization sync
-						const isNewChat = params.forceNewChat || !params.existingThread || params.shouldResetUpstreamThread;
+						// Let the hash-based cache in syncQwenRequestPersonalization decide
+						// whether to actually POST. A new chat does not imply the account's
+						// global settings were reset — only session refresh or profile reset
+						// should bypass the cache.
 						await syncQwenRequestPersonalization(
 							params.requestPersonalizationInstruction ?? "",
 							currentAccountId === "global" ? undefined : currentAccountId,
@@ -631,7 +660,7 @@ async function tryCreateStreamWithRetry(
 								toolsCount: params.toolsCount ?? 0,
 								sessionId: params.sessionId,
 								promptChars: params.finalPrompt.length,
-								forceSync: isNewChat,
+								forceSync: false,
 							},
 						);
 				}
@@ -699,9 +728,16 @@ async function tryCreateStreamWithRetry(
 			}
 
 			markAccountSuccessful(currentAccountId);
-			return { success: true, ...result };
+			return {
+				success: true,
+				...result,
+				releaseAccountLease: accountLease.release,
+			};
 		} catch (err: any) {
 			attemptError = err;
+			// Release the lease on failure — the stream was never created or
+			// will not be consumed by the caller.
+			accountLease?.release();
 		}
 
 		attemptsLeft--;
@@ -801,6 +837,45 @@ async function tryCreateStreamWithRetry(
 			}
 
 		const policy = classifyRetryAction(err);
+
+		// Escalating recovery for chat_in_progress:
+		// 1st: retry same chat after delay (policy default)
+		// 2nd: force new chat on same account with full prompt
+		// 3rd+: allow account switch
+		if (policy.reason === "chat_in_progress") {
+			chatInProgressCount++;
+			markAccountTemporarilyBusy(
+				currentAccountId,
+				config.retry.chatInProgressBusyMs,
+			);
+			if (chatInProgressCount >= 2 && params.useThreadNative) {
+				console.warn(
+					`🔄 [Chat] chat_in_progress escalation (${chatInProgressCount}) | forcing new chat on ${currentAccountEmail}`,
+				);
+				params.existingThread = null;
+				params.finalPrompt = params.fullPrompt;
+				params.messageCount = params.fullMessageCount ?? params.messageCount;
+				params.forceNewChat = true;
+			}
+			if (chatInProgressCount >= 3 && !isSingleAccount && accountSwitches < maxAccountSwitches) {
+				const nextAccount = getNextAvailableAccount(triedAccounts);
+				if (nextAccount && nextAccount.id !== currentAccountId) {
+					console.warn(
+						`🔄 [Chat] chat_in_progress escalation (${chatInProgressCount}) | switching ${currentAccountEmail} -> ${maskEmail(nextAccount.email)}`,
+					);
+					triedAccounts.add(currentAccountId);
+					currentAccountId = nextAccount.id;
+					currentAccountEmail = maskEmail(nextAccount.email);
+					accountSwitches++;
+					if (params.useThreadNative) {
+						params.existingThread = null;
+						params.finalPrompt = params.fullPrompt;
+						params.messageCount = params.fullMessageCount ?? params.messageCount;
+						params.forceNewChat = true;
+					}
+				}
+			}
+		}
 
 		// Prefer switching account for any retryable upstream error when possible
 		if (
