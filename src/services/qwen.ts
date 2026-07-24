@@ -852,7 +852,7 @@ export async function syncQwenRequestPersonalization(
     rememberActivePersonalization(cacheKey, instruction, metadata, "synced");
   }
   console.log(
-    `✅ [Qwen] Personalization synced | ${metadata.model || "?"} | ${metadata.toolsCount ?? 0} tool(s) | ${sent.chars} chars${matchStored === null ? "" : ` | verified=${matchStored}`}`,
+    `✅ [Qwen] Personalization synced | ${metadata.model || "?"} | ${metadata.toolsCount ?? 0} tool(s) | ${sent.chars} chars${metadata.sessionId ? ` | chat=${metadata.sessionId.substring(0, 12)}` : ""}${matchStored === null ? "" : ` | verified=${matchStored}`}`,
   );
   logger.debug("[Qwen] personalization sync details", {
     accountId: cacheKey,
