@@ -1588,6 +1588,22 @@ export async function processStreamingResponse(
         retryContext.releaseAccountLease = null;
       }
     }
+  }, async (err: Error) => {
+    // Custom error handler for the Hono stream callback.
+    // Without this, Hono does console.error(e) which dumps the full stack trace.
+    // Retryable errors are expected and already logged at the point they occur.
+    if (err instanceof RetryableQwenStreamError) {
+      logger.warn("[Chat] Stream ended after retryable error (no more retries)", {
+        code: (err as any).upstreamCode || "unknown",
+        message: err.message?.substring(0, 200),
+        completionId,
+      });
+    } else {
+      logger.error("[Chat] Stream callback error", {
+        error: err.message,
+        completionId,
+      });
+    }
   });
 }
 
