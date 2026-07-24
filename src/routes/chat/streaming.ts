@@ -460,16 +460,23 @@ export async function processNonStreamingResponse(
       const malformedCalls = toolParser.getMalformedToolCalls();
       const malformedCount = malformedCalls.length;
 
-      // Build detailed error message
+      // Build detailed error message with available tools list
       const undeclaredNames = malformedCalls
         .flatMap((mc) => mc.undeclaredNames || [])
         .filter((name, index, self) => self.indexOf(name) === index);
 
+      const availableToolNames = declaredTools
+        .map((t: any) => t.type === "function" ? t.function?.name : t.name)
+        .filter((n: string | undefined): n is string => !!n);
+      const toolsHint = availableToolNames.length > 0
+        ? `\n\nAvailable tools: ${availableToolNames.slice(0, 20).join(", ")}${availableToolNames.length > 20 ? ` (and ${availableToolNames.length - 20} more)` : ""}`
+        : "";
+
       let errorMessage: string;
       if (undeclaredNames.length > 0) {
-        errorMessage = `\n\n⚠️ [ERROR] ${malformedCount} tool call(s) used undeclared tool names: ${undeclaredNames.join(", ")}. Only declared tools can be executed. Please retry with valid tool names.\n\n`;
+        errorMessage = `\n\n⚠️ [ERROR] ${malformedCount} tool call(s) used undeclared tool names: ${undeclaredNames.join(", ")}. Only declared tools can be executed. Please retry with valid tool names.${toolsHint}\n\n`;
       } else {
-        errorMessage = `\n\n⚠️ [ERROR] ${malformedCount} tool call(s) were malformed and could not be executed. The model generated invalid JSON. Please retry the request.\n\n`;
+        errorMessage = `\n\n⚠️ [ERROR] ${malformedCount} tool call(s) were malformed and could not be executed. The model generated invalid JSON. Please retry the request.${toolsHint}\n\n`;
       }
 
       finalContent += errorMessage;
@@ -1419,16 +1426,23 @@ export async function processStreamingResponse(
           const malformedCalls = toolParser.getMalformedToolCalls();
           const malformedCount = malformedCalls.length;
 
-          // Build detailed error message
+          // Build detailed error message with available tools list
           const undeclaredNames = malformedCalls
             .flatMap((mc) => mc.undeclaredNames || [])
             .filter((name, index, self) => self.indexOf(name) === index);
 
+          const availableToolNames = declaredTools
+            .map((t: any) => t.type === "function" ? t.function?.name : t.name)
+            .filter((n: string | undefined): n is string => !!n);
+          const toolsHint = availableToolNames.length > 0
+            ? `\n\nAvailable tools: ${availableToolNames.slice(0, 20).join(", ")}${availableToolNames.length > 20 ? ` (and ${availableToolNames.length - 20} more)` : ""}`
+            : "";
+
           let errorMessage: string;
           if (undeclaredNames.length > 0) {
-            errorMessage = `\n\n⚠️ [ERROR] ${malformedCount} tool call(s) used undeclared tool names: ${undeclaredNames.join(", ")}. Only declared tools can be executed. Please retry with valid tool names.\n\n`;
+            errorMessage = `\n\n⚠️ [ERROR] ${malformedCount} tool call(s) used undeclared tool names: ${undeclaredNames.join(", ")}. Only declared tools can be executed. Please retry with valid tool names.${toolsHint}\n\n`;
           } else {
-            errorMessage = `\n\n⚠️ [ERROR] ${malformedCount} tool call(s) were malformed and could not be executed. The model generated invalid JSON. Please retry the request.\n\n`;
+            errorMessage = `\n\n⚠️ [ERROR] ${malformedCount} tool call(s) were malformed and could not be executed. The model generated invalid JSON. Please retry the request.${toolsHint}\n\n`;
           }
 
           await writeEvent({
