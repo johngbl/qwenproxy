@@ -1832,15 +1832,20 @@ export async function processStreamingResponse(
 
     // The HTTP response is already committed at this point. Emit a terminal
     // OpenAI-compatible SSE error instead of silently closing the connection.
-    await errorStream.write(
-      `data: ${JSON.stringify({
-        error: {
-          message: err.message,
-          type: errorType,
-          code: errorCode,
-        },
-      })}\n\ndata: [DONE]\n\n`,
-    );
+    try {
+      await errorStream.write(
+        `data: ${JSON.stringify({
+          error: {
+            message: err.message,
+            type: errorType,
+            code: errorCode,
+          },
+        })}\n\ndata: [DONE]\n\n`,
+      );
+    } catch (_writeErr) {
+      // Stream already closed — client already disconnected or the stream
+      // was cancelled. Nothing more we can do.
+    }
   });
 }
 

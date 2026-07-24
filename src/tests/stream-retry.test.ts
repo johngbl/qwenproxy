@@ -24,16 +24,31 @@ function sseResponse(...chunks: string[]): Response {
 }
 
 function delayedSseResponse(firstChunk: string, ...laterChunks: string[]): Response {
+  let timer: ReturnType<typeof setTimeout> | null = null;
   const stream = new ReadableStream({
     start(controller) {
       const encoder = new TextEncoder();
       controller.enqueue(encoder.encode(firstChunk));
-      setTimeout(() => {
-        for (const chunk of laterChunks) {
-          controller.enqueue(encoder.encode(chunk));
+      timer = setTimeout(() => {
+        timer = null;
+        try {
+          for (const chunk of laterChunks) {
+            controller.enqueue(encoder.encode(chunk));
+          }
+          controller.close();
+        } catch (_e) {
+          // Stream was cancelled before timer fired — ignore
         }
-        controller.close();
       }, 5);
+      if (typeof timer === "object" && timer !== null && "unref" in timer) {
+        (timer as NodeJS.Timeout).unref();
+      }
+    },
+    cancel() {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
     },
   });
   return new Response(stream, {
