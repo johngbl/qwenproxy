@@ -77,7 +77,7 @@ function addIdleTimeoutToStream(
     cancel(reason) {
       clearIdleTimer();
       onDone?.();
-      return stream.cancel(reason);
+      return reader ? reader.cancel(reason) : stream.cancel(reason);
     },
   });
 }
@@ -1613,6 +1613,7 @@ export async function createQwenStream(
     accountId,
   );
   const { headers, parentMessageId } = captured;
+  let activeHeaders = headers;
   const model = modelId.replace("-no-thinking", "");
   let createdNewChat = false;
   let chatSessionId: string | null | undefined;
@@ -1826,11 +1827,10 @@ export async function createQwenStream(
   const timeoutId = setTimeout(() => controller.abort(), dynamicTimeoutMs);
 
   try {
-    let response: Response;
-    try {
-      response = await fetch(url, {
+    const fetchCompletion = (requestHeaders: Record<string, string>) =>
+      fetch(url, {
         method: "POST",
-        headers: buildCapturedQwenHeaders(headers, {
+        headers: buildCapturedQwenHeaders(requestHeaders, {
           chatSessionId,
           extra: {
             "x-accel-buffering": "no",
@@ -1839,6 +1839,10 @@ export async function createQwenStream(
         body: payloadJson,
         signal: controller.signal,
       });
+
+    let response: Response;
+    try {
+      response = await fetchCompletion(activeHeaders);
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       // Treat network errors (fetch failed, timeout, DNS, etc.) as retryable
@@ -1855,11 +1859,27 @@ export async function createQwenStream(
       throw withCreatedChatMetadata(
         error instanceof Error ? error : new Error(errorMsg),
       );
-    } finally {
-      clearTimeout(timeoutId);
     }
 
-    const responseContentType = response.headers.get("content-type") || "";
+    let responseContentType = response.headers.get("content-type") || "";
+    if (
+      response.status === 200 &&
+      !responseContentType.includes("text/event-stream") &&
+      (!response.body || response.headers.get("content-length") === "0")
+    ) {
+      logger.warn(
+        "[Qwen] Completion returned an empty non-stream 200 response; retrying with fresh headers.",
+        {
+          accountId: accountId ?? "global",
+          chatId: chatSessionId ?? "new",
+          contentType: responseContentType || null,
+        },
+      );
+      const refreshed = await getQwenHeaders(true, accountId);
+      activeHeaders = refreshed.headers;
+      response = await fetchCompletion(activeHeaders);
+      responseContentType = response.headers.get("content-type") || "";
+    }
     if (response.ok && responseContentType.includes("application/json")) {
       const errText = await response.text().catch(() => "");
 
@@ -1941,7 +1961,7 @@ export async function createQwenStream(
 
     return {
       stream: wrapUpstreamStream(response.body, controller),
-      headers,
+      headers: activeHeaders,
       uiSessionId: chatSessionId || "",
       controller,
       accountId: accountId ?? "global",
@@ -1951,5 +1971,7 @@ export async function createQwenStream(
   } catch (error) {
     releaseLeasedWarmChat();
     throw error;
+  } finally {
+    clearTimeout(timeoutId);
   }
 }

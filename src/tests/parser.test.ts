@@ -74,6 +74,37 @@ test("StreamingToolParser: basic tool call", () => {
   assert.strictEqual(result.toolCalls[0].name, "t1");
 });
 
+test("StreamingToolParser: drops residual environment details after tool calls", () => {
+  const parser = new StreamingToolParser();
+  const input =
+    '<tool_call>{"name":"edit_file","arguments":{"path":"a.txt","edits":[]}}</tool_call>\n</environment_details>\nCurrent time: 2026-07-18T15:26:30-03:00\nWorking directory: /tmp/project\n</environment_details>';
+
+  const result = parser.feed(input);
+  const flushed = parser.flush();
+
+  assert.strictEqual(result.toolCalls.length, 1);
+  assert.strictEqual(result.toolCalls[0].name, "edit_file");
+  assert.strictEqual(result.text + flushed.text, "");
+});
+
+test("StreamingToolParser: drops fragmented environment details after tool calls", () => {
+  const parser = new StreamingToolParser();
+  const input =
+    '<tool_call>{"name":"edit_file","arguments":{"path":"a.txt","edits":[]}}</tool_call>\n</environment_details>\nCurrent time: x\n</environment_details>';
+  let text = "";
+  let toolCalls = 0;
+
+  for (const char of input) {
+    const result = parser.feed(char);
+    text += result.text;
+    toolCalls += result.toolCalls.length;
+  }
+  text += parser.flush().text;
+
+  assert.strictEqual(toolCalls, 1);
+  assert.strictEqual(text, "");
+});
+
 test("StreamingToolParser: multiple tool calls", () => {
   const parser = new StreamingToolParser();
 
