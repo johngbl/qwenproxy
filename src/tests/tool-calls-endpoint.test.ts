@@ -777,7 +777,7 @@ test("stream: malformed nameless tool_call restores lead-in text", async () => {
       `Expected content to start with lead-in text, got: ${result.content}`,
     );
     assert.ok(
-      result.content.includes("[ERROR]"),
+      result.content.includes("[TOOL CALL ERROR]"),
       `Expected error feedback for malformed tool call, got: ${result.content}`,
     );
     assert.strictEqual(result.toolCalls.length, 0);

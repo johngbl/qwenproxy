@@ -174,6 +174,7 @@ export async function processNonStreamingResponse(
     shouldParseToolCalls,
     declaredTools,
     tokenEstimationContext,
+    midStreamRetry,
     onAssistantComplete,
     onStreamComplete,
   } = params;
@@ -455,6 +456,96 @@ export async function processNonStreamingResponse(
 
     const finishReason = toolCallsOut.length ? "tool_calls" : "stop";
 
+    // Auto-retry if all tool calls were malformed (no successful tool calls)
+    const allToolsFailed = toolParser && toolParser.getMalformedToolCalls().length > 0 && toolCallsOut.length === 0;
+    if (allToolsFailed && config.retry.autoRetryMalformedTools !== false && midStreamRetry) {
+      const malformedCalls = toolParser.getMalformedToolCalls();
+      const malformedCount = malformedCalls.length;
+
+      // Build detailed error message with available tools list
+      const undeclaredNames = malformedCalls
+        .flatMap((mc) => mc.undeclaredNames || [])
+        .filter((name, index, self) => self.indexOf(name) === index);
+
+      const availableToolNames = declaredTools
+        .map((t: any) => t.type === "function" ? t.function?.name : t.name)
+        .filter((n: string | undefined): n is string => !!n);
+      const toolsHint = availableToolNames.length > 0
+        ? `\n\nAvailable tools: ${availableToolNames.join(", ")}`
+        : "";
+
+      let errorMessage: string;
+      if (undeclaredNames.length > 0) {
+        errorMessage = `Your previous ${malformedCount} tool call(s) used undeclared tool names: ${undeclaredNames.join(", ")}. Only declared tools can be executed. Please retry with valid tool names.${toolsHint}`;
+      } else {
+        const previews = malformedCalls
+          .slice(0, 3)
+          .map((mc) => mc.contentPreview?.substring(0, 100) || "(empty)")
+          .join("\n  - ");
+        errorMessage = `Your previous ${malformedCount} tool call(s) were malformed and could not be executed. The JSON was invalid or truncated. Please retry with valid JSON.\n\nFailed attempt(s):\n  - ${previews}${toolsHint}`;
+      }
+
+      logger.warn("[chat] non-stream: auto-retrying malformed tool calls", {
+        malformedCount,
+        undeclaredNames,
+        completionId,
+      });
+
+      // Build retry prompt with error context
+      const retryPrompt = `${midStreamRetry.fullPrompt}\n\n[SYSTEM CORRECTION]\n${errorMessage}\n\nPlease retry your tool call(s) with correct JSON and valid tool names from the available tools list above.`;
+
+      // Release current stream and lease
+      await stream.cancel();
+      midStreamRetry.releaseAccountLease();
+
+      // Acquire new stream for retry
+      const newStreamResult = await acquireUpstreamStream({
+        finalPrompt: retryPrompt,
+        fullPrompt: retryPrompt,
+        isThinkingModel: midStreamRetry.isThinkingModel,
+        model: body.model,
+        shouldResetUpstreamThread: true,
+        allFiles: midStreamRetry.allFiles,
+        isNewSession: midStreamRetry.isNewSession,
+        sessionId: midStreamRetry.sessionId,
+        useThreadNative: midStreamRetry.useThreadNative,
+        updateLogicalThread: midStreamRetry.updateLogicalThread,
+        allowThreadReuse: midStreamRetry.allowThreadReuse,
+        forceNewChat: true,
+        preferredAccountId: null,
+        excludeAccountIds: undefined,
+        messageCount: midStreamRetry.messageCount,
+        fullMessageCount: midStreamRetry.fullMessageCount,
+        toolsCount: midStreamRetry.toolsCount,
+        requestPersonalizationInstruction: midStreamRetry.requestPersonalizationInstruction,
+      });
+
+      if ("error" in newStreamResult) {
+        // Retry failed, return original error
+        logger.error("[chat] non-stream: auto-retry failed to acquire stream", {
+          error: newStreamResult.error?.message,
+          completionId,
+        });
+        return sendOpenAIError(c, newStreamResult.error);
+      }
+
+      console.log(`🔄 [Chat] Auto-retry | ${newStreamResult.activeAccountLabel} | ${body.model} | chat=${newStreamResult.uiSessionId.substring(0, 12)} | reason=malformed_tool_calls`);
+
+      // Process the new stream (recursive call with retry disabled)
+      return processNonStreamingResponse({
+        ...params,
+        stream: newStreamResult.stream,
+        uiSessionId: newStreamResult.uiSessionId,
+        activeAccountId: newStreamResult.activeAccountId,
+        activeAccountLabel: newStreamResult.activeAccountLabel,
+        midStreamRetry: undefined, // Prevent infinite retry loop
+        onStreamComplete: () => {
+          newStreamResult.releaseAccountLease();
+          onStreamComplete?.();
+        },
+      });
+    }
+
     // Check for malformed tool calls and inject error feedback
     if (toolParser && toolParser.getMalformedToolCalls().length > 0) {
       const malformedCalls = toolParser.getMalformedToolCalls();
@@ -469,14 +560,14 @@ export async function processNonStreamingResponse(
         .map((t: any) => t.type === "function" ? t.function?.name : t.name)
         .filter((n: string | undefined): n is string => !!n);
       const toolsHint = availableToolNames.length > 0
-        ? `\n\nAvailable tools: ${availableToolNames.slice(0, 20).join(", ")}${availableToolNames.length > 20 ? ` (and ${availableToolNames.length - 20} more)` : ""}`
+        ? `\n\nAvailable tools: ${availableToolNames.join(", ")}`
         : "";
 
       let errorMessage: string;
       if (undeclaredNames.length > 0) {
-        errorMessage = `\n\n⚠️ [ERROR] ${malformedCount} tool call(s) used undeclared tool names: ${undeclaredNames.join(", ")}. Only declared tools can be executed. Please retry with valid tool names.${toolsHint}\n\n`;
+        errorMessage = `\n\n⚠️ [TOOL CALL ERROR] ${malformedCount} tool call(s) used undeclared tool names: ${undeclaredNames.join(", ")}. Only declared tools can be executed. Please retry with valid tool names.${toolsHint}\n\n`;
       } else {
-        errorMessage = `\n\n⚠️ [ERROR] ${malformedCount} tool call(s) were malformed and could not be executed. The model generated invalid JSON. Please retry the request.${toolsHint}\n\n`;
+        errorMessage = `\n\n⚠️ [TOOL CALL ERROR] ${malformedCount} tool call(s) were malformed and could not be executed. The JSON was invalid or the tool call was truncated. Please retry the tool call with valid JSON.${toolsHint}\n\n`;
       }
 
       finalContent += errorMessage;
@@ -1201,8 +1292,15 @@ export async function processStreamingResponse(
                 });
 
                 if ("error" in newStreamResult) {
+                  console.error(
+                    `[Chat] Transparent retry failed to acquire stream | ${newStreamResult.error?.message || "unknown error"}`,
+                  );
                   throw _e;
                 }
+
+                console.log(
+                  `🔄 [Chat] Transparent retry acquired stream | ${newStreamResult.activeAccountLabel} | ${body.model} | chat=${newStreamResult.uiSessionId.substring(0, 12)}`,
+                );
 
                 const newEntry = getStream(newStreamResult.completionId);
                 removeStream(newStreamResult.completionId);
@@ -1226,11 +1324,15 @@ export async function processStreamingResponse(
                 lastRawContentLength = 0;
                 lastRawContentSuffix = "";
                 Object.assign(usageAccumulator, createUsageAccumulator(0));
-                reader = newStreamResult.stream.getReader();
                 buffer = "";
 
                 console.log(
-                  `🔄 [Chat] Transparent retry acquired stream | ${currentAccountLabel} | ${body.model} | chat=${currentUiSessionId.substring(0, 12)}`,
+                  `🔄 [Chat] Transparent retry switching reader | old=${currentUiSessionId} | new=${newStreamResult.uiSessionId.substring(0, 12)}`,
+                );
+                reader = newStreamResult.stream.getReader();
+
+                console.log(
+                  `🔄 [Chat] Transparent retry ready to continue`,
                 );
                 continue;
               }
@@ -1421,6 +1523,124 @@ export async function processStreamingResponse(
       }
 
       if (!clientDisconnected) {
+        // Auto-retry if all tool calls were malformed (no successful tool calls)
+        // Only retry if we haven't emitted any content to the client yet
+        const allToolsFailed = toolParser && toolParser.getMalformedToolCalls().length > 0 && toolParser.getEmittedToolCallCount() === 0;
+        if (allToolsFailed && config.retry.autoRetryMalformedTools !== false && midStreamRetry && !emittedModelOutput) {
+          const malformedCalls = toolParser.getMalformedToolCalls();
+          const malformedCount = malformedCalls.length;
+
+          // Build detailed error message with available tools list
+          const undeclaredNames = malformedCalls
+            .flatMap((mc) => mc.undeclaredNames || [])
+            .filter((name, index, self) => self.indexOf(name) === index);
+
+          const availableToolNames = declaredTools
+            .map((t: any) => t.type === "function" ? t.function?.name : t.name)
+            .filter((n: string | undefined): n is string => !!n);
+          const toolsHint = availableToolNames.length > 0
+            ? `\n\nAvailable tools: ${availableToolNames.join(", ")}`
+            : "";
+
+          let errorMessage: string;
+          if (undeclaredNames.length > 0) {
+            errorMessage = `Your previous ${malformedCount} tool call(s) used undeclared tool names: ${undeclaredNames.join(", ")}. Only declared tools can be executed. Please retry with valid tool names.${toolsHint}`;
+          } else {
+            const previews = malformedCalls
+              .slice(0, 3)
+              .map((mc) => mc.contentPreview?.substring(0, 100) || "(empty)")
+              .join("\n  - ");
+            errorMessage = `Your previous ${malformedCount} tool call(s) were malformed and could not be executed. The JSON was invalid or truncated. Please retry with valid JSON.\n\nFailed attempt(s):\n  - ${previews}${toolsHint}`;
+          }
+
+          logger.warn("[chat] stream: auto-retrying malformed tool calls", {
+            malformedCount,
+            undeclaredNames,
+            completionId,
+          });
+
+          // Build retry prompt with error context
+          const retryPrompt = `${midStreamRetry.fullPrompt}\n\n[SYSTEM CORRECTION]\n${errorMessage}\n\nPlease retry your tool call(s) with correct JSON and valid tool names from the available tools list above.`;
+
+          // Release current stream and lease
+          try {
+            await stream.cancel();
+          } catch (cancelErr) {
+            // Ignore cancel errors
+          }
+          midStreamRetry.releaseAccountLease();
+
+          // Acquire new stream for retry
+          const newStreamResult = await acquireUpstreamStream({
+            finalPrompt: retryPrompt,
+            fullPrompt: retryPrompt,
+            isThinkingModel: midStreamRetry.isThinkingModel,
+            model: body.model,
+            shouldResetUpstreamThread: true,
+            allFiles: midStreamRetry.allFiles,
+            isNewSession: midStreamRetry.isNewSession,
+            sessionId: midStreamRetry.sessionId,
+            useThreadNative: midStreamRetry.useThreadNative,
+            updateLogicalThread: midStreamRetry.updateLogicalThread,
+            allowThreadReuse: midStreamRetry.allowThreadReuse,
+            forceNewChat: true,
+            preferredAccountId: null,
+            excludeAccountIds: undefined,
+            messageCount: midStreamRetry.messageCount,
+            fullMessageCount: midStreamRetry.fullMessageCount,
+            toolsCount: midStreamRetry.toolsCount,
+            requestPersonalizationInstruction: midStreamRetry.requestPersonalizationInstruction,
+          });
+
+          if ("error" in newStreamResult) {
+            // Retry failed, log and fall through to error injection
+            logger.error("[chat] stream: auto-retry failed to acquire stream", {
+              error: newStreamResult.error?.message,
+              completionId,
+            });
+          } else {
+            console.log(`🔄 [Chat] Auto-retry | ${newStreamResult.activeAccountLabel} | ${body.model} | chat=${newStreamResult.uiSessionId.substring(0, 12)} | reason=malformed_tool_calls`);
+
+            // Read from new stream and continue writing to the same streamWriter
+            const retryReader = newStreamResult.stream.getReader();
+            const retryDecoder = new TextDecoder();
+            let retryBuffer = "";
+
+            while (true) {
+              const { done, value } = await retryReader.read();
+              if (done) break;
+
+              retryBuffer += retryDecoder.decode(value, { stream: true });
+              let lineStart = 0;
+              let lineEnd = retryBuffer.indexOf("\n", lineStart);
+
+              for (; lineEnd !== -1; lineEnd = retryBuffer.indexOf("\n", lineStart)) {
+                const line = retryBuffer.slice(lineStart, lineEnd);
+                lineStart = lineEnd + 1;
+                const trimmed = line.trim();
+                if (!trimmed || !trimmed.startsWith("data: ")) continue;
+
+                const dataStr = trimmed.slice(6);
+                if (dataStr === "[DONE]") continue;
+
+                // Forward the chunk to the client
+                await streamWriter.write(`data: ${dataStr}\n\n`);
+              }
+
+              retryBuffer = lineStart > 0 ? retryBuffer.slice(lineStart) : retryBuffer;
+            }
+
+            // Update state for cleanup
+            currentUiSessionId = newStreamResult.uiSessionId;
+            currentAccountId = newStreamResult.activeAccountId;
+            currentAccountLabel = newStreamResult.activeAccountLabel;
+            retryContext.releaseAccountLease = newStreamResult.releaseAccountLease;
+
+            // Skip error injection since we successfully retried
+            toolParser.clearMalformedToolCalls();
+          }
+        }
+
         // Check for malformed tool calls and inject error feedback
         if (toolParser && toolParser.getMalformedToolCalls().length > 0) {
           const malformedCalls = toolParser.getMalformedToolCalls();
@@ -1435,14 +1655,14 @@ export async function processStreamingResponse(
             .map((t: any) => t.type === "function" ? t.function?.name : t.name)
             .filter((n: string | undefined): n is string => !!n);
           const toolsHint = availableToolNames.length > 0
-            ? `\n\nAvailable tools: ${availableToolNames.slice(0, 20).join(", ")}${availableToolNames.length > 20 ? ` (and ${availableToolNames.length - 20} more)` : ""}`
+            ? `\n\nAvailable tools: ${availableToolNames.join(", ")}`
             : "";
 
           let errorMessage: string;
           if (undeclaredNames.length > 0) {
-            errorMessage = `\n\n⚠️ [ERROR] ${malformedCount} tool call(s) used undeclared tool names: ${undeclaredNames.join(", ")}. Only declared tools can be executed. Please retry with valid tool names.${toolsHint}\n\n`;
+            errorMessage = `\n\n⚠️ [TOOL CALL ERROR] ${malformedCount} tool call(s) used undeclared tool names: ${undeclaredNames.join(", ")}. Only declared tools can be executed. Please retry with valid tool names.${toolsHint}\n\n`;
           } else {
-            errorMessage = `\n\n⚠️ [ERROR] ${malformedCount} tool call(s) were malformed and could not be executed. The model generated invalid JSON. Please retry the request.${toolsHint}\n\n`;
+            errorMessage = `\n\n⚠️ [TOOL CALL ERROR] ${malformedCount} tool call(s) were malformed and could not be executed. The JSON was invalid or the tool call was truncated. Please retry the tool call with valid JSON.${toolsHint}\n\n`;
           }
 
           await writeEvent({

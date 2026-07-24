@@ -55,6 +55,8 @@ const envSchema = z
     RETRY_MAX_ATTEMPTS: z.string().default("3"),
     RETRY_MAX_ACCOUNT_SWITCHES: z.string().default("2"),
     RETRY_ON_UNKNOWN_UPSTREAM: z.string().default("true"),
+    RETRY_AUTO_MALFORMED_TOOLS: z.string().default("true"),
+    RETRY_AUTO_MALFORMED_TOOLS_MAX: z.string().default("2"),
     ACCOUNT_MAX_CONCURRENT_STREAMS: z.string().default("1"),
     ACCOUNT_BUSY_WAIT_MS: z.string().default("30000"),
     CHAT_IN_PROGRESS_RETRY_DELAY_MS: z.string().default("2000"),
@@ -157,6 +159,8 @@ export const config = {
     onUnknownUpstream: env.RETRY_ON_UNKNOWN_UPSTREAM !== "false",
     chatInProgressDelayMs: Math.max(0, parseInt(env.CHAT_IN_PROGRESS_RETRY_DELAY_MS)),
     chatInProgressBusyMs: Math.max(0, parseInt(env.CHAT_IN_PROGRESS_BUSY_MS)),
+    autoRetryMalformedTools: env.RETRY_AUTO_MALFORMED_TOOLS !== "false",
+    autoRetryMalformedToolsMax: Math.max(1, parseInt(env.RETRY_AUTO_MALFORMED_TOOLS_MAX)),
   },
   concurrency: {
     maxStreamsPerAccount: Math.max(1, parseInt(env.ACCOUNT_MAX_CONCURRENT_STREAMS)),
