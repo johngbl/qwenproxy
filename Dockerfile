@@ -26,7 +26,7 @@ RUN mkdir -p /app/data/db /app/data/qwen_profiles /tmp/playwright \
 VOLUME ["/app/data"]
 
 EXPOSE 3000
-ENV NODE_ENV=production PORT=3000
+ENV NODE_ENV=production
 
 # Use dumb-init to avoid zombie processes from Playwright and ensure writable volumes at startup
 ENTRYPOINT ["/usr/bin/dumb-init", "--", "/app/docker-entrypoint.sh"]
