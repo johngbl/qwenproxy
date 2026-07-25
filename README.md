@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/banner.webp" alt="QwenBridge" width="100%">
+</p>
+
 # QwenBridge
 
 API compatível com OpenAI/Anthropic que conecta clientes ao **Qwen (`chat.qwen.ai`)** com suporte a múltiplas contas, tool calling robusto, thread-native, uploads multimodais, **Responses API completa com memória persistente** e sessões persistentes. Inclui Playwright com stealth, retries para erros transitórios, variantes `-no-thinking`/`-thinking`, cache comprimido, registro de capabilities por modelo e observabilidade.

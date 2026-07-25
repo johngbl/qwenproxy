@@ -3,6 +3,7 @@ import {
   getQwenHeaders,
   getBasicHeaders,
   isAuthMockEnabled,
+  isTokenExpiringSoon,
 } from "./auth-playwright.ts";
 import { v4 as uuidv4 } from "uuid";
 import { UpstreamRateLimit, UpstreamError, AuthError } from "../core/errors.ts";
@@ -379,15 +380,17 @@ function getSessionParent(
 }
 
 export interface QwenMessage {
+  id: string | null;
   fid: string;
   parentId: string | null;
   childrenIds: string[];
-  role: "user" | "assistant";
+  role: string;
   content: string;
   user_action: string;
   files: any[];
   timestamp: number;
   models: string[];
+  model: string;
   chat_type: string;
   feature_config: {
     thinking_enabled: boolean;
@@ -412,7 +415,9 @@ export interface QwenPayload {
   version: string;
   incremental_output: boolean;
   stream_options?: { include_usage: boolean };
+  chatId?: string | null;
   chat_id: string | null;
+  parentId?: string;
   chat_mode: string;
   model: string;
   parent_id: string | null;
@@ -657,7 +662,23 @@ export async function syncQwenRequestPersonalization(
   // instruction pode ser vazia para limpar personalization
 
   const cacheKey = accountId || "global";
-  const { headers } = await getQwenHeaders(false, accountId);
+
+  // Proactive token renewal: refresh BEFORE attempting personalization
+  // to avoid 401 errors that waste time on retry
+  let forceRefresh = false;
+  try {
+    const basic = await getBasicHeaders(accountId);
+    if (isTokenExpiringSoon(basic.cookie, 5)) {
+      logger.debug("[Qwen] Token expiring soon, refreshing proactively", {
+        accountId: cacheKey,
+      });
+      forceRefresh = true;
+    }
+  } catch {
+    // If we can't check, let the normal flow handle it
+  }
+
+  const { headers } = await getQwenHeaders(forceRefresh, accountId);
   const requestHeaders = buildCapturedQwenHeaders(headers, {
     referer: `${config.qwen.baseUrl}/settings/personalization`,
   });
@@ -1738,26 +1759,31 @@ export async function createQwenStream(
 
   const timestamp = Math.floor(Date.now() / 1000);
   const fid = uuidv4();
+  const childId = uuidv4();
 
   const payload: QwenPayload = {
     stream: true,
     version: "2.1",
     incremental_output: true,
+    chatId: chatSessionId || null,
+    parentId: actualParentId ?? "",
     chat_id: chatSessionId || null,
     chat_mode: "normal",
     model: model,
     parent_id: actualParentId,
     messages: [
       {
+        id: null,
         fid: fid,
         parentId: actualParentId,
-        childrenIds: [],
+        childrenIds: [childId],
         role: "user",
         content: prompt,
         user_action: "chat",
         files: files || [],
         timestamp: timestamp,
         models: [model],
+        model: "",
         chat_type: "t2t",
         feature_config: {
           thinking_enabled: enableThinking,
@@ -1766,7 +1792,7 @@ export async function createQwenStream(
           auto_thinking: false,
           thinking_mode: "Thinking",
           thinking_format: "summary",
-          auto_search: false,
+          auto_search: true,
         },
         extra: {
           meta: {

@@ -77,6 +77,28 @@ export async function getBasicHeaders(accountId?: string): Promise<{
   return getPlaywrightBasicHeaders(resolvedAccountId);
 }
 
+export function isTokenExpiringSoon(
+  cookie: string,
+  minutesBeforeExpiry = 5,
+): boolean {
+  const tokenMatch = cookie.match(/token=([^;]+)/);
+  if (!tokenMatch) return true;
+
+  try {
+    const payloadB64 = tokenMatch[1].split(".")[1];
+    const payloadJson = Buffer.from(payloadB64, "base64").toString("utf-8");
+    const payload = JSON.parse(payloadJson);
+    const exp = payload.exp;
+    if (!exp) return true;
+
+    const nowSec = Math.floor(Date.now() / 1000);
+    const thresholdSec = minutesBeforeExpiry * 60;
+    return exp - nowSec < thresholdSec;
+  } catch {
+    return true;
+  }
+}
+
 export async function getQwenHeaders(
   forceNew = false,
   accountId?: string,
