@@ -1,5 +1,10 @@
 FROM mcr.microsoft.com/playwright:v1.61.1-jammy
 
+# Upgrade Node.js to v24 (base image ships with Node 22)
+RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
+  && apt-get install -y --no-install-recommends nodejs \
+  && rm -rf /var/lib/apt/lists/*
+
 # Install dumb-init to handle process signals correctly and gosu for privilege drop
 RUN apt-get update && apt-get install -y --no-install-recommends dumb-init gosu && rm -rf /var/lib/apt/lists/*
 
