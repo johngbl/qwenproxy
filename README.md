@@ -294,6 +294,7 @@ npm run typecheck  # tipos
 | `DELETE_ALL_CHATS_ON_SHUTDOWN` | `false` | Limpa chats no shutdown |
 | `QWEN_PERSONALIZATION_FROM_REQUEST` | `true` | Envia system/tools via personalization |
 | `QWEN_PERSONALIZATION_VERIFY_GET` | `true` | Confirma personalization com GET |
+| `QWEN_MAX_PERSONALIZATION_BYTES` | `131072` | Teto UTF-8 para personalization por request; acima disso as instruções seguem inline |
 | `QWEN_CHAT_POOL_SIZE` | `1` | Warm pool de chats por modelo |
 | `QWEN_CHAT_POOL_MODELS` | `qwen3.7-plus` | Modelos aquecidos no warm pool |
 
@@ -360,6 +361,7 @@ Fingerprint estável por conta (UA, locale, viewport, hardware/WebGL) é aplicad
 |---|---|---|
 | `CACHE_TTL` | `3600` | TTL do cache (s) |
 | `CACHE_COMPRESSION_ENABLED` | `true` | Compressão Brotli |
+| `QWEN_MAX_PROMPT_BYTES` | `1048576` | Teto local UTF-8 do prompt antes de chamar o upstream (`0` desativa) |
 
 ### Observabilidade
 
@@ -381,7 +383,7 @@ O proxy tenta recuperar erros transitórios sem quebrar thread-native/tools:
 |---|---|
 | `502` / `503` / `504` | Retry com delay curto |
 | `fetch failed`, `ECONNREFUSED`, `ETIMEDOUT`, `ENOTFOUND` | Retry de rede |
-| Anti-bot (`FAIL_SYS_USER_VALIDATE`, captcha, etc.) | Cooldown + rotação + profile reset em background |
+| Anti-bot (`FAIL_SYS_USER_VALIDATE`, captcha, WAF HTML, etc.) | Renova headers uma vez; se persistir, cooldown + rotação + profile reset em background |
 | Quota / rate limit | Cooldown categorizado (`RateLimited`, `RateLimitTemporary`, …) |
 | `invalid_input` (“entrada ou anexo inválido”) | Retry forçando **novo chat** + contexto completo |
 | Chat not exist / session stale | Força novo chat na sessão lógica |
@@ -695,6 +697,8 @@ QwenBridge/
 | Quota exceeded | Mais contas ou esperar cooldown |
 | `502 Bad Gateway` / `fetch failed` | Normalmente upstream/rede; o proxy faz retry automático |
 | `invalid_input` (anexo inválido) | Retry com chat novo; settings `largeTextAsFile=false` ajudam |
+| `context_length_exceeded` | O proxy bloqueou o prompt localmente antes de qualquer retry; reduza/resuma o histórico ou ajuste `QWEN_MAX_PROMPT_BYTES` |
+| HTML/WAF no lugar do stream | O bridge renova os headers uma vez e não expõe a página HTML ao cliente; se persistir, aguarde o cooldown ou faça `npm run login` |
 | `Model not found` com `gpt-*` | Aliases (`gpt-5-mini`→flash, `gpt-5`→max, etc.) em Chat/Responses/Anthropic; confira mapping |
 | Vários Chromes abertos / RAM alta | `SESSION_KEEP_ALIVE_ENABLED=false`, idle cleanup on, `PLAYWRIGHT_INIT_BATCH_SIZE=1`, `PLAYWRIGHT_JS_HEAP_MB` |
 | Watchdog “RAM critical” falso | Já corrigido: usa `heap_size_limit`; confira `/health.heap.usagePercent` |

@@ -42,7 +42,17 @@ export abstract class QwenBridgeError extends Error {
 export class ValidationError extends QwenBridgeError {
   readonly statusCode = 400;
   readonly type = "invalid_request_error";
-  readonly code = "bad_request";
+  readonly code: string = "bad_request";
+}
+
+/** Input exceeds the local safe budget before it reaches the Qwen web API. */
+export class ContextLengthExceededError extends ValidationError {
+  readonly code = "context_length_exceeded";
+
+  constructor(message: string, param = "messages") {
+    super(message);
+    this.param = param;
+  }
 }
 
 export class AuthError extends QwenBridgeError {

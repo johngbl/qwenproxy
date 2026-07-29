@@ -657,8 +657,8 @@ export async function syncQwenRequestPersonalization(
     /** Bypass memory/DB/GET caches and always POST. Used on new chat creation. */
     forceSync?: boolean;
   } = {},
-): Promise<void> {
-  if (isAuthMockEnabled()) return;
+): Promise<boolean> {
+  if (isAuthMockEnabled()) return true;
   // instruction pode ser vazia para limpar personalization
 
   const cacheKey = accountId || "global";
@@ -695,7 +695,7 @@ export async function syncQwenRequestPersonalization(
   if (!bypassCache && syncHash && cachedHash === syncHash) {
     rememberActivePersonalization(cacheKey, instruction, metadata, "memory");
     // Personalization unchanged - no log needed
-    return;
+    return true;
   }
 
   // 2. Check DB cache (survives restarts) (skipped on forceSync)
@@ -705,7 +705,7 @@ export async function syncQwenRequestPersonalization(
       lastSyncedPersonalizationHashes.set(cacheKey, syncHash);
       rememberActivePersonalization(cacheKey, instruction, metadata, "db");
       // Personalization unchanged (DB) - no log needed
-      return;
+      return true;
     }
   }
 
@@ -755,7 +755,7 @@ export async function syncQwenRequestPersonalization(
           sent,
           existing,
         });
-        return;
+        return true;
       }
     } catch (err) {
       logger.debug("[Qwen] personalization pre-check failed; updating anyway", {
@@ -835,7 +835,7 @@ export async function syncQwenRequestPersonalization(
       console.warn(
         `[Qwen] Personalization retry failed, continuing without it | account=${cacheKey} | error=${(retryErr as Error).message?.substring(0, 150)}`,
       );
-      return;
+      return false;
     }
   }
 
@@ -844,7 +844,7 @@ export async function syncQwenRequestPersonalization(
     console.warn(
       `[Qwen] Personalization sync failed (non-fatal) | account=${cacheKey} | response=${raw.slice(0, 200)}`,
     );
-    return; // Don't throw — continue with request without personalization
+    return false;
   }
 
   const returnedInstruction = json?.data?.personalization?.instruction;
@@ -867,11 +867,25 @@ export async function syncQwenRequestPersonalization(
 
   const matchReturned = returned.hash !== null && returned.hash === sent.hash;
   const matchStored = stored.hash === null ? null : stored.hash === sent.hash;
-  if (syncHash && (matchReturned || matchStored === true)) {
+  const applied = matchReturned || matchStored === true;
+  if (syncHash && applied) {
     lastSyncedPersonalizationHashes.set(cacheKey, syncHash);
     setPersonalizationHashInDb(cacheKey, syncHash);
     rememberActivePersonalization(cacheKey, instruction, metadata, "synced");
   }
+
+  if (!applied) {
+    logger.warn("[Qwen] personalization response did not confirm the requested instructions", {
+      accountId: cacheKey,
+      model: metadata.model || null,
+      tools: metadata.toolsCount ?? 0,
+      sent,
+      returned,
+      stored,
+    });
+    return false;
+  }
+
   console.log(
     `✅ [Qwen] Personalization synced | ${metadata.model || "?"} | ${metadata.toolsCount ?? 0} tool(s) | ${sent.chars} chars${metadata.sessionId ? ` | chat=${metadata.sessionId.substring(0, 12)}` : ""}${matchStored === null ? "" : ` | verified=${matchStored}`}`,
   );
@@ -888,6 +902,7 @@ export async function syncQwenRequestPersonalization(
     matchReturned,
     matchStored,
   });
+  return true;
 }
 
 const DISABLE_TOOLS_TIMEOUT_MS = 15000;
@@ -1606,6 +1621,66 @@ function parseQwenJsonError(
   return null;
 }
 
+const UPSTREAM_RESPONSE_PREVIEW_BYTES = 8 * 1024;
+
+function isHtmlResponseContentType(contentType: string): boolean {
+  const normalized = contentType.toLowerCase();
+  return (
+    normalized.includes("text/html") ||
+    normalized.includes("application/xhtml+xml")
+  );
+}
+
+function isHtmlResponseBody(value: string): boolean {
+  return /^\s*(?:<!doctype\s+html|<html\b)/i.test(value);
+}
+
+function isWafChallengeResponse(value: string): boolean {
+  const normalized = value.toLowerCase();
+  return (
+    normalized.includes("aliyun_waf") ||
+    normalized.includes("_____tmd_____") ||
+    normalized.includes("fail_sys_user_validate") ||
+    normalized.includes("rgv587_error") ||
+    normalized.includes("denyfromx5") ||
+    normalized.includes("captcha") ||
+    normalized.includes("security verification")
+  );
+}
+
+async function readResponsePreview(
+  response: Response,
+  maxBytes = UPSTREAM_RESPONSE_PREVIEW_BYTES,
+): Promise<string> {
+  if (!response.body) return "";
+
+  const reader = response.body.getReader();
+  const chunks: Buffer[] = [];
+  let bytesRead = 0;
+
+  try {
+    while (bytesRead < maxBytes) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+
+      const chunk = Buffer.from(value);
+      const remaining = maxBytes - bytesRead;
+      if (chunk.byteLength > remaining) {
+        chunks.push(chunk.subarray(0, remaining));
+        bytesRead += remaining;
+        break;
+      }
+      chunks.push(chunk);
+      bytesRead += chunk.byteLength;
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
+
+  return Buffer.concat(chunks).toString("utf8");
+}
+
 export async function createQwenStream(
   prompt: string,
   enableThinking: boolean,
@@ -1888,6 +1963,39 @@ export async function createQwenStream(
     }
 
     let responseContentType = response.headers.get("content-type") || "";
+    let retriedHtmlResponse = false;
+    while (isHtmlResponseContentType(responseContentType)) {
+      const preview = await readResponsePreview(response);
+      const antiBotChallenge = isWafChallengeResponse(preview);
+      logger.warn("[Qwen] Completion returned HTML instead of SSE", {
+        accountId: accountId ?? "global",
+        chatId: chatSessionId ?? "new",
+        status: response.status,
+        contentType: responseContentType,
+        antiBotChallenge,
+        previewBytes: Buffer.byteLength(preview, "utf8"),
+      });
+
+      if (!retriedHtmlResponse) {
+        retriedHtmlResponse = true;
+        const refreshed = await getQwenHeaders(true, accountId);
+        activeHeaders = refreshed.headers;
+        response = await fetchCompletion(activeHeaders);
+        responseContentType = response.headers.get("content-type") || "";
+        continue;
+      }
+
+      throw withCreatedChatMetadata(
+        new QwenUpstreamError(
+          antiBotChallenge
+            ? "Qwen returned an anti-bot challenge instead of an SSE response."
+            : "Qwen returned an HTML response instead of an SSE response.",
+          antiBotChallenge ? "waf_challenge" : "non_sse_html_response",
+          502,
+        ),
+      );
+    }
+
     if (
       response.status === 200 &&
       !responseContentType.includes("text/event-stream") &&
@@ -1909,20 +2017,26 @@ export async function createQwenStream(
     if (response.ok && responseContentType.includes("application/json")) {
       const errText = await response.text().catch(() => "");
 
-      if (
-        errText.includes("FAIL_SYS_USER_VALIDATE") ||
-        errText.includes("_____tmd_____") ||
-        errText.includes("RGV587_ERROR")
-      ) {
+      const htmlResponse = isHtmlResponseBody(errText);
+      const antiBotChallenge = isWafChallengeResponse(errText);
+      if (antiBotChallenge || htmlResponse) {
         logger.warn(
-          "[Qwen] TMD challenge detected in 200 OK; account will rotate.",
+          "[Qwen] Completion returned an HTML or anti-bot challenge body instead of SSE.",
+          {
+            accountId: accountId ?? "global",
+            chatId: chatSessionId ?? "new",
+            antiBotChallenge,
+            previewBytes: Buffer.byteLength(errText, "utf8"),
+          },
         );
 
         throw withCreatedChatMetadata(
           new QwenUpstreamError(
-            "Qwen TMD anti-bot challenge detected. Account needs recovery.",
-            "FAIL_SYS_USER_VALIDATE",
-            403,
+            antiBotChallenge
+              ? "Qwen returned an anti-bot challenge instead of an SSE response."
+              : "Qwen returned an HTML response instead of an SSE response.",
+            antiBotChallenge ? "waf_challenge" : "non_sse_html_response",
+            502,
           ),
         );
       }
@@ -1938,8 +2052,10 @@ export async function createQwenStream(
     }
 
     if (!response.ok || !response.body) {
-      const errText = await response.text().catch(() => "");
       const contentType = response.headers.get("content-type") || "";
+      const errText = contentType.includes("application/json")
+        ? await response.text().catch(() => "")
+        : await readResponsePreview(response);
 
       // Handle 502/503/504 as retryable upstream unavailability
       if (
@@ -1979,8 +2095,12 @@ export async function createQwenStream(
         }
       }
       throw withCreatedChatMetadata(
-        new Error(
-          `Failed to fetch from Qwen: ${response.status} ${response.statusText} - ${errText}`,
+        new QwenUpstreamError(
+          `Qwen completion request failed: ${response.status} ${response.statusText}`,
+          isWafChallengeResponse(errText)
+            ? "waf_challenge"
+            : "completion_http_error",
+          502,
         ),
       );
     }

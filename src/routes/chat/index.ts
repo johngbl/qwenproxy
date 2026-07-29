@@ -126,17 +126,16 @@ export async function chatCompletions(c: Context) {
     });
 
     stepStartedAt = Date.now();
-    // fullPrompt always carries system + full conversation history so account
-    // failover / forceNewChat can rebuild upstream context without deltas only.
-    const fullPromptForRequest = ctx.requestPersonalizationInstruction
-      ? parsed.prompt
-      : parsed.systemPrompt + parsed.prompt;
+    // Full replay must retain system instructions even when personalization was
+    // requested: its update can fail or be invalidated after a profile refresh.
+    const fullPromptForRequest = parsed.systemPrompt + parsed.prompt;
 
     let streamResult = await acquireUpstreamStream({
       finalPrompt,
       fullPrompt: fullPromptForRequest,
       isThinkingModel: ctx.isThinkingModel,
       model: body.model,
+      contextModelId: modelId,
       shouldResetUpstreamThread: ctx.shouldResetUpstreamThread,
       allFiles: files,
       isNewSession: ctx.isNewSession,
@@ -201,6 +200,7 @@ export async function chatCompletions(c: Context) {
       midStreamRetry: {
         fullPrompt: fullPromptForRequest,
         isThinkingModel: ctx.isThinkingModel,
+        contextModelId: modelId,
         allFiles: files,
         isNewSession: ctx.isNewSession,
         sessionId: ctx.sessionId,
@@ -309,6 +309,7 @@ export async function chatCompletions(c: Context) {
               fullPrompt: fullPromptForRequest,
               isThinkingModel: ctx.isThinkingModel,
               model: body.model,
+              contextModelId: modelId,
               shouldResetUpstreamThread: ctx.shouldResetUpstreamThread,
               allFiles: files,
               isNewSession: ctx.isNewSession,
@@ -333,8 +334,9 @@ export async function chatCompletions(c: Context) {
             });
 
             if ("error" in newStreamResult) {
-              // Can't get new stream, fail with original error
-              throw streamErr;
+              // Prefer a local preflight error over the upstream error that
+              // triggered the replay (for example, an oversized full context).
+              throw newStreamResult.error ?? streamErr;
             }
 
             console.log(
@@ -368,6 +370,7 @@ export async function chatCompletions(c: Context) {
               midStreamRetry: {
                 fullPrompt: fullPromptForRequest,
                 isThinkingModel: ctx.isThinkingModel,
+                contextModelId: modelId,
                 allFiles: files,
                 isNewSession: ctx.isNewSession,
                 sessionId: ctx.sessionId,

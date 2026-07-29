@@ -1,6 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { config } from "../core/config.ts";
+import { ContextLengthExceededError } from "../core/errors.ts";
+import {
+  assertPromptWithinLimits,
+  getPromptLimitStats,
+  isRequestPersonalizationWithinLimit,
+} from "../core/prompt-limits.ts";
 
 test("config exposes only Playwright/thread-native current auth and context settings", () => {
   assert.equal(typeof config.playwright.headless, "boolean");
@@ -32,4 +38,51 @@ test("config keeps Qwen anti-bot static config limited to bx-v fallback", () => 
   assert.equal(typeof config.auth.bxV, "string");
   assert.equal("bxUa" in config.auth, false);
   assert.equal("bxUmidtoken" in config.auth, false);
+});
+
+test("prompt limits reject byte and model-context overages locally", () => {
+  assert.equal(typeof config.qwen.maxPromptBytes, "number");
+  assert.equal(typeof config.qwen.maxPersonalizationBytes, "number");
+
+  if (config.qwen.maxPromptBytes > 0) {
+    const oversizedUtf8Prompt = "é".repeat(
+      Math.floor(config.qwen.maxPromptBytes / 2) + 1,
+    );
+    assert.throws(
+      () => assertPromptWithinLimits(oversizedUtf8Prompt, "qwen3.7-plus"),
+      (error: unknown) => {
+        assert.ok(error instanceof ContextLengthExceededError);
+        assert.equal(error.code, "context_length_exceeded");
+        assert.equal(error.param, "messages");
+        return true;
+      },
+    );
+  }
+
+  const compactModel = "qwen3-omni-flash-2025-12-01";
+  const stats = getPromptLimitStats("", compactModel);
+  const overContextPrompt = "a".repeat((stats.usableInputTokens + 1) * 4);
+  assert.throws(
+    () => assertPromptWithinLimits(overContextPrompt, compactModel),
+    (error: unknown) => {
+      assert.ok(error instanceof ContextLengthExceededError);
+      assert.match(error.message, /usable context/);
+      return true;
+    },
+  );
+
+  if (config.qwen.maxPersonalizationBytes > 0) {
+    assert.equal(
+      isRequestPersonalizationWithinLimit(
+        "x".repeat(config.qwen.maxPersonalizationBytes),
+      ),
+      true,
+    );
+    assert.equal(
+      isRequestPersonalizationWithinLimit(
+        "x".repeat(config.qwen.maxPersonalizationBytes + 1),
+      ),
+      false,
+    );
+  }
 });

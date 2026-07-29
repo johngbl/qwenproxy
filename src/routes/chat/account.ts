@@ -11,6 +11,7 @@ import { markAccountSuccessful, markAccountFailed } from "../../core/account-pri
 import { loadAccounts } from "../../core/accounts.ts";
 import { config } from "../../core/config.ts";
 import { UpstreamRateLimit } from "../../core/errors.ts";
+import { assertPromptWithinLimits } from "../../core/prompt-limits.ts";
 import {
 	isToolcallDebugEnabled,
 	logger,
@@ -133,10 +134,12 @@ export interface AcquireParams {
 	excludeAccountIds?: string[];
 	messageCount?: number;
 	fullMessageCount?: number;
-	toolsCount?: number;
-	requestPersonalizationInstruction?: string | null;
-	requestSignal?: AbortSignal;
-	/** Allow this request to retry the account it just marked temporarily busy. */
+	  toolsCount?: number;
+	  requestPersonalizationInstruction?: string | null;
+	  /** Mapped Qwen model id used for local prompt-budget validation. */
+	  contextModelId?: string;
+	  requestSignal?: AbortSignal;
+	  /** Allow this request to retry the account it just marked temporarily busy. */
 	allowTemporarilyBusyAccountId?: string;
 }
 
@@ -443,6 +446,7 @@ export async function acquireUpstreamStream(
 					toolsCount: params.toolsCount,
 					requestPersonalizationInstruction:
 						params.requestPersonalizationInstruction,
+					contextModelId: params.contextModelId,
 					fullPrompt: params.fullPrompt,
 					requestSignal: params.requestSignal,
 				},
@@ -606,6 +610,7 @@ async function tryCreateStreamWithRetry(
 		fullMessageCount?: number;
 		toolsCount?: number;
 		requestPersonalizationInstruction?: string | null;
+		contextModelId?: string;
 		requestSignal?: AbortSignal;
 	},
 	accountId: string,
@@ -636,6 +641,11 @@ async function tryCreateStreamWithRetry(
 		let accountLease: AccountLease | null = null;
 
 		try {
+			assertPromptWithinLimits(
+				params.finalPrompt,
+				params.contextModelId ?? params.model,
+			);
+
 			const threadParentId = params.useThreadNative
 				? params.forceNewChat
 					? null
@@ -650,18 +660,25 @@ async function tryCreateStreamWithRetry(
 				timeoutMs: config.concurrency.busyWaitMs,
 				signal: params.requestSignal,
 			});
-			const releasePersonalization = params.requestPersonalizationInstruction
+			const hasRequestPersonalization =
+				params.requestPersonalizationInstruction !== null &&
+				params.requestPersonalizationInstruction !== undefined;
+			const releasePersonalization = hasRequestPersonalization
 				? await acquirePersonalizationLock(currentAccountId)
 				: null;
 			let result: Awaited<ReturnType<typeof createQwenStream>>;
 			try {
-				if (params.requestPersonalizationInstruction !== null) {
-						// Let the hash-based cache in syncQwenRequestPersonalization decide
-						// whether to actually POST. A new chat does not imply the account's
-						// global settings were reset — only session refresh or profile reset
-						// should bypass the cache.
-						await syncQwenRequestPersonalization(
-							params.requestPersonalizationInstruction ?? "",
+				let promptForUpstream = params.finalPrompt;
+				if (hasRequestPersonalization) {
+					// Let the hash-based cache in syncQwenRequestPersonalization decide
+					// whether to actually POST. A new chat does not imply the account's
+					// global settings were reset — only session refresh or profile reset
+					// should bypass the cache.
+					const instruction = params.requestPersonalizationInstruction ?? "";
+					let personalizationApplied = false;
+					try {
+						personalizationApplied = await syncQwenRequestPersonalization(
+							instruction,
 							currentAccountId === "global" ? undefined : currentAccountId,
 							{
 								model: params.model,
@@ -671,10 +688,39 @@ async function tryCreateStreamWithRetry(
 								forceSync: false,
 							},
 						);
-				}
+					} catch (error) {
+						logger.warn(
+							"[Chat] Personalization sync failed; sending instructions inline",
+							{
+								accountId: currentAccountId,
+								error:
+									error instanceof Error ? error.message : String(error),
+							},
+						);
+					}
 
+					if (
+						!personalizationApplied &&
+						instruction &&
+						!promptForUpstream.startsWith(instruction)
+					) {
+						logger.warn(
+							"[Chat] Personalization was not confirmed; sending instructions inline",
+							{
+								accountId: currentAccountId,
+								instructionChars: instruction.length,
+							},
+						);
+						promptForUpstream = `${instruction}\n${promptForUpstream}`;
+					}
+					}
+
+				assertPromptWithinLimits(
+					promptForUpstream,
+					params.contextModelId ?? params.model,
+				);
 				result = await createQwenStream(
-						params.finalPrompt,
+							promptForUpstream,
 						params.isThinkingModel,
 						params.model,
 						threadParentId,

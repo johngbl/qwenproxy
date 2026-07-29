@@ -1,5 +1,10 @@
 import { config } from "../../core/config.ts";
+import { logger } from "../../core/logger.ts";
 import { getModelContextWindow } from "../../core/model-registry.ts";
+import {
+  assertPromptWithinLimits,
+  isRequestPersonalizationWithinLimit,
+} from "../../core/prompt-limits.ts";
 import type { Message } from "../../utils/types.ts";
 import { estimateTokenCount } from "../../utils/context-truncation.ts";
 import { deriveSessionId } from "../../utils/session-id.ts";
@@ -85,8 +90,21 @@ export async function buildFinalContext(
     (!existingThread && !hasTrailingToolResult ? prompt : currentPrompt) ||
     prompt;
   const isTitleGenerationRequest = detectTitleGenerationRequest(messages);
-  const useRequestPersonalization =
+  const requestedPersonalization =
     config.qwen.personalizationFromRequest && !isTitleGenerationRequest;
+  const personalizationInstruction = systemPrompt.trim();
+  const useRequestPersonalization =
+    requestedPersonalization &&
+    isRequestPersonalizationWithinLimit(personalizationInstruction);
+  if (requestedPersonalization && !useRequestPersonalization) {
+    logger.warn(
+      "[chat] system instructions exceed the personalization payload limit; sending them inline",
+      {
+        instructionBytes: Buffer.byteLength(personalizationInstruction, "utf8"),
+        maxPersonalizationBytes: config.qwen.maxPersonalizationBytes,
+      },
+    );
+  }
   const estimatedTokens = estimateTokenCount(
     systemPrompt + activePrompt,
   );
@@ -100,6 +118,8 @@ export async function buildFinalContext(
     shouldSendInstructions && systemPrompt
       ? `${systemPrompt}\n${activePrompt}`
       : activePrompt;
+
+  assertPromptWithinLimits(finalPrompt, modelId);
 
   const isThinkingModel = enableThinking;
   const shouldResetUpstreamThread = false;
@@ -119,7 +139,7 @@ export async function buildFinalContext(
     modelContextWindow,
     isTitleGenerationRequest,
     requestPersonalizationInstruction: useRequestPersonalization
-      ? systemPrompt.trim()
+      ? personalizationInstruction
       : null,
     hasExplicitConversationKey,
     allowThreadReuse,

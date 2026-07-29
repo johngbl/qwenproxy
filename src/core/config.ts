@@ -73,6 +73,8 @@ const envSchema = z
     QWEN_CHAT_POOL_MODELS: z.string().default("qwen3.7-plus"),
     QWEN_PERSONALIZATION_FROM_REQUEST: z.string().default("true"),
     QWEN_PERSONALIZATION_VERIFY_GET: z.string().default("true"),
+    QWEN_MAX_PROMPT_BYTES: z.string().default("1048576"),
+    QWEN_MAX_PERSONALIZATION_BYTES: z.string().default("131072"),
     DELETE_ALL_CHATS_ON_SHUTDOWN: z.string().default("false"),
     SESSION_KEEP_ALIVE_ENABLED: z.string().default("false"),
     SESSION_KEEP_ALIVE_INTERVAL_MS: z.string().default("180000"),
@@ -201,6 +203,11 @@ export const config = {
     personalizationFromRequest:
       env.QWEN_PERSONALIZATION_FROM_REQUEST === "true",
     personalizationVerifyGet: env.QWEN_PERSONALIZATION_VERIFY_GET !== "false",
+    maxPromptBytes: Math.max(0, parseInt(env.QWEN_MAX_PROMPT_BYTES)),
+    maxPersonalizationBytes: Math.max(
+      0,
+      parseInt(env.QWEN_MAX_PERSONALIZATION_BYTES),
+    ),
     deleteAllChatsOnShutdown: env.DELETE_ALL_CHATS_ON_SHUTDOWN === "true",
   },
 };

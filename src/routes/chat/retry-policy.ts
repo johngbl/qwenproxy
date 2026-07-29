@@ -193,14 +193,16 @@ export function isQuotaLikeError(err: unknown): boolean {
 }
 
 export function isAntiBotError(err: unknown): boolean {
-  if (err instanceof RetryableQwenStreamError) {
-    return errMessage(err).toLowerCase().includes("anti-bot");
-  }
   const code = errCode(err);
+  const codeLower = code.toLowerCase();
   const message = errMessage(err).toLowerCase();
+  if (err instanceof RetryableQwenStreamError) {
+    return codeLower === "waf_challenge" || message.includes("anti-bot");
+  }
   return (
     code === "FAIL_SYS_USER_VALIDATE" ||
     code === "RGV587_ERROR" ||
+    codeLower === "waf_challenge" ||
     message.includes("fail_sys_user_validate") ||
     message.includes("rgv587_error") ||
     message.includes("_____tmd_____") ||
@@ -555,8 +557,8 @@ export function parseSseErrorFromBuffer(
   const lines = buffer.split("\n");
   for (const line of lines) {
     const trimmed = line.trim();
-    if (!trimmed.startsWith("data: ")) continue;
-    const dataStr = trimmed.slice(6);
+    if (!trimmed.startsWith("data:")) continue;
+    const dataStr = trimmed.slice(5).trimStart();
     if (!dataStr || dataStr === "[DONE]") continue;
     try {
       const chunk = JSON.parse(dataStr);

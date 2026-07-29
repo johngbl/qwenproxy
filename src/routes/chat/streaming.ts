@@ -33,9 +33,8 @@ import {
   isToolcallDebugEnabled,
   upstreamDebugEnabled,
 } from "../../core/logger.js";
-import { sendOpenAIError, createError } from "../../api/error-helpers.js";
+import { sendOpenAIError } from "../../api/error-helpers.js";
 import { classifyError } from "../../api/error-classifier.js";
-import type { QwenBridgeStatusCode } from "../../core/errors.js";
 import { config } from "../../core/config.js";
 import { parseQwenErrorPayload } from "./errors.ts";
 import {
@@ -85,6 +84,19 @@ function extractChatSessionId(chunk: any): string | null {
 
 // Retry/switch policy lives in ./retry-policy.ts (generic by default).
 
+const MAX_INITIAL_PROTOCOL_BYTES = 64 * 1024;
+
+function hasSseProtocolStart(buffer: string): boolean {
+  const trimmed = buffer.trimStart();
+  return trimmed.startsWith("data:") || trimmed.startsWith(":");
+}
+
+function throwParsedUpstreamError(
+  error: NonNullable<ReturnType<typeof parseQwenErrorPayload>>,
+): never {
+  throwFromSseUpstreamError(error.code, error.details);
+}
+
 export interface AssistantCompleteEvent {
   sessionId: string | null;
   accountId: string;
@@ -122,6 +134,7 @@ export interface StreamProcessingParams {
   midStreamRetry?: {
     fullPrompt: string;
     isThinkingModel: boolean;
+    contextModelId?: string;
     allFiles: any[];
     isNewSession: boolean;
     sessionId: string | null;
@@ -197,7 +210,9 @@ export async function processNonStreamingResponse(
       ? new StreamingToolParser(declaredTools)
       : null;
     const toolCallsOut: any[] = [];
-            let buffer = "";
+    let buffer = "";
+    let protocolBuffer = "";
+    let sawSseProtocol = false;
     const usageAccumulator = createUsageAccumulator(0);
 
     const rememberSession = (sessionId: string | null) => {
@@ -262,7 +277,22 @@ export async function processNonStreamingResponse(
       const { done, value } = await reader.read();
       if (done) break;
 
-      buffer += decoder.decode(value, { stream: true });
+      const decoded = decoder.decode(value, { stream: true });
+      if (!sawSseProtocol) {
+        protocolBuffer += decoded;
+        sawSseProtocol = hasSseProtocolStart(protocolBuffer);
+        if (
+          !sawSseProtocol &&
+          Buffer.byteLength(protocolBuffer, "utf8") > MAX_INITIAL_PROTOCOL_BYTES
+        ) {
+          throw toRetryableStreamError(
+            "non_sse_response",
+            "Qwen did not start an SSE response before the protocol probe limit.",
+          );
+        }
+      }
+
+      buffer += decoded;
       let lineStart = 0;
       let lineEnd = buffer.indexOf("\n", lineStart);
 
@@ -270,9 +300,9 @@ export async function processNonStreamingResponse(
         const line = buffer.slice(lineStart, lineEnd);
         lineStart = lineEnd + 1;
         const trimmed = line.trim();
-        if (!trimmed || !trimmed.startsWith("data: ")) continue;
+        if (!trimmed || !trimmed.startsWith("data:")) continue;
 
-        const dataStr = trimmed.slice(6);
+        const dataStr = trimmed.slice(5).trimStart();
         if (dataStr === "[DONE]") continue;
 
         if (upstreamDebugEnabled) {
@@ -390,16 +420,20 @@ export async function processNonStreamingResponse(
       buffer = lineStart > 0 ? buffer.slice(lineStart) : buffer;
     }
 
+    if (!sawSseProtocol) {
+      const upstreamError = parseQwenErrorPayload(protocolBuffer);
+      if (upstreamError) {
+        throwParsedUpstreamError(upstreamError);
+      }
+      throw toRetryableStreamError(
+        "non_sse_response",
+        "Qwen ended the response before emitting an SSE event.",
+      );
+    }
+
     const upstreamError = parseQwenErrorPayload(buffer);
     if (upstreamError) {
-      removeStream(completionId);
-      return sendOpenAIError(
-        c,
-        createError(
-          upstreamError.status as QwenBridgeStatusCode,
-          upstreamError.message,
-        ),
-      );
+      throwParsedUpstreamError(upstreamError);
     }
 
 
@@ -504,6 +538,7 @@ export async function processNonStreamingResponse(
         fullPrompt: retryPrompt,
         isThinkingModel: midStreamRetry.isThinkingModel,
         model: body.model,
+        contextModelId: midStreamRetry.contextModelId,
         shouldResetUpstreamThread: true,
         allFiles: midStreamRetry.allFiles,
         isNewSession: midStreamRetry.isNewSession,
@@ -518,6 +553,7 @@ export async function processNonStreamingResponse(
         fullMessageCount: midStreamRetry.fullMessageCount,
         toolsCount: midStreamRetry.toolsCount,
         requestPersonalizationInstruction: midStreamRetry.requestPersonalizationInstruction,
+        requestSignal: c.req.raw.signal,
       });
 
       if ("error" in newStreamResult) {
@@ -684,27 +720,28 @@ export async function processStreamingResponse(
 
     initialStreamBuffer += streamDecoder.decode(value, { stream: true });
     const trimmedInitialBuffer = initialStreamBuffer.trimStart();
-    if (
-      trimmedInitialBuffer.startsWith("data: ") ||
-      trimmedInitialBuffer.startsWith(":")
-    ) {
+    if (hasSseProtocolStart(trimmedInitialBuffer)) {
       break;
+    }
+    if (
+      Buffer.byteLength(initialStreamBuffer, "utf8") >
+      MAX_INITIAL_PROTOCOL_BYTES
+    ) {
+      await streamReader.cancel().catch(() => undefined);
+      throw toRetryableStreamError(
+        "non_sse_response",
+        "Qwen did not start an SSE response before the protocol probe limit.",
+      );
     }
   }
 
   const upstreamError = parseQwenErrorPayload(initialStreamBuffer);
-    if (upstreamError) {
-      await streamReader.cancel().catch(() => undefined);
-      removeStream(completionId);
-      if (onStreamComplete) onStreamComplete();
-      return sendOpenAIError(
-        c,
-        createError(
-          upstreamError.status as QwenBridgeStatusCode,
-          upstreamError.message,
-        ),
-      );
-    }
+  if (upstreamError) {
+    await streamReader.cancel().catch(() => undefined);
+    removeStream(completionId);
+    if (onStreamComplete) onStreamComplete();
+    throwParsedUpstreamError(upstreamError);
+  }
 
     // Detect first-chunk SSE error BEFORE committing to SSE so outer retry loop can run
     const earlySseError = parseSseErrorFromBuffer(initialStreamBuffer);
@@ -1071,9 +1108,9 @@ export async function processStreamingResponse(
           const line = buffer.slice(lineStart, lineEnd);
           lineStart = lineEnd + 1;
           const trimmed = line.trim();
-          if (!trimmed || !trimmed.startsWith("data: ")) continue;
+          if (!trimmed || !trimmed.startsWith("data:")) continue;
 
-          const dataStr = trimmed.slice(6);
+          const dataStr = trimmed.slice(5).trimStart();
           if (dataStr === "[DONE]") {
             if (!clientDisconnected) {
               await streamWriter.write("data: [DONE]\n\n");
@@ -1268,6 +1305,7 @@ export async function processStreamingResponse(
                   fullPrompt: midStreamRetry.fullPrompt,
                   isThinkingModel: midStreamRetry.isThinkingModel,
                   model: body.model,
+                  contextModelId: midStreamRetry.contextModelId,
                   shouldResetUpstreamThread: needsFullPrompt,
                   allFiles: policy.dropFiles ? [] : midStreamRetry.allFiles,
                   isNewSession: midStreamRetry.isNewSession,
@@ -1295,7 +1333,7 @@ export async function processStreamingResponse(
                   console.error(
                     `[Chat] Transparent retry failed to acquire stream | ${newStreamResult.error?.message || "unknown error"}`,
                   );
-                  throw _e;
+                  throw newStreamResult.error ?? _e;
                 }
 
                 console.log(
@@ -1576,6 +1614,7 @@ export async function processStreamingResponse(
             fullPrompt: retryPrompt,
             isThinkingModel: midStreamRetry.isThinkingModel,
             model: body.model,
+            contextModelId: midStreamRetry.contextModelId,
             shouldResetUpstreamThread: true,
             allFiles: midStreamRetry.allFiles,
             isNewSession: midStreamRetry.isNewSession,
@@ -1590,6 +1629,7 @@ export async function processStreamingResponse(
             fullMessageCount: midStreamRetry.fullMessageCount,
             toolsCount: midStreamRetry.toolsCount,
             requestPersonalizationInstruction: midStreamRetry.requestPersonalizationInstruction,
+            requestSignal: c.req.raw.signal,
           });
 
           if ("error" in newStreamResult) {
@@ -1618,9 +1658,9 @@ export async function processStreamingResponse(
                 const line = retryBuffer.slice(lineStart, lineEnd);
                 lineStart = lineEnd + 1;
                 const trimmed = line.trim();
-                if (!trimmed || !trimmed.startsWith("data: ")) continue;
+                if (!trimmed || !trimmed.startsWith("data:")) continue;
 
-                const dataStr = trimmed.slice(6);
+                const dataStr = trimmed.slice(5).trimStart();
                 if (dataStr === "[DONE]") continue;
 
                 // Forward the chunk to the client

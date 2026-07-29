@@ -17,6 +17,7 @@ import {
   RetryableQwenStreamError,
 } from "../services/qwen.ts";
 import { ValidationError, AuthError } from "../core/errors.ts";
+import { parseQwenErrorPayload } from "../routes/chat/errors.ts";
 
 test("classifyRetryAction: unknown upstream errors are retryable by default", () => {
   const err = Object.assign(new Error("brand new qwen failure xyz"), {
@@ -63,6 +64,32 @@ test("classifyRetryAction: quota prefers account switch", () => {
   assert.equal(action.retryable, true);
   assert.equal(action.switchAccount, true);
   assert.equal(action.reason, "quota_or_rate_limit");
+});
+
+test("classifyRetryAction: WAF challenges use anti-bot recovery", () => {
+  const err = Object.assign(
+    new Error("Qwen returned an anti-bot challenge instead of an SSE response."),
+    { upstreamCode: "waf_challenge" },
+  );
+  const action = classifyRetryAction(err);
+  assert.equal(action.retryable, true);
+  assert.equal(action.switchAccount, true);
+  assert.equal(action.reason, "anti_bot");
+});
+
+test("parseQwenErrorPayload sanitizes an HTML WAF page", () => {
+  const parsed = parseQwenErrorPayload(
+    '<!doctype html><meta name="aliyun_waf_aa" content="do-not-expose-this-page">',
+  );
+
+  assert.deepEqual(parsed, {
+    code: "waf_challenge",
+    details: "Qwen returned an anti-bot challenge instead of an SSE response.",
+    message:
+      "Qwen upstream error: Qwen returned an anti-bot challenge instead of an SSE response.",
+    status: 502,
+  });
+  assert.doesNotMatch(parsed!.message, /aliyun_waf|do-not-expose-this-page/i);
 });
 
 test("classifyRetryAction: network / abort / upstream error classes retry with switch", () => {

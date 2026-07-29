@@ -82,20 +82,25 @@ export function isTokenExpiringSoon(
   minutesBeforeExpiry = 5,
 ): boolean {
   const tokenMatch = cookie.match(/token=([^;]+)/);
-  if (!tokenMatch) return true;
+  if (!tokenMatch) return false;
 
   try {
-    const payloadB64 = tokenMatch[1].split(".")[1];
-    const payloadJson = Buffer.from(payloadB64, "base64").toString("utf-8");
+    const token = decodeURIComponent(tokenMatch[1]);
+    const segments = token.split(".");
+    // Some Qwen deployments use opaque cookies. Treating those as expired
+    // forces expensive header capture on every personalization request.
+    if (segments.length !== 3 || !segments[1]) return false;
+
+    const payloadJson = Buffer.from(segments[1], "base64url").toString("utf-8");
     const payload = JSON.parse(payloadJson);
     const exp = payload.exp;
-    if (!exp) return true;
+    if (typeof exp !== "number" || !Number.isFinite(exp)) return false;
 
     const nowSec = Math.floor(Date.now() / 1000);
     const thresholdSec = minutesBeforeExpiry * 60;
     return exp - nowSec < thresholdSec;
   } catch {
-    return true;
+    return false;
   }
 }
 

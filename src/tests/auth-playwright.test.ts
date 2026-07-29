@@ -78,6 +78,73 @@ test("auth-playwright: requires configured account outside mock mode", async () 
   }
 });
 
+test("auth-playwright: only a parseable JWT expiry triggers proactive refresh", async () => {
+  const { isTokenExpiringSoon } = await import("../services/auth-playwright.ts");
+  const now = Math.floor(Date.now() / 1000);
+  const token = (exp: number) =>
+    `header.${Buffer.from(JSON.stringify({ exp })).toString("base64url")}.signature`;
+
+  assert.equal(isTokenExpiringSoon("token=opaque-qwen-session"), false);
+  assert.equal(isTokenExpiringSoon("session=without-token"), false);
+  assert.equal(isTokenExpiringSoon("token=not.a.valid.jwt"), false);
+  assert.equal(isTokenExpiringSoon(`token=${token(now + 60)}`), true);
+  assert.equal(isTokenExpiringSoon(`token=${token(now - 1)}`), true);
+  assert.equal(isTokenExpiringSoon(`token=${token(now + 3600)}`), false);
+});
+
+test("playwright header capture rejects empty headers and timeouts", async () => {
+  const { captureQwenHeaders, hasRequiredQwenHeaders } = await import(
+    "../services/playwright.ts"
+  );
+
+  assert.equal(hasRequiredQwenHeaders({}), false);
+  assert.equal(
+    hasRequiredQwenHeaders({ "bx-ua": "present", "bx-umidtoken": " " }),
+    false,
+  );
+  assert.equal(
+    hasRequiredQwenHeaders({
+      "bx-ua": "present",
+      "bx-umidtoken": "present",
+    }),
+    true,
+  );
+
+  let timeoutUnroutes = 0;
+  const timeoutPage = {
+    isClosed: () => false,
+    route: async () => {},
+    unroute: async () => {
+      timeoutUnroutes++;
+    },
+    goto: () => new Promise<void>(() => {}),
+  };
+  await assert.rejects(
+    () => captureQwenHeaders("test-header-timeout", timeoutPage as any, 20),
+    /timed out/,
+  );
+  assert.equal(timeoutUnroutes, 1);
+
+  let incompleteUnroutes = 0;
+  const incompletePage = {
+    isClosed: () => false,
+    route: async (_pattern: string, handler: any) => {
+      await handler(
+        { abort: async () => {} },
+        { headers: () => ({ "bx-ua": "present" }) },
+      );
+    },
+    unroute: async () => {
+      incompleteUnroutes++;
+    },
+  };
+  await assert.rejects(
+    () => captureQwenHeaders("test-header-incomplete", incompletePage as any, 20),
+    /incomplete anti-fraud headers/,
+  );
+  assert.equal(incompleteUnroutes, 1);
+});
+
 test("auth-playwright: falls back to first configured account when no account id is provided", async () => {
   const existing = snapshotAccounts();
   delete process.env.TEST_MOCK_QWEN_AUTH;

@@ -13,6 +13,7 @@ import {
   clearAccountCooldown,
   getAccountCooldownInfo,
 } from "../core/account-manager.ts";
+import { config } from "../core/config.ts";
 
 test("Health check endpoint returns 200", async () => {
   const req = new Request("http://localhost/health");
@@ -420,7 +421,41 @@ test("Chat Completions returns explicit error for stream=true upstream JSON erro
   }
 });
 
-test("Chat Completions releases per-chat lock after initial stream body errors", async () => {
+test("Chat Completions rejects oversized context before upstream retry", async () => {
+  if (config.qwen.maxPromptBytes <= 0) return;
+
+  const originalFetch = globalThis.fetch;
+  let upstreamCalls = 0;
+  globalThis.fetch = async (input: any, init?: RequestInit) => {
+    upstreamCalls++;
+    return originalFetch(input, init);
+  };
+
+  try {
+    const req = new Request("http://localhost/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "qwen3.7-plus",
+        messages: [
+          { role: "user", content: "x".repeat(config.qwen.maxPromptBytes) },
+        ],
+        stream: false,
+      }),
+    });
+
+    const res = await app.fetch(req);
+    assert.strictEqual(res.status, 400);
+    const body = await res.json();
+    assert.strictEqual(body.error.code, "context_length_exceeded");
+    assert.strictEqual(body.error.param, "messages");
+    assert.strictEqual(upstreamCalls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Chat Completions retries initial stream body errors and releases the per-chat lock", async () => {
   const originalFetch = globalThis.fetch;
   const conversationId = `lock-release-${Date.now()}`;
   const messages = [{ role: "user", content: "hello lock" }];
@@ -482,7 +517,9 @@ test("Chat Completions releases per-chat lock after initial stream body errors",
     });
 
     const firstRes = await app.fetch(firstReq);
-    assert.strictEqual(firstRes.status, 502);
+    assert.strictEqual(firstRes.status, 200);
+    assert.match(await firstRes.text(), /after lock/);
+    assert.strictEqual(completionCalls, 2);
 
     const secondReq = new Request("http://localhost/v1/chat/completions", {
       method: "POST",
@@ -495,18 +532,23 @@ test("Chat Completions releases per-chat lock after initial stream body errors",
       }),
     });
 
-    const secondRes = await Promise.race([
-      app.fetch(secondReq),
-      new Promise<Response>((_, reject) => {
-        setTimeout(
-          () => reject(new Error("per-chat lock was not released")),
-          1000,
-        );
-      }),
-    ]);
-    assert.strictEqual(secondRes.status, 200);
-    assert.match(await secondRes.text(), /after lock/);
-    assert.strictEqual(completionCalls, 2);
+    let lockTimeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const secondRes = await Promise.race([
+        app.fetch(secondReq),
+        new Promise<Response>((_, reject) => {
+          lockTimeout = setTimeout(
+            () => reject(new Error("per-chat lock was not released")),
+            1000,
+          );
+        }),
+      ]);
+      assert.strictEqual(secondRes.status, 200);
+      assert.match(await secondRes.text(), /after lock/);
+      assert.strictEqual(completionCalls, 3);
+    } finally {
+      if (lockTimeout) clearTimeout(lockTimeout);
+    }
   } finally {
     globalThis.fetch = originalFetch;
     await Promise.resolve();

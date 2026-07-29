@@ -326,6 +326,12 @@ function getHeaderCache(accountId: string): AccountHeaderCache {
   return cache;
 }
 
+export function hasRequiredQwenHeaders(
+  headers: Record<string, string>,
+): boolean {
+  return Boolean(headers["bx-ua"]?.trim() && headers["bx-umidtoken"]?.trim());
+}
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 export async function getCookies(accountId: string): Promise<string> {
@@ -369,34 +375,44 @@ export async function getBasicHeaders(accountId: string): Promise<{
     }
 
     const cache = getHeaderCache(accountId);
+    const hadUsableHeaders = hasRequiredQwenHeaders(cache.headers);
 
-    // Refresh headers if stale
+    // Refresh headers if stale. A valid cached set remains usable when a
+    // browser recapture transiently fails; a cold/partial cache must fail.
     const headersAge = Date.now() - cache.lastRefresh;
     if (headersAge > HEADER_CACHE_TTL && !cache.refreshInProgress) {
-      await refreshHeadersInternal(accountId);
+      try {
+        await refreshHeadersInternal(accountId);
+      } catch (error) {
+        if (!hadUsableHeaders) throw error;
+        console.warn(
+          `⚠️  [Playwright] Header refresh failed for ${accountId}; retaining the previous valid cache: ${getErrorMessage(error)}`,
+        );
+      }
     }
 
-    let bxUa = cache.headers["bx-ua"] || "";
-    let bxUmidtoken = cache.headers["bx-umidtoken"] || "";
-    let bxV = cache.headers["bx-v"] || "2.5.36";
-
-    // Auto-recover missing anti-fraud headers by triggering full header interception
-    if (!bxUa || !bxUmidtoken) {
+    if (!hasRequiredQwenHeaders(cache.headers)) {
       console.log(
         `🔄 [Playwright] Missing bx-ua/bx-umidtoken for ${accountId}, triggering header interception...`,
       );
       try {
         await refreshHeadersInternal(accountId);
-        const refreshedCache = getHeaderCache(accountId);
-        bxUa = refreshedCache.headers["bx-ua"] || bxUa;
-        bxUmidtoken = refreshedCache.headers["bx-umidtoken"] || bxUmidtoken;
-        bxV = refreshedCache.headers["bx-v"] || bxV;
-      } catch (err: any) {
+      } catch (error) {
         console.warn(
-          `❌ [Playwright] Failed to auto-recover headers for ${accountId}: ${err.message}`,
+          `❌ [Playwright] Failed to auto-recover headers for ${accountId}: ${getErrorMessage(error)}`,
         );
       }
     }
+
+    if (!hasRequiredQwenHeaders(cache.headers)) {
+      throw new Error(
+        `Required Qwen anti-fraud headers are unavailable for account: ${accountId}`,
+      );
+    }
+
+    const bxUa = cache.headers["bx-ua"];
+    const bxUmidtoken = cache.headers["bx-umidtoken"];
+    const bxV = cache.headers["bx-v"] || "2.5.36";
 
     // Read cookie AFTER all refreshes (re-login may have updated it)
     const cookie = await getCookies(accountId);
@@ -507,7 +523,7 @@ export async function initPlaywrightForAccount(
       }
 
       // Capture headers by navigating and intercepting
-      await captureHeaders(account.id);
+      await captureQwenHeaders(account.id);
       touchAccountActivity(account.id);
     } catch (error) {
       await closePlaywrightContextBestEffort(account.id, acctContext);
@@ -670,74 +686,120 @@ async function loginViaUi(
 
 // ─── Header Capture ───────────────────────────────────────────────────────────
 
-async function captureHeaders(accountId: string): Promise<void> {
-  const page = accountPages.get(accountId);
-  if (!page) return;
+/**
+ * Capture a complete anti-fraud header set from a browser completion request.
+ * The optional page and timeout make the capture path independently testable
+ * without starting a real browser.
+ */
+export async function captureQwenHeaders(
+  accountId: string,
+  pageOverride?: Page,
+  timeoutMs = config.timeouts.headers,
+): Promise<void> {
+  const page = pageOverride ?? accountPages.get(accountId);
+  if (!page || page.isClosed()) {
+    throw new Error(`Playwright page unavailable for header capture: ${accountId}`);
+  }
 
   touchAccountActivity(accountId);
   const cache = getHeaderCache(accountId);
 
-  return new Promise<void>((resolve) => {
-    let resolved = false;
-    const done = () => {
-      if (resolved) return;
-      resolved = true;
-      resolve();
-    };
+  return new Promise<void>((resolve, reject) => {
+    let settled = false;
+    let routeRegistered = false;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    let routeHandler: (route: any, request: any) => Promise<void>;
 
-    const timeout = setTimeout(async () => {
-      console.warn(`⏱️  [Playwright] Header capture timeout for ${accountId}`);
-      await page
+    const cleanupRoute = () => {
+      if (!routeRegistered) return;
+      void page
         .unroute("**/api/v2/chat/completions*", routeHandler)
         .catch(() => {});
-      done();
-    }, config.timeouts.headers);
+    };
 
-    const routeHandler = async (route: any, request: any) => {
-      if (resolved) {
-        await route.abort("aborted").catch(() => {});
+    const settle = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      if (timeout) clearTimeout(timeout);
+      cleanupRoute();
+      if (error) reject(error);
+      else resolve();
+    };
+
+    routeHandler = async (route: any, request: any) => {
+      if (settled) {
+        // A route installed immediately before timeout must not poison future
+        // browser traffic after the capture operation has completed.
+        await route.continue().catch(() => {});
         return;
       }
-      clearTimeout(timeout);
 
       const reqHeaders = request.headers();
-      cache.headers = {
+      const capturedHeaders = {
         cookie: reqHeaders["cookie"] || "",
         "bx-ua": reqHeaders["bx-ua"] || "",
         "bx-umidtoken": reqHeaders["bx-umidtoken"] || "",
         "bx-v": reqHeaders["bx-v"] || "2.5.36",
         "user-agent": reqHeaders["user-agent"] || "",
       };
+
+      if (!hasRequiredQwenHeaders(capturedHeaders)) {
+        await route.abort("aborted").catch(() => {});
+        settle(
+          new Error(
+            `Header capture returned incomplete anti-fraud headers for ${accountId}`,
+          ),
+        );
+        return;
+      }
+
+      if (timeout) clearTimeout(timeout);
+      cache.headers = capturedHeaders;
       cache.lastRefresh = Date.now();
+      // Header interception can set challenge/session cookies, so do not reuse
+      // a cookie snapshot taken before this browser request.
+      cookieCaches.delete(accountId);
       touchAccountActivity(accountId);
 
       await route.abort("aborted").catch(() => {});
-      await page
-        .unroute("**/api/v2/chat/completions*", routeHandler)
-        .catch(() => {});
       await sleep(HEADER_CAPTURE_SETTLE_MS);
-      done();
+      settle();
     };
 
-    page
+    timeout = setTimeout(() => {
+      console.warn(`⏱️  [Playwright] Header capture timeout for ${accountId}`);
+      settle(new Error(`Header capture timed out for ${accountId}`));
+    }, timeoutMs);
+
+    void page
       .route("**/api/v2/chat/completions*", routeHandler)
       .then(async () => {
-        // Navigate to Qwen and trigger a request
-        await page.goto("https://chat.qwen.ai/", {
-          waitUntil: "domcontentloaded",
-        });
-        await sleep(2000);
+        routeRegistered = true;
+        if (settled) {
+          cleanupRoute();
+          return;
+        }
 
-        // Type something and send to trigger header capture
-        const inputSelector =
-          'textarea:visible, [contenteditable="true"]:visible';
         try {
-          await page.focus(inputSelector);
-          await page.fill(inputSelector, "");
-          await page.type(inputSelector, "a", { delay: 100 });
+          // Navigate to Qwen and trigger a request.
+          await page.goto("https://chat.qwen.ai/", {
+            waitUntil: "domcontentloaded",
+          });
+          if (settled) return;
           await sleep(2000);
+          if (settled) return;
 
-          // Try to click send button
+          const inputSelector =
+            'textarea:visible, [contenteditable="true"]:visible';
+          await page.focus(inputSelector);
+          if (settled) return;
+          await page.fill(inputSelector, "");
+          if (settled) return;
+          await page.type(inputSelector, "a", { delay: 100 });
+          if (settled) return;
+          await sleep(2000);
+          if (settled) return;
+
           const sendSelectors = [
             ".message-input-right-button-send .send-button",
             ".chat-prompt-send-button",
@@ -746,10 +808,10 @@ async function captureHeaders(accountId: string): Promise<void> {
 
           let clicked = false;
           for (const selector of sendSelectors) {
+            if (settled) return;
             try {
               const btn = await page.$(selector);
               if (btn && (await btn.isVisible())) {
-                // DOM click first (more faithful to real user interaction)
                 await page.evaluate((sel) => {
                   const element = document.querySelector(sel) as HTMLElement;
                   if (element) {
@@ -757,35 +819,40 @@ async function captureHeaders(accountId: string): Promise<void> {
                     element.click();
                   }
                 }, selector);
-
-                await btn.click({ force: true, delay: 50 }).catch(() => {});
+                if (!settled) {
+                  await btn.click({ force: true, delay: 50 }).catch(() => {});
+                }
                 clicked = true;
                 break;
               }
             } catch {
-              // Try next selector
+              // Try the next selector.
             }
           }
 
-          if (!clicked) {
-            // Fallback to Enter key
+          if (!clicked && !settled) {
             await page.keyboard.press("Enter");
           }
-        } catch (err) {
-          console.warn(`❌ [Playwright] Error triggering request: ${err}`);
-          clearTimeout(timeout);
-          await page
-            .unroute("**/api/v2/chat/completions*", routeHandler)
-            .catch(() => {});
-          done();
+        } catch (error) {
+          console.warn(
+            `❌ [Playwright] Error triggering header capture for ${accountId}: ${getErrorMessage(error)}`,
+          );
+          settle(
+            error instanceof Error
+              ? error
+              : new Error(`Header capture failed for ${accountId}`),
+          );
         }
       })
-      .catch(async (err) => {
+      .catch((error) => {
         console.warn(
-          `[Playwright] Error registering header capture route: ${err}`,
+          `[Playwright] Error registering header capture route: ${getErrorMessage(error)}`,
         );
-        clearTimeout(timeout);
-        done();
+        settle(
+          error instanceof Error
+            ? error
+            : new Error(`Header capture route registration failed for ${accountId}`),
+        );
       });
   });
 }
@@ -830,7 +897,7 @@ async function refreshHeadersInternal(accountId: string): Promise<void> {
       }
     }
 
-    await captureHeaders(accountId);
+    await captureQwenHeaders(accountId);
   } finally {
     touchAccountActivity(accountId);
     cache.refreshInProgress = false;
