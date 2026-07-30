@@ -5,7 +5,7 @@
 
 import {
   getAccountCredentials,
-  loadAccounts,
+  loadConfiguredAccounts,
   type QwenAccount,
 } from "../core/accounts.ts";
 import { deleteAllQwenChats } from "./qwen.ts";
@@ -44,7 +44,7 @@ async function deleteChatsForAccount(account: QwenAccount): Promise<boolean> {
 }
 
 export async function deleteChatsForConfiguredAccounts(): Promise<DeleteChatsResult> {
-  const accounts = loadAccounts();
+  const accounts = loadConfiguredAccounts();
   if (accounts.length === 0) {
     const ok = await deleteAllQwenChats();
     return {
