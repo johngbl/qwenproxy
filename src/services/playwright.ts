@@ -106,7 +106,7 @@ const accountMutexes = new Map<string, Mutex>();
 function getAccountMutex(accountId: string): Mutex {
   let mutex = accountMutexes.get(accountId);
   if (!mutex) {
-    mutex = new Mutex();
+    mutex = new Mutex(`playwright:${accountId.substring(0, 8)}`);
     accountMutexes.set(accountId, mutex);
   }
   return mutex;

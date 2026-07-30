@@ -3,28 +3,44 @@
  * QwenBridge - OpenAI-compatible proxy for Qwen
  */
 
-export class Mutex {
-  private queue: Array<() => void> = [];
-  private locked = false;
+import { logger } from "./logger.js";
 
-  async acquire(timeoutMs = 300_000): Promise<() => void> {
+export class Mutex {
+  private queue: Array<{ waiter: () => void; enqueuedAt: number; key: string }> = [];
+  private locked = false;
+  private lockedAt = 0;
+  private lockedByKey = "";
+
+  constructor(public readonly name: string = "unnamed") {}
+
+  async acquire(timeoutMs = 300_000, key = ""): Promise<() => void> {
     if (!this.locked) {
       this.locked = true;
+      this.lockedAt = Date.now();
+      this.lockedByKey = key;
       return this.createRelease();
     }
+
+    const enqueuedAt = Date.now();
+    const logKey = key || "anon";
+    logger.debug(`[Mutex:${this.name}] enqueue key=${logKey} queue=${this.queue.length + 1} heldBy=${this.lockedByKey || "unknown"} heldFor=${Date.now() - this.lockedAt}ms`);
 
     return new Promise<() => void>((resolve, reject) => {
       const waiter = () => {
         clearTimeout(timer);
+        this.lockedByKey = logKey;
+        this.lockedAt = Date.now();
         resolve(this.createRelease());
       };
       const timer = setTimeout(() => {
-        const index = this.queue.indexOf(waiter);
+        const index = this.queue.findIndex((e) => e.waiter === waiter);
         if (index !== -1) this.queue.splice(index, 1);
-        reject(new Error(`Mutex acquire timeout after ${timeoutMs}ms`));
+        const heldFor = Date.now() - this.lockedAt;
+        logger.warn(`[Mutex:${this.name}] TIMEOUT key=${logKey} waited=${timeoutMs}ms heldBy=${this.lockedByKey || "unknown"} heldFor=${heldFor}ms queueLeft=${this.queue.length}`);
+        reject(new Error(`Mutex[${this.name}] acquire timeout after ${timeoutMs}ms (held by ${this.lockedByKey || "unknown"} for ${heldFor}ms)`));
       }, timeoutMs);
       timer.unref?.();
-      this.queue.push(waiter);
+      this.queue.push({ waiter, enqueuedAt, key: logKey });
     });
   }
 
@@ -49,15 +65,31 @@ export class Mutex {
   private release(): void {
     const next = this.queue.shift();
     if (next) {
-      next();
+      const waitTime = Date.now() - next.enqueuedAt;
+      if (waitTime > 1_000) {
+        logger.debug(`[Mutex:${this.name}] dequeued key=${next.key} waited=${waitTime}ms`);
+      }
+      next.waiter();
       return;
     }
 
     this.locked = false;
+    this.lockedAt = 0;
+    this.lockedByKey = "";
   }
 
   /** Returns true if the mutex is not locked and has no waiting queue. */
   isIdle(): boolean {
     return !this.locked && this.queue.length === 0;
+  }
+
+  /** Returns diagnostic info about the current lock state. */
+  state(): { locked: boolean; heldBy: string; heldForMs: number; queueLength: number } {
+    return {
+      locked: this.locked,
+      heldBy: this.lockedByKey,
+      heldForMs: this.locked ? Date.now() - this.lockedAt : 0,
+      queueLength: this.queue.length,
+    };
   }
 }

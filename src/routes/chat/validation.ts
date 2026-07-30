@@ -126,6 +126,7 @@ async function buildPromptFromMessages(
     let contentStr = "";
 
     if (Array.isArray(msg.content)) {
+      const isCurrentMessage = i >= currentStartIndex;
       const imageParts = (msg.content as any[]).filter(
         (p: any) =>
           (p.type === "image_url" && p.image_url?.url) ||
@@ -134,7 +135,7 @@ async function buildPromptFromMessages(
           (p.type === "file_url" && p.file_url?.url),
       );
 
-      if (imageParts.length > 0) {
+      if (imageParts.length > 0 && isCurrentMessage) {
         try {
           if (!uploadHeaders) {
             const { cookie, userAgent, bxV, bxUa, bxUmidtoken } =
@@ -153,7 +154,7 @@ async function buildPromptFromMessages(
           );
           contentStr = text;
           allFiles.push(...files);
-          if (i >= currentStartIndex) currentFiles.push(...files);
+          currentFiles.push(...files);
         } catch (err: unknown) {
           const errMsg = err instanceof Error ? err.message : "Unknown error";
           console.error("[Chat] Failed to process images:", errMsg);

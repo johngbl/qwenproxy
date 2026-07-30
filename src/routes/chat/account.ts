@@ -56,10 +56,10 @@ const personalizationLocks = new Map<string, Mutex>();
 export async function acquireChatLock(chatId: string): Promise<() => void> {
 	let mutex = chatLocks.get(chatId);
 	if (!mutex) {
-		mutex = new Mutex();
+		mutex = new Mutex(`chat:${chatId.substring(0, 8)}`);
 		chatLocks.set(chatId, mutex);
 	}
-	const release = await mutex.acquire();
+	const release = await mutex.acquire(60_000, `chat:${chatId.substring(0, 12)}`);
 	return () => {
 		release();
 		if (mutex!.isIdle()) {
@@ -73,10 +73,10 @@ async function acquirePersonalizationLock(
 ): Promise<() => void> {
 	let mutex = personalizationLocks.get(accountId);
 	if (!mutex) {
-		mutex = new Mutex();
+		mutex = new Mutex(`personalization:${accountId.substring(0, 8)}`);
 		personalizationLocks.set(accountId, mutex);
 	}
-	const release = await mutex.acquire();
+	const release = await mutex.acquire(60_000, `personalization:${accountId.substring(0, 8)}`);
 	return () => {
 		release();
 		if (mutex!.isIdle()) {
