@@ -1274,7 +1274,12 @@ export async function processStreamingResponse(
                   `[Chat] Stream mid-stream error, retrying transparently | reason=${policy.reason} | ${_e.message?.substring(0, 150)} | retries left: ${retryContext.retriesLeft}`,
                 );
 
-                if (policy.accountCooldownMs || policy.accountCooldownReason) {
+                const switchAccount = policy.switchAccount;
+
+                // Only cooldown the account when switching away. If retrying on
+                // the same account (temporary load), a cooldown would cause
+                // acquireUpstreamStream to skip it, defeating the purpose.
+                if (switchAccount && (policy.accountCooldownMs || policy.accountCooldownReason)) {
                   markAccountRateLimited(
                     currentAccountId,
                     policy.accountCooldownMs,
@@ -1292,8 +1297,6 @@ export async function processStreamingResponse(
                     setTimeout(resolve, Math.min(policy.retryAfterMs, 3000)),
                   );
                 }
-
-                const switchAccount = policy.switchAccount;
                 const forceRetryNewChat = policy.forceNewChat;
                 const needsFullPrompt =
                   policy.retryWithFullPrompt || switchAccount || forceRetryNewChat;

@@ -55,10 +55,22 @@ test("classifyRetryAction: invalid_input forces new chat + full prompt + switch"
   assert.equal(action.reason, "invalid_input");
 });
 
-test("classifyRetryAction: quota prefers account switch", () => {
+test("classifyRetryAction: temporary quota (alta demanda) retries same account", () => {
   const err = Object.assign(
     new Error("quota_limit: O serviço está com alta demanda no momento."),
     { upstreamCode: "quota_limit", upstreamStatus: 502 },
+  );
+  const action = classifyRetryAction(err);
+  assert.equal(action.retryable, true);
+  assert.equal(action.switchAccount, false);
+  assert.equal(action.accountCooldownReason, "RateLimitTemporary");
+  assert.equal(action.reason, "quota_or_rate_limit");
+});
+
+test("classifyRetryAction: real quota exhaustion prefers account switch", () => {
+  const err = Object.assign(
+    new Error("RateLimited: You've reached the upper limit for today's usage."),
+    { upstreamCode: "RateLimited", upstreamStatus: 429 },
   );
   const action = classifyRetryAction(err);
   assert.equal(action.retryable, true);

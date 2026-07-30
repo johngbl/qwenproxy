@@ -853,15 +853,18 @@ async function tryCreateStreamWithRetry(
 			if (isAccountUnavailableError(err)) {
 				const quotaMsg = err.message || "Unknown quota error";
 				const policy = classifyRetryAction(err);
+				const isTemporary = policy.accountCooldownReason === "RateLimitTemporary";
 				
-				// Single account: retry once after delay before giving up
-				if (isSingleAccount && !quotaRetried && attemptsLeft > 0) {
+				// Temporary load shedding or single account: retry same account
+				// after a short delay before giving up / rotating.
+				if ((isTemporary || isSingleAccount) && !quotaRetried && attemptsLeft > 0) {
 					quotaRetried = true;
+					const delayMs = isTemporary ? 3_000 : config.retry.baseDelayMs;
 					console.warn(
-						`⚠️  [Chat] Quota exceeded | ${currentAccountEmail} | Retrying in ${config.retry.baseDelayMs}ms...`,
+						`⚠️  [Chat] Quota exceeded | ${currentAccountEmail} | ${isTemporary ? "temporary, " : ""}retrying in ${delayMs}ms...`,
 					);
 					await new Promise((resolve) =>
-						setTimeout(resolve, config.retry.baseDelayMs),
+						setTimeout(resolve, delayMs),
 					);
 					continue;
 				}

@@ -79,16 +79,10 @@ export async function chatCompletions(c: Context) {
     });
     mark("context", stepStartedAt);
 
-    // Acquire per-chat lock to prevent concurrent requests to the same Qwen chat
-    // Only lock when we have an explicit conversation key (allowThreadReuse)
-    stepStartedAt = Date.now();
-    if (ctx.allowThreadReuse && ctx.sessionId) {
-      const existingThread = getLogicalThreadState(ctx.sessionId);
-      const chatId = existingThread?.chatSessionId;
-      if (chatId) {
-        releaseChatLock = await acquireChatLock(chatId);
-      }
-    }
+    // Chat lock is acquired AFTER stream creation (below) to avoid holding it
+    // during account selection, retries, and anti-bot recovery which can take
+    // 30s+. Holding it here caused 190s+ lock contention cascading to all
+    // subsequent requests on the same chat.
     mark("lock", stepStartedAt);
 
     let finalPrompt = ctx.finalPrompt;
@@ -159,11 +153,6 @@ export async function chatCompletions(c: Context) {
     c.header("X-QwenBridge-Timing", formatTimingHeader(timings));
 
     if ("error" in streamResult) {
-      // Release per-chat lock on error (no stream to complete)
-      if (releaseChatLock) {
-        releaseChatLock();
-        releaseChatLock = null;
-      }
       if (streamResult.allOnCooldown) {
         const err: any = new Error(
           `All configured accounts are on cooldown. Retry in about ${Math.max(
@@ -175,6 +164,16 @@ export async function chatCompletions(c: Context) {
         throw err;
       }
       throw streamResult.error || new Error("All accounts failed");
+    }
+
+    // Acquire per-chat lock now that we have a stream, to serialize concurrent
+    // writes to the same upstream Qwen chat session.
+    if (ctx.allowThreadReuse && ctx.sessionId) {
+      const existingThread = getLogicalThreadState(ctx.sessionId);
+      const chatId = existingThread?.chatSessionId;
+      if (chatId) {
+        releaseChatLock = await acquireChatLock(chatId);
+      }
     }
 
     console.log(

@@ -219,16 +219,21 @@ function classifyQuotaCooldown(message: string): {
   accountCooldownMs?: number;
   accountCooldownReason: string;
 } {
+  const lower = message.toLowerCase();
   const hourHint = message.match(/Wait about (\d+) hour/i);
   const temporary =
-    message.toLowerCase().includes("rate increased too quickly") ||
-    message.toLowerCase().includes("request rate increased too quickly");
+    lower.includes("rate increased too quickly") ||
+    lower.includes("request rate increased too quickly") ||
+    lower.includes("alta demanda") ||
+    lower.includes("high demand") ||
+    lower.includes("tente novamente mais tarde") ||
+    lower.includes("try again later");
 
   return {
     accountCooldownMs: hourHint
       ? parseInt(hourHint[1], 10) * 60 * 60 * 1000
       : temporary
-        ? 5 * 60 * 1000
+        ? 2 * 60 * 1000
         : undefined,
     accountCooldownReason: temporary
       ? "RateLimitTemporary"
@@ -371,12 +376,15 @@ export function classifyRetryAction(
     if (isQuotaLikeError(err)) {
       const typed = err as RetryableStreamError;
       const quota = classifyQuotaCooldown(errMessage(err));
+      const isTemporary = quota.accountCooldownReason === "RateLimitTemporary";
       return {
         retryable: true,
-        switchAccount: typed.switchAccount !== false,
+        // Temporary load shedding: retry same account first, only switch on
+        // repeated failure. Real quota exhaustion: switch immediately.
+        switchAccount: isTemporary ? false : typed.switchAccount !== false,
         forceNewChat: typed.forceNewChat === true,
         retryWithFullPrompt: typed.retryWithFullPrompt === true,
-        retryAfterMs: typed.retryAfterMs ?? baseDelayMs,
+        retryAfterMs: typed.retryAfterMs ?? (isTemporary ? 3_000 : baseDelayMs),
         accountCooldownMs: quota.accountCooldownMs,
         accountCooldownReason: quota.accountCooldownReason,
         reason: "quota_or_rate_limit",
