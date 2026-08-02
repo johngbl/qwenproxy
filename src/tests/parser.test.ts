@@ -74,6 +74,43 @@ test("StreamingToolParser: basic tool call", () => {
   assert.strictEqual(result.toolCalls[0].name, "t1");
 });
 
+test("StreamingToolParser: does not close inside a JSON string", () => {
+  const parser = new StreamingToolParser([
+    {
+      type: "function",
+      function: {
+        name: "write",
+        parameters: {
+          type: "object",
+          properties: { content: { type: "string" } },
+        },
+      },
+    },
+  ]);
+  const content = 'const marker = "</tool_call>";';
+  const result = parser.feed(
+    `<tool_call>${JSON.stringify({
+      name: "write",
+      arguments: { content },
+    })}</tool_call>`,
+  );
+
+  assert.strictEqual(result.toolCalls.length, 1);
+  assert.strictEqual(result.toolCalls[0].name, "write");
+  assert.strictEqual(result.toolCalls[0].arguments.content, content);
+});
+
+test("StreamingToolParser: recovers double-escaped JSON tool calls", () => {
+  const parser = new StreamingToolParser(TOOLS);
+  const escaped =
+    '{\\"name\\":\\"read_file\\",\\"arguments\\":{\\"path\\":\\"a.txt\\"}}';
+  const result = parser.feed(`<tool_call>${escaped}</tool_call>`);
+
+  assert.strictEqual(result.toolCalls.length, 1);
+  assert.strictEqual(result.toolCalls[0].name, "read_file");
+  assert.deepStrictEqual(result.toolCalls[0].arguments, { path: "a.txt" });
+});
+
 test("StreamingToolParser: drops residual environment details after tool calls", () => {
   const parser = new StreamingToolParser();
   const input =

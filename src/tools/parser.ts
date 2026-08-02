@@ -44,6 +44,42 @@ interface ActiveIncrementalToolCall {
 
 const TOOL_END = "</" + "tool_call>";
 
+/**
+ * Find the closing marker only when it is outside a JSON string. Tool
+ * arguments frequently contain source code or tests that mention the literal
+ * `</tool_call>`; using indexOf() would truncate those arguments early.
+ */
+function findToolEndOutsideJsonString(buffer: string): number {
+  const lower = buffer.toLowerCase();
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < buffer.length; i++) {
+    const ch = buffer[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (lower.startsWith(TOOL_END, i)) return i;
+  }
+
+  // Malformed/recovered tool payloads can have an unbalanced quote count.
+  // Preserve the historical recovery path in that case; valid JSON above has
+  // already protected literal markers inside quoted argument values.
+  return lower.indexOf(TOOL_END);
+}
+
 function normalizeToolNameForMatch(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]/g, "");
 }
@@ -284,8 +320,7 @@ function findRecoverableMissingOpenToolCall(
   buffer: string,
   initialDelimiterLength = 0,
 ): { textBefore: string; candidate: string; consumeLength: number } | null {
-  const lower = buffer.toLowerCase();
-  const endIdx = lower.indexOf(TOOL_END);
+  const endIdx = findToolEndOutsideJsonString(buffer);
   if (endIdx === -1) return null;
 
   const beforeEnd = buffer.substring(0, endIdx);
@@ -1163,9 +1198,8 @@ export class StreamingToolParser {
           break;
         }
       } else {
-        // Inside tool: look for </tool_call>
-        const lowerBuffer = this.buffer.toLowerCase();
-        const endIdx = lowerBuffer.indexOf(TOOL_END);
+        // Inside tool: look for </tool_call> outside JSON strings.
+        const endIdx = findToolEndOutsideJsonString(this.buffer);
         if (endIdx !== -1) {
           const content = this.buffer.substring(0, endIdx);
           if (isToolcallDebugEnabled()) {
@@ -1767,29 +1801,42 @@ export class StreamingToolParser {
       });
     }
 
-    // Try parsing as single JSON first
-    try {
-      const parsed = robustParseJSON(str);
-      if (parsed && typeof parsed === "object") {
-        const tc = this.parseToolCall(parsed);
-        if (tc) {
-          if (isToolcallDebugEnabled()) {
-            logger.debug(
-              "[parser] parseToolContent: single JSON parse succeeded",
-              {
-                name: tc.name,
-                arguments: tc.arguments,
-              },
-            );
+    // Try parsing as single JSON first. Some models return a JSON object with
+    // every quote escaped (e.g. {\\"name\\":...}) after serializing a tool
+    // call into text. Retry that representation without altering the normal
+    // valid-JSON path.
+    const jsonCandidates = [str];
+    if (str.includes('\\"')) {
+      jsonCandidates.push(str.replace(/\\"/g, '"'));
+    }
+
+    for (const candidate of jsonCandidates) {
+      try {
+        const parsed = robustParseJSON(candidate);
+        if (parsed && typeof parsed === "object") {
+          const tc = this.parseToolCall(parsed);
+          if (tc) {
+            if (isToolcallDebugEnabled()) {
+              logger.debug(
+                "[parser] parseToolContent: single JSON parse succeeded",
+                {
+                  name: tc.name,
+                  arguments: tc.arguments,
+                  unescapedCandidate: candidate !== str,
+                },
+              );
+            }
+            calls.push(tc);
+            break;
           }
-          calls.push(tc);
         }
-      }
-    } catch (e) {
-      if (isToolcallDebugEnabled()) {
-        logger.debug("[parser] parseToolContent: single JSON parse failed", {
-          error: e instanceof Error ? e.message : String(e),
-        });
+      } catch (e) {
+        if (isToolcallDebugEnabled()) {
+          logger.debug("[parser] parseToolContent: single JSON parse failed", {
+            error: e instanceof Error ? e.message : String(e),
+            unescapedCandidate: candidate !== str,
+          });
+        }
       }
     }
 

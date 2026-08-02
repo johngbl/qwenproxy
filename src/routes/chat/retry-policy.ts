@@ -314,6 +314,21 @@ export function classifyRetryAction(
     };
   }
 
+  const message = errMessage(err).toLowerCase();
+  if (
+    message.includes("waiting for a free slot") ||
+    message.includes("busy: timed out")
+  ) {
+    return {
+      retryable: true,
+      switchAccount: true,
+      forceNewChat: false,
+      retryWithFullPrompt: false,
+      retryAfterMs: Math.min(baseDelayMs, 1_000),
+      reason: "account_busy",
+    };
+  }
+
   // Specialized recoveries first (even if wrapped as RetryableQwenStreamError)
     // Corrupted chat history must win over broad "invalid input" matches.
     if (isCorruptedChatHistoryError(err)) {

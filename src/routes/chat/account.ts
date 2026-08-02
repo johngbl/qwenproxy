@@ -45,6 +45,7 @@ import {
 	isAntiBotError as isAntiBotPolicyError,
 	isChatInProgressError,
 	isQuotaLikeError,
+	isTerminalLocalError,
 } from "./retry-policy.ts";
 
 // Per-chat lock: serializes requests to the same Qwen chat session
@@ -485,6 +486,20 @@ export async function acquireUpstreamStream(
 			lastError = err;
 		}
 
+		// The request signal is shared by every account attempt. Once the client
+		// disconnects, stop the outer rotation loop as well as inner retries.
+		if (params.requestSignal?.aborted) {
+			break;
+		}
+
+		// Client/proxy validation errors must not be retried on other accounts.
+		// In particular, an oversized prompt is independent of the selected
+		// account; rotating accounts only repeats the same 400 response and can
+		// also rebuild the full history several times.
+		if (isTerminalLocalError(lastError)) {
+			break;
+		}
+
 		if (stickyThreadAccountId === accountId) {
 			if (isAccountUnavailableError(lastError) || isAntiBotError(lastError)) {
 				console.warn(
@@ -797,6 +812,12 @@ async function tryCreateStreamWithRetry(
 		attemptsLeft--;
 		const err = attemptError;
 
+		// Once the client request is aborted, do not rotate accounts or retry. The
+		// old request can otherwise keep acquiring leases after the client is gone.
+		if (params.requestSignal?.aborted) {
+			return { success: false, error: err };
+		}
+
 		// Log the error details for debugging (skip quota errors — logged separately below)
 			const errMsg = err instanceof Error ? err.message : String(err || "");
 			if (err && !isAccountUnavailableError(err)) {
@@ -852,7 +873,9 @@ async function tryCreateStreamWithRetry(
 			// so outer account rotation can pick another one immediately.
 			if (isAccountUnavailableError(err)) {
 				const quotaMsg = err.message || "Unknown quota error";
-				const policy = classifyRetryAction(err);
+				const policy = classifyRetryAction(err, {
+					requestAborted: params.requestSignal?.aborted === true,
+				});
 				const isTemporary = policy.accountCooldownReason === "RateLimitTemporary";
 				
 				// Temporary load shedding or single account: retry same account
@@ -893,7 +916,9 @@ async function tryCreateStreamWithRetry(
 				return { success: false, error: err };
 			}
 
-		const policy = classifyRetryAction(err);
+		const policy = classifyRetryAction(err, {
+			requestAborted: params.requestSignal?.aborted === true,
+		});
 
 		// Escalating recovery for chat_in_progress:
 		// 1st: retry same chat after delay (policy default)

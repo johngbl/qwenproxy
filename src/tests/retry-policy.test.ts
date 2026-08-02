@@ -16,7 +16,11 @@ import {
   QwenUpstreamError,
   RetryableQwenStreamError,
 } from "../services/qwen.ts";
-import { ValidationError, AuthError } from "../core/errors.ts";
+import {
+  ValidationError,
+  AuthError,
+  ContextLengthExceededError,
+} from "../core/errors.ts";
 import { parseQwenErrorPayload } from "../routes/chat/errors.ts";
 
 test("classifyRetryAction: unknown upstream errors are retryable by default", () => {
@@ -40,6 +44,37 @@ test("classifyRetryAction: terminal local errors are not retryable", () => {
 
   const auth = classifyRetryAction(new AuthError("Missing or invalid authorization"));
   assert.equal(auth.retryable, false);
+});
+
+test("classifyRetryAction: context length is terminal and does not rotate accounts", () => {
+  const err = new ContextLengthExceededError("Input is too large");
+  const action = classifyRetryAction(err);
+
+  assert.equal(action.retryable, false);
+  assert.equal(action.switchAccount, false);
+  assert.equal(action.reason, "terminal_local");
+});
+
+test("classifyRetryAction: aborted request is not retried", () => {
+  const action = classifyRetryAction(new Error("Aborted before acquiring account lease"), {
+    requestAborted: true,
+  });
+
+  assert.equal(action.retryable, false);
+  assert.equal(action.switchAccount, false);
+  assert.equal(action.reason, "client_abort");
+});
+
+test("classifyRetryAction: account lease timeout is retryable without rebuilding chat", () => {
+  const action = classifyRetryAction(
+    new Error("Account abc busy: timed out after 30000ms waiting for a free slot"),
+  );
+
+  assert.equal(action.retryable, true);
+  assert.equal(action.switchAccount, true);
+  assert.equal(action.forceNewChat, false);
+  assert.equal(action.retryWithFullPrompt, false);
+  assert.equal(action.reason, "account_busy");
 });
 
 test("classifyRetryAction: invalid_input forces new chat + full prompt + switch", () => {

@@ -234,7 +234,9 @@ export async function chatCompletions(c: Context) {
               ? await processStreamingResponse(currentParams)
               : await processNonStreamingResponse(currentParams);
           } catch (streamErr: any) {
-            const policy = classifyRetryAction(streamErr);
+            const policy = classifyRetryAction(streamErr, {
+              requestAborted: c.req.raw.signal.aborted,
+            });
 
             // Prefer explicit RetryableQwenStreamError OR generic retryable policy
             const canRetry =
@@ -256,8 +258,13 @@ export async function chatCompletions(c: Context) {
             const forceRetryNewChat = policy.forceNewChat;
             const retryWithFullPrompt = policy.retryWithFullPrompt;
 
-            // Mark current account for cooldown when policy requests it
-            if (policy.accountCooldownMs || policy.accountCooldownReason) {
+            // Do not cooldown an account when the policy is retrying it in
+            // place (temporary load shedding). A cooldown here would make the
+            // subsequent preferred-account retry skip that same account.
+            if (
+              policy.switchAccount &&
+              (policy.accountCooldownMs || policy.accountCooldownReason)
+            ) {
               const { markAccountRateLimited } =
                 await import("../../core/account-manager.ts");
               markAccountRateLimited(
@@ -402,6 +409,16 @@ export async function chatCompletions(c: Context) {
       releaseChatLock();
       releaseChatLock = null;
     }
+
+    // The client is already gone; do not turn expected cancellation into a
+    // misleading 500/internal_server_error log or retry response.
+    if (c.req.raw.signal.aborted) {
+      logger.debug("[chat] request aborted before response", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return new Response(null, { status: 499 });
+    }
+
     return handleChatCompletionsError(c, err);
   } finally {
     // Lock released via onStreamComplete when stream finishes

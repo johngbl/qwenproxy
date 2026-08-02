@@ -1267,7 +1267,9 @@ export async function processStreamingResponse(
               midStreamRetry &&
               !emittedModelOutput
             ) {
-              const policy = classifyRetryAction(_e);
+              const policy = classifyRetryAction(_e, {
+                requestAborted: c.req.raw.signal.aborted,
+              });
               if (policy.retryable) {
                 retryContext.retriesLeft--;
                 console.warn(

@@ -112,6 +112,57 @@ function getAccountMutex(accountId: string): Mutex {
   return mutex;
 }
 
+async function recoverStuckAccountMutex(
+  accountId: string,
+  mutex: Mutex,
+  key: string,
+): Promise<void> {
+  // A waiter timing out means the holder may be a browser operation that no
+  // longer has a live promise (the logs showed locks held for hours). Closing
+  // the context makes the old operation fail; replacing the mutex lets the
+  // account be initialized again instead of remaining permanently wedged.
+  if (accountMutexes.get(accountId) !== mutex) return;
+
+  console.warn(
+    `[Playwright] Recovering stuck account mutex | account=${accountId} | key=${key}`,
+  );
+  const context = accountContexts.get(accountId);
+  if (context) {
+    await closePlaywrightContextBestEffort(accountId, context);
+  }
+  cleanupPlaywrightAccountState(accountId);
+  if (accountMutexes.get(accountId) === mutex) {
+    accountMutexes.delete(accountId);
+  }
+
+  // A normal request can recover the browser on the next attempt. Avoid
+  // recursively scheduling another reset when the reset/close path itself was
+  // the operation that timed out.
+  if (!key.startsWith("profile-reset:") && !key.startsWith("close:")) {
+    schedulePlaywrightProfileReset(accountId);
+  }
+}
+
+async function acquireAccountMutex(
+  accountId: string,
+  key: string,
+  timeoutMs = PLAYWRIGHT_MUTEX_WAIT_MS,
+): Promise<() => void> {
+  const mutex = getAccountMutex(accountId);
+  try {
+    return await mutex.acquire(timeoutMs, key);
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message.startsWith("Mutex[playwright:") &&
+      error.message.includes("acquire timeout")
+    ) {
+      await recoverStuckAccountMutex(accountId, mutex, key);
+    }
+    throw error;
+  }
+}
+
 // ─── State ────────────────────────────────────────────────────────────────────
 
 // Per-account browser contexts and pages
@@ -142,6 +193,11 @@ type KillableProcess = {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const HEADER_CAPTURE_SETTLE_MS = 1500;
+const PLAYWRIGHT_MUTEX_WAIT_MS = 60_000;
+const ACCOUNT_PAGE_OPERATION_TIMEOUT_MS = Math.max(
+  config.captchaSolver.timeoutMs + 10_000,
+  config.timeouts.page,
+);
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -344,7 +400,11 @@ export async function getCookies(accountId: string): Promise<string> {
   const page = accountPages.get(accountId);
   if (!page) return "";
 
-  const cookies = await page.context().cookies();
+  const cookies = await withTimeout(
+    page.context().cookies(),
+    config.timeouts.page,
+    `Cookie retrieval timed out for ${accountId}`,
+  );
   const cookieStr = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
   cookieCaches.set(accountId, { cookie: cookieStr, timestamp: now });
   return cookieStr;
@@ -363,13 +423,20 @@ export async function getBasicHeaders(accountId: string): Promise<{
   }
 
   // Acquire mutex to prevent concurrent browser access
-  const release = await getAccountMutex(accountId).acquire();
+  const release = await acquireAccountMutex(
+    accountId,
+    `headers:${accountId.substring(0, 12)}`,
+  );
   try {
     touchAccountActivity(accountId);
     // Get real user agent from browser
     let userAgent = config.auth.userAgent;
     try {
-      userAgent = await page.evaluate(() => navigator.userAgent);
+      userAgent = await withTimeout(
+        page.evaluate(() => navigator.userAgent),
+        config.timeouts.page,
+        `User-agent lookup timed out for ${accountId}`,
+      );
     } catch {
       // Use default
     }
@@ -442,7 +509,10 @@ export async function initPlaywrightForAccount(
     return;
   }
 
-  const release = await getAccountMutex(account.id).acquire();
+  const release = await acquireAccountMutex(
+    account.id,
+    `init:${account.id.substring(0, 12)}`,
+  );
   try {
     // Double-check after acquiring lock
     if (accountPages.has(account.id)) {
@@ -478,6 +548,8 @@ export async function initPlaywrightForAccount(
       await acctContext.addInitScript(getStealthScript(fingerprint));
 
       const acctPage = await acctContext.newPage();
+      acctPage.setDefaultTimeout(config.timeouts.page);
+      acctPage.setDefaultNavigationTimeout(config.timeouts.navigation);
       accountContexts.set(account.id, acctContext);
       accountPages.set(account.id, acctPage);
       touchAccountActivity(account.id);
@@ -571,6 +643,7 @@ async function loginViaApi(
   try {
     await page.goto("https://chat.qwen.ai/auth", {
       waitUntil: "domcontentloaded",
+      timeout: config.timeouts.navigation,
     });
     await sleep(2000);
 
@@ -591,6 +664,7 @@ async function loginViaApi(
             "https://chat.qwen.ai/api/v2/auths/signin",
             {
               method: "POST",
+              signal: AbortSignal.timeout(10_000),
               headers: {
                 accept: "application/json, text/plain, */*",
                 "content-type": "application/json",
@@ -613,6 +687,7 @@ async function loginViaApi(
     if (result.ok) {
       await page.goto("https://chat.qwen.ai/", {
         waitUntil: "domcontentloaded",
+        timeout: config.timeouts.navigation,
       });
       return !page.url().includes("auth") && !page.url().includes("login");
     }
@@ -632,6 +707,7 @@ async function loginViaUi(
   try {
     await page.goto("https://chat.qwen.ai/auth", {
       waitUntil: "domcontentloaded",
+      timeout: config.timeouts.navigation,
     });
     await sleep(2000);
 
@@ -674,6 +750,7 @@ async function loginViaUi(
     if (isLoggedIn) {
       await page.goto("https://chat.qwen.ai/", {
         waitUntil: "domcontentloaded",
+        timeout: config.timeouts.navigation,
       });
     }
 
@@ -784,6 +861,7 @@ export async function captureQwenHeaders(
           // Navigate to Qwen and trigger a request.
           await page.goto("https://chat.qwen.ai/", {
             waitUntil: "domcontentloaded",
+            timeout: config.timeouts.navigation,
           });
           if (settled) return;
           await sleep(2000);
@@ -905,7 +983,10 @@ async function refreshHeadersInternal(accountId: string): Promise<void> {
 }
 
 export async function refreshHeaders(accountId: string): Promise<void> {
-  const release = await getAccountMutex(accountId).acquire();
+  const release = await acquireAccountMutex(
+    accountId,
+    `refresh:${accountId.substring(0, 12)}`,
+  );
   try {
     await refreshHeadersInternal(accountId);
   } finally {
@@ -925,12 +1006,34 @@ export async function withAccountPage<T>(
   if (!page || page.isClosed()) {
     throw new Error(`Playwright page unavailable for account: ${accountId}`);
   }
-  const release = await getAccountMutex(accountId).acquire();
+  const release = await acquireAccountMutex(
+    accountId,
+    `page:${accountId.substring(0, 12)}`,
+  );
   try {
     touchAccountActivity(accountId);
-    const result = await fn(page);
-    touchAccountActivity(accountId);
-    return result;
+    try {
+      const result = await withTimeout(
+        fn(page),
+        ACCOUNT_PAGE_OPERATION_TIMEOUT_MS,
+        `Playwright page operation timed out for ${accountId}`,
+      );
+      touchAccountActivity(accountId);
+      return result;
+    } catch (error) {
+      const message = getErrorMessage(error);
+      if (message.includes("Playwright page operation timed out")) {
+        console.warn(
+          `⏱️  [Playwright] Resetting account context after a stuck page operation: ${accountId}`,
+        );
+        const context = accountContexts.get(accountId);
+        if (context) {
+          await closePlaywrightContextBestEffort(accountId, context);
+        }
+        cleanupPlaywrightAccountState(accountId);
+      }
+      throw error;
+    }
   } finally {
     release();
   }
@@ -969,7 +1072,10 @@ export async function refreshHeadersWithProfileReset(
 ): Promise<void> {
   let account: QwenAccount | null = null;
 
-  const release = await getAccountMutex(accountId).acquire();
+  const release = await acquireAccountMutex(
+    accountId,
+    `profile-reset:${accountId.substring(0, 12)}`,
+  );
   try {
     await resetPlaywrightProfileLocked(accountId);
     const accounts = await import("../core/accounts.ts");
@@ -1060,7 +1166,9 @@ export async function keepAlivePlaywrightAccount(
   const lastActivity = lastAccountActivity.get(accountId) ?? 0;
   if (Date.now() - lastActivity < config.sessionKeeper.idleMs) return false;
 
-  const release = await mutex.acquire(2_000).catch(() => null);
+  const release = await mutex
+    .acquire(2_000, `keepalive:${accountId.substring(0, 12)}`)
+    .catch(() => null);
   if (!release) return false;
 
   try {
@@ -1173,7 +1281,10 @@ function isPlaywrightAlreadyClosedError(error: unknown): boolean {
 export async function closePlaywrightForAccount(
   accountId: string,
 ): Promise<void> {
-  const release = await getAccountMutex(accountId).acquire();
+  const release = await acquireAccountMutex(
+    accountId,
+    `close:${accountId.substring(0, 12)}`,
+  );
   try {
     await closePlaywrightForAccountLocked(accountId);
   } finally {
