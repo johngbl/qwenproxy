@@ -159,6 +159,15 @@ export function isInvalidInputError(err: unknown): boolean {
   );
 }
 
+/** Prefer a clean chat on the current account before paying the cost of replaying
+ * the full context on another account. Callers keep their own per-request count. */
+export function shouldRetryInvalidInputOnSameAccount(
+  reason: string,
+  alreadyRetried: boolean,
+): boolean {
+  return reason === "invalid_input" && !alreadyRetried;
+}
+
 export function isAccountInitializationError(err: unknown): boolean {
   const message = errMessage(err).toLowerCase();
   return (
@@ -565,8 +574,10 @@ export function throwFromSseUpstreamError(
     logger.warn("[Upstream] invalid_input mid-stream detected", {
       code: errCode,
       detailsLength: errDetails.length,
-      containsAttachment: detailsLower.includes("anexo") || detailsLower.includes("attachment"),
-      containsFile: detailsLower.includes("file") || detailsLower.includes("arquivo"),
+      messageMentionsAttachment:
+        detailsLower.includes("anexo") || detailsLower.includes("attachment"),
+      messageMentionsFile:
+        detailsLower.includes("file") || detailsLower.includes("arquivo"),
     });
 
     const error = new RetryableQwenStreamError(

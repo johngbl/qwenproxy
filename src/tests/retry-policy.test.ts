@@ -8,6 +8,7 @@ import {
   classifyRetryAction,
   isTerminalLocalError,
   parseSseErrorFromBuffer,
+  shouldRetryInvalidInputOnSameAccount,
   throwFromSseUpstreamError,
   toRetryableStreamError,
 } from "../routes/chat/retry-policy.ts";
@@ -101,6 +102,21 @@ test("classifyRetryAction: invalid_input forces new chat + full prompt + switch"
   assert.equal(action.forceNewChat, true);
   assert.equal(action.retryWithFullPrompt, true);
   assert.equal(action.reason, "invalid_input");
+});
+
+test("invalid_input retries a clean chat once before account rotation", () => {
+  assert.equal(
+    shouldRetryInvalidInputOnSameAccount("invalid_input", false),
+    true,
+  );
+  assert.equal(
+    shouldRetryInvalidInputOnSameAccount("invalid_input", true),
+    false,
+  );
+  assert.equal(
+    shouldRetryInvalidInputOnSameAccount("anti_bot", false),
+    false,
+  );
 });
 
 test("classifyRetryAction: temporary quota (alta demanda) retries same account", () => {

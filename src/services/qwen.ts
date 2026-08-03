@@ -18,6 +18,7 @@ import type {
 import { getDatabase } from "../core/database.ts";
 import { markAccountRateLimited } from "../core/account-manager.ts";
 import { MAX_PAYLOAD_SIZE } from "../core/model-registry.ts";
+import { withAccountPage } from "./playwright.ts";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -1681,6 +1682,456 @@ async function readResponsePreview(
   return Buffer.concat(chunks).toString("utf8");
 }
 
+interface BrowserCompletionResponse {
+  status: number;
+  contentType: string;
+  stream: ReadableStream<Uint8Array>;
+}
+
+type BrowserRelayEvent =
+  | { type: "headers"; status: number; contentType: string }
+  | { type: "chunk"; text: string }
+  | { type: "done" }
+  | { type: "error"; message: string };
+
+interface BrowserResponseMetadata {
+  status: number;
+  contentType: string;
+}
+
+const MAX_BROWSER_STREAM_QUEUE_BYTES = 512 * 1024;
+const BROWSER_STREAM_HEADER_TIMEOUT_MS = 60_000;
+
+/**
+ * Aliyun sometimes challenges the Node fetch while allowing the same request
+ * from the already-authenticated Qwen page. Use that browser session as a
+ * fallback instead of exposing the challenge HTML or immediately rotating an
+ * otherwise healthy account.
+ *
+ * The browser request is relayed incrementally through an exposed Playwright
+ * function. The previous implementation awaited response.text(), which held
+ * the Playwright page operation until the whole generation completed and could
+ * buffer a very large answer. This bridge keeps SSE streaming, applies a
+ * bounded queue for backpressure, and connects request cancellation to the
+ * browser-side AbortController.
+ */
+async function fetchCompletionInBrowser(
+  accountId: string,
+  url: string,
+  payloadJson: string,
+  headers: Record<string, string>,
+  timeoutMs: number,
+  requestController: AbortController,
+): Promise<BrowserCompletionResponse> {
+  const origin = new URL(config.qwen.baseUrl).origin;
+  const relayName = `__qwenBridgeRelay_${uuidv4().replace(/-/g, "")}`;
+  const controllerKey = `__qwenBridgeController_${uuidv4().replace(/-/g, "")}`;
+  const encoder = new TextEncoder();
+
+  let bindingRegistered = false;
+  let relayBinding: { dispose: () => Promise<void> } | null = null;
+  let cleanupPromise: Promise<void> | null = null;
+  let abortPromise: Promise<void> | null = null;
+  let streamController: ReadableStreamDefaultController<Uint8Array> | null =
+    null;
+  let pendingPullResolve: (() => void) | null = null;
+  let queuedChunks: Uint8Array[] = [];
+  let queuedBytes = 0;
+  let terminalKind: "done" | "error" | null = null;
+  let terminalError: Error | null = null;
+  const capacityWaiters: Array<() => void> = [];
+
+  let headersReceived = false;
+  let resolveHeaders!: (metadata: BrowserResponseMetadata) => void;
+  let rejectHeaders!: (error: Error) => void;
+  const headersPromise = new Promise<BrowserResponseMetadata>(
+    (resolve, reject) => {
+      resolveHeaders = resolve;
+      rejectHeaders = reject;
+    },
+  );
+  // The Playwright page may be unavailable before the callback starts waiting
+  // for response headers. Keep that setup-failure rejection observed while the
+  // real await below still receives the original rejection.
+  void headersPromise.catch(() => {});
+
+  const notifyCapacity = () => {
+    if (
+      terminalKind ||
+      queuedBytes < MAX_BROWSER_STREAM_QUEUE_BYTES
+    ) {
+      while (capacityWaiters.length > 0) {
+        capacityWaiters.shift()?.();
+      }
+    }
+  };
+
+  const closeStreamIfReady = () => {
+    if (!streamController || queuedChunks.length > 0 || !terminalKind) {
+      return;
+    }
+
+    try {
+      // Before response headers arrive the stream is never returned to the
+      // caller. Close it instead of rejecting an internal pending pull, which
+      // would otherwise surface as an unhandled rejection in WAF fallback
+      // paths where Playwright is unavailable.
+      if (terminalKind === "error" && headersReceived) {
+        streamController.error(
+          terminalError ?? new Error("Browser completion stream failed"),
+        );
+      } else {
+        streamController.close();
+      }
+    } catch {
+      // The consumer may have cancelled the stream concurrently.
+    }
+
+    const resolvePull = pendingPullResolve;
+    pendingPullResolve = null;
+    resolvePull?.();
+  };
+
+  const finishStream = (kind: "done" | "error", error?: Error) => {
+    if (terminalKind) return;
+    terminalKind = kind;
+    terminalError = error ?? null;
+    if (kind === "error") {
+      queuedChunks = [];
+      queuedBytes = 0;
+    }
+    notifyCapacity();
+    closeStreamIfReady();
+  };
+
+  const deliverChunk = async (text: string): Promise<void> => {
+    if (terminalKind || !text) return;
+    const chunk = encoder.encode(text);
+
+    while (
+      !terminalKind &&
+      queuedBytes > 0 &&
+      queuedBytes + chunk.byteLength > MAX_BROWSER_STREAM_QUEUE_BYTES
+    ) {
+      await new Promise<void>((resolve) => capacityWaiters.push(resolve));
+    }
+    if (terminalKind) return;
+
+    if (pendingPullResolve && streamController) {
+      streamController.enqueue(chunk);
+      const resolvePull = pendingPullResolve;
+      pendingPullResolve = null;
+      resolvePull();
+      return;
+    }
+
+    queuedChunks.push(chunk);
+    queuedBytes += chunk.byteLength;
+  };
+
+  const relayEvent = async (event: BrowserRelayEvent): Promise<void> => {
+    if (!event || typeof event.type !== "string") return;
+
+    if (event.type === "headers") {
+      if (
+        !headersReceived &&
+        Number.isFinite(event.status) &&
+        typeof event.contentType === "string"
+      ) {
+        headersReceived = true;
+        resolveHeaders({
+          status: event.status,
+          contentType: event.contentType,
+        });
+      }
+      return;
+    }
+
+    if (event.type === "chunk") {
+      await deliverChunk(typeof event.text === "string" ? event.text : "");
+      return;
+    }
+
+    if (event.type === "error") {
+      const error = new Error(
+        typeof event.message === "string"
+          ? event.message
+          : "Browser completion request failed",
+      );
+      if (!headersReceived) rejectHeaders(error);
+      finishStream("error", error);
+      void cleanupRelay();
+      return;
+    }
+
+    if (event.type === "done") {
+      if (!headersReceived) {
+        const error = new Error(
+          "Browser completion ended before returning response headers",
+        );
+        rejectHeaders(error);
+        finishStream("error", error);
+        void cleanupRelay();
+        return;
+      }
+      finishStream("done");
+      void cleanupRelay();
+    }
+  };
+
+  const abortBrowserRequest = (): Promise<void> => {
+    if (abortPromise) return abortPromise;
+    abortPromise = (async () => {
+      try {
+        await withAccountPage(
+          accountId,
+          (page) =>
+            page.evaluate((key) => {
+              const win = window as unknown as Record<string, unknown>;
+              const controller = win[key] as AbortController | undefined;
+              controller?.abort();
+            }, controllerKey),
+          5_000,
+          5_000,
+        );
+      } catch {
+        // The page may already have been reset or closed.
+      }
+    })();
+    return abortPromise;
+  };
+
+  const cleanupRelay = (): Promise<void> => {
+    if (cleanupPromise) return cleanupPromise;
+    cleanupPromise = (async () => {
+      requestController.signal.removeEventListener(
+        "abort",
+        onRequestAbort,
+      );
+      if (!bindingRegistered) return;
+
+      try {
+        await withAccountPage(
+          accountId,
+          async (page) => {
+            await page
+              .evaluate((key) => {
+                const win = window as unknown as Record<string, unknown>;
+                delete win[key];
+              }, controllerKey)
+              .catch(() => {});
+            const binding = relayBinding;
+            relayBinding = null;
+            await binding?.dispose().catch(() => {});
+          },
+          5_000,
+          5_000,
+        );
+      } catch {
+        // Cleanup is best effort when the account context is being reset.
+      }
+    })();
+    return cleanupPromise;
+  };
+
+  const onRequestAbort = () => {
+    finishStream("error", new Error("Browser completion request aborted"));
+    void abortBrowserRequest().finally(() => cleanupRelay());
+  };
+
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      streamController = controller;
+    },
+    pull(controller) {
+      if (queuedChunks.length > 0) {
+        const chunk = queuedChunks.shift();
+        if (!chunk) return;
+        queuedBytes -= chunk.byteLength;
+        controller.enqueue(chunk);
+        notifyCapacity();
+        closeStreamIfReady();
+        return;
+      }
+
+      if (terminalKind) {
+        closeStreamIfReady();
+        return;
+      }
+
+      return new Promise<void>((resolve) => {
+        pendingPullResolve = resolve;
+      });
+    },
+    cancel(reason) {
+      if (!terminalKind) {
+        finishStream(
+          "error",
+          new Error(
+            reason ? `Browser completion cancelled: ${String(reason)}` : "Browser completion cancelled",
+          ),
+        );
+      }
+      queuedChunks = [];
+      queuedBytes = 0;
+      notifyCapacity();
+      return abortBrowserRequest().finally(() => cleanupRelay());
+    },
+  });
+
+  requestController.signal.addEventListener("abort", onRequestAbort, {
+    once: true,
+  });
+
+  const setupTimeoutMs = Math.min(
+    Math.max(5_000, timeoutMs),
+    BROWSER_STREAM_HEADER_TIMEOUT_MS,
+  );
+
+  try {
+    const metadata = await withAccountPage(
+      accountId,
+      async (page) => {
+        let pageOrigin = "";
+        let pageUrl = "";
+        try {
+          pageUrl = page.url();
+          pageOrigin = new URL(pageUrl).origin;
+        } catch {
+          // Navigate below when the page has no usable origin.
+        }
+
+        const pageNeedsNavigation =
+          pageOrigin !== origin ||
+          /_____tmd_____|\/bx\/|punish|x5secdata/i.test(pageUrl);
+        if (pageNeedsNavigation) {
+          await page.goto(`${config.qwen.baseUrl}/`, {
+            waitUntil: "domcontentloaded",
+            timeout: Math.min(config.timeouts.navigation, 15_000),
+          });
+        }
+
+        relayBinding = await page.exposeFunction(relayName, relayEvent);
+        bindingRegistered = true;
+        if (requestController.signal.aborted) {
+          throw new Error("Browser completion request aborted");
+        }
+
+        const started = await page.evaluate(
+          ({
+            url,
+            payload,
+            bxUa,
+            bxUmidtoken,
+            bxV,
+            requestId,
+            controllerKey,
+            relayName,
+            version,
+          }) => {
+            const win = window as unknown as Record<string, unknown>;
+            const relay = win[relayName] as
+              | ((event: BrowserRelayEvent) => Promise<void>)
+              | undefined;
+            if (!relay) return false;
+
+            const browserController = new AbortController();
+            win[controllerKey] = browserController;
+
+            void (async () => {
+              try {
+                const response = await fetch(url, {
+                  method: "POST",
+                  credentials: "include",
+                  headers: {
+                    Accept: "text/event-stream",
+                    "Content-Type": "application/json",
+                    "X-Request-Id": requestId,
+                    "x-accel-buffering": "no",
+                    "bx-v": bxV || "2.5.36",
+                    ...(bxUa ? { "bx-ua": bxUa } : {}),
+                    ...(bxUmidtoken ? { "bx-umidtoken": bxUmidtoken } : {}),
+                    source: "web",
+                    version,
+                  },
+                  body: payload,
+                  signal: browserController.signal,
+                });
+                await relay({
+                  type: "headers",
+                  status: response.status,
+                  contentType: response.headers.get("content-type") || "",
+                });
+
+                if (!response.body) {
+                  throw new Error("Browser completion returned an empty body");
+                }
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                while (true) {
+                  const { done, value } = await reader.read();
+                  if (done) break;
+                  const text = decoder.decode(value, { stream: true });
+                  if (text) await relay({ type: "chunk", text });
+                }
+                const tail = decoder.decode();
+                if (tail) await relay({ type: "chunk", text: tail });
+                await relay({ type: "done" });
+              } catch (error) {
+                await relay({
+                  type: "error",
+                  message:
+                    error instanceof Error
+                      ? error.message
+                      : String(error),
+                }).catch(() => {});
+              } finally {
+                delete win[controllerKey];
+              }
+            })();
+
+            return true;
+          },
+          {
+            url,
+            payload: payloadJson,
+            bxUa: headers["bx-ua"] || "",
+            bxUmidtoken: headers["bx-umidtoken"] || "",
+            bxV: headers["bx-v"] || "2.5.36",
+            requestId: uuidv4(),
+            controllerKey,
+            relayName,
+            version: QWEN_WEB_VERSION,
+          },
+        );
+
+        if (!started) {
+          throw new Error("Browser completion relay failed to start");
+        }
+
+        return headersPromise;
+      },
+      setupTimeoutMs,
+      setupTimeoutMs,
+    );
+
+    return {
+      status: metadata.status,
+      contentType: metadata.contentType,
+      stream,
+    };
+  } catch (error) {
+    const normalizedError =
+      error instanceof Error ? error : new Error(String(error));
+    if (!headersReceived) rejectHeaders(normalizedError);
+    finishStream("error", normalizedError);
+    await abortBrowserRequest();
+    await cleanupRelay();
+    throw normalizedError;
+  }
+}
+
 export async function createQwenStream(
   prompt: string,
   enableThinking: boolean,
@@ -1963,92 +2414,186 @@ export async function createQwenStream(
     }
 
     let responseContentType = response.headers.get("content-type") || "";
-    let retriedHtmlResponse = false;
-    while (isHtmlResponseContentType(responseContentType)) {
-      const preview = await readResponsePreview(response);
-      const antiBotChallenge = isWafChallengeResponse(preview);
-      logger.warn("[Qwen] Completion returned HTML instead of SSE", {
-        accountId: accountId ?? "global",
-        chatId: chatSessionId ?? "new",
-        status: response.status,
-        contentType: responseContentType,
-        antiBotChallenge,
-        previewBytes: Buffer.byteLength(preview, "utf8"),
-      });
+    let retriedNonSseResponse = false;
+    let browserFallbackAttempted = false;
 
-      if (!retriedHtmlResponse) {
-        retriedHtmlResponse = true;
-        const refreshed = await getQwenHeaders(true, accountId);
-        activeHeaders = refreshed.headers;
-        response = await fetchCompletion(activeHeaders);
-        responseContentType = response.headers.get("content-type") || "";
-        continue;
-      }
+    const tryBrowserFallback = async (reason: string): Promise<boolean> => {
+      if (browserFallbackAttempted) return false;
+      browserFallbackAttempted = true;
 
-      throw withCreatedChatMetadata(
-        new QwenUpstreamError(
-          antiBotChallenge
-            ? "Qwen returned an anti-bot challenge instead of an SSE response."
-            : "Qwen returned an HTML response instead of an SSE response.",
-          antiBotChallenge ? "waf_challenge" : "non_sse_html_response",
-          502,
-        ),
-      );
-    }
-
-    if (
-      response.status === 200 &&
-      !responseContentType.includes("text/event-stream") &&
-      (!response.body || response.headers.get("content-length") === "0")
-    ) {
-      logger.warn(
-        "[Qwen] Completion returned an empty non-stream 200 response; retrying with fresh headers.",
-        {
+      try {
+        const browserResponse = await fetchCompletionInBrowser(
+          accountId ?? "global",
+          url,
+          payloadJson,
+          activeHeaders,
+          dynamicTimeoutMs,
+          controller,
+        );
+        response = new Response(browserResponse.stream, {
+          status: browserResponse.status,
+          headers: {
+            "content-type":
+              browserResponse.contentType || "text/event-stream",
+          },
+        });
+        responseContentType = browserResponse.contentType;
+        logger.info("[Qwen] Browser completion fallback returned", {
           accountId: accountId ?? "global",
           chatId: chatSessionId ?? "new",
-          contentType: responseContentType || null,
-        },
-      );
-      const refreshed = await getQwenHeaders(true, accountId);
-      activeHeaders = refreshed.headers;
-      response = await fetchCompletion(activeHeaders);
-      responseContentType = response.headers.get("content-type") || "";
-    }
-    if (response.ok && responseContentType.includes("application/json")) {
-      const errText = await response.text().catch(() => "");
+          status: browserResponse.status,
+          contentType: browserResponse.contentType || null,
+          reason,
+        });
+        return true;
+      } catch (error) {
+        logger.warn("[Qwen] Browser completion fallback failed", {
+          accountId: accountId ?? "global",
+          chatId: chatSessionId ?? "new",
+          reason,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return false;
+      }
+    };
 
-      const htmlResponse = isHtmlResponseBody(errText);
-      const antiBotChallenge = isWafChallengeResponse(errText);
-      if (antiBotChallenge || htmlResponse) {
+    while (true) {
+      responseContentType = response.headers.get("content-type") || "";
+
+      const isNonSseSuccessResponse =
+        response.ok &&
+        responseContentType.trim().length > 0 &&
+        !responseContentType.includes("text/event-stream") &&
+        !responseContentType.includes("application/json") &&
+        Boolean(response.body);
+
+      if (
+        isHtmlResponseContentType(responseContentType) ||
+        isNonSseSuccessResponse
+      ) {
+        const preview = await readResponsePreview(response);
+        const htmlBody = isHtmlResponseBody(preview);
+        const antiBotChallenge = isWafChallengeResponse(preview);
         logger.warn(
-          "[Qwen] Completion returned an HTML or anti-bot challenge body instead of SSE.",
+          htmlBody || isHtmlResponseContentType(responseContentType)
+            ? "[Qwen] Completion returned HTML instead of SSE"
+            : "[Qwen] Completion returned a non-SSE body",
           {
             accountId: accountId ?? "global",
             chatId: chatSessionId ?? "new",
+            status: response.status,
+            contentType: responseContentType,
             antiBotChallenge,
-            previewBytes: Buffer.byteLength(errText, "utf8"),
+            previewBytes: Buffer.byteLength(preview, "utf8"),
           },
         );
+
+        if (
+          antiBotChallenge &&
+          (await tryBrowserFallback("html_waf_response"))
+        ) {
+          continue;
+        }
+
+        if (!retriedNonSseResponse) {
+          retriedNonSseResponse = true;
+          const refreshed = await getQwenHeaders(true, accountId);
+          activeHeaders = refreshed.headers;
+          response = await fetchCompletion(activeHeaders);
+          continue;
+        }
 
         throw withCreatedChatMetadata(
           new QwenUpstreamError(
             antiBotChallenge
               ? "Qwen returned an anti-bot challenge instead of an SSE response."
               : "Qwen returned an HTML response instead of an SSE response.",
-            antiBotChallenge ? "waf_challenge" : "non_sse_html_response",
+            antiBotChallenge
+              ? "waf_challenge"
+              : htmlBody || isHtmlResponseContentType(responseContentType)
+                ? "non_sse_html_response"
+                : "non_sse_response",
             502,
           ),
         );
       }
 
-      throw withCreatedChatMetadata(
-        parseQwenJsonError(errText, response.status, accountId) ??
-          new QwenUpstreamError(
-            `Qwen returned non-stream JSON response: ${errText.substring(0, 300)}`,
-            "NonStreamJsonResponse",
-            502,
-          ),
-      );
+      if (
+        response.status === 200 &&
+        !responseContentType.includes("text/event-stream") &&
+        (!response.body || response.headers.get("content-length") === "0")
+      ) {
+        if (!retriedNonSseResponse) {
+          logger.warn(
+            "[Qwen] Completion returned an empty non-stream 200 response; retrying with fresh headers.",
+            {
+              accountId: accountId ?? "global",
+              chatId: chatSessionId ?? "new",
+              contentType: responseContentType || null,
+            },
+          );
+          retriedNonSseResponse = true;
+          const refreshed = await getQwenHeaders(true, accountId);
+          activeHeaders = refreshed.headers;
+          response = await fetchCompletion(activeHeaders);
+          continue;
+        }
+        break;
+      }
+
+      if (response.ok && responseContentType.includes("application/json")) {
+        const errText = await response.text().catch(() => "");
+
+        const htmlResponse = isHtmlResponseBody(errText);
+        const antiBotChallenge = isWafChallengeResponse(errText);
+        if (antiBotChallenge || htmlResponse) {
+          logger.warn(
+            "[Qwen] Completion returned an HTML or anti-bot challenge body instead of SSE.",
+            {
+              accountId: accountId ?? "global",
+              chatId: chatSessionId ?? "new",
+              antiBotChallenge,
+              previewBytes: Buffer.byteLength(errText, "utf8"),
+            },
+          );
+
+          if (
+            antiBotChallenge &&
+            (await tryBrowserFallback("json_waf_body"))
+          ) {
+            continue;
+          }
+
+          if (!retriedNonSseResponse) {
+            retriedNonSseResponse = true;
+            const refreshed = await getQwenHeaders(true, accountId);
+            activeHeaders = refreshed.headers;
+            response = await fetchCompletion(activeHeaders);
+            continue;
+          }
+
+          throw withCreatedChatMetadata(
+            new QwenUpstreamError(
+              antiBotChallenge
+                ? "Qwen returned an anti-bot challenge instead of an SSE response."
+                : "Qwen returned an HTML response instead of an SSE response.",
+              antiBotChallenge ? "waf_challenge" : "non_sse_html_response",
+              502,
+            ),
+          );
+        }
+
+        throw withCreatedChatMetadata(
+          parseQwenJsonError(errText, response.status, accountId) ??
+            new QwenUpstreamError(
+              `Qwen returned non-stream JSON response: ${errText.substring(0, 300)}`,
+              "NonStreamJsonResponse",
+              502,
+            ),
+        );
+      }
+
+      break;
     }
 
     if (!response.ok || !response.body) {

@@ -45,6 +45,8 @@ const SLIDER_SELECTORS = [
   ".nc-container .btn_slide",
   ".slidetounlock",
   ".nc_scale span",
+  "#aliyunCaptcha-sliding-slider",
+  '#aliyunCaptcha-sliding-slider [class*="slider"]',
   "#nocaptcha .btn_slide",
   '[class*="btn_slide"]',
   ".yidun_slider",
@@ -58,6 +60,9 @@ const CHALLENGE_SELECTORS = [
   ".nc-container",
   ".nc_wrapper",
   "#baxia-punish",
+  "#aliyunCaptcha-window-float",
+  "#aliyunCaptcha-sliding-slider",
+  "iframe#baxia-dialog-content",
   'iframe[src*="punish"]',
   'iframe[src*="_____tmd_____"]',
   'iframe[src*="nocaptcha"]',
@@ -81,6 +86,9 @@ export function looksLikeAntiBotChallengeText(text: string): boolean {
     lower.includes("punish") ||
     lower.includes("nocaptcha") ||
     lower.includes("captcha") ||
+    lower.includes("aliyuncaptcha") ||
+    lower.includes("baxia") ||
+    lower.includes("access verification") ||
     lower.includes("security verification") ||
     lower.includes("verify you are human") ||
     lower.includes("human verification") ||
@@ -232,7 +240,7 @@ async function softSessionWarmup(page: Page): Promise<void> {
   await page
     .goto("https://chat.qwen.ai/", {
       waitUntil: "domcontentloaded",
-      timeout: config.timeouts.navigation,
+      timeout: Math.min(config.timeouts.navigation, 10_000),
     })
     .catch(() => {});
   await sleep(humanDelay(400, 900));
@@ -285,20 +293,41 @@ export async function recoverAntiBotChallenge(
     const deadline = Date.now() + budgetMs;
 
     try {
-      // Phase 1: warm page + capture fresh anti-fraud headers
-      await withAccountPage(accountId, async (page) => {
+      const remainingBudget = () => Math.max(1_000, deadline - Date.now());
+      const runPageOperation = <T>(
+        fn: (page: Page) => Promise<T>,
+      ): Promise<T> => {
+        const operationTimeout = Math.min(
+          config.captchaSolver.timeoutMs + 5_000,
+          remainingBudget(),
+        );
+        return withAccountPage(
+          accountId,
+          fn,
+          operationTimeout,
+          Math.min(operationTimeout, remainingBudget()),
+        );
+      };
+
+      // Phase 1: warm page + capture fresh anti-fraud headers. Every browser
+      // operation is bounded by the solver deadline so a stuck navigation cannot
+      // monopolize this account's Playwright mutex.
+      await runPageOperation(async (page) => {
         await softSessionWarmup(page);
       });
-      await refreshHeaders(accountId);
+      await refreshHeaders(
+        accountId,
+        Math.min(config.timeouts.headers, remainingBudget()),
+      );
 
-      let signal = await withAccountPage(accountId, (page) =>
+      let signal = await runPageOperation((page) =>
         pageHasChallengeSignals(page),
       );
 
       // Phase 2: if challenge not visible yet, force a tiny in-page completions
       // probe so Alibaba may render punish page / widgets.
       if (!signal.challenged && Date.now() < deadline) {
-        await withAccountPage(accountId, async (page) => {
+        await runPageOperation(async (page) => {
           await page
             .evaluate(async () => {
               try {
@@ -323,7 +352,7 @@ export async function recoverAntiBotChallenge(
             .catch(() => {});
           await sleep(humanDelay(500, 1000));
         });
-        signal = await withAccountPage(accountId, (page) =>
+        signal = await runPageOperation((page) =>
           pageHasChallengeSignals(page),
         );
       }
@@ -350,7 +379,7 @@ export async function recoverAntiBotChallenge(
         Date.now() < deadline;
         attempt++
       ) {
-        const dragged = await withAccountPage(accountId, (page) =>
+        const dragged = await runPageOperation((page) =>
           attemptSliderOnPage(page),
         );
         if (dragged.ok) {
@@ -361,11 +390,14 @@ export async function recoverAntiBotChallenge(
       }
 
       const remaining = Math.max(800, deadline - Date.now());
-      const cleared = await withAccountPage(accountId, (page) =>
-        waitForChallengeClear(page, remaining),
+      const cleared = await runPageOperation((page) =>
+        waitForChallengeClear(page, Math.min(remaining, remainingBudget())),
       );
 
-      await refreshHeaders(accountId);
+      await refreshHeaders(
+        accountId,
+        Math.min(config.timeouts.headers, remainingBudget()),
+      );
 
       if (cleared) {
         console.log(

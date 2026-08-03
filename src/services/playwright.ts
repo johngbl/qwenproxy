@@ -861,7 +861,7 @@ export async function captureQwenHeaders(
           // Navigate to Qwen and trigger a request.
           await page.goto("https://chat.qwen.ai/", {
             waitUntil: "domcontentloaded",
-            timeout: config.timeouts.navigation,
+            timeout: Math.min(config.timeouts.navigation, timeoutMs),
           });
           if (settled) return;
           await sleep(2000);
@@ -935,12 +935,16 @@ export async function captureQwenHeaders(
   });
 }
 
-async function refreshHeadersInternal(accountId: string): Promise<void> {
+async function refreshHeadersInternal(
+  accountId: string,
+  timeoutMs = config.timeouts.headers,
+): Promise<void> {
   const cache = getHeaderCache(accountId);
   if (cache.refreshInProgress) return;
 
   touchAccountActivity(accountId);
   cache.refreshInProgress = true;
+  const boundedTimeoutMs = Math.max(1_000, timeoutMs);
   try {
     // Check if session is expired before capturing headers
     const page = accountPages.get(accountId);
@@ -948,7 +952,7 @@ async function refreshHeadersInternal(accountId: string): Promise<void> {
       try {
         await page.goto("https://chat.qwen.ai/", {
           waitUntil: "domcontentloaded",
-          timeout: config.timeouts.navigation,
+          timeout: Math.min(config.timeouts.navigation, boundedTimeoutMs),
         });
         const url = page.url();
         if (url.includes("auth") || url.includes("login")) {
@@ -975,20 +979,25 @@ async function refreshHeadersInternal(accountId: string): Promise<void> {
       }
     }
 
-    await captureQwenHeaders(accountId);
+    await captureQwenHeaders(accountId, undefined, boundedTimeoutMs);
   } finally {
     touchAccountActivity(accountId);
     cache.refreshInProgress = false;
   }
 }
 
-export async function refreshHeaders(accountId: string): Promise<void> {
+export async function refreshHeaders(
+  accountId: string,
+  timeoutMs = config.timeouts.headers,
+): Promise<void> {
+  const boundedTimeoutMs = Math.max(1_000, timeoutMs);
   const release = await acquireAccountMutex(
     accountId,
     `refresh:${accountId.substring(0, 12)}`,
+    boundedTimeoutMs,
   );
   try {
-    await refreshHeadersInternal(accountId);
+    await refreshHeadersInternal(accountId, timeoutMs);
   } finally {
     release();
   }
@@ -1001,6 +1010,8 @@ export async function refreshHeaders(accountId: string): Promise<void> {
 export async function withAccountPage<T>(
   accountId: string,
   fn: (page: Page) => Promise<T>,
+  timeoutMs = ACCOUNT_PAGE_OPERATION_TIMEOUT_MS,
+  mutexTimeoutMs = PLAYWRIGHT_MUTEX_WAIT_MS,
 ): Promise<T> {
   const page = accountPages.get(accountId);
   if (!page || page.isClosed()) {
@@ -1009,13 +1020,14 @@ export async function withAccountPage<T>(
   const release = await acquireAccountMutex(
     accountId,
     `page:${accountId.substring(0, 12)}`,
+    Math.max(1_000, mutexTimeoutMs),
   );
   try {
     touchAccountActivity(accountId);
     try {
       const result = await withTimeout(
         fn(page),
-        ACCOUNT_PAGE_OPERATION_TIMEOUT_MS,
+        Math.max(1_000, timeoutMs),
         `Playwright page operation timed out for ${accountId}`,
       );
       touchAccountActivity(accountId);

@@ -25,7 +25,10 @@ import {
   getLogicalThreadState,
   RetryableQwenStreamError,
 } from "../../services/qwen.ts";
-import { classifyRetryAction } from "./retry-policy.ts";
+import {
+  classifyRetryAction,
+  shouldRetryInvalidInputOnSameAccount,
+} from "./retry-policy.ts";
 
 
 
@@ -225,6 +228,7 @@ export async function chatCompletions(c: Context) {
 
     // Retry loop for mid-stream/create-stream failures (generic policy)
         let streamProcessingRetries = Math.max(0, config.retry.maxAttempts - 1);
+        let invalidInputSameAccountRetries = 0;
         let currentStreamResult = streamResult;
         let currentParams = params;
 
@@ -254,9 +258,21 @@ export async function chatCompletions(c: Context) {
               `[Chat] Stream processing error, retrying with new stream | reason=${policy.reason} | ${streamErr.message?.substring(0, 150)} | retries left: ${streamProcessingRetries}`,
             );
 
-            const switchAccount = policy.switchAccount;
+            // Recover a generic invalid_input on the same account once by
+            // creating a clean upstream chat. A second failure may rotate.
+            const retryInvalidInputOnSameAccount =
+              shouldRetryInvalidInputOnSameAccount(
+                policy.reason,
+                invalidInputSameAccountRetries > 0,
+              );
+            if (retryInvalidInputOnSameAccount) {
+              invalidInputSameAccountRetries++;
+            }
+            const switchAccount =
+              policy.switchAccount && !retryInvalidInputOnSameAccount;
             const forceRetryNewChat = policy.forceNewChat;
             const retryWithFullPrompt = policy.retryWithFullPrompt;
+            const retryFiles = policy.dropFiles ? [] : files;
 
             // Do not cooldown an account when the policy is retrying it in
             // place (temporary load shedding). A cooldown here would make the
@@ -317,7 +333,7 @@ export async function chatCompletions(c: Context) {
               model: body.model,
               contextModelId: modelId,
               shouldResetUpstreamThread: ctx.shouldResetUpstreamThread,
-              allFiles: files,
+              allFiles: retryFiles,
               isNewSession: ctx.isNewSession,
               sessionId: ctx.sessionId,
               useThreadNative: ctx.useThreadNative,
@@ -377,7 +393,7 @@ export async function chatCompletions(c: Context) {
                 fullPrompt: fullPromptForRequest,
                 isThinkingModel: ctx.isThinkingModel,
                 contextModelId: modelId,
-                allFiles: files,
+                allFiles: retryFiles,
                 isNewSession: ctx.isNewSession,
                 sessionId: ctx.sessionId,
                 useThreadNative: ctx.useThreadNative,

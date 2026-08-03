@@ -17,7 +17,10 @@ import {
 } from "../../services/qwen.ts";
 import { acquireUpstreamStream } from "./account.ts";
 import { markAccountRateLimited } from "../../core/account-manager.ts";
-import { classifyRetryAction } from "./retry-policy.ts";
+import {
+  classifyRetryAction,
+  shouldRetryInvalidInputOnSameAccount,
+} from "./retry-policy.ts";
 import type { OpenAIRequest, Usage } from "../../utils/types.ts";
 import { StreamingToolParser } from "../../tools/parser.ts";
 import {
@@ -771,6 +774,7 @@ export async function processStreamingResponse(
     let currentUiSessionId = retryContext.uiSessionId;
     let currentAccountId = retryContext.activeAccountId;
     let currentAccountLabel = retryContext.activeAccountLabel;
+    let invalidInputSameAccountRetries = 0;
 
     const abortHandler = async () => {
       if (clientDisconnected) return;
@@ -1276,7 +1280,19 @@ export async function processStreamingResponse(
                   `[Chat] Stream mid-stream error, retrying transparently | reason=${policy.reason} | ${_e.message?.substring(0, 150)} | retries left: ${retryContext.retriesLeft}`,
                 );
 
-                const switchAccount = policy.switchAccount;
+                // A generic invalid_input is usually recoverable by opening a
+                // fresh upstream chat. Keep the first retry on the same account;
+                // rotate only if that fresh chat also fails.
+                const retryInvalidInputOnSameAccount =
+                  shouldRetryInvalidInputOnSameAccount(
+                    policy.reason,
+                    invalidInputSameAccountRetries > 0,
+                  );
+                if (retryInvalidInputOnSameAccount) {
+                  invalidInputSameAccountRetries++;
+                }
+                const switchAccount =
+                  policy.switchAccount && !retryInvalidInputOnSameAccount;
 
                 // Only cooldown the account when switching away. If retrying on
                 // the same account (temporary load), a cooldown would cause

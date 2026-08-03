@@ -47,6 +47,7 @@ import {
 	isChatInProgressError,
 	isQuotaLikeError,
 	isTerminalLocalError,
+	shouldRetryInvalidInputOnSameAccount,
 } from "./retry-policy.ts";
 
 // Per-chat lock: serializes requests to the same Qwen chat session
@@ -481,9 +482,15 @@ export async function acquireUpstreamStream(
 			}
 		}
 
-		// Anti-bot: try in-browser captcha recovery first; only then cooldown + profile reset
+		// Anti-bot recovery is attempted once inside the account retry loop. If
+		// it already failed there, do not run the same browser recovery a second
+		// time before rotating this account.
 		if (isAntiBotError(lastError)) {
-			const recovered = await tryRecoverAntiBot(accountId, accountEmail);
+			const recoveryAlreadyAttempted =
+				(lastError as any)?.antiBotRecoveryAttempted === true;
+			const recovered = recoveryAlreadyAttempted
+				? false
+				: await tryRecoverAntiBot(accountId, accountEmail);
 			if (recovered) {
 				// Give the same account one more chance with fresh tokens/session
 				triedAccountIds.delete(accountId);
@@ -610,6 +617,7 @@ async function tryCreateStreamWithRetry(
 	let quotaRetried = false;
 	let accountSwitches = 0;
 	let chatInProgressCount = 0;
+	let invalidInputSameAccountRetried = false;
 	const accounts = loadAccounts();
 	const isSingleAccount = accounts.length <= 1;
 	let currentAccountId = accountId;
@@ -822,22 +830,23 @@ async function tryCreateStreamWithRetry(
 			return { success: false, error: err };
 		}
 
-		// In-request captcha recovery before burning remaining retries / rotating
+
+
+		// Anti-bot recovery belongs here, before the generic switch policy. A failed
+		// recovery is marked on the error so the outer account loop will rotate
+		// without opening a second browser recovery flight.
 		if (isAntiBotError(err) && attemptsLeft > 0) {
 			const recovered = await tryRecoverAntiBot(
 				currentAccountId,
 				currentAccountEmail,
 			);
-			await new Promise((resolve) =>
-				setTimeout(
-					resolve,
-					recovered
-						? Math.min(config.antiBot.baseDelayMs, 2500)
-						: Math.min(config.antiBot.baseDelayMs, 4000),
-				),
-			);
-			// Always continue once for anti-bot so a fresh header/token set can land
-			continue;
+			if (recovered) {
+				await new Promise((resolve) =>
+					setTimeout(resolve, Math.min(config.antiBot.baseDelayMs, 2500)),
+				);
+				continue;
+			}
+			(err as any).antiBotRecoveryAttempted = true;
 		}
 
 		// Account-scoped quota/rate-limit: cool this account and stop local retries
@@ -890,6 +899,20 @@ async function tryCreateStreamWithRetry(
 		const policy = classifyRetryAction(err, {
 			requestAborted: params.requestSignal?.aborted === true,
 		});
+
+		// A generic invalid_input is often a stale/corrupted upstream chat rather
+		// than an account failure. Rebuild it once on the same account first. If the
+		// fresh chat fails again, the normal policy is allowed to rotate.
+		const retryInvalidInputOnSameAccount =
+			shouldRetryInvalidInputOnSameAccount(
+				policy.reason,
+				invalidInputSameAccountRetried,
+			);
+		if (retryInvalidInputOnSameAccount) {
+			invalidInputSameAccountRetried = true;
+		}
+		const shouldSwitchAccount =
+			policy.switchAccount && !retryInvalidInputOnSameAccount;
 
 		// chat_in_progress means the previous Qwen generation has not stopped yet;
 		// it is not a quota error. Retry the same chat once, then rotate while an
@@ -945,7 +968,7 @@ async function tryCreateStreamWithRetry(
 		// Prefer switching account for any retryable upstream error when possible
 		if (
 			policy.retryable &&
-			policy.switchAccount &&
+			shouldSwitchAccount &&
 			!isSingleAccount &&
 			accountSwitches < maxAccountSwitches
 		) {
