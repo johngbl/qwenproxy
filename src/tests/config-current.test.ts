@@ -31,6 +31,7 @@ test("config exposes only Playwright/thread-native current auth and context sett
   assert.equal(typeof config.sessionKeeper.intervalMs, "number");
   assert.equal(typeof config.sessionKeeper.idleMs, "number");
   assert.equal(typeof config.sessionKeeper.navigationIntervalMs, "number");
+  assert.ok(config.concurrency.initFailureCooldownMs >= 30_000);
 });
 
 test("config keeps Qwen anti-bot static config limited to bx-v fallback", () => {

@@ -43,6 +43,7 @@ import type { QwenFileEntry } from "../upload.ts";
 import {
 	classifyRetryAction,
 	isAntiBotError as isAntiBotPolicyError,
+	isAccountInitializationError,
 	isChatInProgressError,
 	isQuotaLikeError,
 	isTerminalLocalError,
@@ -316,7 +317,6 @@ export async function acquireUpstreamStream(
 	const configuredAccounts = resolved.configuredAccounts;
 	const triedAccountIds = new Set<string>();
 	let lastError: any = null;
-	let verifiedPersistedCooldown = false;
 
 	while (account) {
 		const accountId = account.id;
@@ -342,49 +342,16 @@ export async function acquireUpstreamStream(
 
 		const cooldownInfo = getAccountCooldownInfo(accountId);
 		if (cooldownInfo) {
-			const allConfiguredAccountsOnCooldown = configuredAccounts.every(
-				(configuredAccount) => getAccountCooldownInfo(configuredAccount.id),
+			console.log(
+				`⏭️  [Chat] Skipping account ${accountEmail} (${accountId}) on cooldown for ${Math.round(cooldownInfo.remainingMs / 1000)}s (${cooldownInfo.reason})`,
 			);
-
-			if (allConfiguredAccountsOnCooldown && !verifiedPersistedCooldown) {
-				verifiedPersistedCooldown = true;
+			if (stickyThreadAccountId === accountId) {
 				console.warn(
-					`⚠️  [Chat] All accounts are on cooldown; clearing cooldowns and resetting all profiles in background.`,
+					`⚠️  [Chat] Sticky account is on cooldown; recreating upstream chat on another account with full context.`,
 				);
-
-				// Clear all cooldowns
-				for (const acc of configuredAccounts) {
-					clearAccountCooldown(acc.id);
-				}
-
-				// Reset all profiles in background
-				void (async () => {
-					try {
-						const { schedulePlaywrightProfileReset } = await import(
-							"../../services/playwright.ts"
-						);
-						for (const acc of configuredAccounts) {
-							schedulePlaywrightProfileReset(acc.id);
-						}
-					} catch (err) {
-						console.warn(
-							`❌ [Playwright] Failed to start background profile resets:`,
-							(err as Error).message,
-						);
-					}
-				})();
-			} else {
-				console.log(
-					`⏭️  [Chat] Skipping account ${accountEmail} (${accountId}) on cooldown for ${Math.round(cooldownInfo.remainingMs / 1000)}s (${cooldownInfo.reason})`,
-				);
-				if (stickyThreadAccountId === accountId) {
-					console.warn(
-						`⚠️  [Chat] Sticky account is on cooldown; recreating upstream chat on another account with full context.`,
-					);
-				}
-				account = getNextAvailableAccount(triedAccountIds);
-				continue;
 			}
+			account = getNextAvailableAccount(triedAccountIds);
+			continue;
 		}
 
 		if (isToolcallDebugEnabled()) {
@@ -501,7 +468,11 @@ export async function acquireUpstreamStream(
 		}
 
 		if (stickyThreadAccountId === accountId) {
-			if (isAccountUnavailableError(lastError) || isAntiBotError(lastError)) {
+			if (
+				isAccountUnavailableError(lastError) ||
+				isAntiBotError(lastError) ||
+				isAccountInitializationError(lastError)
+			) {
 				console.warn(
 					`⚠️  [Chat] Sticky account unavailable; trying another account with full context.`,
 				);
@@ -920,27 +891,21 @@ async function tryCreateStreamWithRetry(
 			requestAborted: params.requestSignal?.aborted === true,
 		});
 
-		// Escalating recovery for chat_in_progress:
-		// 1st: retry same chat after delay (policy default)
-		// 2nd: force new chat on same account with full prompt
-		// 3rd+: allow account switch
+		// chat_in_progress means the previous Qwen generation has not stopped yet;
+		// it is not a quota error. Retry the same chat once, then rotate while an
+		// attempt remains so the alternate account can actually be used.
 		if (policy.reason === "chat_in_progress") {
 			chatInProgressCount++;
 			markAccountTemporarilyBusy(
 				currentAccountId,
 				config.retry.chatInProgressBusyMs,
 			);
-			if (chatInProgressCount >= 2 && params.useThreadNative) {
-				console.warn(
-					`🔄 [Chat] chat_in_progress escalation (${chatInProgressCount}) | forcing new chat on ${currentAccountEmail}`,
-				);
-				params.existingThread = null;
-				params.finalPrompt = params.fullPrompt;
-				params.messageCount = params.fullMessageCount ?? params.messageCount;
-				params.forceNewChat = true;
-			}
-			if (chatInProgressCount >= 3 && !isSingleAccount && accountSwitches < maxAccountSwitches) {
-				const nextAccount = getNextAvailableAccount(triedAccounts);
+
+			if (chatInProgressCount >= 2) {
+				const nextAccount =
+					!isSingleAccount && accountSwitches < maxAccountSwitches
+						? getNextAvailableAccount(triedAccounts)
+						: null;
 				if (nextAccount && nextAccount.id !== currentAccountId) {
 					console.warn(
 						`🔄 [Chat] chat_in_progress escalation (${chatInProgressCount}) | switching ${currentAccountEmail} -> ${maskEmail(nextAccount.email)}`,
@@ -949,14 +914,32 @@ async function tryCreateStreamWithRetry(
 					currentAccountId = nextAccount.id;
 					currentAccountEmail = maskEmail(nextAccount.email);
 					accountSwitches++;
-					if (params.useThreadNative) {
-						params.existingThread = null;
-						params.finalPrompt = params.fullPrompt;
-						params.messageCount = params.fullMessageCount ?? params.messageCount;
-						params.forceNewChat = true;
-					}
+				} else {
+					console.warn(
+						`🔄 [Chat] chat_in_progress escalation (${chatInProgressCount}) | forcing a new chat on ${currentAccountEmail}`,
+					);
+				}
+
+				if (params.useThreadNative) {
+					params.existingThread = null;
+					params.finalPrompt = params.fullPrompt;
+					params.messageCount = params.fullMessageCount ?? params.messageCount;
+					params.forceNewChat = true;
 				}
 			}
+		}
+
+		if (policy.reason === "account_initialization_failed") {
+			console.warn(
+				`⚠️  [Chat] Account initialization failed | ${currentAccountEmail} | cooldown=${Math.round((policy.accountCooldownMs ?? 0) / 1000)}s`,
+			);
+			markAccountFailed(currentAccountId);
+			markAccountRateLimited(
+				currentAccountId,
+				policy.accountCooldownMs,
+				policy.accountCooldownReason,
+			);
+			return { success: false, error: err };
 		}
 
 		// Prefer switching account for any retryable upstream error when possible

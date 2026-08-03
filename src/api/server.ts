@@ -202,6 +202,18 @@ async function prepareQwenRuntime(params: {
     modelId: string,
   ) => Promise<void>;
 }): Promise<boolean> {
+  if (params.accountId) {
+    const { getAccountCooldownInfo } =
+      await import("../core/account-manager.ts");
+    const cooldownInfo = getAccountCooldownInfo(params.accountId);
+    if (cooldownInfo) {
+      console.warn(
+        `⚠️  [Server] Account not ready: cooldown ${Math.ceil(cooldownInfo.remainingMs / 1000)}s (${cooldownInfo.reason})`,
+      );
+      return false;
+    }
+  }
+
   try {
     await params.initAuth();
     await params.disableNativeTools(params.accountId).catch(() => {});
@@ -220,6 +232,15 @@ async function prepareQwenRuntime(params: {
     return true;
   } catch (error) {
     console.warn(`❌ ${params.failureMessage}`, getErrorMessage(error));
+    if (params.accountId) {
+      const { markAccountRateLimited } =
+        await import("../core/account-manager.ts");
+      markAccountRateLimited(
+        params.accountId,
+        config.concurrency.initFailureCooldownMs,
+        "AuthInitFailed",
+      );
+    }
     return false;
   }
 }

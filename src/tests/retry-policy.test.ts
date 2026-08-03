@@ -65,6 +65,19 @@ test("classifyRetryAction: aborted request is not retried", () => {
   assert.equal(action.reason, "client_abort");
 });
 
+test("classifyRetryAction: failed account initialization cools and rotates", () => {
+  const action = classifyRetryAction(
+    new Error("Header capture returned incomplete anti-fraud headers for account"),
+  );
+
+  assert.equal(action.retryable, true);
+  assert.equal(action.switchAccount, true);
+  assert.equal(action.forceNewChat, false);
+  assert.equal(action.accountCooldownReason, "AuthInitFailed");
+  assert.ok(action.accountCooldownMs! >= 30_000);
+  assert.equal(action.reason, "account_initialization_failed");
+});
+
 test("classifyRetryAction: account lease timeout is retryable without rebuilding chat", () => {
   const action = classifyRetryAction(
     new Error("Account abc busy: timed out after 30000ms waiting for a free slot"),

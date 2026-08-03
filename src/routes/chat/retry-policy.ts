@@ -159,6 +159,17 @@ export function isInvalidInputError(err: unknown): boolean {
   );
 }
 
+export function isAccountInitializationError(err: unknown): boolean {
+  const message = errMessage(err).toLowerCase();
+  return (
+    message.includes("header capture returned incomplete anti-fraud headers") ||
+    message.includes("required qwen anti-fraud headers are unavailable") ||
+    message.includes("playwright not initialized for account") ||
+    message.includes("playwright page unavailable") ||
+    message.includes("playwright re-initialization timed out")
+  );
+}
+
 export function isQuotaLikeError(err: unknown): boolean {
   // Chat-not-exist / invalid attachment must never look like quota.
   if (isChatNotExistError(err) || isInvalidInputError(err)) return false;
@@ -315,6 +326,19 @@ export function classifyRetryAction(
   }
 
   const message = errMessage(err).toLowerCase();
+  if (isAccountInitializationError(err)) {
+    return {
+      retryable: true,
+      switchAccount: true,
+      forceNewChat: false,
+      retryWithFullPrompt: false,
+      retryAfterMs: Math.min(baseDelayMs, 1_000),
+      accountCooldownMs: config.concurrency.initFailureCooldownMs,
+      accountCooldownReason: "AuthInitFailed",
+      reason: "account_initialization_failed",
+    };
+  }
+
   if (
     message.includes("waiting for a free slot") ||
     message.includes("busy: timed out")
