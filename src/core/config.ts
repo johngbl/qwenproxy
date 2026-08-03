@@ -62,13 +62,8 @@ const envSchema = z
     ACCOUNT_INIT_FAILURE_COOLDOWN_MS: z.string().default("300000"),
     CHAT_IN_PROGRESS_RETRY_DELAY_MS: z.string().default("2000"),
     CHAT_IN_PROGRESS_BUSY_MS: z.string().default("5000"),
-    ANTI_BOT_BASE_DELAY_MS: z.string().default("5000"),
-    ANTI_BOT_MAX_DELAY_MS: z.string().default("30000"),
-    CAPTCHA_SOLVER_ENABLED: z.string().default("true"),
-    CAPTCHA_SOLVER_TIMEOUT_MS: z.string().default("25000"),
-    CAPTCHA_SOLVER_MAX_SLIDER_ATTEMPTS: z.string().default("2"),
-    CAPTCHA_SOLVER_MIN_INTERVAL_MS: z.string().default("20000"),
-    CAPTCHA_SOLVER_FAIL_COOLDOWN_MS: z.string().default("600000"),
+
+
     QWEN_BASE_URL: z.string().default("https://chat.qwen.ai"),
     QWEN_CHAT_POOL_SIZE: z.string().default("1"),
     QWEN_CHAT_POOL_MODELS: z.string().default("qwen3.7-plus"),
@@ -176,23 +171,8 @@ export const config = {
       parseInt(env.ACCOUNT_INIT_FAILURE_COOLDOWN_MS),
     ),
   },
-  antiBot: {
-    baseDelayMs: parseInt(env.ANTI_BOT_BASE_DELAY_MS),
-    maxDelayMs: parseInt(env.ANTI_BOT_MAX_DELAY_MS),
-  },
-  captchaSolver: {
-    enabled: env.CAPTCHA_SOLVER_ENABLED !== "false",
-    timeoutMs: Math.max(5_000, parseInt(env.CAPTCHA_SOLVER_TIMEOUT_MS)),
-    maxSliderAttempts: Math.max(
-      1,
-      parseInt(env.CAPTCHA_SOLVER_MAX_SLIDER_ATTEMPTS),
-    ),
-    minIntervalMs: Math.max(0, parseInt(env.CAPTCHA_SOLVER_MIN_INTERVAL_MS)),
-    failCooldownMs: Math.max(
-      60_000,
-      parseInt(env.CAPTCHA_SOLVER_FAIL_COOLDOWN_MS),
-    ),
-  },
+
+
   sessionKeeper: {
     enabled: env.SESSION_KEEP_ALIVE_ENABLED !== "false",
     intervalMs: parseInt(env.SESSION_KEEP_ALIVE_INTERVAL_MS),

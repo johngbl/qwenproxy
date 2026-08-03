@@ -417,15 +417,15 @@ export function classifyRetryAction(
     }
 
     if (isAntiBotError(err)) {
-      const typed = err as RetryableStreamError;
+      // WAF/captcha is only identified here. Retry the same request on the
+      // same account immediately; recovery, cooldown and account rotation are
+      // intentionally left out so the failure path stays observable.
       return {
         retryable: true,
-        switchAccount: typed.switchAccount !== false,
-        forceNewChat: typed.forceNewChat === true,
-        retryWithFullPrompt: typed.retryWithFullPrompt === true,
-        retryAfterMs: typed.retryAfterMs ?? config.antiBot.baseDelayMs,
-        accountCooldownMs: config.captchaSolver.failCooldownMs,
-        accountCooldownReason: "AntiBot",
+        switchAccount: false,
+        forceNewChat: false,
+        retryWithFullPrompt: false,
+        retryAfterMs: 0,
         reason: "anti_bot",
       };
     }
@@ -608,7 +608,7 @@ export function throwFromSseUpstreamError(
   ) {
     const error = new RetryableQwenStreamError(
       `Qwen anti-bot: ${errCode}: ${errDetails}`,
-      config.antiBot.baseDelayMs,
+      0,
     ) as RetryableStreamError;
     error.upstreamCode = errCode;
     error.switchAccount = true;

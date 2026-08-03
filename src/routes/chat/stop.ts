@@ -17,6 +17,7 @@ import {
   getStreamKeysBySessionId,
   removeStream,
 } from "../../core/stream-registry.ts";
+import { requestQwenTextInBrowser } from "../../services/qwen.ts";
 import { sendOpenAIError, createError } from "../../api/error-helpers.js";
 
 export async function chatCompletionsStop(c: Context) {
@@ -65,22 +66,20 @@ export async function chatCompletionsStop(c: Context) {
       );
     }
 
-    const stopResponse = await fetch(
-      qwenUrl(
-        `/api/v2/chat/completions/stop?chat_id=${encodeURIComponent(chat_id)}`,
-      ),
-      {
-        method: "POST",
-        headers: buildQwenRequestHeaders({
-          cookie: stream.headers.cookie,
-          userAgent: stream.headers["user-agent"],
-          bxUa: stream.headers["bx-ua"],
-          bxUmidtoken: stream.headers["bx-umidtoken"],
-          bxV: stream.headers["bx-v"],
-          chatSessionId: chat_id,
-        }),
-        body: JSON.stringify({ chat_id, response_id }),
-      },
+    const stopResponse = await requestQwenTextInBrowser(
+      stream.accountId,
+      "POST",
+      `/api/v2/chat/completions/stop?chat_id=${encodeURIComponent(chat_id)}`,
+      buildQwenRequestHeaders({
+        cookie: stream.headers.cookie,
+        userAgent: stream.headers["user-agent"],
+        bxUa: stream.headers["bx-ua"],
+        bxUmidtoken: stream.headers["bx-umidtoken"],
+        bxV: stream.headers["bx-v"],
+        chatSessionId: chat_id,
+      }),
+      JSON.stringify({ chat_id, response_id }),
+      { referrer: qwenUrl(`/c/${encodeURIComponent(chat_id)}`) },
     );
 
     if (!stopResponse.ok) {

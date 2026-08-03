@@ -153,6 +153,7 @@ test("thread-native continuation reuses sticky account binding from logical stat
 	const ctx = await buildFinalContext({
 		messages,
 		systemPrompt,
+		toolInstructions: "",
 		prompt: "User: hello sticky\n\nAssistant: hi\n\nUser: continue\n\n",
 		currentPrompt: "User: continue\n\n",
 		modelId: "qwen3.7-plus",
@@ -174,6 +175,25 @@ test("thread-native continuation reuses sticky account binding from logical stat
 	// forceNewChat semantics: sticky owner remains readable even if caller forces
 	// a new chat (account layer should still pin to this account unless null).
 	assert.equal(state!.accountId, "acc-sticky");
+});
+
+test("personalization contains complete agent instructions and tools", async () => {
+	const ctx = await buildFinalContext({
+		messages: [{ role: "user", content: "run the tool" }] as any,
+		systemPrompt: "Agent instructions",
+		toolInstructions: "# TOOLS AVAILABLE\\n- shell: execute commands",
+		prompt: "User: run the tool\\n\\n",
+		currentPrompt: "User: run the tool\\n\\n",
+		modelId: "qwen3.7-plus",
+		enableThinking: false,
+		conversationKey: null,
+		hasExplicitConversationKey: false,
+	});
+
+	assert.match(ctx.requestPersonalizationInstruction ?? "", /Agent instructions/);
+	assert.match(ctx.requestPersonalizationInstruction ?? "", /TOOLS AVAILABLE/);
+	assert.match(ctx.finalPrompt, /Agent instructions/);
+	assert.match(ctx.finalPrompt, /execute commands/);
 });
 
 test("account switch contract: full history is required when sticky owner changes", () => {

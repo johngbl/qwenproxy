@@ -12,6 +12,7 @@ import { stream as honoStream } from "hono/streaming";
 import { buildQwenRequestHeaders } from "../../services/qwen-headers.ts";
 import { qwenUrl } from "../../services/qwen-url.ts";
 import {
+  requestQwenTextInBrowser,
   updateLogicalThreadParent,
   updateSessionParent,
   RetryableQwenStreamError,
@@ -829,25 +830,23 @@ export async function processStreamingResponse(
             console.log(
               `🛑 [Chat] Stopping Qwen generation | session=${currentUiSessionId} | response=${targetResponseId}`,
             );
-            await fetch(
-              qwenUrl(
-                `/api/v2/chat/completions/stop?chat_id=${encodeURIComponent(currentUiSessionId)}`,
-              ),
-              {
-                method: "POST",
-                headers: buildQwenRequestHeaders({
-                  cookie: streamData.headers.cookie,
-                  userAgent: streamData.headers["user-agent"],
-                  bxUa: streamData.headers["bx-ua"],
-                  bxUmidtoken: streamData.headers["bx-umidtoken"],
-                  bxV: streamData.headers["bx-v"],
-                  chatSessionId: currentUiSessionId,
-                }),
-                body: JSON.stringify({
-                  chat_id: currentUiSessionId,
-                  response_id: targetResponseId,
-                }),
-              },
+            await requestQwenTextInBrowser(
+              currentAccountId,
+              "POST",
+              `/api/v2/chat/completions/stop?chat_id=${encodeURIComponent(currentUiSessionId)}`,
+              buildQwenRequestHeaders({
+                cookie: streamData.headers.cookie,
+                userAgent: streamData.headers["user-agent"],
+                bxUa: streamData.headers["bx-ua"],
+                bxUmidtoken: streamData.headers["bx-umidtoken"],
+                bxV: streamData.headers["bx-v"],
+                chatSessionId: currentUiSessionId,
+              }),
+              JSON.stringify({
+                chat_id: currentUiSessionId,
+                response_id: targetResponseId,
+              }),
+              { referrer: qwenUrl(`/c/${encodeURIComponent(currentUiSessionId)}`) },
             ).catch((err) => {
               console.error(
                 `❌ [Chat] Stop failed | ${err.message}`,

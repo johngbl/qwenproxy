@@ -20,10 +20,11 @@ API compatível com OpenAI/Anthropic que conecta clientes ao **Qwen (`chat.qwen.
 - **Responses API completa** — SSE com `event:` + `data:` + `sequence_number`, memória persistente via `previous_response_id` (SQLite durável), `last_response_id`, multimodal (`input_image`/`input_file`), reasoning effort normalization, lifecycle events de reasoning e usage real do upstream.
 - **Thread-native** — Reutiliza sessão/pai no Qwen; preservação de contexto entre turns
 - **Playwright + stealth** — Headers reais (`bx-ua`, `bx-umidtoken`, `bx-v`) por conta; fingerprint estável e cleanup de processos.
+- **Transporte Qwen via Chromium** — No fluxo principal de chat, modelos, criação de sessão, personalização, completion e stop usam o contexto Playwright; o completion lê o `ReadableStream` incrementalmente e preserva o SSE sem bufferizar a resposta inteira.
 - **Startup rápido multi-conta** — Sobe com a **primeira conta pronta**; as demais continuam preparando em background.
 - **Retries resilientes** — 502/503/504, erros de rede (`fetch failed`), anti-bot, quota e `invalid_input` com recriação de chat.
 - **Parser de tools robusto** — stream fragmentado, JSON malformado, fuzzy de nomes (`readFile` → `read_file`), JSON duplamente escapado e `</tool_call>` case-insensitive.
-- **Personalization sync** — system/tools vão por personalization; em novos chats o sync é forçado (ignora cache) garantindo Critical Rules + AGENTS.md + tools sempre atualizadas; aplica settings seguras (`largeTextAsFile=false`, memory off, tools internas off)
+- **Personalization sync** — system + tools completos são sincronizados em `/settings/personalization` via `POST /api/v2/users/user/settings/update`; o cache por conteúdo evita updates repetidos e instruções acima do limite seguem inline; aplica settings seguras (`largeTextAsFile=false`, memory off, tools internas off).
 - **Senhas criptografadas at-rest** no SQLite.
 - **Uploads multimodais** — imagens, vídeo, áudio e documentos via OSS do Qwen.
 - **Modelos atuais** — catálogo live da família `qwen3.x` (incluindo `qwen3.8-max`) + variante sintética `-fast` para todos os modelos + registro de capabilities (vision, thinking, modalities)
@@ -53,13 +54,14 @@ flowchart TD
     Playwright --> Fingerprint["Fingerprint / session keeper"]
     Chat --> Parser["Tool-call parser"]
     Chat --> Personalization["Settings + personalization sync"]
-    Chat --> Qwen["chat.qwen.ai"]
+    Chat --> BrowserTransport["Playwright page fetch + SSE bridge"]
+    BrowserTransport --> Qwen["chat.qwen.ai"]
     Upload --> OSS["Qwen OSS"]
 ```
 
 ---
 
-## Autenticação
+### Autenticação
 
 Se `API_KEY` estiver definido, as rotas `/v1/*` (e `/metrics`) exigem uma das formas:
 
@@ -80,6 +82,12 @@ npx playwright install chromium
 ```
 
 Senhas das contas são armazenadas **criptografadas** no SQLite (`data/`).
+
+### Transporte upstream e streaming
+
+No fluxo textual principal, as chamadas ao Qwen são feitas pelo `fetch` executado dentro da página Chromium da conta. Isso mantém cookies, User-Agent, TLS, Origin e fingerprint no mesmo contexto do navegador.
+
+A resposta de completion é consumida com `ReadableStream.getReader()` e encaminhada em chunks ao Bridge. O corpo SSE não é acumulado inteiro antes de ser entregue ao cliente. Personalization usa a página `/settings/personalization`; os demais endpoints de chat usam o mesmo contexto autenticado.
 
 ---
 
@@ -199,7 +207,7 @@ curl http://localhost:3000/v1/responses \
 
 | Dependência | Versão mínima | Observação |
 |---|---:|---|
-| Node.js | 20+ | LTS recomendado |
+| Node.js | 24+ | Conforme `engines` do `package.json` |
 | npm | 9+ | Incluído com Node |
 | Playwright | - | `npx playwright install chromium` |
 | Docker | opcional | Deploy em container |
@@ -291,10 +299,10 @@ npm run typecheck  # tipos
 |---|---|---|
 | `QWEN_ACCOUNTS` | vazio | `email1:senha1;email2:senha2` |
 | `DELETE_ALL_CHATS_ON_SHUTDOWN` | `false` | Limpa chats no shutdown |
-| `QWEN_PERSONALIZATION_FROM_REQUEST` | `true` | Envia system/tools via personalization |
+| `QWEN_PERSONALIZATION_FROM_REQUEST` | `true` | Envia system + tools via `/settings/personalization` |
 | `QWEN_PERSONALIZATION_VERIFY_GET` | `true` | Confirma personalization com GET |
 | `QWEN_MAX_PERSONALIZATION_BYTES` | `131072` | Teto UTF-8 para personalization por request; acima disso as instruções seguem inline |
-| `QWEN_CHAT_POOL_SIZE` | `1` | Warm pool de chats por modelo |
+| `QWEN_CHAT_POOL_SIZE` | `1` | Warm pool de chats por modelo; fica desativado quando personalization por request está ativa |
 | `QWEN_CHAT_POOL_MODELS` | `qwen3.7-plus` | Modelos aquecidos no warm pool |
 
 ### Playwright / processos
@@ -305,8 +313,8 @@ npm run typecheck  # tipos
 | `PLAYWRIGHT_BROWSER` | `chromium` | `chromium` / `chrome` / `edge` |
 | `PLAYWRIGHT_INIT_BATCH_SIZE` | `1` | Contas em paralelo no background init |
 | `PLAYWRIGHT_CONTEXT_CLOSE_TIMEOUT_MS` | `10000` | Timeout de close antes do kill |
-| `PLAYWRIGHT_IDLE_CONTEXT_TTL_MS` | `600000` | Fecha contextos idle (`0` desativa) |
-| `PLAYWRIGHT_JS_HEAP_MB` | `512` | Cap V8 do Chromium (`--max-old-space-size`) |
+| `PLAYWRIGHT_IDLE_CONTEXT_TTL_MS` | `300000` | Fecha contextos idle (`0` desativa) |
+| `PLAYWRIGHT_JS_HEAP_MB` | `256` | Cap V8 do Chromium (`--max-old-space-size`) |
 | `PLAYWRIGHT_LOW_MEMORY_FLAGS` | `true` | Flags de baixa RAM (heap cap, cache mínimo, renderer limit) |
 | `OSS_MULTIPART_THRESHOLD_MB` | `5` | Acima disso usa multipart OSS; abaixo `putStream` |
 | `SESSION_KEEP_ALIVE_ENABLED` | `false` | Keep-alive opt-in (evita Chromes permanentes) |
@@ -332,13 +340,8 @@ Fingerprint estável por conta (UA, locale, viewport, hardware/WebGL) é aplicad
 | `RETRY_MAX_ATTEMPTS` | `3` | Tentativas por request (create-stream + mid-stream) |
 | `RETRY_MAX_ACCOUNT_SWITCHES` | `2` | Máximo de trocas de conta por request |
 | `RETRY_ON_UNKNOWN_UPSTREAM` | `true` | Retry/troca automática em erros upstream desconhecidos (denylist só para erros locais terminais) |
-| `ANTI_BOT_BASE_DELAY_MS` | `5000` | Base anti-bot |
-| `ANTI_BOT_MAX_DELAY_MS` | `30000` | Cap anti-bot |
-| `CAPTCHA_SOLVER_ENABLED` | `true` | Recovery anti-bot/TMD no Playwright |
-| `CAPTCHA_SOLVER_TIMEOUT_MS` | `25000` | Orçamento total por tentativa de solve |
-| `CAPTCHA_SOLVER_MAX_SLIDER_ATTEMPTS` | `2` | Tentativas de drag do slider |
-| `CAPTCHA_SOLVER_MIN_INTERVAL_MS` | `20000` | Evita thrash de solve na mesma conta |
-| `CAPTCHA_SOLVER_FAIL_COOLDOWN_MS` | `600000` | Cooldown se o solve falhar (10 min) |
+
+
 
 ### Timeouts
 
@@ -387,7 +390,7 @@ O proxy tenta recuperar erros transitórios sem quebrar thread-native/tools:
 |---|---|
 | `502` / `503` / `504` | Retry com delay curto |
 | `fetch failed`, `ECONNREFUSED`, `ETIMEDOUT`, `ENOTFOUND` | Retry de rede |
-| Anti-bot (`FAIL_SYS_USER_VALIDATE`, captcha, WAF HTML, etc.) | Renova headers uma vez; se persistir, cooldown + rotação + profile reset em background |
+| Anti-bot (`FAIL_SYS_USER_VALIDATE`, captcha, WAF HTML, etc.) | Identifica o WAF e repete imediatamente na mesma conta; não resolve captcha nem aplica cooldown/rotação |
 | Quota / rate limit | Cooldown categorizado (`RateLimited`, `RateLimitTemporary`, …) |
 | `invalid_input` (“entrada ou anexo inválido”) | Retry forçando **novo chat** + contexto completo |
 | Chat not exist / session stale | Força novo chat na sessão lógica |
@@ -415,22 +418,14 @@ Detecta, entre outros:
 
 **Fluxo:**
 
-1. Erro detectado → retry com delay
-2. Marca cooldown / reseta profile se necessário
-3. Rotaciona conta quando faz sentido
-4. Se todas falharem → erro ao cliente
+1. Identifica o WAF/captcha sem expor o HTML do desafio ao cliente
+2. Repete imediatamente a requisição na mesma conta
+3. Se as tentativas da conta acabarem, retorna o erro sanitizado
+4. Não há solver, cooldown, rotação ou reset específico para captcha
 
 Com Playwright, cada conta usa fingerprint e headers capturados do browser real.
 
-**Captcha auto solver (opt-out):** habilitado por padrão (`CAPTCHA_SOLVER_ENABLED=true`). Em anti-bot/TMD (`FAIL_SYS_USER_VALIDATE`, `RGV587`, punish page sufei), o proxy:
-
-1. Reaquece a sessão no Playwright da conta e recaptura `bx-*`
-2. Detecta a punish page / `#nocaptcha` (capturas em `network/captcha`)
-3. Tenta o slider NoCaptcha de forma humanizada
-4. Se limpar o challenge → limpa cooldown e **reusa a mesma conta**
-5. Se falhar → cooldown (`CAPTCHA_SOLVER_FAIL_COOLDOWN_MS`) + profile reset + rotação
-
-Não resolve 100% de todos os tipos de captcha visual (puzzle/click complexos), mas cobre o fluxo TMD/sufei-punish mais comum do Qwen/Alibaba.
+O proxy não tenta resolver o captcha. Quando identifica um desafio WAF, repete a requisição imediatamente na mesma conta para manter o comportamento simples e observável durante a investigação.
 
 ---
 
@@ -564,21 +559,6 @@ base_url = "http://127.0.0.1:3000/v1"
 
 ## Tool calling
 
-```bash
-curl http://localhost:3000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer sua-api-key" \
-  -d '{
-    "model": "qwen3.7-plus",
-    "messages": [{"role": "user", "content": "Hello!"}],
-    "stream": true
-  }'
-```
-
----
-
-## Tool calling
-
 O parser suporta:
 
 - tags `<tool_call>...</tool_call>` (close case-insensitive: `</TOOL_CALL>`)
@@ -697,12 +677,12 @@ QwenBridge/
 
 | Problema | Solução |
 |---|---|
-| Anti-bot / captcha | Solver tenta slider/TMD no browser; se falhar → rotação/profile reset. Desligue com `CAPTCHA_SOLVER_ENABLED=false` |
+| Anti-bot / captcha | O WAF é identificado e a requisição é repetida imediatamente na mesma conta; não há solver, cooldown ou rotação específicos |
 | Quota exceeded | Mais contas ou esperar cooldown |
 | `502 Bad Gateway` / `fetch failed` | Normalmente upstream/rede; o proxy faz retry automático |
 | `invalid_input` (anexo inválido) | Retry com chat novo; settings `largeTextAsFile=false` ajudam |
 | `context_length_exceeded` | O proxy bloqueou o prompt localmente antes de qualquer retry; reduza/resuma o histórico ou ajuste `QWEN_MAX_PROMPT_BYTES` |
-| HTML/WAF no lugar do stream | O bridge renova os headers uma vez e não expõe a página HTML ao cliente; se persistir, aguarde o cooldown ou faça `npm run login` |
+| HTML/WAF no lugar do stream | O Bridge identifica o desafio e repete imediatamente na mesma conta; não há solver, cooldown ou rotação específicos. Se persistir, reduza o tamanho/frequência do payload e verifique a sessão |
 | `Model not found` com `gpt-*` | Aliases (`gpt-5-mini`→flash, `gpt-5`→max, etc.) em Chat/Responses/Anthropic; confira mapping |
 | Vários Chromes abertos / RAM alta | `SESSION_KEEP_ALIVE_ENABLED=false`, idle cleanup on, `PLAYWRIGHT_INIT_BATCH_SIZE=1`, `PLAYWRIGHT_JS_HEAP_MB` |
 | Watchdog “RAM critical” falso | Já corrigido: usa `heap_size_limit`; confira `/health.heap.usagePercent` |

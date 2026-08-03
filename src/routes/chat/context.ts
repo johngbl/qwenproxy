@@ -32,6 +32,7 @@ export interface FinalContext {
 export interface BuildContextParams {
   messages: Message[];
   systemPrompt: string;
+  toolInstructions: string;
   prompt: string;
   currentPrompt: string;
   modelId: string;
@@ -46,6 +47,7 @@ export async function buildFinalContext(
   const {
     messages,
     systemPrompt,
+    toolInstructions,
     prompt,
     currentPrompt,
     modelId,
@@ -57,6 +59,9 @@ export async function buildFinalContext(
   const modelContextWindow = getModelContextWindow(modelId);
   const useThreadNative = true;
   const isNewSession = !messages.some((m) => m.role === "assistant");
+  const completeInstructions = [systemPrompt.trim(), toolInstructions.trim()]
+    .filter(Boolean)
+    .join("\n\n");
 
   // Thread reuse is allowed when:
   // 1. Thread-native mode is active
@@ -73,7 +78,7 @@ export async function buildFinalContext(
   const sessionId = (conversationKey || useThreadNative)
     ? deriveSessionId(
         messages,
-        conversationKey ? systemPrompt : "",
+        conversationKey ? completeInstructions : "",
         conversationKey ?? "implicit-thread",
       )
     : null;
@@ -92,13 +97,13 @@ export async function buildFinalContext(
   const isTitleGenerationRequest = detectTitleGenerationRequest(messages);
   const requestedPersonalization =
     config.qwen.personalizationFromRequest && !isTitleGenerationRequest;
-  const personalizationInstruction = systemPrompt.trim();
+  const personalizationInstruction = completeInstructions;
   const useRequestPersonalization =
     requestedPersonalization &&
     isRequestPersonalizationWithinLimit(personalizationInstruction);
   if (requestedPersonalization && !useRequestPersonalization) {
     logger.warn(
-      "[chat] system instructions exceed the personalization payload limit; sending them inline",
+      "[chat] system instructions and tools exceed the personalization payload limit; sending them inline",
       {
         instructionBytes: Buffer.byteLength(personalizationInstruction, "utf8"),
         maxPersonalizationBytes: config.qwen.maxPersonalizationBytes,
@@ -106,17 +111,16 @@ export async function buildFinalContext(
     );
   }
   const estimatedTokens = estimateTokenCount(
-    systemPrompt + activePrompt,
+    completeInstructions + activePrompt,
   );
-  // Send instructions in prompt for NEW chats to establish context immediately,
-  // even when personalization is active. For continuations, rely on account-level
-  // personalization to avoid redundancy.
+  // Send the complete instruction block in the prompt for NEW chats to establish
+  // context immediately. Continuations rely on the account-level personalization.
   const isNewChat = !existingThread;
   const shouldSendInstructions = !useRequestPersonalization || isNewChat;
 
   const finalPrompt =
-    shouldSendInstructions && systemPrompt
-      ? `${systemPrompt}\n${activePrompt}`
+    shouldSendInstructions && completeInstructions
+      ? `${completeInstructions}\n${activePrompt}`
       : activePrompt;
 
   // Model metadata is synchronized after account selection. Keep the early

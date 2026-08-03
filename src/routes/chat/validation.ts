@@ -26,6 +26,7 @@ export interface ParsedRequest {
   conversationKey: string | null;
   hasExplicitConversationKey: boolean;
   systemPrompt: string;
+  toolInstructions: string;
   prompt: string;
   currentPrompt: string;
   allFiles: QwenFileEntry[];
@@ -60,7 +61,8 @@ export async function parseRequestBody(c: Context): Promise<ParsedRequest> {
     currentFiles,
   } = await buildPromptFromMessages(messages, uploadHeaders);
 
-  const shouldParseToolCalls = injectToolInstructions(systemPromptParts, body);
+  const toolInstructions = injectToolInstructions(body);
+  const shouldParseToolCalls = toolInstructions.length > 0;
 
   const systemPrompt = systemPromptParts.join("");
   const prompt = promptParts.join("");
@@ -76,6 +78,7 @@ export async function parseRequestBody(c: Context): Promise<ParsedRequest> {
     conversationKey,
     hasExplicitConversationKey: conversationKey !== null,
     systemPrompt,
+    toolInstructions,
     prompt,
     currentPrompt,
     allFiles,
@@ -418,15 +421,12 @@ function getCurrentPromptStartIndex(messages: Message[]): number {
   return last;
 }
 
-function injectToolInstructions(
-  systemPromptParts: string[],
-  body: OpenAIRequest,
-): boolean {
+function injectToolInstructions(body: OpenAIRequest): string {
   const bodyAny = body as any;
   const declaredTools = Array.isArray(bodyAny.tools) ? bodyAny.tools : [];
   const shouldParseToolCalls = declaredTools.length > 0;
 
-  if (!shouldParseToolCalls) return false;
+  if (!shouldParseToolCalls) return "";
 
   if (isToolcallDebugEnabled()) {
     logger.debug("[chat] tools provided in request", {
@@ -451,7 +451,6 @@ function injectToolInstructions(
   const toolsJson = JSON.stringify(formattedTools, null, 2);
 
   const instructions = buildToolInstructions(toolsJson, bodyAny.tool_choice);
-  systemPromptParts.push(instructions);
 
   if (
     isToolcallDebugEnabled() &&
@@ -464,5 +463,5 @@ function injectToolInstructions(
     });
   }
 
-  return true;
+  return instructions;
 }

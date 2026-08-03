@@ -154,7 +154,7 @@ test("createQwenStream matches the latest browser completion payload", async () 
   }
 });
 
-test("createQwenStream retries an HTML WAF response once with fresh headers", async () => {
+test("createQwenStream returns an HTML WAF response immediately", async () => {
   const originalFetch = globalThis.fetch;
   let completionRequests = 0;
 
@@ -179,18 +179,25 @@ test("createQwenStream retries an HTML WAF response once with fresh headers", as
   };
 
   try {
-    const result = await createQwenStream(
-      "Retry WAF response",
-      false,
-      "qwen3.7-plus",
-      null,
-      "waf-response-account",
-      undefined,
-      { chatSessionId: "waf-response-chat" },
+    await assert.rejects(
+      () =>
+        createQwenStream(
+          "Retry WAF response",
+          false,
+          "qwen3.7-plus",
+          null,
+          "waf-response-account",
+          undefined,
+          { chatSessionId: "waf-response-chat" },
+        ),
+      (error: any) => {
+        assert.strictEqual(error.upstreamCode, "waf_challenge");
+        assert.match(error.message, /anti-bot challenge/i);
+        return true;
+      },
     );
 
-    assert.strictEqual(completionRequests, 2);
-    await result.stream.cancel();
+    assert.strictEqual(completionRequests, 1);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -236,7 +243,7 @@ test("createQwenStream sanitizes a persistent HTML WAF challenge", async () => {
         return true;
       },
     );
-    assert.strictEqual(completionRequests, 2);
+    assert.strictEqual(completionRequests, 1);
   } finally {
     globalThis.fetch = originalFetch;
   }

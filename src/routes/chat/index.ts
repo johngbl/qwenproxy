@@ -56,6 +56,7 @@ export async function chatCompletions(c: Context) {
       body,
       isStream,
       systemPrompt,
+      toolInstructions,
       prompt,
       currentPrompt,
       modelId,
@@ -75,6 +76,7 @@ export async function chatCompletions(c: Context) {
     const ctx = await buildFinalContext({
       messages,
       systemPrompt,
+      toolInstructions,
       prompt,
       currentPrompt,
       modelId,
@@ -127,7 +129,13 @@ export async function chatCompletions(c: Context) {
     stepStartedAt = Date.now();
     // Full replay must retain system instructions even when personalization was
     // requested: its update can fail or be invalidated after a profile refresh.
-    const fullPromptForRequest = parsed.systemPrompt + parsed.prompt;
+    const fullPromptForRequest = [
+      parsed.systemPrompt,
+      parsed.toolInstructions,
+      parsed.prompt,
+    ]
+      .filter((part) => part.trim().length > 0)
+      .join("\n\n");
     const initialContextMode: ContextMeterMode = ctx.existingThread
       ? "delta"
       : "full";

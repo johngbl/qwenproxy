@@ -158,14 +158,17 @@ test("classifyRetryAction: real quota exhaustion prefers account switch", () => 
   assert.equal(action.reason, "quota_or_rate_limit");
 });
 
-test("classifyRetryAction: WAF challenges use anti-bot recovery", () => {
+test("classifyRetryAction: WAF challenges retry the same account immediately", () => {
   const err = Object.assign(
     new Error("Qwen returned an anti-bot challenge instead of an SSE response."),
     { upstreamCode: "waf_challenge" },
   );
   const action = classifyRetryAction(err);
   assert.equal(action.retryable, true);
-  assert.equal(action.switchAccount, true);
+  assert.equal(action.switchAccount, false);
+  assert.equal(action.retryAfterMs, 0);
+  assert.equal(action.accountCooldownMs, undefined);
+  assert.equal(action.accountCooldownReason, undefined);
   assert.equal(action.reason, "anti_bot");
 });
 

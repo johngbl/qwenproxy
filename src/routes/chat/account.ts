@@ -1,6 +1,6 @@
 import { v4 as uuidv4 } from "uuid";
 import {
-	clearAccountCooldown,
+
 	formatDateTimeBR,
 	getAccountCooldownInfo,
 	getNextAccount,
@@ -219,36 +219,7 @@ function isAntiBotError(err: any): boolean {
 	return isAntiBotPolicyError(err);
 }
 
-async function tryRecoverAntiBot(
-	accountId: string,
-	accountEmail: string,
-): Promise<boolean> {
-	try {
-		const { recoverAntiBotChallenge, isCaptchaSolverEnabled } = await import(
-			"../../services/captcha-solver.ts"
-		);
-		if (!isCaptchaSolverEnabled()) return false;
 
-		console.log(
-			`🧩 [Captcha] Starting anti-bot recovery for ${accountEmail}...`,
-		);
-		const result = await recoverAntiBotChallenge(accountId);
-		if (result.success) {
-			clearAccountCooldown(accountId);
-			return true;
-		}
-		console.warn(
-			`⚠️  [Captcha] Recovery failed for ${accountEmail} | method=${result.method} | ${result.detail || ""}`,
-		);
-		return false;
-	} catch (error) {
-		console.warn(
-			`❌ [Captcha] Recovery error for ${accountEmail}:`,
-			error instanceof Error ? error.message : String(error),
-		);
-		return false;
-	}
-}
 
 async function attemptRelogin(
 	accountId: string,
@@ -482,7 +453,6 @@ export async function acquireUpstreamStream(
 		if (stickyThreadAccountId === accountId) {
 			const stickyAccountMustRotate =
 				isAccountUnavailableError(lastError) ||
-				isAntiBotError(lastError) ||
 				isAccountInitializationError(lastError) ||
 				isChatInProgressError(lastError);
 			if (stickyAccountMustRotate) {
@@ -494,42 +464,14 @@ export async function acquireUpstreamStream(
 			}
 		}
 
-		// Anti-bot recovery is attempted once inside the account retry loop. If
-		// it already failed there, do not run the same browser recovery a second
-		// time before rotating this account.
+		// A WAF challenge is only identified here. The inner retry loop already
+		// retried this same account; do not rotate, cool down, or reset it as a
+		// side effect of captcha handling.
 		if (isAntiBotError(lastError)) {
-			const recoveryAlreadyAttempted =
-				(lastError as any)?.antiBotRecoveryAttempted === true;
-			const recovered = recoveryAlreadyAttempted
-				? false
-				: await tryRecoverAntiBot(accountId, accountEmail);
-			if (recovered) {
-				// Give the same account one more chance with fresh tokens/session
-				triedAccountIds.delete(accountId);
-				continue;
-			}
-
-			markAccountRateLimited(
-				accountId,
-				config.captchaSolver.failCooldownMs,
-				"AntiBot",
+			console.warn(
+				`⚠️  [Chat] WAF challenge retries exhausted on the same account | ${accountEmail}`,
 			);
-			void (async () => {
-				try {
-					const { schedulePlaywrightProfileReset } = await import(
-						"../../services/playwright.ts"
-					);
-					console.log(
-						`🔄 [Playwright] Scheduling profile reset for ${accountEmail}...`,
-					);
-					schedulePlaywrightProfileReset(accountId);
-				} catch (resetErr) {
-					console.warn(
-						`❌ [Playwright] Background profile reset failed for ${accountEmail}:`,
-						(resetErr as Error).message,
-					);
-				}
-			})();
+			break;
 		}
 
 		if (isToolcallDebugEnabled()) {
@@ -904,22 +846,7 @@ async function tryCreateStreamWithRetry(
 
 
 
-		// Anti-bot recovery belongs here, before the generic switch policy. A failed
-		// recovery is marked on the error so the outer account loop will rotate
-		// without opening a second browser recovery flight.
-		if (isAntiBotError(err) && attemptsLeft > 0) {
-			const recovered = await tryRecoverAntiBot(
-				currentAccountId,
-				currentAccountEmail,
-			);
-			if (recovered) {
-				await new Promise((resolve) =>
-					setTimeout(resolve, Math.min(config.antiBot.baseDelayMs, 2500)),
-				);
-				continue;
-			}
-			(err as any).antiBotRecoveryAttempted = true;
-		}
+
 
 		// Account-scoped quota/rate-limit: cool this account and stop local retries
 			// so outer account rotation can pick another one immediately.
@@ -1074,7 +1001,7 @@ async function tryCreateStreamWithRetry(
 				await new Promise((resolve) =>
 					setTimeout(
 						resolve,
-						Math.min(policy.retryAfterMs || config.retry.baseDelayMs, 1000),
+						Math.min(policy.retryAfterMs ?? config.retry.baseDelayMs, 1000),
 					),
 				);
 				continue;
@@ -1137,7 +1064,7 @@ async function tryCreateStreamWithRetry(
 
 		const useDelay = Math.max(
 			0,
-			policy.retryAfterMs || retryDelay || config.retry.baseDelayMs,
+			policy.retryAfterMs ?? retryDelay ?? config.retry.baseDelayMs,
 		);
 
 		console.warn(

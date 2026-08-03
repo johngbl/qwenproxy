@@ -195,10 +195,7 @@ type KillableProcess = {
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const HEADER_CAPTURE_SETTLE_MS = 1500;
 const PLAYWRIGHT_MUTEX_WAIT_MS = 60_000;
-const ACCOUNT_PAGE_OPERATION_TIMEOUT_MS = Math.max(
-  config.captchaSolver.timeoutMs + 10_000,
-  config.timeouts.page,
-);
+const ACCOUNT_PAGE_OPERATION_TIMEOUT_MS = config.timeouts.page;
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);

@@ -8,7 +8,7 @@ import {
 import { v4 as uuidv4 } from "uuid";
 import { UpstreamRateLimit, UpstreamError, AuthError } from "../core/errors.ts";
 import { buildQwenRequestHeaders, QWEN_WEB_VERSION } from "./qwen-headers.ts";
-import { qwenOrigin, qwenUrl } from "./qwen-url.ts";
+import { qwenUrl } from "./qwen-url.ts";
 import { config } from "../core/config.ts";
 import { logger, isToolcallDebugEnabled } from "../core/logger.ts";
 import { estimateTokenCount } from "../utils/context-truncation.ts";
@@ -24,9 +24,76 @@ import {
   replaceModelMetadata,
   syncModelMetadata,
 } from "../core/model-registry.ts";
+import { type Page } from "playwright";
 import { withAccountPage } from "./playwright.ts";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+const BROWSER_STREAM_BINDING = "__qwenBridgeStreamEvent";
+const BROWSER_ABORTERS_KEY = "__qwenBridgeAborters";
+const BROWSER_STREAM_FLUSH_BYTES = 4096;
+const BROWSER_STREAM_FLUSH_MS = 25;
+
+type BrowserStreamEvent = {
+  type: "headers" | "chunk" | "done" | "error";
+  status?: number;
+  contentType?: string;
+  data?: string;
+  message?: string;
+};
+
+interface BrowserStreamState {
+  chunks: Uint8Array[];
+  done: boolean;
+  error: Error | null;
+  waiters: Set<() => void>;
+}
+
+const browserStreamStates = new Map<string, BrowserStreamState>();
+const browserStreamBindingPages = new WeakSet<object>();
+
+function wakeBrowserStreamState(state: BrowserStreamState): void {
+  const waiters = Array.from(state.waiters);
+  state.waiters.clear();
+  for (const wake of waiters) wake();
+}
+
+function handleBrowserStreamEvent(
+  requestId: string,
+  event: BrowserStreamEvent,
+): void {
+  const state = browserStreamStates.get(requestId);
+  if (!state) return;
+
+  if (event.type === "chunk" && typeof event.data === "string") {
+    if (event.data.length > 0) {
+      state.chunks.push(Buffer.from(event.data, "utf8"));
+    }
+  } else if (event.type === "done") {
+    state.done = true;
+  } else if (event.type === "error") {
+    state.error = browserStreamError(event.message || "Browser Qwen stream failed");
+    state.done = true;
+  }
+
+  wakeBrowserStreamState(state);
+}
+
+async function ensureBrowserStreamBinding(page: Page): Promise<void> {
+  if (browserStreamBindingPages.has(page)) return;
+
+  await page.exposeFunction(
+    BROWSER_STREAM_BINDING,
+    (requestId: string, event: BrowserStreamEvent) => {
+      handleBrowserStreamEvent(requestId, event);
+    },
+  );
+  browserStreamBindingPages.add(page);
+}
+
+function browserStreamError(message: string): Error {
+  return new Error(message || "Browser Qwen stream failed");
+}
 
 function addIdleTimeoutToStream(
   stream: ReadableStream<Uint8Array>,
@@ -661,6 +728,498 @@ async function readJsonTextResponse(
   }
 }
 
+async function withQwenBrowserPage<T>(
+  accountId: string,
+  fn: (page: Page) => Promise<T>,
+  targetPath?: string,
+): Promise<T> {
+  const targetUrl = qwenUrl(targetPath || "/");
+  const targetOrigin = new URL(targetUrl).origin;
+  const normalizedTargetPath = targetPath
+    ? new URL(targetUrl).pathname.replace(/\/+$/, "") || "/"
+    : null;
+
+  return withAccountPage(
+    accountId,
+    async (page) => {
+      let currentOrigin = "";
+      let currentPath = "";
+      try {
+        const currentUrl = new URL(page.url());
+        currentOrigin = currentUrl.origin;
+        currentPath = currentUrl.pathname.replace(/\/+$/, "") || "/";
+      } catch {
+        // Navigate below when the current page has no usable URL.
+      }
+
+      if (
+        currentOrigin !== targetOrigin ||
+        (normalizedTargetPath && currentPath !== normalizedTargetPath)
+      ) {
+        await page.goto(targetUrl, {
+          waitUntil: "domcontentloaded",
+          timeout: Math.min(config.timeouts.navigation, config.timeouts.page),
+        });
+      }
+
+      return fn(page);
+    },
+    config.timeouts.page,
+    Math.min(config.timeouts.page, 5_000),
+  );
+}
+
+async function withQwenPersonalizationPage<T>(
+  accountId: string,
+  fn: (page: Page) => Promise<T>,
+): Promise<T> {
+  return withQwenBrowserPage(accountId, fn, "/settings/personalization");
+}
+
+async function ensureQwenPersonalizationPage(accountId?: string): Promise<void> {
+  if (!accountId || isAuthMockEnabled()) return;
+
+  try {
+    await withQwenPersonalizationPage(accountId, async () => undefined);
+  } catch (error) {
+    // Keep sync non-fatal if the visible page cannot navigate in time. The
+    // browser request itself will fail and be handled by the caller.
+    logger.warn("[Qwen] Could not open personalization settings page", {
+      accountId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+function getBrowserFetchHeaders(
+  headers: Record<string, string>,
+): Record<string, string> {
+  const browserForbiddenHeaders = new Set([
+    "accept-encoding",
+    "connection",
+    "content-length",
+    "cookie",
+    "host",
+    "origin",
+    "referer",
+    "user-agent",
+  ]);
+
+  return Object.fromEntries(
+    Object.entries(headers).filter(([name]) => {
+      const normalized = name.toLowerCase();
+      return (
+        !browserForbiddenHeaders.has(normalized) &&
+        !normalized.startsWith("sec-")
+      );
+    }),
+  );
+}
+
+interface BrowserTextResponse {
+  status: number;
+  contentType: string;
+  raw: string;
+}
+
+export async function requestQwenTextInBrowser(
+  accountId: string | undefined,
+  method: "GET" | "POST" | "DELETE",
+  path: string,
+  headers: Record<string, string>,
+  body?: string,
+  options: {
+    settingsPage?: boolean;
+    referrer?: string;
+  } = {},
+): Promise<Response> {
+  const url = qwenUrl(path);
+
+  // Mock tests intentionally use Node fetch and do not initialize a browser.
+  if (isAuthMockEnabled()) {
+    return fetch(url, {
+      method,
+      headers,
+      ...(body === undefined ? {} : { body }),
+    });
+  }
+
+  if (!accountId) {
+    throw new Error("A Qwen account is required for browser request");
+  }
+
+  const browserHeaders = getBrowserFetchHeaders(headers);
+  if (
+    body !== undefined &&
+    !Object.keys(browserHeaders).some(
+      (name) => name.toLowerCase() === "content-type",
+    )
+  ) {
+    browserHeaders["Content-Type"] = "application/json";
+  }
+
+  const evaluateRequest = (page: Page) =>
+    page.evaluate(
+      async ({ url, method, headers, body, referrer }: {
+        url: string;
+        method: "GET" | "POST" | "DELETE";
+        headers: Record<string, string>;
+        body?: string;
+        referrer?: string;
+      }): Promise<BrowserTextResponse> => {
+        const response = await fetch(url, {
+          method,
+          credentials: "include",
+          headers,
+          body,
+          ...(referrer ? { referrer } : {}),
+        });
+        return {
+          status: response.status,
+          contentType: response.headers.get("content-type") || "",
+          raw: await response.text(),
+        };
+      },
+      {
+        url,
+        method,
+        headers: browserHeaders,
+        body,
+        referrer: options.referrer,
+      },
+    );
+  const response = options.settingsPage
+    ? await withQwenPersonalizationPage<BrowserTextResponse>(
+        accountId,
+        evaluateRequest,
+      )
+    : await withQwenBrowserPage<BrowserTextResponse>(
+        accountId,
+        evaluateRequest,
+      );
+
+  return new Response(response.raw, {
+    status: response.status,
+    headers: response.contentType
+      ? { "content-type": response.contentType }
+      : undefined,
+  });
+}
+
+async function requestQwenPersonalizationInBrowser(
+  accountId: string | undefined,
+  method: "GET" | "POST",
+  path: string,
+  headers: Record<string, string>,
+  payload?: Record<string, unknown>,
+): Promise<{ status: number; raw: string; json: any }> {
+  const response = await requestQwenTextInBrowser(
+    accountId,
+    method,
+    path,
+    headers,
+    payload === undefined ? undefined : JSON.stringify(payload),
+    {
+      settingsPage: true,
+      referrer: qwenUrl("/settings/personalization"),
+    },
+  );
+  const { raw, json } = await readJsonTextResponse(response);
+  return { status: response.status, raw, json };
+}
+
+async function cancelQwenBrowserStream(
+  accountId: string,
+  requestId: string,
+): Promise<void> {
+  const state = browserStreamStates.get(requestId);
+  if (state) {
+    state.done = true;
+    wakeBrowserStreamState(state);
+  }
+
+  try {
+    await withQwenBrowserPage(accountId, async (page) => {
+      await page.evaluate(
+        ({ abortersKey, requestId }: {
+          abortersKey: string;
+          requestId: string;
+        }) => {
+          const aborters = (globalThis as unknown as Record<string, unknown>)[
+            abortersKey
+          ] as Map<string, AbortController> | undefined;
+          aborters?.get(requestId)?.abort();
+        },
+        { abortersKey: BROWSER_ABORTERS_KEY, requestId },
+      );
+    });
+  } catch {
+    // The page may already be closing after an abort or timeout.
+  } finally {
+    browserStreamStates.delete(requestId);
+  }
+}
+
+async function createQwenBrowserResponse(
+  accountId: string | undefined,
+  url: string,
+  method: "POST",
+  headers: Record<string, string>,
+  body: string,
+  signal: AbortSignal,
+  referrer?: string,
+): Promise<Response> {
+  if (isAuthMockEnabled()) {
+    return fetch(url, {
+      method,
+      headers,
+      body,
+      signal,
+    });
+  }
+
+  if (!accountId) {
+    throw new Error("A Qwen account is required for browser streaming");
+  }
+  if (signal.aborted) {
+    throw new DOMException("The operation was aborted", "AbortError");
+  }
+
+  const requestId = uuidv4();
+  const state: BrowserStreamState = {
+    chunks: [],
+    done: false,
+    error: null,
+    waiters: new Set(),
+  };
+  browserStreamStates.set(requestId, state);
+
+  const browserHeaders = getBrowserFetchHeaders(headers);
+  if (
+    !Object.keys(browserHeaders).some(
+      (name) => name.toLowerCase() === "content-type",
+    )
+  ) {
+    browserHeaders["Content-Type"] = "application/json";
+  }
+
+  let metadata: { status: number; contentType: string };
+  try {
+    metadata = await withQwenBrowserPage(accountId, async (page) => {
+      await ensureBrowserStreamBinding(page);
+      return page.evaluate(
+        async ({
+          url,
+          method,
+          headers,
+          body,
+          referrer,
+          requestId,
+          bindingName,
+          abortersKey,
+          flushBytes,
+          flushMs,
+        }: {
+          url: string;
+          method: "POST";
+          headers: Record<string, string>;
+          body: string;
+          referrer?: string;
+          requestId: string;
+          bindingName: string;
+          abortersKey: string;
+          flushBytes: number;
+          flushMs: number;
+        }) => {
+          const globalObject = globalThis as unknown as Record<string, unknown>;
+          const notify = globalObject[bindingName] as (
+            (id: string, event: BrowserStreamEvent) => Promise<void>
+          );
+          if (typeof notify !== "function") {
+            throw new Error("Qwen browser stream binding is unavailable");
+          }
+
+          let aborters = globalObject[abortersKey] as
+            | Map<string, AbortController>
+            | undefined;
+          if (!aborters) {
+            aborters = new Map<string, AbortController>();
+            globalObject[abortersKey] = aborters;
+          }
+          const abortController = new AbortController();
+          aborters.set(requestId, abortController);
+
+          try {
+            const response = await fetch(url, {
+              method,
+              credentials: "include",
+              headers,
+              body,
+              signal: abortController.signal,
+              ...(referrer ? { referrer } : {}),
+            });
+
+            await notify(requestId, {
+              type: "headers",
+              status: response.status,
+              contentType: response.headers.get("content-type") || "",
+            });
+
+            void (async () => {
+              try {
+                if (!response.body) {
+                  await notify(requestId, { type: "done" });
+                  return;
+                }
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffered = "";
+                let lastFlushAt = Date.now();
+
+                while (true) {
+                  const { done, value } = await reader.read();
+                  if (done) break;
+                  if (value) {
+                    buffered += decoder.decode(value, { stream: true });
+                    if (
+                      buffered.length >= flushBytes ||
+                      Date.now() - lastFlushAt >= flushMs
+                    ) {
+                      const data = buffered;
+                      buffered = "";
+                      lastFlushAt = Date.now();
+                      await notify(requestId, { type: "chunk", data });
+                    }
+                  }
+                }
+                buffered += decoder.decode();
+                if (buffered) {
+                  const data = buffered;
+                  buffered = "";
+                  await notify(requestId, { type: "chunk", data });
+                }
+                await notify(requestId, { type: "done" });
+              } catch (error) {
+                try {
+                  await notify(requestId, {
+                    type: "error",
+                    message: error instanceof Error ? error.message : String(error),
+                  });
+                } catch {
+                  // Node may have cancelled the stream already.
+                }
+              } finally {
+                aborters?.delete(requestId);
+              }
+            })();
+
+            return {
+              status: response.status,
+              contentType: response.headers.get("content-type") || "",
+            };
+          } catch (error) {
+            aborters.delete(requestId);
+            try {
+              await notify(requestId, {
+                type: "error",
+                message: error instanceof Error ? error.message : String(error),
+              });
+            } catch {
+              // Preserve the original fetch error for Node.
+            }
+            throw error;
+          }
+        },
+        {
+          url,
+          method,
+          headers: browserHeaders,
+          body,
+          referrer,
+          requestId,
+          bindingName: BROWSER_STREAM_BINDING,
+          abortersKey: BROWSER_ABORTERS_KEY,
+          flushBytes: BROWSER_STREAM_FLUSH_BYTES,
+          flushMs: BROWSER_STREAM_FLUSH_MS,
+        },
+      );
+    });
+  } catch (error) {
+    browserStreamStates.delete(requestId);
+    throw error;
+  }
+
+  let settled = false;
+  let abortListener: (() => void) | undefined;
+  let cancelPromise: Promise<void> | undefined;
+  const cleanup = () => {
+    if (settled) return;
+    settled = true;
+    if (abortListener) signal.removeEventListener("abort", abortListener);
+    browserStreamStates.delete(requestId);
+  };
+  const cancel = () => {
+    if (!cancelPromise) {
+      cancelPromise = cancelQwenBrowserStream(accountId, requestId);
+    }
+    cleanup();
+    return cancelPromise;
+  };
+
+  if (signal.aborted) {
+    await cancel();
+    throw new DOMException("The operation was aborted", "AbortError");
+  }
+
+  abortListener = () => {
+    void cancel();
+  };
+  signal.addEventListener("abort", abortListener, { once: true });
+
+  const stream = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      const current = browserStreamStates.get(requestId);
+      if (!current) {
+        controller.close();
+        return;
+      }
+
+      while (current.chunks.length === 0 && !current.done) {
+        await new Promise<void>((resolve) => {
+          current.waiters.add(resolve);
+          if (current.chunks.length > 0 || current.done) {
+            current.waiters.delete(resolve);
+            resolve();
+          }
+        });
+      }
+
+      if (current.chunks.length > 0) {
+        controller.enqueue(current.chunks.shift()!);
+        return;
+      }
+
+      cleanup();
+      if (current.error) {
+        controller.error(current.error);
+      } else {
+        controller.close();
+      }
+    },
+    cancel() {
+      return cancel();
+    },
+  });
+
+  return new Response(stream, {
+    status: metadata.status,
+    headers: metadata.contentType
+      ? { "content-type": metadata.contentType }
+      : undefined,
+  });
+}
+
 export async function syncQwenRequestPersonalization(
   instruction: string,
   accountId?: string,
@@ -694,9 +1253,10 @@ export async function syncQwenRequestPersonalization(
   }
 
   const { headers } = await getQwenHeaders(forceRefresh, accountId);
-  const requestHeaders = buildCapturedQwenHeaders(headers, {
+  let requestHeaders = buildCapturedQwenHeaders(headers, {
     referer: qwenUrl("/settings/personalization"),
   });
+  await ensureQwenPersonalizationPage(accountId);
 
   let currentSettings: any = null;
   let payload = buildQwenSettingsUpdatePayload(currentSettings, instruction);
@@ -730,15 +1290,13 @@ export async function syncQwenRequestPersonalization(
   // Verifica GET apenas se temos um hash válido (skipped on forceSync)
   if (!bypassCache && syncHash && !cachedHash && config.qwen.personalizationVerifyGet) {
     try {
-      const existingResponse = await fetch(
-        qwenUrl("/api/v2/users/user/settings"),
-        {
-          method: "GET",
-          headers: requestHeaders,
-        },
-      );
       const { json: existingJson } =
-        await readJsonTextResponse(existingResponse);
+        await requestQwenPersonalizationInBrowser(
+          accountId,
+          "GET",
+          "/api/v2/users/user/settings",
+          requestHeaders,
+        );
       currentSettings = existingJson?.data ?? null;
       payload = buildQwenSettingsUpdatePayload(currentSettings, instruction);
       existing = textSize(existingJson?.data?.personalization?.instruction);
@@ -784,19 +1342,17 @@ export async function syncQwenRequestPersonalization(
   async function attemptPost(
     headers: Record<string, string>,
   ): Promise<{ raw: string; json: any }> {
+    await ensureQwenPersonalizationPage(accountId);
+
     if (!currentSettings) {
       try {
-        const settingsResponse = await fetch(
-          qwenUrl("/api/v2/users/user/settings"),
-          {
-            method: "GET",
-            headers: buildCapturedQwenHeaders(headers, {
-              referer: qwenUrl("/settings/personalization"),
-            }),
-          },
-        );
         const { json: settingsJson } =
-          await readJsonTextResponse(settingsResponse);
+          await requestQwenPersonalizationInBrowser(
+            accountId,
+            "GET",
+            "/api/v2/users/user/settings",
+            headers,
+          );
         currentSettings = settingsJson?.data ?? null;
         payload = buildQwenSettingsUpdatePayload(currentSettings, instruction);
       } catch (err) {
@@ -810,18 +1366,13 @@ export async function syncQwenRequestPersonalization(
       }
     }
 
-    const reqHeaders = buildCapturedQwenHeaders(headers, {
-      referer: qwenUrl("/settings/personalization"),
-    });
-    const resp = await fetch(
-      qwenUrl("/api/v2/users/user/settings/update"),
-      {
-        method: "POST",
-        headers: reqHeaders,
-        body: JSON.stringify(payload),
-      },
+    return requestQwenPersonalizationInBrowser(
+      accountId,
+      "POST",
+      "/api/v2/users/user/settings/update",
+      headers,
+      payload,
     );
-    return readJsonTextResponse(resp);
   }
 
   let raw: string;
@@ -844,6 +1395,9 @@ export async function syncQwenRequestPersonalization(
     );
     try {
       const { headers: freshHeaders } = await getQwenHeaders(true, accountId);
+      requestHeaders = buildCapturedQwenHeaders(freshHeaders, {
+        referer: qwenUrl("/settings/personalization"),
+      });
       ({ raw, json } = await attemptPost(freshHeaders));
     } catch (retryErr) {
       // Layer 3: Retry failed → non-fatal, continue without personalization
@@ -869,14 +1423,13 @@ export async function syncQwenRequestPersonalization(
   >;
 
   if (config.qwen.personalizationVerifyGet) {
-    const verifyResponse = await fetch(
-      qwenUrl("/api/v2/users/user/settings"),
-      {
-        method: "GET",
-        headers: requestHeaders,
-      },
-    );
-    const { json: verifyJson } = await readJsonTextResponse(verifyResponse);
+    const { json: verifyJson } =
+      await requestQwenPersonalizationInBrowser(
+        accountId,
+        "GET",
+        "/api/v2/users/user/settings",
+        requestHeaders,
+      );
     stored = textSize(verifyJson?.data?.personalization?.instruction);
   }
 
@@ -920,7 +1473,6 @@ export async function syncQwenRequestPersonalization(
   return true;
 }
 
-const DISABLE_TOOLS_TIMEOUT_MS = 15000;
 const DISABLE_TOOLS_MAX_RETRIES = 3;
 const DISABLE_TOOLS_BACKOFF_MS = 2000;
 
@@ -951,26 +1503,24 @@ export async function disableNativeTools(accountId?: string): Promise<void> {
       },
     };
 
-    const requestHeaders = buildCapturedQwenHeaders(headers);
+    const requestHeaders = buildCapturedQwenHeaders(headers, {
+      referer: qwenUrl("/settings/personalization"),
+    });
 
     let lastError: string | null = null;
     for (let attempt = 1; attempt <= DISABLE_TOOLS_MAX_RETRIES; attempt++) {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(
-        () => controller.abort(),
-        DISABLE_TOOLS_TIMEOUT_MS,
-      );
       try {
-        const response = await fetch(
-          qwenUrl("/api/v2/users/user/settings/update"),
+        const response = await requestQwenTextInBrowser(
+          accountId,
+          "POST",
+          "/api/v2/users/user/settings/update",
+          requestHeaders,
+          JSON.stringify(payload),
           {
-            method: "POST",
-            headers: requestHeaders,
-            body: JSON.stringify(payload),
-            signal: controller.signal,
+            settingsPage: true,
+            referrer: qwenUrl("/settings/personalization"),
           },
         );
-        clearTimeout(timeoutId);
 
         if (!response.ok) {
           const text = await response.text();
@@ -983,7 +1533,6 @@ export async function disableNativeTools(accountId?: string): Promise<void> {
           return;
         }
       } catch (err: any) {
-        clearTimeout(timeoutId);
         lastError = err.message;
         console.warn(
           `[Qwen] Error disabling native tools for ${cacheKey} (attempt ${attempt}/${DISABLE_TOOLS_MAX_RETRIES}): ${lastError}`,
@@ -1090,12 +1639,16 @@ function formatPublicQwenModel(model: Record<string, unknown>): PublicQwenModel 
 
 export async function deleteAllQwenChats(accountId?: string): Promise<boolean> {
   const { headers } = await getQwenHeaders(false, accountId);
-  const response = await fetch(qwenUrl("/api/v2/chats/"), {
-    method: "DELETE",
-    headers: buildCapturedQwenHeaders(headers, {
+  const response = await requestQwenTextInBrowser(
+    accountId,
+    "DELETE",
+    "/api/v2/chats/",
+    buildCapturedQwenHeaders(headers, {
       referer: qwenUrl("/settings/chats"),
     }),
-  });
+    undefined,
+    { referrer: qwenUrl("/settings/chats") },
+  );
 
   const { raw, json: parsed } = await readJsonTextResponse(response, {
     strict: true,
@@ -1123,14 +1676,15 @@ export async function deleteQwenChat(
 ): Promise<boolean> {
   if (!chatId) return false;
   const { headers } = await getQwenHeaders(false, accountId);
-  const response = await fetch(
-    qwenUrl(`/api/v2/chats/${encodeURIComponent(chatId)}`),
-    {
-      method: "DELETE",
-      headers: buildCapturedQwenHeaders(headers, {
-        referer: qwenUrl("/settings/chats"),
-      }),
-    },
+  const response = await requestQwenTextInBrowser(
+    accountId,
+    "DELETE",
+    `/api/v2/chats/${encodeURIComponent(chatId)}`,
+    buildCapturedQwenHeaders(headers, {
+      referer: qwenUrl("/settings/chats"),
+    }),
+    undefined,
+    { referrer: qwenUrl("/settings/chats") },
   );
 
   const { raw, json: parsed } = await readJsonTextResponse(response, {
@@ -1158,15 +1712,16 @@ export async function fetchQwenChatHistory(
 ): Promise<any> {
   if (!chatId) return null;
   const { headers } = await getQwenHeaders(false, accountId);
-  const response = await fetch(
-    qwenUrl(`/api/v2/chats/${encodeURIComponent(chatId)}`),
-    {
-      method: "GET",
-      headers: buildCapturedQwenHeaders(headers, {
-        chatSessionId: chatId,
-        referer: qwenUrl(`/c/${encodeURIComponent(chatId)}`),
-      }),
-    },
+  const response = await requestQwenTextInBrowser(
+    accountId,
+    "GET",
+    `/api/v2/chats/${encodeURIComponent(chatId)}`,
+    buildCapturedQwenHeaders(headers, {
+      chatSessionId: chatId,
+      referer: qwenUrl(`/c/${encodeURIComponent(chatId)}`),
+    }),
+    undefined,
+    { referrer: qwenUrl(`/c/${encodeURIComponent(chatId)}`) },
   );
 
   const { raw, json } = await readJsonTextResponse(response, { strict: true });
@@ -1195,8 +1750,11 @@ export async function fetchQwenModels(
   const { cookie, userAgent, bxV, bxUa, bxUmidtoken } =
     await getBasicHeaders(accountId);
 
-  const response = await fetch(qwenUrl("/api/models"), {
-    headers: buildQwenRequestHeaders({
+  const response = await requestQwenTextInBrowser(
+    accountId,
+    "GET",
+    "/api/models",
+    buildQwenRequestHeaders({
       cookie,
       userAgent,
       bxV,
@@ -1206,7 +1764,9 @@ export async function fetchQwenModels(
         timezone: new Date().toString(),
       },
     }),
-  });
+    undefined,
+    { referrer: qwenUrl("/") },
+  );
 
   if (!response.ok) {
     throw new Error(
@@ -1249,61 +1809,57 @@ export interface QwenFileEntry {
 async function createQwenChatSession(
   headers: Record<string, string>,
   model: string,
+  accountId?: string,
 ): Promise<string> {
   if (isAuthMockEnabled()) {
     return process.env.TEST_SESSION_ID || "mock-session";
   }
 
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), config.timeouts.http);
+  const response = await requestQwenTextInBrowser(
+    accountId,
+    "POST",
+    "/api/v2/chats/new",
+    buildCapturedQwenHeaders(headers, {
+      referer: qwenUrl("/c/new-chat"),
+    }),
+    JSON.stringify({
+      title: "Nova Conversa",
+      models: [model],
+      chat_mode: "normal",
+      chat_type: "t2t",
+      timestamp: Date.now(),
+      project_id: "",
+    }),
+    { referrer: qwenUrl("/c/new-chat") },
+  );
 
-  try {
-    const response = await fetch(qwenUrl("/api/v2/chats/new"), {
-      method: "POST",
-      headers: buildCapturedQwenHeaders(headers, {
-        referer: qwenUrl("/c/new-chat"),
-      }),
-      body: JSON.stringify({
-        title: "Nova Conversa",
-        models: [model],
-        chat_mode: "normal",
-        chat_type: "t2t",
-        timestamp: Date.now(),
-        project_id: "",
-      }),
-      signal: controller.signal,
-    });
-
-    const { raw, json } = await readJsonTextResponse(response, {
-      strict: true,
-    });
-    if (!response.ok) {
-      throw new QwenUpstreamError(
-        `Qwen create chat failed: ${response.status} ${response.statusText} - ${raw.substring(0, 300)}`,
-        "CreateChatFailed",
-        response.status >= 500 ? 502 : response.status,
-      );
-    }
-
-    const chatId =
-      json?.chat_id ||
-      json?.id ||
-      json?.data?.chat_id ||
-      json?.data?.id ||
-      json?.data?.chat?.id;
-
-    if (!chatId || typeof chatId !== "string") {
-      throw new QwenUpstreamError(
-        `Qwen create chat returned unexpected payload: ${raw.substring(0, 300)}`,
-        "CreateChatInvalidResponse",
-        502,
-      );
-    }
-
-    return chatId;
-  } finally {
-    clearTimeout(timeoutId);
+  const { raw, json } = await readJsonTextResponse(response, {
+    strict: true,
+  });
+  if (!response.ok) {
+    throw new QwenUpstreamError(
+      `Qwen create chat failed: ${response.status} ${response.statusText} - ${raw.substring(0, 300)}`,
+      "CreateChatFailed",
+      response.status >= 500 ? 502 : response.status,
+    );
   }
+
+  const chatId =
+    json?.chat_id ||
+    json?.id ||
+    json?.data?.chat_id ||
+    json?.data?.id ||
+    json?.data?.chat?.id;
+
+  if (!chatId || typeof chatId !== "string") {
+    throw new QwenUpstreamError(
+      `Qwen create chat returned unexpected payload: ${raw.substring(0, 300)}`,
+      "CreateChatInvalidResponse",
+      502,
+    );
+  }
+
+  return chatId;
 }
 
 /**
@@ -1312,30 +1868,23 @@ async function createQwenChatSession(
  */
 async function fetchUnusedChats(
   headers: Record<string, string>,
+  accountId?: string,
 ): Promise<string[]> {
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(
-      () => controller.abort(),
-      config.timeouts.http,
+    const response = await requestQwenTextInBrowser(
+      accountId,
+      "GET",
+      "/api/v2/chats/?page=1&exclude_project=true",
+      buildCapturedQwenHeaders(headers, {
+        extra: {
+          accept: "application/json, text/plain, */*",
+          "x-request-id": crypto.randomUUID(),
+          source: "web",
+        },
+      }),
+      undefined,
+      { referrer: qwenUrl("/settings/chats") },
     );
-
-    const response = await fetch(
-      qwenUrl("/api/v2/chats/?page=1&exclude_project=true"),
-      {
-        method: "GET",
-        headers: buildCapturedQwenHeaders(headers, {
-          extra: {
-            accept: "application/json, text/plain, */*",
-            "x-request-id": crypto.randomUUID(),
-            source: "web",
-          },
-        }),
-        signal: controller.signal,
-      },
-    );
-
-    clearTimeout(timeoutId);
 
     if (!response.ok) return [];
 
@@ -1438,7 +1987,7 @@ async function acquireNewQwenChatSession(
     }
   }
 
-  const created = await createQwenChatSession(headers, model);
+  const created = await createQwenChatSession(headers, model, accountId);
   logger.debug("[Qwen] created fresh chat", {
     accountId: accountId || "global",
     model,
@@ -1468,7 +2017,7 @@ async function refillQwenChatPool(
     const existingIds = new Set(precreatedChatSessions.get(key) ?? []);
     let reused = 0;
     try {
-      const unusedChats = await fetchUnusedChats(headers);
+      const unusedChats = await fetchUnusedChats(headers, accountId);
       for (const chatId of unusedChats) {
         if ((precreatedChatSessions.get(key)?.length ?? 0) >= targetSize) break;
         if (existingIds.has(chatId)) continue;
@@ -1499,7 +2048,7 @@ async function refillQwenChatPool(
         await sleep(300 + Math.floor(Math.random() * 700));
       }
       isFirst = false;
-      const chatId = await createQwenChatSession(headers, model);
+      const chatId = await createQwenChatSession(headers, model, accountId);
       const current = precreatedChatSessions.get(key) ?? [];
       current.push(chatId);
       precreatedChatSessions.set(key, current);
@@ -1590,14 +2139,7 @@ function parseQwenJsonError(
     return null;
   }
 
-  // Helper: exponential backoff with jitter, capped by config
-  const antiBotDelay = (attempt: number) => {
-    const base = config.antiBot.baseDelayMs;
-    const max = config.antiBot.maxDelayMs;
-    const exp = Math.min(base * Math.pow(2, attempt - 1), max);
-    const jitter = exp * 0.3 * Math.random();
-    return Math.floor(exp + jitter);
-  };
+
 
   const retryDelay = (attempt: number) => {
     const base = config.retry.baseDelayMs;
@@ -1615,10 +2157,9 @@ function parseQwenJsonError(
       retStr.includes("FAIL_SYS_USER_VALIDATE") ||
       retStr.includes("RGV587_ERROR")
     ) {
-      const attempt = errorJson?.data?.retryCount ?? 1;
       return new RetryableQwenStreamError(
         `Qwen anti-bot: ${retStr.substring(0, 200)}`,
-        antiBotDelay(attempt),
+        0,
       );
     }
   }
@@ -1644,10 +2185,9 @@ function parseQwenJsonError(
       details.includes("RGV587_ERROR") ||
       details.includes("user validate"))
   ) {
-    const attempt = errorJson?.data?.retryCount ?? 1;
     return new RetryableQwenStreamError(
       `Qwen anti-bot: ${details}`,
-      antiBotDelay(attempt),
+      0,
     );
   }
 
@@ -1773,456 +2313,6 @@ async function readResponsePreview(
   }
 
   return Buffer.concat(chunks).toString("utf8");
-}
-
-interface BrowserCompletionResponse {
-  status: number;
-  contentType: string;
-  stream: ReadableStream<Uint8Array>;
-}
-
-type BrowserRelayEvent =
-  | { type: "headers"; status: number; contentType: string }
-  | { type: "chunk"; text: string }
-  | { type: "done" }
-  | { type: "error"; message: string };
-
-interface BrowserResponseMetadata {
-  status: number;
-  contentType: string;
-}
-
-const MAX_BROWSER_STREAM_QUEUE_BYTES = 512 * 1024;
-const BROWSER_STREAM_HEADER_TIMEOUT_MS = 60_000;
-
-/**
- * Aliyun sometimes challenges the Node fetch while allowing the same request
- * from the already-authenticated Qwen page. Use that browser session as a
- * fallback instead of exposing the challenge HTML or immediately rotating an
- * otherwise healthy account.
- *
- * The browser request is relayed incrementally through an exposed Playwright
- * function. The previous implementation awaited response.text(), which held
- * the Playwright page operation until the whole generation completed and could
- * buffer a very large answer. This bridge keeps SSE streaming, applies a
- * bounded queue for backpressure, and connects request cancellation to the
- * browser-side AbortController.
- */
-async function fetchCompletionInBrowser(
-  accountId: string,
-  url: string,
-  payloadJson: string,
-  headers: Record<string, string>,
-  timeoutMs: number,
-  requestController: AbortController,
-): Promise<BrowserCompletionResponse> {
-  const origin = qwenOrigin();
-  const relayName = `__qwenBridgeRelay_${uuidv4().replace(/-/g, "")}`;
-  const controllerKey = `__qwenBridgeController_${uuidv4().replace(/-/g, "")}`;
-  const encoder = new TextEncoder();
-
-  let bindingRegistered = false;
-  let relayBinding: { dispose: () => Promise<void> } | null = null;
-  let cleanupPromise: Promise<void> | null = null;
-  let abortPromise: Promise<void> | null = null;
-  let streamController: ReadableStreamDefaultController<Uint8Array> | null =
-    null;
-  let pendingPullResolve: (() => void) | null = null;
-  let queuedChunks: Uint8Array[] = [];
-  let queuedBytes = 0;
-  let terminalKind: "done" | "error" | null = null;
-  let terminalError: Error | null = null;
-  const capacityWaiters: Array<() => void> = [];
-
-  let headersReceived = false;
-  let resolveHeaders!: (metadata: BrowserResponseMetadata) => void;
-  let rejectHeaders!: (error: Error) => void;
-  const headersPromise = new Promise<BrowserResponseMetadata>(
-    (resolve, reject) => {
-      resolveHeaders = resolve;
-      rejectHeaders = reject;
-    },
-  );
-  // The Playwright page may be unavailable before the callback starts waiting
-  // for response headers. Keep that setup-failure rejection observed while the
-  // real await below still receives the original rejection.
-  void headersPromise.catch(() => {});
-
-  const notifyCapacity = () => {
-    if (
-      terminalKind ||
-      queuedBytes < MAX_BROWSER_STREAM_QUEUE_BYTES
-    ) {
-      while (capacityWaiters.length > 0) {
-        capacityWaiters.shift()?.();
-      }
-    }
-  };
-
-  const closeStreamIfReady = () => {
-    if (!streamController || queuedChunks.length > 0 || !terminalKind) {
-      return;
-    }
-
-    try {
-      // Before response headers arrive the stream is never returned to the
-      // caller. Close it instead of rejecting an internal pending pull, which
-      // would otherwise surface as an unhandled rejection in WAF fallback
-      // paths where Playwright is unavailable.
-      if (terminalKind === "error" && headersReceived) {
-        streamController.error(
-          terminalError ?? new Error("Browser completion stream failed"),
-        );
-      } else {
-        streamController.close();
-      }
-    } catch {
-      // The consumer may have cancelled the stream concurrently.
-    }
-
-    const resolvePull = pendingPullResolve;
-    pendingPullResolve = null;
-    resolvePull?.();
-  };
-
-  const finishStream = (kind: "done" | "error", error?: Error) => {
-    if (terminalKind) return;
-    terminalKind = kind;
-    terminalError = error ?? null;
-    if (kind === "error") {
-      queuedChunks = [];
-      queuedBytes = 0;
-    }
-    notifyCapacity();
-    closeStreamIfReady();
-  };
-
-  const deliverChunk = async (text: string): Promise<void> => {
-    if (terminalKind || !text) return;
-    const chunk = encoder.encode(text);
-
-    while (
-      !terminalKind &&
-      queuedBytes > 0 &&
-      queuedBytes + chunk.byteLength > MAX_BROWSER_STREAM_QUEUE_BYTES
-    ) {
-      await new Promise<void>((resolve) => capacityWaiters.push(resolve));
-    }
-    if (terminalKind) return;
-
-    if (pendingPullResolve && streamController) {
-      streamController.enqueue(chunk);
-      const resolvePull = pendingPullResolve;
-      pendingPullResolve = null;
-      resolvePull();
-      return;
-    }
-
-    queuedChunks.push(chunk);
-    queuedBytes += chunk.byteLength;
-  };
-
-  const relayEvent = async (event: BrowserRelayEvent): Promise<void> => {
-    if (!event || typeof event.type !== "string") return;
-
-    if (event.type === "headers") {
-      if (
-        !headersReceived &&
-        Number.isFinite(event.status) &&
-        typeof event.contentType === "string"
-      ) {
-        headersReceived = true;
-        resolveHeaders({
-          status: event.status,
-          contentType: event.contentType,
-        });
-      }
-      return;
-    }
-
-    if (event.type === "chunk") {
-      await deliverChunk(typeof event.text === "string" ? event.text : "");
-      return;
-    }
-
-    if (event.type === "error") {
-      const error = new Error(
-        typeof event.message === "string"
-          ? event.message
-          : "Browser completion request failed",
-      );
-      if (!headersReceived) rejectHeaders(error);
-      finishStream("error", error);
-      void cleanupRelay();
-      return;
-    }
-
-    if (event.type === "done") {
-      if (!headersReceived) {
-        const error = new Error(
-          "Browser completion ended before returning response headers",
-        );
-        rejectHeaders(error);
-        finishStream("error", error);
-        void cleanupRelay();
-        return;
-      }
-      finishStream("done");
-      void cleanupRelay();
-    }
-  };
-
-  const abortBrowserRequest = (): Promise<void> => {
-    if (abortPromise) return abortPromise;
-    abortPromise = (async () => {
-      try {
-        await withAccountPage(
-          accountId,
-          (page) =>
-            page.evaluate((key) => {
-              const win = window as unknown as Record<string, unknown>;
-              const controller = win[key] as AbortController | undefined;
-              controller?.abort();
-            }, controllerKey),
-          5_000,
-          5_000,
-        );
-      } catch {
-        // The page may already have been reset or closed.
-      }
-    })();
-    return abortPromise;
-  };
-
-  const cleanupRelay = (): Promise<void> => {
-    if (cleanupPromise) return cleanupPromise;
-    cleanupPromise = (async () => {
-      requestController.signal.removeEventListener(
-        "abort",
-        onRequestAbort,
-      );
-      if (!bindingRegistered) return;
-
-      try {
-        await withAccountPage(
-          accountId,
-          async (page) => {
-            await page
-              .evaluate((key) => {
-                const win = window as unknown as Record<string, unknown>;
-                delete win[key];
-              }, controllerKey)
-              .catch(() => {});
-            const binding = relayBinding;
-            relayBinding = null;
-            await binding?.dispose().catch(() => {});
-          },
-          5_000,
-          5_000,
-        );
-      } catch {
-        // Cleanup is best effort when the account context is being reset.
-      }
-    })();
-    return cleanupPromise;
-  };
-
-  const onRequestAbort = () => {
-    finishStream("error", new Error("Browser completion request aborted"));
-    void abortBrowserRequest().finally(() => cleanupRelay());
-  };
-
-  const stream = new ReadableStream<Uint8Array>({
-    start(controller) {
-      streamController = controller;
-    },
-    pull(controller) {
-      if (queuedChunks.length > 0) {
-        const chunk = queuedChunks.shift();
-        if (!chunk) return;
-        queuedBytes -= chunk.byteLength;
-        controller.enqueue(chunk);
-        notifyCapacity();
-        closeStreamIfReady();
-        return;
-      }
-
-      if (terminalKind) {
-        closeStreamIfReady();
-        return;
-      }
-
-      return new Promise<void>((resolve) => {
-        pendingPullResolve = resolve;
-      });
-    },
-    cancel(reason) {
-      if (!terminalKind) {
-        finishStream(
-          "error",
-          new Error(
-            reason ? `Browser completion cancelled: ${String(reason)}` : "Browser completion cancelled",
-          ),
-        );
-      }
-      queuedChunks = [];
-      queuedBytes = 0;
-      notifyCapacity();
-      return abortBrowserRequest().finally(() => cleanupRelay());
-    },
-  });
-
-  requestController.signal.addEventListener("abort", onRequestAbort, {
-    once: true,
-  });
-
-  const setupTimeoutMs = Math.min(
-    Math.max(5_000, timeoutMs),
-    BROWSER_STREAM_HEADER_TIMEOUT_MS,
-  );
-
-  try {
-    const metadata = await withAccountPage(
-      accountId,
-      async (page) => {
-        let pageOrigin = "";
-        let pageUrl = "";
-        try {
-          pageUrl = page.url();
-          pageOrigin = new URL(pageUrl).origin;
-        } catch {
-          // Navigate below when the page has no usable origin.
-        }
-
-        const pageNeedsNavigation =
-          pageOrigin !== origin ||
-          /_____tmd_____|\/bx\/|punish|x5secdata/i.test(pageUrl);
-        if (pageNeedsNavigation) {
-          await page.goto(qwenUrl("/"), {
-            waitUntil: "domcontentloaded",
-            timeout: Math.min(config.timeouts.navigation, 15_000),
-          });
-        }
-
-        relayBinding = await page.exposeFunction(relayName, relayEvent);
-        bindingRegistered = true;
-        if (requestController.signal.aborted) {
-          throw new Error("Browser completion request aborted");
-        }
-
-        const started = await page.evaluate(
-          ({
-            url,
-            payload,
-            bxUa,
-            bxUmidtoken,
-            bxV,
-            requestId,
-            controllerKey,
-            relayName,
-            version,
-          }) => {
-            const win = window as unknown as Record<string, unknown>;
-            const relay = win[relayName] as
-              | ((event: BrowserRelayEvent) => Promise<void>)
-              | undefined;
-            if (!relay) return false;
-
-            const browserController = new AbortController();
-            win[controllerKey] = browserController;
-
-            void (async () => {
-              try {
-                const response = await fetch(url, {
-                  method: "POST",
-                  credentials: "include",
-                  headers: {
-                    Accept: "text/event-stream",
-                    "Content-Type": "application/json",
-                    "X-Request-Id": requestId,
-                    "x-accel-buffering": "no",
-                    "bx-v": bxV || "2.5.36",
-                    ...(bxUa ? { "bx-ua": bxUa } : {}),
-                    ...(bxUmidtoken ? { "bx-umidtoken": bxUmidtoken } : {}),
-                    source: "web",
-                    version,
-                  },
-                  body: payload,
-                  signal: browserController.signal,
-                });
-                await relay({
-                  type: "headers",
-                  status: response.status,
-                  contentType: response.headers.get("content-type") || "",
-                });
-
-                if (!response.body) {
-                  throw new Error("Browser completion returned an empty body");
-                }
-
-                const reader = response.body.getReader();
-                const decoder = new TextDecoder();
-                while (true) {
-                  const { done, value } = await reader.read();
-                  if (done) break;
-                  const text = decoder.decode(value, { stream: true });
-                  if (text) await relay({ type: "chunk", text });
-                }
-                const tail = decoder.decode();
-                if (tail) await relay({ type: "chunk", text: tail });
-                await relay({ type: "done" });
-              } catch (error) {
-                await relay({
-                  type: "error",
-                  message:
-                    error instanceof Error
-                      ? error.message
-                      : String(error),
-                }).catch(() => {});
-              } finally {
-                delete win[controllerKey];
-              }
-            })();
-
-            return true;
-          },
-          {
-            url,
-            payload: payloadJson,
-            bxUa: headers["bx-ua"] || "",
-            bxUmidtoken: headers["bx-umidtoken"] || "",
-            bxV: headers["bx-v"] || "2.5.36",
-            requestId: uuidv4(),
-            controllerKey,
-            relayName,
-            version: QWEN_WEB_VERSION,
-          },
-        );
-
-        if (!started) {
-          throw new Error("Browser completion relay failed to start");
-        }
-
-        return headersPromise;
-      },
-      setupTimeoutMs,
-      setupTimeoutMs,
-    );
-
-    return {
-      status: metadata.status,
-      contentType: metadata.contentType,
-      stream,
-    };
-  } catch (error) {
-    const normalizedError =
-      error instanceof Error ? error : new Error(String(error));
-    if (!headersReceived) rejectHeaders(normalizedError);
-    finishStream("error", normalizedError);
-    await abortBrowserRequest();
-    await cleanupRelay();
-    throw normalizedError;
-  }
 }
 
 export async function createQwenStream(
@@ -2474,17 +2564,24 @@ export async function createQwenStream(
 
   try {
     const fetchCompletion = (requestHeaders: Record<string, string>) =>
-      fetch(url, {
-        method: "POST",
-        headers: buildCapturedQwenHeaders(requestHeaders, {
+      createQwenBrowserResponse(
+        accountId,
+        url,
+        "POST",
+        buildCapturedQwenHeaders(requestHeaders, {
           chatSessionId,
           extra: {
             "x-accel-buffering": "no",
           },
         }),
-        body: payloadJson,
-        signal: controller.signal,
-      });
+        payloadJson,
+        controller.signal,
+        qwenUrl(
+          chatSessionId
+            ? `/c/${encodeURIComponent(chatSessionId)}`
+            : "/c/new-chat",
+        ),
+      );
 
     let response: Response;
     try {
@@ -2509,47 +2606,6 @@ export async function createQwenStream(
 
     let responseContentType = response.headers.get("content-type") || "";
     let retriedNonSseResponse = false;
-    let browserFallbackAttempted = false;
-
-    const tryBrowserFallback = async (reason: string): Promise<boolean> => {
-      if (browserFallbackAttempted) return false;
-      browserFallbackAttempted = true;
-
-      try {
-        const browserResponse = await fetchCompletionInBrowser(
-          accountId ?? "global",
-          url,
-          payloadJson,
-          activeHeaders,
-          dynamicTimeoutMs,
-          controller,
-        );
-        response = new Response(browserResponse.stream, {
-          status: browserResponse.status,
-          headers: {
-            "content-type":
-              browserResponse.contentType || "text/event-stream",
-          },
-        });
-        responseContentType = browserResponse.contentType;
-        logger.info("[Qwen] Browser completion fallback returned", {
-          accountId: accountId ?? "global",
-          chatId: chatSessionId ?? "new",
-          status: browserResponse.status,
-          contentType: browserResponse.contentType || null,
-          reason,
-        });
-        return true;
-      } catch (error) {
-        logger.warn("[Qwen] Browser completion fallback failed", {
-          accountId: accountId ?? "global",
-          chatId: chatSessionId ?? "new",
-          reason,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        return false;
-      }
-    };
 
     while (true) {
       responseContentType = response.headers.get("content-type") || "";
@@ -2582,14 +2638,7 @@ export async function createQwenStream(
           },
         );
 
-        if (
-          antiBotChallenge &&
-          (await tryBrowserFallback("html_waf_response"))
-        ) {
-          continue;
-        }
-
-        if (!retriedNonSseResponse) {
+        if (!antiBotChallenge && !retriedNonSseResponse) {
           retriedNonSseResponse = true;
           const refreshed = await getQwenHeaders(true, accountId);
           activeHeaders = refreshed.headers;
@@ -2651,14 +2700,7 @@ export async function createQwenStream(
             },
           );
 
-          if (
-            antiBotChallenge &&
-            (await tryBrowserFallback("json_waf_body"))
-          ) {
-            continue;
-          }
-
-          if (!retriedNonSseResponse) {
+          if (!antiBotChallenge && !retriedNonSseResponse) {
             retriedNonSseResponse = true;
             const refreshed = await getQwenHeaders(true, accountId);
             activeHeaders = refreshed.headers;
