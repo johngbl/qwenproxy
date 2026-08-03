@@ -8,6 +8,7 @@ import {
 import { v4 as uuidv4 } from "uuid";
 import { UpstreamRateLimit, UpstreamError, AuthError } from "../core/errors.ts";
 import { buildQwenRequestHeaders, QWEN_WEB_VERSION } from "./qwen-headers.ts";
+import { qwenOrigin, qwenUrl } from "./qwen-url.ts";
 import { config } from "../core/config.ts";
 import { logger, isToolcallDebugEnabled } from "../core/logger.ts";
 import { estimateTokenCount } from "../utils/context-truncation.ts";
@@ -17,8 +18,10 @@ import type {
 } from "./token-estimation-metrics.ts";
 import { getDatabase } from "../core/database.ts";
 import { markAccountRateLimited } from "../core/account-manager.ts";
+import { mapClientModelToQwen } from "../core/model-alias.ts";
 import {
   MAX_PAYLOAD_SIZE,
+  replaceModelMetadata,
   syncModelMetadata,
 } from "../core/model-registry.ts";
 import { withAccountPage } from "./playwright.ts";
@@ -402,7 +405,7 @@ export interface QwenMessage {
     research_mode: string;
     auto_thinking: boolean;
     thinking_mode: string;
-    thinking_format: string;
+    thinking_format?: string;
     auto_search: boolean;
   };
   extra: {
@@ -429,14 +432,22 @@ export interface QwenPayload {
   timestamp: number;
 }
 
-interface PublicQwenModel {
+export interface PublicQwenModel {
   id: string;
   name: string;
   object: "model";
   owned_by: string;
   created: number;
   context_window?: number;
-  capabilities?: any;
+  capabilities?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+  info?: Record<string, unknown>;
+  meta?: Record<string, unknown>;
+  modality?: string[];
+  chat_type?: string[];
+  think_skip?: Record<string, unknown>;
+  is_active?: boolean;
+  [key: string]: unknown;
 }
 
 const MODEL_CACHE_TTL_MS = 60 * 60 * 1000;
@@ -684,7 +695,7 @@ export async function syncQwenRequestPersonalization(
 
   const { headers } = await getQwenHeaders(forceRefresh, accountId);
   const requestHeaders = buildCapturedQwenHeaders(headers, {
-    referer: `${config.qwen.baseUrl}/settings/personalization`,
+    referer: qwenUrl("/settings/personalization"),
   });
 
   let currentSettings: any = null;
@@ -720,7 +731,7 @@ export async function syncQwenRequestPersonalization(
   if (!bypassCache && syncHash && !cachedHash && config.qwen.personalizationVerifyGet) {
     try {
       const existingResponse = await fetch(
-        `${config.qwen.baseUrl}/api/v2/users/user/settings`,
+        qwenUrl("/api/v2/users/user/settings"),
         {
           method: "GET",
           headers: requestHeaders,
@@ -776,11 +787,11 @@ export async function syncQwenRequestPersonalization(
     if (!currentSettings) {
       try {
         const settingsResponse = await fetch(
-          `${config.qwen.baseUrl}/api/v2/users/user/settings`,
+          qwenUrl("/api/v2/users/user/settings"),
           {
             method: "GET",
             headers: buildCapturedQwenHeaders(headers, {
-              referer: `${config.qwen.baseUrl}/settings/personalization`,
+              referer: qwenUrl("/settings/personalization"),
             }),
           },
         );
@@ -800,10 +811,10 @@ export async function syncQwenRequestPersonalization(
     }
 
     const reqHeaders = buildCapturedQwenHeaders(headers, {
-      referer: `${config.qwen.baseUrl}/settings/personalization`,
+      referer: qwenUrl("/settings/personalization"),
     });
     const resp = await fetch(
-      `${config.qwen.baseUrl}/api/v2/users/user/settings/update`,
+      qwenUrl("/api/v2/users/user/settings/update"),
       {
         method: "POST",
         headers: reqHeaders,
@@ -859,7 +870,7 @@ export async function syncQwenRequestPersonalization(
 
   if (config.qwen.personalizationVerifyGet) {
     const verifyResponse = await fetch(
-      `${config.qwen.baseUrl}/api/v2/users/user/settings`,
+      qwenUrl("/api/v2/users/user/settings"),
       {
         method: "GET",
         headers: requestHeaders,
@@ -951,7 +962,7 @@ export async function disableNativeTools(accountId?: string): Promise<void> {
       );
       try {
         const response = await fetch(
-          `${config.qwen.baseUrl}/api/v2/users/user/settings/update`,
+          qwenUrl("/api/v2/users/user/settings/update"),
           {
             method: "POST",
             headers: requestHeaders,
@@ -996,27 +1007,93 @@ export async function disableNativeTools(accountId?: string): Promise<void> {
   }
 }
 
-function formatPublicQwenModel(
-  model: any,
-  noThinking = false,
-): PublicQwenModel {
+function asModelRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+/**
+ * Keep the upstream model object intact while adding stable normalized aliases.
+ * The registry consumes `info.meta`, and adapters can still inspect fields Qwen
+ * adds in the future without another parser change.
+ */
+function formatPublicQwenModel(model: Record<string, unknown>): PublicQwenModel {
+  const info = asModelRecord(model.info);
+  const metadata = {
+    ...asModelRecord(model.metadata),
+    ...asModelRecord(model.meta),
+    ...asModelRecord(info.meta),
+  };
+  const capabilities = {
+    ...asModelRecord(metadata.capabilities),
+    ...asModelRecord(info.capabilities),
+    ...asModelRecord(model.capabilities),
+  };
+  const id = typeof model.id === "string" ? model.id : "";
+  const name =
+    (typeof model.name === "string" && model.name) ||
+    (typeof info.name === "string" && info.name) ||
+    id;
+  const createdValue = info.created_at ?? model.created;
+  const created =
+    typeof createdValue === "number" && Number.isFinite(createdValue)
+      ? createdValue
+      : Date.now();
+  const contextWindow =
+    typeof metadata.max_context_length === "number"
+      ? metadata.max_context_length
+      : undefined;
+  const modality = Array.isArray(metadata.modality)
+    ? metadata.modality.filter((value): value is string => typeof value === "string")
+    : undefined;
+  const chatType = Array.isArray(metadata.chat_type)
+    ? metadata.chat_type.filter((value): value is string => typeof value === "string")
+    : undefined;
+  const isActive =
+    typeof info.is_active === "boolean"
+      ? info.is_active
+      : typeof model.is_active === "boolean"
+        ? model.is_active
+        : undefined;
+
   return {
-    id: noThinking ? `${model.id}-no-thinking` : model.id,
-    name: noThinking ? `${model.name} (No Thinking)` : model.name,
+    ...model,
+    id,
+    name,
     object: "model",
-    owned_by: model.owned_by || "qwen",
-    created: model.info?.created_at || Date.now(),
-    context_window: model.info?.meta?.max_context_length,
-    capabilities: model.info?.meta?.capabilities,
+    owned_by:
+      (typeof model.owned_by === "string" && model.owned_by) || "qwen",
+    created,
+    ...(contextWindow !== undefined ? { context_window: contextWindow } : {}),
+    capabilities,
+    metadata,
+    info,
+    meta: metadata,
+    ...(modality ? { modality } : {}),
+    ...(chatType ? { chat_type: chatType } : {}),
+    ...(metadata.think_skip && typeof metadata.think_skip === "object"
+      ? { think_skip: metadata.think_skip as Record<string, unknown> }
+      : {}),
+    ...(isActive !== undefined ? { is_active: isActive } : {}),
+    ...(metadata.max_summary_generation_length !== undefined
+      ? { max_summary_generation_length: metadata.max_summary_generation_length }
+      : {}),
+    ...(metadata.max_thinking_generation_length !== undefined
+      ? {
+          max_thinking_generation_length:
+            metadata.max_thinking_generation_length,
+        }
+      : {}),
   };
 }
 
 export async function deleteAllQwenChats(accountId?: string): Promise<boolean> {
   const { headers } = await getQwenHeaders(false, accountId);
-  const response = await fetch(`${config.qwen.baseUrl}/api/v2/chats/`, {
+  const response = await fetch(qwenUrl("/api/v2/chats/"), {
     method: "DELETE",
     headers: buildCapturedQwenHeaders(headers, {
-      referer: `${config.qwen.baseUrl}/settings/chats`,
+      referer: qwenUrl("/settings/chats"),
     }),
   });
 
@@ -1047,11 +1124,11 @@ export async function deleteQwenChat(
   if (!chatId) return false;
   const { headers } = await getQwenHeaders(false, accountId);
   const response = await fetch(
-    `${config.qwen.baseUrl}/api/v2/chats/${encodeURIComponent(chatId)}`,
+    qwenUrl(`/api/v2/chats/${encodeURIComponent(chatId)}`),
     {
       method: "DELETE",
       headers: buildCapturedQwenHeaders(headers, {
-        referer: `${config.qwen.baseUrl}/settings/chats`,
+        referer: qwenUrl("/settings/chats"),
       }),
     },
   );
@@ -1082,12 +1159,12 @@ export async function fetchQwenChatHistory(
   if (!chatId) return null;
   const { headers } = await getQwenHeaders(false, accountId);
   const response = await fetch(
-    `${config.qwen.baseUrl}/api/v2/chats/${encodeURIComponent(chatId)}`,
+    qwenUrl(`/api/v2/chats/${encodeURIComponent(chatId)}`),
     {
       method: "GET",
       headers: buildCapturedQwenHeaders(headers, {
         chatSessionId: chatId,
-        referer: `${config.qwen.baseUrl}/c/${chatId}`,
+        referer: qwenUrl(`/c/${encodeURIComponent(chatId)}`),
       }),
     },
   );
@@ -1110,6 +1187,7 @@ export async function fetchQwenModels(
   if (cached && now - cached.fetchedAt < MODEL_CACHE_TTL_MS) {
     syncModelMetadata(
       cached.models as unknown as Array<Record<string, unknown> & { id: string }>,
+      accountId,
     );
     return cached.models;
   }
@@ -1117,7 +1195,7 @@ export async function fetchQwenModels(
   const { cookie, userAgent, bxV, bxUa, bxUmidtoken } =
     await getBasicHeaders(accountId);
 
-  const response = await fetch(`${config.qwen.baseUrl}/api/models`, {
+  const response = await fetch(qwenUrl("/api/models"), {
     headers: buildQwenRequestHeaders({
       cookie,
       userAgent,
@@ -1138,12 +1216,20 @@ export async function fetchQwenModels(
 
   const json = await response.json();
   if (json.data && Array.isArray(json.data)) {
-    const models = json.data.flatMap((model: any) => [
-      formatPublicQwenModel(model),
-      formatPublicQwenModel(model, true),
-    ]);
+    // Keep only upstream/base entries here. The public `-fast` variant is
+    // generated exactly once by the public models endpoint after metadata has
+    // been synchronized.
+    const models = json.data
+      .filter((model: unknown) => {
+        const record = asModelRecord(model);
+        return typeof record.id === "string" && record.id.trim().length > 0;
+      })
+      .map((model: unknown) => formatPublicQwenModel(asModelRecord(model)));
 
-    syncModelMetadata(models as unknown as Array<Record<string, unknown> & { id: string }>);
+    replaceModelMetadata(
+      models as unknown as Array<Record<string, unknown> & { id: string }>,
+      accountId,
+    );
     modelsCache.set(cacheKey, { models, fetchedAt: now });
     return models;
   }
@@ -1172,10 +1258,10 @@ async function createQwenChatSession(
   const timeoutId = setTimeout(() => controller.abort(), config.timeouts.http);
 
   try {
-    const response = await fetch(`${config.qwen.baseUrl}/api/v2/chats/new`, {
+    const response = await fetch(qwenUrl("/api/v2/chats/new"), {
       method: "POST",
       headers: buildCapturedQwenHeaders(headers, {
-        referer: `${config.qwen.baseUrl}/c/new-chat`,
+        referer: qwenUrl("/c/new-chat"),
       }),
       body: JSON.stringify({
         title: "Nova Conversa",
@@ -1235,7 +1321,7 @@ async function fetchUnusedChats(
     );
 
     const response = await fetch(
-      `${config.qwen.baseUrl}/api/v2/chats/?page=1&exclude_project=true`,
+      qwenUrl("/api/v2/chats/?page=1&exclude_project=true"),
       {
         method: "GET",
         headers: buildCapturedQwenHeaders(headers, {
@@ -1466,7 +1552,7 @@ export async function warmQwenChatPool(
   const { headers } = await getQwenHeaders(false, accountId);
   await refillQwenChatPool(
     headers,
-    modelId.replace("-no-thinking", ""),
+    mapClientModelToQwen(modelId),
     accountId,
   );
 }
@@ -1730,7 +1816,7 @@ async function fetchCompletionInBrowser(
   timeoutMs: number,
   requestController: AbortController,
 ): Promise<BrowserCompletionResponse> {
-  const origin = new URL(config.qwen.baseUrl).origin;
+  const origin = qwenOrigin();
   const relayName = `__qwenBridgeRelay_${uuidv4().replace(/-/g, "")}`;
   const controllerKey = `__qwenBridgeController_${uuidv4().replace(/-/g, "")}`;
   const encoder = new TextEncoder();
@@ -2012,7 +2098,7 @@ async function fetchCompletionInBrowser(
           pageOrigin !== origin ||
           /_____tmd_____|\/bx\/|punish|x5secdata/i.test(pageUrl);
         if (pageNeedsNavigation) {
-          await page.goto(`${config.qwen.baseUrl}/`, {
+          await page.goto(qwenUrl("/"), {
             waitUntil: "domcontentloaded",
             timeout: Math.min(config.timeouts.navigation, 15_000),
           });
@@ -2168,7 +2254,9 @@ export async function createQwenStream(
   );
   const { headers, parentMessageId } = captured;
   let activeHeaders = headers;
-  const model = modelId.replace("-no-thinking", "");
+  // The upstream always receives the real base model ID. Reasoning mode is
+  // selected exclusively by feature_config, not by a synthetic model suffix.
+  const model = mapClientModelToQwen(modelId);
   let createdNewChat = false;
   let chatSessionId: string | null | undefined;
   let leasedWarmChat = false;
@@ -2323,8 +2411,8 @@ export async function createQwenStream(
           output_schema: "phase",
           research_mode: "normal",
           auto_thinking: false,
-          thinking_mode: "Thinking",
-          thinking_format: "summary",
+          thinking_mode: enableThinking ? "Thinking" : "Fast",
+          ...(enableThinking ? { thinking_format: "summary" } : {}),
           auto_search: true,
         },
         extra: {
@@ -2370,17 +2458,16 @@ export async function createQwenStream(
   }
 
   const payloadMB = payloadSize / (1024 * 1024);
-  const dynamicTimeoutMs =
-    enableThinking || modelId.includes("thinking")
-      ? Math.max(
-          config.timeouts.reasoningModelTimeout,
-          BASE_TIMEOUT_MS + Math.ceil(payloadMB * TIMEOUT_PER_MB),
-        )
-      : BASE_TIMEOUT_MS + Math.ceil(payloadMB * TIMEOUT_PER_MB);
+  const dynamicTimeoutMs = enableThinking
+    ? Math.max(
+        config.timeouts.reasoningModelTimeout,
+        BASE_TIMEOUT_MS + Math.ceil(payloadMB * TIMEOUT_PER_MB),
+      )
+    : BASE_TIMEOUT_MS + Math.ceil(payloadMB * TIMEOUT_PER_MB);
 
   const url = chatSessionId
-    ? `${config.qwen.baseUrl}/api/v2/chat/completions?chat_id=${chatSessionId}`
-    : `${config.qwen.baseUrl}/api/v2/chat/completions`;
+    ? qwenUrl(`/api/v2/chat/completions?chat_id=${encodeURIComponent(chatSessionId)}`)
+    : qwenUrl("/api/v2/chat/completions");
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), dynamicTimeoutMs);

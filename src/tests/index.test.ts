@@ -26,13 +26,26 @@ test("Health check endpoint returns 200", async () => {
   assert.ok(body.timestamp);
 });
 
-test("Models endpoint returns qwen3.6-plus and qwen3.6-plus-no-thinking", async () => {
+test("Models endpoint returns live models and supported variants", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input: any) => {
     const url = typeof input === "string" ? input : input.url;
     if (url.includes("/api/models")) {
       return new Response(
-        JSON.stringify({ data: [{ id: "qwen3.6-plus", owned_by: "qwen" }] }),
+        JSON.stringify({
+          data: [
+            {
+              id: "qwen3.6-plus",
+              owned_by: "qwen",
+              info: {
+                meta: {
+                  capabilities: { thinking: true },
+                  think_skip: { enable: true },
+                },
+              },
+            },
+          ],
+        }),
         { status: 200 },
       );
     }
@@ -49,7 +62,15 @@ test("Models endpoint returns qwen3.6-plus and qwen3.6-plus-no-thinking", async 
     assert.strictEqual(body.object, "list");
     assert.ok(Array.isArray(body.data));
     assert.ok(body.data.some((m: any) => m.id === "qwen3.6-plus"));
-    assert.ok(body.data.some((m: any) => m.id === "qwen3.6-plus-no-thinking"));
+    assert.ok(body.data.some((m: any) => m.id === "qwen3.6-plus-fast"));
+    assert.equal(
+      body.data.some((m: any) => m.id === "qwen3.6-plus-thinking"),
+      false,
+    );
+    assert.equal(
+      body.data.some((m: any) => m.id === "qwen3.6-plus-no-thinking"),
+      false,
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }

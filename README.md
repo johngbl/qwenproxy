@@ -4,7 +4,7 @@
 
 # QwenBridge
 
-API compatível com OpenAI/Anthropic que conecta clientes ao **Qwen (`chat.qwen.ai`)** com suporte a múltiplas contas, tool calling robusto, thread-native, uploads multimodais, **Responses API completa com memória persistente** e sessões persistentes. Inclui Playwright com stealth, retries para erros transitórios, variantes `-no-thinking`/`-thinking`, cache comprimido, registro de capabilities por modelo e observabilidade.
+API compatível com OpenAI/Anthropic que conecta clientes ao **Qwen (`chat.qwen.ai`)** com suporte a múltiplas contas, tool calling robusto, thread-native, uploads multimodais, **Responses API completa com memória persistente** e sessões persistentes. Inclui Playwright com stealth, retries para erros transitórios, variantes públicas base/`-fast`, cache comprimido, registro de capabilities por modelo e observabilidade.
 
 [![CI](https://github.com/johngbl/QwenBridge/actions/workflows/ci.yml/badge.svg)](https://github.com/johngbl/QwenBridge/actions/workflows/ci.yml)
 [![TypeScript](https://img.shields.io/badge/TypeScript-7.0-blue)](https://www.typescriptlang.org/)
@@ -26,7 +26,7 @@ API compatível com OpenAI/Anthropic que conecta clientes ao **Qwen (`chat.qwen.
 - **Personalization sync** — system/tools vão por personalization; em novos chats o sync é forçado (ignora cache) garantindo Critical Rules + AGENTS.md + tools sempre atualizadas; aplica settings seguras (`largeTextAsFile=false`, memory off, tools internas off)
 - **Senhas criptografadas at-rest** no SQLite.
 - **Uploads multimodais** — imagens, vídeo, áudio e documentos via OSS do Qwen.
-- **Modelos atuais** — família `qwen3.x` (incluindo `qwen3.8-max-preview`) + variantes sintéticas `-no-thinking` e `-thinking` + registro de capabilities (vision, thinking, modalities)
+- **Modelos atuais** — catálogo live da família `qwen3.x` (incluindo `qwen3.8-max`) + variante sintética `-fast` para todos os modelos + registro de capabilities (vision, thinking, modalities)
 - **Thinking nativo** — raciocínio chega via `phase: thinking_summary` do upstream, sem sanitização de tags; o modelo é instruído a nunca emitir `<think>` no conteúdo visível
 - **Observabilidade** — `/health`, `/metrics` (Prometheus), watchdog e logs com emojis.
 - **Deploy simples** — `npm`, Docker e graceful shutdown.
@@ -85,30 +85,20 @@ Senhas das contas são armazenadas **criptografadas** no SQLite (`data/`).
 
 ## Modelos e contexto
 
-Modelos e janelas de contexto são sincronizados via `/v1/models`. Fallbacks hardcoded antes da primeira sincronização:
+Modelos e janelas de contexto são sincronizados em tempo real pelo catálogo `/api/models` do Qwen, separadamente para cada conta. O QwenBridge não mantém uma tabela de nomes/capabilities: modelos novos aparecem automaticamente em `/v1/models`, e o objeto `info.meta` recebido do upstream é preservado.
 
-| Modelo | Contexto | Thinking | Vision |
-|---|---:|:---:|:---:|
-| `qwen3.8-max-preview` | 1.000.000 | ✅ | ✅ |
-| `qwen3.7-max` | 1.000.000 | ✅ | ❌ |
-| `qwen3.7-plus` | 1.000.000 | ✅ | ✅ |
-| `qwen3.6-plus` | 1.000.000 | ✅ | ✅ |
-| `qwen3.6-max-preview` | 262.144 | ✅ | ❌ |
-| `qwen3.6-27b` | 262.144 | ✅ | ✅ |
-| `qwen3.6-35b-a3b` | 262.144 | ✅ | ✅ |
-| `qwen3.5-plus` | 1.000.000 | ✅ | ✅ |
-| `qwen3.5-flash` | 1.000.000 | ✅ | ✅ |
-| `qwen3.5-397b-a17b` | 262.144 | ✅ | ✅ |
-| `qwen3.5-omni-plus` | 262.144 | ❌ | ✅ |
-| `qwen3.5-omni-flash` | 262.144 | ❌ | ✅ |
-| `qwen3-coder-plus` | 1.048.576 | ❌ | ✅ |
-| `qwen3-vl-plus` | 262.144 | ✅ | ✅ |
-| `qwen3-omni-flash-2025-12-01` | 65.536 | ✅ | ✅ |
-| `qwen3-max-2026-01-23` | 262.144 | ✅ | ✅ |
-| `qwen-plus-2025-07-28` | 131.072 | ✅ | ✅ |
-| **Fallback** | **131.072** | — | — |
+Exemplos do catálogo atual (podem mudar sem release do proxy):
 
-> **Nota:** O endpoint `/v1/models` retorna capabilities dinâmicas (via formato Anthropic: `max_tokens`, `image_input`, `thinking.supported`).
+| Modelo | Contexto | Output máximo | Thinking | Vision |
+|---|---:|---:|:---:|:---:|
+| `qwen3.8-max` | 1.000.000 | 131.072 | ✅ | ✅ |
+| `qwen3.7-plus` | 1.000.000 | 65.536 | ✅ | ✅ |
+| `qwen3.7-max` | 1.000.000 | 65.536 | ✅ | ❌ |
+| **Fallback desconhecido** | **131.072** | **8.192** | — | — |
+
+O fallback é usado somente quando a conta ainda não sincronizou o catálogo ou o endpoint upstream está indisponível. Depois da sincronização, contexto, output, thinking, modalidades, `think_skip`, `chat_type`, `mcp`, status ativo e demais metadata vêm do Qwen.
+
+> **Nota:** O endpoint `/v1/models` retorna capabilities dinâmicas (inclusive no formato Anthropic: `max_tokens`, `image_input`, `pdf_input`, `code_execution` e `thinking`).
 
 ### Capabilities
 
@@ -116,23 +106,32 @@ Cada modelo tem um registro `ModelCapabilities` em `src/core/model-registry.ts`:
 
 ```ts
 interface ModelCapabilities {
-  maxOutputTokens: number;    // ex: 65536
-  maxThinkingTokens: number;  // ex: 81920 (apenas reasoning models)
-  supportsThinking: boolean;  // suporta thinking_summary
-  supportsVision: boolean;    // suporta imagens
-  canSkipThinking: boolean;   // permite sufixo -no-thinking
-  modalities: string[];       // ex: ["text", "image", "video"]
+  maxOutputTokens: number;
+  maxThinkingTokens: number;
+  supportsThinking: boolean;
+  supportsVision: boolean;
+  canSkipThinking: boolean;
+  supportsDocument: boolean;
+  supportsAudio: boolean;
+  supportsVideo: boolean;
+  supportsCitations: boolean;
+  supportsCodeExecution: boolean;
+  supportsStructuredOutputs: boolean;
+  modalities: string[];
+  chatTypes: string[];
+  mcp: string[];
+  isActive: boolean;
 }
 ```
 
-**Destaque `qwen3.8-max-preview`**: único modelo flagship com suporte a visão (o `qwen3.7-max` não suporta). **Não permite desativar thinking** (`canSkipThinking: false`).
+**Destaque `qwen3.8-max`**: modelo flagship com suporte a visão (o `qwen3.7-max` não suporta). Permite desativar thinking (`canSkipThinking: true`).
 
 ### Variantes sintéticas
 
-- `-no-thinking` — ex.: `qwen3.7-plus-no-thinking` (apenas modelos com `canSkipThinking: true`)
-- `-thinking` — ex.: `qwen3.7-plus-thinking`
+- modelo base — Thinking por padrão, ex.: `qwen3.7-plus`
+- `-fast` — Fast com thinking desativado, ex.: `qwen3.7-plus-fast`
 
-Ambas usam a mesma janela de contexto do modelo base.
+A variante `-fast` usa a mesma janela de contexto e o mesmo modelo upstream do modelo base. IDs antigos `-no-thinking`/`-thinking` não são publicados; são apenas normalizados internamente para compatibilidade legada.
 
 ---
 
@@ -160,12 +159,12 @@ Implementação completa da OpenAI Responses API com extensões para clientes ag
 |---|---|---|
 | `max`, `high`, `xhigh`, `thinking`, `ultra`, `deep` | high | `thinking_enabled: true`, `thinking_mode: "Thinking"` |
 | `medium`, `med`, `default` | medium | thinking ON (mesmo que high) |
-| `fast`, `none`, `low`, `off`, `minimal`, `no-thinking` | low | `thinking_enabled: false`, `thinking_mode: "Fast"` |
+| `fast`, `none`, `low`, `off`, `minimal`, `no-thinking` | low | `thinking_enabled: false`, `thinking_mode: "Fast"` e modelo `*-fast` |
 | numérico 0–33 | low | thinking OFF |
 | numérico 34–66 | medium | thinking ON |
 | numérico 67–100 | high | thinking ON |
 
-> **Nota:** `qwen3.8-max-preview` é always-thinking (`canSkipThinking: false`) — effort `low` não desativa thinking neste modelo.
+> **Nota:** effort `low` sempre seleciona a variante pública `*-fast`; o catálogo pode informar `think_skip`, mas esse metadado não limita a publicação da variante.
 
 ### Exemplo: Responses API com memória
 
@@ -174,7 +173,7 @@ Implementação completa da OpenAI Responses API com extensões para clientes ag
 curl http://localhost:3000/v1/responses \
   -H "Authorization: Bearer local" \
   -H "Content-Type: application/json" \
-  -d '{"model":"qwen3.8-max-preview","input":"Meu nome é João","stream":true}'
+  -d '{"model":"qwen3.8-max","input":"Meu nome é João","stream":true}'
 
 # Resposta inclui last_response_id: "resp_abc123..."
 
@@ -182,7 +181,7 @@ curl http://localhost:3000/v1/responses \
 curl http://localhost:3000/v1/responses \
   -H "Authorization: Bearer local" \
   -H "Content-Type: application/json" \
-  -d '{"model":"qwen3.8-max-preview","input":"Qual meu nome?","previous_response_id":"resp_abc123...","stream":true}'
+  -d '{"model":"qwen3.8-max","input":"Qual meu nome?","previous_response_id":"resp_abc123...","stream":true}'
 ```
 
 ### Exemplo: effort com Codex/Grok
@@ -508,7 +507,7 @@ const client = new OpenAI({
 
 // Streaming com reasoning effort
 const stream = await client.responses.create({
-  model: "qwen3.8-max-preview",
+  model: "qwen3.8-max",
   input: "Explique computação quântica",
   reasoning: { effort: "high" },
   stream: true,
@@ -556,7 +555,7 @@ curl http://localhost:3000/v1/chat/completions \
 ### Grok CLI (config)
 
 ```toml
-[model.qwen38-max-preview]
+[model.qwen38-max]
 api_backend = "responses"
 base_url = "http://127.0.0.1:3000/v1"
 ```
@@ -600,11 +599,11 @@ Tools internas da conta Qwen (web_search, code interpreter, etc.) ficam desligad
 
 | Claude | Qwen |
 |---|---|
-| `claude-opus-4-*` | `qwen3.8-max-preview` |
+| `claude-opus-4-*` | `qwen3.8-max` |
 | `claude-sonnet-4-*` | `qwen3.7-plus` |
 | `claude-haiku-4-*` | `qwen3.5-flash` |
 | `claude-3-5-sonnet` | `qwen3.7-plus` |
-| `claude-3-opus` | `qwen3.8-max-preview` |
+| `claude-3-opus` | `qwen3.8-max` |
 | `claude-3-sonnet` | `qwen3.6-plus` |
 | `claude-3-haiku` | `qwen3.5-flash` |
 
@@ -612,7 +611,7 @@ Tools internas da conta Qwen (web_search, code interpreter, etc.) ficam desligad
 
 | GPT | Qwen |
 |---|---|
-| `gpt-5` / `gpt-5.5` | `qwen3.8-max-preview` |
+| `gpt-5` / `gpt-5.5` | `qwen3.8-max` |
 | `gpt-5-turbo` | `qwen3.7-plus` |
 | `gpt-5-mini` | `qwen3.5-flash` |
 | `gpt-4.1` / `gpt-4o` | `qwen3.7-plus` |
@@ -709,7 +708,7 @@ QwenBridge/
 | Watchdog “RAM critical” falso | Já corrigido: usa `heap_size_limit`; confira `/health.heap.usagePercent` |
 | Timeout em requests grandes | Aumente `TOTAL_REQUEST_TIMEOUT` / `REASONING_MODEL_TIMEOUT` |
 | `stream_aborted` em modelo reasoning | Idle timeout: modelos reasoning usam `REASONING_MODEL_TIMEOUT` (600s default); aumente se necessário |
-| `canSkipThinking: false` | `qwen3.8-max-preview` não permite `-no-thinking`; use sem sufixo |
+| `canSkipThinking: false` | O catálogo não informa `think_skip`; a variante pública `-fast` continua disponível e usa o payload Fast do Qwen |
 | Grok CLI `missing field input_tokens_details` | Corrigido: usage sempre inclui `input_tokens_details` e `output_tokens_details` |
 | Responses `previous_response_id` not found | Store SQLite com TTL 7 dias; verifique se `store: false` não foi enviado |
 | Playwright não inicia | `npx playwright install chromium` |

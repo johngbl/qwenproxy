@@ -10,6 +10,7 @@
 import { Context } from "hono";
 import { stream as honoStream } from "hono/streaming";
 import { buildQwenRequestHeaders } from "../../services/qwen-headers.ts";
+import { qwenUrl } from "../../services/qwen-url.ts";
 import {
   updateLogicalThreadParent,
   updateSessionParent,
@@ -829,7 +830,9 @@ export async function processStreamingResponse(
               `🛑 [Chat] Stopping Qwen generation | session=${currentUiSessionId} | response=${targetResponseId}`,
             );
             await fetch(
-              `https://chat.qwen.ai/api/v2/chat/completions/stop?chat_id=${currentUiSessionId}`,
+              qwenUrl(
+                `/api/v2/chat/completions/stop?chat_id=${encodeURIComponent(currentUiSessionId)}`,
+              ),
               {
                 method: "POST",
                 headers: buildQwenRequestHeaders({

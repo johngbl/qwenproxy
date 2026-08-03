@@ -668,6 +668,7 @@ async function tryCreateStreamWithRetry(
 			assertPromptWithinLimits(
 				params.finalPrompt,
 				params.contextModelId ?? params.model,
+				{ accountId: currentAccountId },
 			);
 
 			const threadParentId = params.useThreadNative
@@ -742,6 +743,7 @@ async function tryCreateStreamWithRetry(
 				assertPromptWithinLimits(
 					promptForUpstream,
 					params.contextModelId ?? params.model,
+					{ accountId: currentAccountId },
 				);
 				result = await createQwenStream(
 							promptForUpstream,
@@ -762,6 +764,7 @@ async function tryCreateStreamWithRetry(
 
 				const contextMeter = buildContextMeterSnapshot({
 					modelId: params.contextModelId ?? params.model,
+					accountId: currentAccountId,
 					requestPrompt: promptForUpstream,
 					fullPrompt: params.fullPrompt,
 					mode:

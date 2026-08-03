@@ -13,6 +13,7 @@ import { v4 as uuidv4 } from "uuid";
 import { ValidationError, ServiceUnavailable } from "../core/errors.js";
 import { sendOpenAIError } from "../api/error-helpers.js";
 import { buildQwenRequestHeaders } from "../services/qwen-headers.ts";
+import { qwenUrl } from "../services/qwen-url.ts";
 import { config } from "../core/config.ts";
 
 // Cache the heavy ali-oss module so we import it once, not on every upload.
@@ -339,7 +340,7 @@ async function getSTSToken(
   headers: Record<string, string>,
 ): Promise<STSResponse["data"]> {
   const response = await fetch(
-    "https://chat.qwen.ai/api/v2/files/getstsToken",
+    qwenUrl("/api/v2/files/getstsToken"),
     {
       method: "POST",
       headers: buildQwenRequestHeaders({

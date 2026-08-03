@@ -17,11 +17,20 @@ test("mapClientModelToQwen maps GPT-5 family including gpt-5-mini", () => {
 
 test("mapClientModelToQwen keeps qwen ids and unknown models", () => {
   assert.equal(mapClientModelToQwen("qwen3.7-plus"), "qwen3.7-plus");
+  assert.equal(mapClientModelToQwen("qwen3.7-plus-fast"), "qwen3.7-plus");
   assert.equal(mapClientModelToQwen("qwen3.7-plus-thinking"), "qwen3.7-plus");
   assert.equal(mapClientModelToQwen("totally-custom"), "totally-custom");
 });
 
-test("stripThinkingSuffix detects enable/disable flags", () => {
+test("stripThinkingSuffix maps base and public Fast variants", () => {
+  assert.deepEqual(stripThinkingSuffix("qwen3.7-plus-fast"), {
+    baseModel: "qwen3.7-plus",
+    enableThinking: false,
+  });
+  assert.deepEqual(stripThinkingSuffix("qwen3.7-plus"), {
+    baseModel: "qwen3.7-plus",
+    enableThinking: true,
+  });
   assert.deepEqual(stripThinkingSuffix("qwen3.7-plus-no-thinking"), {
     baseModel: "qwen3.7-plus",
     enableThinking: false,

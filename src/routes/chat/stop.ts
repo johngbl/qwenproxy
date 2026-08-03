@@ -9,6 +9,7 @@
 
 import { Context } from "hono";
 import { buildQwenRequestHeaders } from "../../services/qwen-headers.ts";
+import { qwenUrl } from "../../services/qwen-url.ts";
 import {
   getStream,
   getStreamKeyBySessionAndResponse,
@@ -65,7 +66,9 @@ export async function chatCompletionsStop(c: Context) {
     }
 
     const stopResponse = await fetch(
-      `https://chat.qwen.ai/api/v2/chat/completions/stop?chat_id=${chat_id}`,
+      qwenUrl(
+        `/api/v2/chat/completions/stop?chat_id=${encodeURIComponent(chat_id)}`,
+      ),
       {
         method: "POST",
         headers: buildQwenRequestHeaders({

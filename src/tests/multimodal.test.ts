@@ -10,6 +10,7 @@ process.env.TEST_MOCK_QWEN_AUTH = "true";
 
 import { processImagesForQwen } from "../routes/upload.ts";
 import { fetchQwenModels } from "../services/qwen.ts";
+import { resolveMediaModel } from "../services/media-generation.ts";
 
 test("fetchQwenModels caches results per account", async () => {
   const originalFetch = globalThis.fetch;
@@ -20,7 +21,21 @@ test("fetchQwenModels caches results per account", async () => {
     if (url.includes("/api/models")) {
       modelRequests++;
       return new Response(
-        JSON.stringify({ data: [{ id: "qwen3.6-plus", owned_by: "qwen" }] }),
+        JSON.stringify({
+          data: [
+            {
+              id: "qwen3.6-plus",
+              owned_by: "qwen",
+              info: {
+                meta: {
+                  capabilities: { thinking: true },
+                  modality: ["text"],
+                  think_skip: { enable: true },
+                },
+              },
+            },
+          ],
+        }),
         { status: 200 },
       );
     }
@@ -34,11 +49,20 @@ test("fetchQwenModels caches results per account", async () => {
 
     assert.strictEqual(modelRequests, 2);
     assert.strictEqual(first[0]?.id, "qwen3.6-plus");
-    assert.strictEqual(second[1]?.id, "qwen3.6-plus-no-thinking");
+    assert.strictEqual(second.length, 1);
+    assert.strictEqual(second[0]?.id, "qwen3.6-plus");
     assert.strictEqual(third[0]?.id, "qwen3.6-plus");
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("media generation uses the model selected by the client", async () => {
+  assert.equal(resolveMediaModel("caller-selected-model"), "caller-selected-model");
+  assert.throws(
+    () => resolveMediaModel(undefined),
+    /model selected by the client/i,
+  );
 });
 
 test("processImagesForQwen re-uploads remote HTTP files to Qwen OSS", async () => {

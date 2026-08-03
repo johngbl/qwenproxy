@@ -18,6 +18,8 @@ export interface PromptLimitStats {
 export interface PromptLimitOptions {
   /** Skip the model-token check until live model metadata has been synced. */
   checkModelContext?: boolean;
+  /** Use metadata synchronized from this account, never another account. */
+  accountId?: string;
 }
 
 export function getUtf8ByteLength(value: string): number {
@@ -27,9 +29,10 @@ export function getUtf8ByteLength(value: string): number {
 export function getPromptLimitStats(
   prompt: string,
   modelId: string,
+  accountId?: string,
 ): PromptLimitStats {
-  const modelContextWindow = getModelContextWindow(modelId);
-  const capabilities = getModelCapabilities(modelId);
+  const modelContextWindow = getModelContextWindow(modelId, accountId);
+  const capabilities = getModelCapabilities(modelId, accountId);
   const reservedOutputTokens = Math.max(
     INPUT_TOKEN_SAFETY_MARGIN,
     capabilities.maxOutputTokens,
@@ -53,7 +56,7 @@ export function assertPromptWithinLimits(
   modelId: string,
   options: PromptLimitOptions = {},
 ): PromptLimitStats {
-  const stats = getPromptLimitStats(prompt, modelId);
+  const stats = getPromptLimitStats(prompt, modelId, options.accountId);
   const maxPromptBytes = config.qwen.maxPromptBytes;
 
   if (maxPromptBytes > 0 && stats.bytes > maxPromptBytes) {

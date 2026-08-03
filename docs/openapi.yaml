@@ -156,7 +156,7 @@ paths:
       description: |
         OpenAI list format by default. When `anthropic-version` is present,
         returns Anthropic-compatible model objects (same underlying catalog,
-        including synthetic `-thinking` / `-no-thinking` variants).
+        including the synthetic `-fast` variant for every model).
       tags:
         - Models
       parameters:
@@ -360,8 +360,8 @@ components:
         model:
           type: string
           description: |
-            ID of the model to use. Append `-no-thinking` to disable reasoning output
-            for thinking-capable models.
+            ID of the model to use. The base model uses Thinking by default;
+            append `-fast` to use Qwen's Fast mode without reasoning output.
           example: qwen3-max
         messages:
           type: array

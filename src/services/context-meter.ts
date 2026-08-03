@@ -53,6 +53,7 @@ export interface ContextMeterSnapshot {
 
 export interface BuildContextMeterInput {
   modelId: string;
+  accountId?: string;
   requestPrompt: string;
   fullPrompt: string;
   mode: ContextMeterMode;
@@ -74,8 +75,11 @@ function roundPercent(value: number): number {
   return Number(value.toFixed(2));
 }
 
-function getReservedOutputTokens(modelId: string): number {
-  const capabilities = getModelCapabilities(modelId);
+function getReservedOutputTokens(
+  modelId: string,
+  accountId?: string,
+): number {
+  const capabilities = getModelCapabilities(modelId, accountId);
   return Math.max(
     4_096,
     capabilities.maxOutputTokens,
@@ -105,12 +109,15 @@ export function buildContextMeterSnapshot(
   const contextWindowTokens =
     options.windowTokens > 0
       ? options.windowTokens
-      : getModelContextWindow(input.modelId);
+      : getModelContextWindow(input.modelId, input.accountId);
   const contextWindowSource =
     options.windowTokens > 0
       ? "configured"
-      : getModelContextWindowSource(input.modelId);
-  const reservedOutputTokens = getReservedOutputTokens(input.modelId);
+      : getModelContextWindowSource(input.modelId, input.accountId);
+  const reservedOutputTokens = getReservedOutputTokens(
+    input.modelId,
+    input.accountId,
+  );
   const usableInputTokens = Math.max(
     1,
     contextWindowTokens - reservedOutputTokens,

@@ -4,7 +4,6 @@ import { logger } from "../core/logger.ts";
 import { sendOpenAIError } from "../api/error-helpers.ts";
 import { NotFoundError, ValidationError } from "../core/errors.ts";
 
-const DEFAULT_MODEL = "qwen3-vl-plus";
 const DEFAULT_SIZE = "16:9";
 
 const VALID_SIZES = new Set([
@@ -83,10 +82,20 @@ export async function videosGenerations(c: Context): Promise<Response> {
   const model =
     typeof body.model === "string" && body.model.trim()
       ? body.model.trim()
-      : DEFAULT_MODEL;
+      : "";
+  if (!model) {
+    return sendOpenAIError(
+      c,
+      validationError("`model` must be the model selected by the client", "model"),
+    );
+  }
   const wait = body.wait !== false;
 
-  logger.info("Video generation request", { model, size, wait });
+  logger.info("Video generation request", {
+    model,
+    size,
+    wait,
+  });
 
   try {
     const result = await generateVideo({

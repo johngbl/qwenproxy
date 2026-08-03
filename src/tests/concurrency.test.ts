@@ -86,7 +86,7 @@ test("Concurrent new sessions can overlap after startup lock", async () => {
   }
 });
 
-test("No-thinking model variant is accepted", async () => {
+test("Fast model variant is accepted", async () => {
   const originalFetch = globalThis.fetch;
 
   globalThis.fetch = async (input: any) => {
@@ -120,13 +120,13 @@ test("No-thinking model variant is accepted", async () => {
   await Promise.resolve();
 
   try {
-    // Test no-thinking model is accepted without error
+    // Test the public Fast model variant is accepted without error.
     const res = await app.fetch(
       new Request("http://localhost/v1/chat/completions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "qwen3.6-plus-no-thinking",
+          model: "qwen3.6-plus-fast",
           messages: [{ role: "user", content: "Test" }],
           stream: false,
         }),
@@ -135,7 +135,7 @@ test("No-thinking model variant is accepted", async () => {
 
     assert.ok(
       res.status === 200 || res.status === 429 || res.status === 502,
-      `No-thinking model should be accepted, got status: ${res.status}`,
+      `Fast model should be accepted, got status: ${res.status}`,
     );
   } finally {
     globalThis.fetch = originalFetch;

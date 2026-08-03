@@ -20,6 +20,7 @@ import {
   type FingerprintProfile,
 } from "./fingerprint.ts";
 import { subtlePageActivity } from "./human-behavior.ts";
+import { qwenOrigin, qwenUrl } from "./qwen-url.ts";
 
 // Try to import playwright-extra and stealth, fallback to regular playwright
 let chromiumWithStealth: typeof chromium | null = null;
@@ -570,7 +571,7 @@ export async function initPlaywrightForAccount(
 
       // Navigate to Qwen home to validate session and populate cookies
       try {
-        await acctPage.goto("https://chat.qwen.ai/", {
+        await acctPage.goto(qwenUrl("/"), {
           waitUntil: "domcontentloaded",
           timeout: config.timeouts.navigation,
         });
@@ -641,7 +642,7 @@ async function loginViaApi(
   password: string,
 ): Promise<boolean> {
   try {
-    await page.goto("https://chat.qwen.ai/auth", {
+    await page.goto(qwenUrl("/auth"), {
       waitUntil: "domcontentloaded",
       timeout: config.timeouts.navigation,
     });
@@ -656,12 +657,12 @@ async function loginViaApi(
       .createHash("sha256")
       .update(password)
       .digest("hex");
+    const signinUrl = qwenUrl("/api/v2/auths/signin");
 
     const result = await page.evaluate(
-      async ({ email, password }) => {
+      async ({ email, password, signinUrl }) => {
         try {
-          const response = await fetch(
-            "https://chat.qwen.ai/api/v2/auths/signin",
+          const response = await fetch(signinUrl,
             {
               method: "POST",
               signal: AbortSignal.timeout(10_000),
@@ -681,11 +682,11 @@ async function loginViaApi(
           return { ok: false, error: e.message };
         }
       },
-      { email, password: hashedPassword },
+      { email, password: hashedPassword, signinUrl },
     );
 
     if (result.ok) {
-      await page.goto("https://chat.qwen.ai/", {
+      await page.goto(qwenUrl("/"), {
         waitUntil: "domcontentloaded",
         timeout: config.timeouts.navigation,
       });
@@ -705,7 +706,7 @@ async function loginViaUi(
   password: string,
 ): Promise<boolean> {
   try {
-    await page.goto("https://chat.qwen.ai/auth", {
+    await page.goto(qwenUrl("/auth"), {
       waitUntil: "domcontentloaded",
       timeout: config.timeouts.navigation,
     });
@@ -748,7 +749,7 @@ async function loginViaUi(
       !page.url().includes("auth") && !page.url().includes("login");
 
     if (isLoggedIn) {
-      await page.goto("https://chat.qwen.ai/", {
+      await page.goto(qwenUrl("/"), {
         waitUntil: "domcontentloaded",
         timeout: config.timeouts.navigation,
       });
@@ -859,7 +860,7 @@ export async function captureQwenHeaders(
 
         try {
           // Navigate to Qwen and trigger a request.
-          await page.goto("https://chat.qwen.ai/", {
+          await page.goto(qwenUrl("/"), {
             waitUntil: "domcontentloaded",
             timeout: Math.min(config.timeouts.navigation, timeoutMs),
           });
@@ -950,7 +951,7 @@ async function refreshHeadersInternal(
     const page = accountPages.get(accountId);
     if (page) {
       try {
-        await page.goto("https://chat.qwen.ai/", {
+        await page.goto(qwenUrl("/"), {
           waitUntil: "domcontentloaded",
           timeout: Math.min(config.timeouts.navigation, boundedTimeoutMs),
         });
@@ -1191,11 +1192,11 @@ export async function keepAlivePlaywrightAccount(
     const currentUrl = page.url();
     const lastNavigation = lastKeepAliveNavigation.get(accountId) ?? 0;
     const shouldNavigate =
-      !currentUrl.includes("chat.qwen.ai") ||
+      !currentUrl.startsWith(qwenOrigin()) ||
       now - lastNavigation > config.sessionKeeper.navigationIntervalMs;
 
     if (shouldNavigate) {
-      await page.goto(config.qwen.baseUrl, {
+      await page.goto(qwenUrl("/"), {
         waitUntil: "domcontentloaded",
         timeout: Math.min(config.timeouts.navigation, 15_000),
       });

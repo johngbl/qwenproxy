@@ -58,25 +58,41 @@ const CLIENT_MODEL_ALIASES: Record<string, string> = {
 };
 
 /**
- * Strip Qwen thinking suffixes while preserving the intent flag for callers.
+ * Resolve the public Qwen reasoning variants.
+ *
+ * The public contract is deliberately small: the base model means Thinking
+ * and `-fast` means Fast. The old suffixes are accepted only as an internal
+ * compatibility shim so existing clients do not send those IDs upstream; they
+ * are never published by `/v1/models`.
  */
 export function stripThinkingSuffix(model: string): {
   baseModel: string;
   enableThinking: boolean;
 } {
-  if (model.endsWith("-no-thinking")) {
+  const normalizedModel = model.trim();
+
+  if (normalizedModel.endsWith("-fast")) {
     return {
-      baseModel: model.slice(0, -"-no-thinking".length),
+      baseModel: normalizedModel.slice(0, -"-fast".length),
       enableThinking: false,
     };
   }
-  if (model.endsWith("-thinking")) {
+
+  // Legacy client compatibility. These IDs are not public model variants.
+  if (normalizedModel.endsWith("-no-thinking")) {
     return {
-      baseModel: model.slice(0, -"-thinking".length),
+      baseModel: normalizedModel.slice(0, -"-no-thinking".length),
+      enableThinking: false,
+    };
+  }
+  if (normalizedModel.endsWith("-thinking")) {
+    return {
+      baseModel: normalizedModel.slice(0, -"-thinking".length),
       enableThinking: true,
     };
   }
-  return { baseModel: model, enableThinking: true };
+
+  return { baseModel: normalizedModel, enableThinking: true };
 }
 
 /**

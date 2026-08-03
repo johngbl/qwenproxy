@@ -1,4 +1,5 @@
 import { v4 as uuidv4 } from "uuid";
+import { qwenUrl, qwenOrigin } from "./qwen-url.ts";
 
 export const QWEN_WEB_VERSION = "0.2.80";
 export const DEFAULT_QWEN_USER_AGENT =
@@ -24,12 +25,12 @@ export function buildQwenRequestHeaders(
     "Accept-Encoding": "gzip, deflate, br, zstd",
     "Content-Type": "application/json",
     Cookie: opts.cookie,
-    Origin: "https://chat.qwen.ai",
+    Origin: qwenOrigin(),
     Referer:
       opts.extra?.Referer ??
       (opts.chatSessionId
-        ? `https://chat.qwen.ai/c/${opts.chatSessionId}`
-        : "https://chat.qwen.ai/c/new-chat"),
+        ? qwenUrl(`/c/${encodeURIComponent(opts.chatSessionId)}`)
+        : qwenUrl("/c/new-chat")),
     "sec-ch-ua":
       '"Google Chrome";v="150", "Chromium";v="150", "Not.A/Brand";v="99"',
     "sec-ch-ua-mobile": "?0",

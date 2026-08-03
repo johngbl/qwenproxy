@@ -1,7 +1,7 @@
 import { v4 as uuidv4 } from "uuid";
 import { getQwenHeaders } from "./auth-playwright.ts";
 import { buildQwenRequestHeaders } from "./qwen-headers.ts";
-import { config } from "../core/config.ts";
+import { qwenUrl } from "./qwen-url.ts";
 import { logger } from "../core/logger.ts";
 import {
   getNextAvailableAccount,
@@ -36,9 +36,17 @@ const IMAGE_TIMEOUT_MS = 120_000;
 const VIDEO_TIMEOUT_MS = 300_000;
 const MAX_ACCOUNT_ATTEMPTS = 3;
 const ACCOUNT_COOLDOWN_MS = 60_000;
-const DEFAULT_IMAGE_MODEL = "qwen3-vl-plus";
-const DEFAULT_VIDEO_MODEL = "qwen3-vl-plus";
 const VIDEO_POLL_INTERVAL_MS = 5_000;
+
+export function resolveMediaModel(requestedModel?: string): string {
+  const explicitModel = requestedModel?.trim();
+  if (!explicitModel) {
+    throw new UpstreamError(
+      "A model selected by the client is required for image/video generation",
+    );
+  }
+  return explicitModel;
+}
 
 function normalizeSize(size?: string): string | undefined {
   if (!size) return undefined;
@@ -67,8 +75,8 @@ function buildHeadersFromCaptured(
     chatSessionId,
     extra: {
       Referer: chatSessionId
-        ? `${config.qwen.baseUrl}/c/${chatSessionId}`
-        : `${config.qwen.baseUrl}/c/new-chat`,
+        ? qwenUrl(`/c/${encodeURIComponent(chatSessionId)}`)
+        : qwenUrl("/c/new-chat"),
     },
   });
 }
@@ -81,7 +89,7 @@ async function createMediaChatSession(
 ): Promise<string> {
   const title = chatType === "t2i" ? "Image Generation" : "Video Generation";
 
-  const response = await fetch(`${config.qwen.baseUrl}/api/v2/chats/new`, {
+  const response = await fetch(qwenUrl("/api/v2/chats/new"), {
     method: "POST",
     headers: buildHeadersFromCaptured(headers),
     body: JSON.stringify({
@@ -233,7 +241,7 @@ export async function generateImage(params: {
 }): Promise<ImageGenerationResult> {
   const {
     prompt,
-    model = DEFAULT_IMAGE_MODEL,
+    model: requestedModel,
     size,
     accountId: requestedAccountId,
     signal: externalSignal,
@@ -264,6 +272,7 @@ export async function generateImage(params: {
       : controller.signal;
 
     try {
+      const model = resolveMediaModel(requestedModel);
       logger.info(
         `🎨 [MediaGen] Starting image generation | account=${account.id} | model=${model} | attempt=${attempt + 1}`,
       );
@@ -279,7 +288,7 @@ export async function generateImage(params: {
       const requestHeaders = buildHeadersFromCaptured(headers, chatId);
 
       const response = await fetch(
-        `${config.qwen.baseUrl}/api/v2/chat/completions?chat_id=${chatId}`,
+        qwenUrl(`/api/v2/chat/completions?chat_id=${encodeURIComponent(chatId)}`),
         {
           method: "POST",
           headers: {
@@ -351,7 +360,7 @@ export async function generateVideo(params: {
 }): Promise<VideoGenerationResult> {
   const {
     prompt,
-    model = DEFAULT_VIDEO_MODEL,
+    model: requestedModel,
     size,
     accountId: requestedAccountId,
     waitForCompletion = false,
@@ -383,6 +392,7 @@ export async function generateVideo(params: {
       : controller.signal;
 
     try {
+      const model = resolveMediaModel(requestedModel);
       logger.info(
         `🎬 [MediaGen] Starting video generation | account=${account.id} | model=${model} | attempt=${attempt + 1}`,
       );
@@ -398,7 +408,7 @@ export async function generateVideo(params: {
       const requestHeaders = buildHeadersFromCaptured(headers, chatId);
 
       const response = await fetch(
-        `${config.qwen.baseUrl}/api/v2/chat/completions?chat_id=${chatId}`,
+        qwenUrl(`/api/v2/chat/completions?chat_id=${encodeURIComponent(chatId)}`),
         {
           method: "POST",
           headers: {
@@ -507,7 +517,7 @@ export async function pollVideoTask(params: {
 
     while (!effectiveSignal.aborted) {
       const response = await fetch(
-        `${config.qwen.baseUrl}/api/v2/tasks/${taskId}`,
+        qwenUrl(`/api/v2/tasks/${encodeURIComponent(taskId)}`),
         {
           method: "GET",
           headers: requestHeaders,

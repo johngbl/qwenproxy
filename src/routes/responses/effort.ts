@@ -9,10 +9,7 @@
  * Qwen upstream only has a boolean + Thinking|Fast — no true medium gradient.
  */
 
-import {
-  isAlwaysThinkingModel,
-  stripNoThinkingSuffix,
-} from "../../core/model-registry.ts";
+import { stripFastSuffix } from "../../core/model-registry.ts";
 
 export type NormalizedEffort = "low" | "medium" | "high";
 
@@ -92,9 +89,9 @@ export function effortEnablesThinking(
 }
 
 /**
- * Optionally rewrite model id based on effort.
- * low/Fast → *-no-thinking (unless always-thinking model)
- * medium/high/Max → keep thinking models
+ * Optionally rewrite the model id based on effort.
+ * low/Fast → *-fast
+ * medium/high/Max → the base model (Thinking)
  */
 export function applyEffortToModel(
   model: string,
@@ -102,18 +99,12 @@ export function applyEffortToModel(
 ): string {
   if (!effort) return model;
 
-  const base = stripNoThinkingSuffix(model);
-
-  // qwen3.8-max-preview and friends: never strip thinking
-  if (isAlwaysThinkingModel(base)) {
-    return base;
-  }
+  const base = stripFastSuffix(model);
 
   if (effort === "low") {
-    if (model.endsWith("-no-thinking")) return model;
-    return `${base}-no-thinking`;
+    return `${base}-fast`;
   }
 
-  // medium/high: strip no-thinking if present so thinking stays on
+  // medium/high: strip -fast so the base model enables Thinking.
   return base;
 }

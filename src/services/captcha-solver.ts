@@ -23,6 +23,7 @@ import {
   refreshHeaders,
   withAccountPage,
 } from "./playwright.ts";
+import { qwenUrl } from "./qwen-url.ts";
 
 export interface CaptchaSolveResult {
   success: boolean;
@@ -238,7 +239,7 @@ async function waitForChallengeClear(
 
 async function softSessionWarmup(page: Page): Promise<void> {
   await page
-    .goto("https://chat.qwen.ai/", {
+    .goto(qwenUrl("/"), {
       waitUntil: "domcontentloaded",
       timeout: Math.min(config.timeouts.navigation, 10_000),
     })
@@ -327,28 +328,32 @@ export async function recoverAntiBotChallenge(
       // Phase 2: if challenge not visible yet, force a tiny in-page completions
       // probe so Alibaba may render punish page / widgets.
       if (!signal.challenged && Date.now() < deadline) {
+        const completionsUrl = qwenUrl("/api/v2/chat/completions");
         await runPageOperation(async (page) => {
           await page
-            .evaluate(async () => {
-              try {
-                await fetch("/api/v2/chat/completions", {
-                  method: "POST",
-                  credentials: "include",
-                  headers: {
-                    accept: "application/json, text/plain, */*",
-                    "content-type": "application/json",
-                    source: "web",
-                  },
-                  body: JSON.stringify({
-                    stream: false,
-                    model: "qwen3.5-flash",
-                    messages: [{ role: "user", content: "ping" }],
-                  }),
-                });
-              } catch {
-                // ignore; we only care if a challenge UI appears
-              }
-            })
+            .evaluate(
+              async ({ completionsUrl }) => {
+                try {
+                  await fetch(completionsUrl, {
+                    method: "POST",
+                    credentials: "include",
+                    headers: {
+                      accept: "application/json, text/plain, */*",
+                      "content-type": "application/json",
+                      source: "web",
+                    },
+                    body: JSON.stringify({
+                      stream: false,
+                      model: "qwen3.5-flash",
+                      messages: [{ role: "user", content: "ping" }],
+                    }),
+                  });
+                } catch {
+                  // ignore; we only care if a challenge UI appears
+                }
+              },
+              { completionsUrl },
+            )
             .catch(() => {});
           await sleep(humanDelay(500, 1000));
         });

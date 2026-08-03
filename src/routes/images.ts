@@ -4,7 +4,6 @@ import { logger } from "../core/logger.ts";
 import { sendOpenAIError } from "../api/error-helpers.ts";
 import { ValidationError } from "../core/errors.ts";
 
-const DEFAULT_MODEL = "qwen3-vl-plus";
 const DEFAULT_SIZE = "1024x1024";
 
 const VALID_SIZES = new Set([
@@ -89,7 +88,13 @@ export async function imagesGenerations(c: Context): Promise<Response> {
   const model =
     typeof body.model === "string" && body.model.trim()
       ? body.model.trim()
-      : DEFAULT_MODEL;
+      : "";
+  if (!model) {
+    return sendOpenAIError(
+      c,
+      validationError("`model` must be the model selected by the client", "model"),
+    );
+  }
 
   logger.info("Image generation request", {
     model,

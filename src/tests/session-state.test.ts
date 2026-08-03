@@ -121,7 +121,34 @@ test("createQwenStream matches the latest browser completion payload", async () 
     assert.equal(capturedPayload.messages[0].model, "");
     assert.equal(capturedPayload.messages[0].childrenIds.length, 1);
     assert.equal(capturedPayload.messages[0].feature_config.auto_search, true);
+    assert.equal(capturedPayload.messages[0].feature_config.thinking_enabled, false);
+    assert.equal(capturedPayload.messages[0].feature_config.thinking_mode, "Fast");
+    assert.equal(
+      "thinking_format" in capturedPayload.messages[0].feature_config,
+      false,
+    );
     await result.stream.cancel();
+
+    const thinkingResult = await createQwenStream(
+      "Thinking payload",
+      true,
+      "qwen3.7-plus",
+      null,
+      "canonical-thinking-account",
+      undefined,
+      { chatSessionId: "canonical-thinking-chat" },
+    );
+
+    assert.equal(capturedPayload.messages[0].feature_config.thinking_enabled, true);
+    assert.equal(
+      capturedPayload.messages[0].feature_config.thinking_mode,
+      "Thinking",
+    );
+    assert.equal(
+      capturedPayload.messages[0].feature_config.thinking_format,
+      "summary",
+    );
+    await thinkingResult.stream.cancel();
   } finally {
     globalThis.fetch = originalFetch;
   }
