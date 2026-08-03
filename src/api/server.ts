@@ -11,6 +11,8 @@ import { getAccountCooldownInfo } from "../core/account-manager.js";
 import { app as modelsApp } from "./models.js";
 import { chatCompletions, chatCompletionsStop } from "../routes/chat.js";
 import { uploadFile } from "../routes/upload.js";
+import { imagesGenerations } from "../routes/images.js";
+import { videosGenerations, videoTaskStatus } from "../routes/videos.js";
 import { anthropicApp } from "../routes/anthropic/index.js";
 import { responsesApp } from "../routes/responses/index.js";
 import { sendOpenAIError } from "./error-helpers.js";
@@ -107,6 +109,9 @@ app.route("", modelsApp);
 app.post("/v1/chat/completions", chatCompletions);
 app.post("/v1/chat/completions/stop", chatCompletionsStop);
 app.post("/v1/upload", uploadFile);
+app.post("/v1/images/generations", imagesGenerations);
+app.post("/v1/videos/generations", videosGenerations);
+app.get("/v1/tasks/status/:taskId", videoTaskStatus);
 
 // Anthropic API compatible routes
 app.route("", anthropicApp);
