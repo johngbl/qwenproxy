@@ -1,6 +1,7 @@
 import { logger } from "../core/logger.ts";
 import { estimateTokenCount } from "../utils/context-truncation.ts";
 import type { Usage } from "../utils/types.ts";
+import type { ContextMeterSnapshot } from "./context-meter.ts";
 
 export interface PersonalizationEstimationInfo {
   accountId: string;
@@ -20,6 +21,7 @@ export interface TokenEstimationContext {
   qwenPayloadBytes?: number;
   qwenPayloadPromptChars?: number;
   qwenPayloadMessageCount?: number;
+  contextMeter?: ContextMeterSnapshot | null;
 }
 
 function isEnabled(): boolean {
@@ -86,6 +88,17 @@ export function logTokenEstimationSample(input: {
     qwenPayloadBytes: input.context?.qwenPayloadBytes ?? null,
     qwenPayloadPromptChars: input.context?.qwenPayloadPromptChars ?? null,
     qwenPayloadMessageCount: input.context?.qwenPayloadMessageCount ?? null,
+    contextMeterMode: input.context?.contextMeter?.mode ?? null,
+    contextMeterEstimatedTokens:
+      input.context?.contextMeter?.estimatedContextTokens ?? null,
+    contextMeterWindowTokens:
+      input.context?.contextMeter?.contextWindowTokens ?? null,
+    contextMeterPercent:
+      input.context?.contextMeter?.estimatedContextPercent ?? null,
+    contextMeterFullPromptBytes:
+      input.context?.contextMeter?.fullPromptBytes ?? null,
+    contextMeterRequestPromptBytes:
+      input.context?.contextMeter?.requestPromptBytes ?? null,
     estimatedLocalPromptTokens: estimatedPromptTokens,
     estimatedUserPromptTokens,
     estimatedPersonalizationTokens,

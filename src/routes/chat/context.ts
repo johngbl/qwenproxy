@@ -119,7 +119,10 @@ export async function buildFinalContext(
       ? `${systemPrompt}\n${activePrompt}`
       : activePrompt;
 
-  assertPromptWithinLimits(finalPrompt, modelId);
+  // Model metadata is synchronized after account selection. Keep the early
+  // context build from rejecting an unknown model with the registry fallback;
+  // the account attempt performs the authoritative preflight check.
+  assertPromptWithinLimits(finalPrompt, modelId, { checkModelContext: false });
 
   const isThinkingModel = enableThinking;
   const shouldResetUpstreamThread = false;

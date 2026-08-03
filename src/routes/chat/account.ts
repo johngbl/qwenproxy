@@ -28,9 +28,10 @@ import {
 import { isAuthMockEnabled } from "../../services/auth-playwright.ts";
 import { refreshHeaders } from "../../services/playwright.ts";
 import {
-	clearAllSessionsForAccount,
-	createQwenStream,
-	deleteQwenChat,
+	  clearAllSessionsForAccount,
+	  createQwenStream,
+	  deleteQwenChat,
+	  fetchQwenModels,
 	getLogicalThreadState,
 	type LogicalThreadEntry,
 	QwenSessionExpiredError,
@@ -39,6 +40,11 @@ import {
 	updateLogicalThreadState,
 } from "../../services/qwen.ts";
 import type { TokenEstimationContext } from "../../services/token-estimation-metrics.ts";
+import {
+  buildContextMeterSnapshot,
+  contextMeterLogData,
+  type ContextMeterMode,
+} from "../../services/context-meter.ts";
 import type { QwenFileEntry } from "../upload.ts";
 import {
 	classifyRetryAction,
@@ -142,9 +148,11 @@ export interface AcquireParams {
 	  /** Mapped Qwen model id used for local prompt-budget validation. */
 	  contextModelId?: string;
 	  requestSignal?: AbortSignal;
+	  /** Context accounting mode for this concrete upstream attempt. */
+	  contextMode?: ContextMeterMode;
 	  /** Allow this request to retry the account it just marked temporarily busy. */
-	allowTemporarilyBusyAccountId?: string;
-}
+	  allowTemporarilyBusyAccountId?: string;
+	}
 
 /** Exported for unit tests — selects the first account for a request. */
 export function resolveInitialAccount(
@@ -417,6 +425,9 @@ export async function acquireUpstreamStream(
 						params.requestPersonalizationInstruction,
 					contextModelId: params.contextModelId,
 					fullPrompt: params.fullPrompt,
+					contextMode: recreatingOnNewAccount
+						? "replay"
+						: params.contextMode,
 					requestSignal: params.requestSignal,
 				},
 				accountId,
@@ -469,13 +480,14 @@ export async function acquireUpstreamStream(
 		}
 
 		if (stickyThreadAccountId === accountId) {
-			if (
+			const stickyAccountMustRotate =
 				isAccountUnavailableError(lastError) ||
 				isAntiBotError(lastError) ||
-				isAccountInitializationError(lastError)
-			) {
+				isAccountInitializationError(lastError) ||
+				isChatInProgressError(lastError);
+			if (stickyAccountMustRotate) {
 				console.warn(
-					`⚠️  [Chat] Sticky account unavailable; trying another account with full context.`,
+					`⚠️  [Chat] Sticky account unavailable (${isChatInProgressError(lastError) ? "chat_in_progress" : "upstream failure"}); trying another account with full context.`,
 				);
 			} else {
 				break;
@@ -604,6 +616,7 @@ async function tryCreateStreamWithRetry(
 		toolsCount?: number;
 		requestPersonalizationInstruction?: string | null;
 		contextModelId?: string;
+		contextMode?: ContextMeterMode;
 		requestSignal?: AbortSignal;
 	},
 	accountId: string,
@@ -635,6 +648,23 @@ async function tryCreateStreamWithRetry(
 		let accountLease: AccountLease | null = null;
 
 		try {
+			if (config.contextMeter.enabled) {
+				try {
+					// Qwen publishes the actual context window in /api/models. The
+					// cached sync is best-effort; the registry remains the fallback if
+					// this account is temporarily behind a WAF or unavailable.
+					await fetchQwenModels(currentAccountId);
+				} catch (metadataError) {
+					logger.warn("[context_meter] model metadata sync unavailable; using registry fallback", {
+						model: params.contextModelId ?? params.model,
+						error:
+							metadataError instanceof Error
+									? metadataError.message
+									: String(metadataError),
+					});
+				}
+			}
+
 			assertPromptWithinLimits(
 				params.finalPrompt,
 				params.contextModelId ?? params.model,
@@ -729,6 +759,45 @@ async function tryCreateStreamWithRetry(
 								}
 							: undefined,
 					);
+
+				const contextMeter = buildContextMeterSnapshot({
+					modelId: params.contextModelId ?? params.model,
+					requestPrompt: promptForUpstream,
+					fullPrompt: params.fullPrompt,
+					mode:
+						params.contextMode ??
+						(params.forceNewChat
+							? "replay"
+							: params.existingThread
+								? "delta"
+								: "full"),
+					qwenPayloadBytes: result.tokenEstimationContext.qwenPayloadBytes,
+					qwenPayloadPromptChars:
+						result.tokenEstimationContext.qwenPayloadPromptChars,
+					qwenPayloadMessageCount:
+						result.tokenEstimationContext.qwenPayloadMessageCount,
+					messageCount: params.messageCount,
+					fullMessageCount: params.fullMessageCount,
+					toolsCount: params.toolsCount,
+					filesCount: params.allFiles.length,
+					activePersonalization:
+						result.tokenEstimationContext.activePersonalization,
+				});
+
+				if (contextMeter) {
+					logger.debug("[context_meter] request", {
+						...contextMeterLogData(contextMeter),
+						account: currentAccountEmail,
+						attempt,
+					});
+					result = {
+						...result,
+						tokenEstimationContext: {
+							...result.tokenEstimationContext,
+							contextMeter,
+						},
+					};
+				}
 			} finally {
 				releasePersonalization?.();
 			}

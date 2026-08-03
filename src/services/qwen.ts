@@ -17,7 +17,10 @@ import type {
 } from "./token-estimation-metrics.ts";
 import { getDatabase } from "../core/database.ts";
 import { markAccountRateLimited } from "../core/account-manager.ts";
-import { MAX_PAYLOAD_SIZE } from "../core/model-registry.ts";
+import {
+  MAX_PAYLOAD_SIZE,
+  syncModelMetadata,
+} from "../core/model-registry.ts";
 import { withAccountPage } from "./playwright.ts";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -1105,6 +1108,9 @@ export async function fetchQwenModels(
   const now = Date.now();
   const cached = modelsCache.get(cacheKey);
   if (cached && now - cached.fetchedAt < MODEL_CACHE_TTL_MS) {
+    syncModelMetadata(
+      cached.models as unknown as Array<Record<string, unknown> & { id: string }>,
+    );
     return cached.models;
   }
 
@@ -1137,6 +1143,7 @@ export async function fetchQwenModels(
       formatPublicQwenModel(model, true),
     ]);
 
+    syncModelMetadata(models as unknown as Array<Record<string, unknown> & { id: string }>);
     modelsCache.set(cacheKey, { models, fetchedAt: now });
     return models;
   }

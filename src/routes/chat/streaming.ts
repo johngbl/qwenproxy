@@ -17,8 +17,10 @@ import {
 } from "../../services/qwen.ts";
 import { acquireUpstreamStream } from "./account.ts";
 import { markAccountRateLimited } from "../../core/account-manager.ts";
+import { markAccountTemporarilyBusy } from "../../core/account-concurrency.ts";
 import {
   classifyRetryAction,
+  shouldRetryChatInProgressOnSameAccount,
   shouldRetryInvalidInputOnSameAccount,
 } from "./retry-policy.ts";
 import type { OpenAIRequest, Usage } from "../../utils/types.ts";
@@ -49,6 +51,11 @@ import {
   logTokenEstimationSample,
   type TokenEstimationContext,
 } from "../../services/token-estimation-metrics.ts";
+import {
+  enrichUsageWithContextMeter,
+  getContextMeterHeaders,
+  type ContextMeterMode,
+} from "../../services/context-meter.ts";
 import {
   getIncrementalDelta,
   formatThinkingSummaryContent,
@@ -148,6 +155,7 @@ export interface StreamProcessingParams {
     fullMessageCount: number;
     toolsCount?: number;
     requestPersonalizationInstruction?: string | null;
+    contextMode?: ContextMeterMode;
     releaseAccountLease: () => void;
   };
   onAssistantComplete?: AssistantCompleteHandler;
@@ -194,6 +202,7 @@ export async function processNonStreamingResponse(
     onAssistantComplete,
     onStreamComplete,
   } = params;
+  let currentTokenEstimationContext = tokenEstimationContext;
 
   try {
     const reader = stream.getReader();
@@ -478,7 +487,15 @@ export async function processNonStreamingResponse(
       });
     }
 
-    const usage = buildUsage(usageAccumulator);
+    const usage = enrichUsageWithContextMeter(
+      buildUsage(usageAccumulator),
+      currentTokenEstimationContext?.contextMeter,
+    );
+    for (const [name, value] of Object.entries(
+      getContextMeterHeaders((usage as any).context_meter),
+    )) {
+      c.header(name, value);
+    }
     const message: any = {
       role: "assistant",
       content: toolCallsOut.length ? null : finalContent,
@@ -556,6 +573,7 @@ export async function processNonStreamingResponse(
         fullMessageCount: midStreamRetry.fullMessageCount,
         toolsCount: midStreamRetry.toolsCount,
         requestPersonalizationInstruction: midStreamRetry.requestPersonalizationInstruction,
+        contextMode: "replay",
         requestSignal: c.req.raw.signal,
       });
 
@@ -577,6 +595,8 @@ export async function processNonStreamingResponse(
         uiSessionId: newStreamResult.uiSessionId,
         activeAccountId: newStreamResult.activeAccountId,
         activeAccountLabel: newStreamResult.activeAccountLabel,
+        finalPrompt: retryPrompt,
+        tokenEstimationContext: newStreamResult.tokenEstimationContext,
         midStreamRetry: undefined, // Prevent infinite retry loop
         onStreamComplete: () => {
           newStreamResult.releaseAccountLease();
@@ -644,7 +664,7 @@ export async function processNonStreamingResponse(
       reasoningContent: reasoningBuffer || undefined,
       usage,
       mode: "non-stream",
-      context: tokenEstimationContext,
+      context: currentTokenEstimationContext,
     });
 
     scheduleAssistantComplete(onAssistantComplete, {
@@ -708,6 +728,7 @@ export async function processStreamingResponse(
     onAssistantComplete,
     onStreamComplete,
   } = params;
+  let currentTokenEstimationContext = tokenEstimationContext;
 
   // Pre-read initial bytes to detect upstream error before committing to SSE
   const streamReader = stream.getReader();
@@ -775,10 +796,18 @@ export async function processStreamingResponse(
     let currentAccountId = retryContext.activeAccountId;
     let currentAccountLabel = retryContext.activeAccountLabel;
     let invalidInputSameAccountRetries = 0;
+    let chatInProgressSameAccountRetries = 0;
 
     const abortHandler = async () => {
       if (clientDisconnected) return;
       clientDisconnected = true;
+      // A disconnect can leave Qwen settling the previous generation for a few
+      // seconds even after the stop request is sent. Keep new requests away from
+      // this account briefly instead of immediately reusing the same chat.
+      markAccountTemporarilyBusy(
+        currentAccountId,
+        config.retry.chatInProgressBusyMs,
+      );
 
       console.log(
         `🔌 [Chat] Client disconnected | ${completionId} | stopping Qwen generation`,
@@ -1265,6 +1294,14 @@ export async function processStreamingResponse(
               }
             }
           } catch (_e) {
+            // Never start a transparent retry after the downstream client has
+            // gone away. A stop/abort can race the upstream error and otherwise
+            // keep creating requests on the same sticky account in the
+            // background.
+            if (clientDisconnected || c.req.raw.signal.aborted) {
+              return;
+            }
+
             if (
               _e instanceof RetryableQwenStreamError &&
               retryContext.retriesLeft > 0 &&
@@ -1291,8 +1328,18 @@ export async function processStreamingResponse(
                 if (retryInvalidInputOnSameAccount) {
                   invalidInputSameAccountRetries++;
                 }
+                const retryChatInProgressOnSameAccount =
+                  shouldRetryChatInProgressOnSameAccount(
+                    policy.reason,
+                    chatInProgressSameAccountRetries > 0,
+                  );
+                if (retryChatInProgressOnSameAccount) {
+                  chatInProgressSameAccountRetries++;
+                }
                 const switchAccount =
-                  policy.switchAccount && !retryInvalidInputOnSameAccount;
+                  (policy.switchAccount && !retryInvalidInputOnSameAccount) ||
+                  (policy.reason === "chat_in_progress" &&
+                    !retryChatInProgressOnSameAccount);
 
                 // Only cooldown the account when switching away. If retrying on
                 // the same account (temporary load), a cooldown would cause
@@ -1346,6 +1393,9 @@ export async function processStreamingResponse(
                   toolsCount: midStreamRetry.toolsCount,
                   requestPersonalizationInstruction:
                     midStreamRetry.requestPersonalizationInstruction,
+                  contextMode: needsFullPrompt
+                    ? "replay"
+                    : (midStreamRetry.contextMode ?? "delta"),
                   requestSignal: c.req.raw.signal,
                   allowTemporarilyBusyAccountId: currentAccountId,
                 });
@@ -1375,6 +1425,8 @@ export async function processStreamingResponse(
                 currentUiSessionId = newStreamResult.uiSessionId;
                 retryContext.releaseAccountLease =
                   newStreamResult.releaseAccountLease;
+                currentTokenEstimationContext =
+                  newStreamResult.tokenEstimationContext;
                 targetResponseId = null;
                 lastThinkingSummary = "";
                 lastThinkingSummaryLength = 0;
@@ -1542,8 +1594,10 @@ export async function processStreamingResponse(
       }
 
       // Finish reason + usage + [DONE]
-      const usage = buildUsage(usageAccumulator);
-
+      const usage = enrichUsageWithContextMeter(
+        buildUsage(usageAccumulator),
+        currentTokenEstimationContext?.contextMeter,
+      );
       const finalFinishReason =
         toolParser && toolParser.getEmittedToolCallCount() > 0
           ? "tool_calls"
@@ -1650,6 +1704,7 @@ export async function processStreamingResponse(
             fullMessageCount: midStreamRetry.fullMessageCount,
             toolsCount: midStreamRetry.toolsCount,
             requestPersonalizationInstruction: midStreamRetry.requestPersonalizationInstruction,
+            contextMode: "replay",
             requestSignal: c.req.raw.signal,
           });
 
@@ -1695,6 +1750,8 @@ export async function processStreamingResponse(
             currentUiSessionId = newStreamResult.uiSessionId;
             currentAccountId = newStreamResult.activeAccountId;
             currentAccountLabel = newStreamResult.activeAccountLabel;
+            currentTokenEstimationContext =
+              newStreamResult.tokenEstimationContext;
             retryContext.releaseAccountLease = newStreamResult.releaseAccountLease;
 
             // Skip error injection since we successfully retried
@@ -1792,7 +1849,7 @@ export async function processStreamingResponse(
           reasoningContent: reasoningBuffer || undefined,
           usage,
           mode: "stream",
-          context: tokenEstimationContext,
+          context: currentTokenEstimationContext,
         });
       } else {
         if (isToolcallDebugEnabled()) {

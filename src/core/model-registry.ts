@@ -19,6 +19,7 @@ const modelContextWindows: Record<string, number> = {
 };
 
 const defaultContextWindow = 131072;
+const modelContextWindowSources = new Map<string, "upstream">();
 const defaultMaxOutputTokens = 8192;
 const defaultMaxThinkingTokens = 16384;
 export const MAX_PAYLOAD_SIZE = 50 * 1024 * 1024;
@@ -189,23 +190,40 @@ const defaultCapabilities: ModelCapabilities = {
   modalities: ["text"],
 };
 
+function getBaseModelId(modelId: string): string {
+  return modelId.replace(/-(?:no-thinking|thinking)$/, "");
+}
+
 export function setModelContextWindow(
   modelId: string,
   contextWindow: number,
 ): void {
+  if (!Number.isFinite(contextWindow) || contextWindow <= 0) return;
+  const baseId = getBaseModelId(modelId);
   modelContextWindows[modelId] = contextWindow;
+  modelContextWindows[baseId] = contextWindow;
+  modelContextWindowSources.set(modelId, "upstream");
+  modelContextWindowSources.set(baseId, "upstream");
 }
 
 export function getModelContextWindow(modelId: string): number {
-  // Remove both -thinking and -no-thinking suffixes to get base model ID
-  const baseId = modelId.replace("-no-thinking", "").replace("-thinking", "");
+  const baseId = getBaseModelId(modelId);
   return modelContextWindows[baseId] ?? defaultContextWindow;
 }
 
+export function getModelContextWindowSource(
+  modelId: string,
+): "upstream" | "registry" | "default" {
+  const baseId = getBaseModelId(modelId);
+  if (modelContextWindowSources.has(modelId) || modelContextWindowSources.has(baseId)) {
+    return "upstream";
+  }
+  if (modelContextWindows[baseId] !== undefined) return "registry";
+  return "default";
+}
+
 export function getModelCapabilities(modelId: string): ModelCapabilities {
-  // Remove both -thinking and -no-thinking suffixes to get base model ID
-  const baseId = modelId.replace("-no-thinking", "").replace("-thinking", "");
-  return modelCapabilities[baseId] ?? defaultCapabilities;
+  return modelCapabilities[getBaseModelId(modelId)] ?? defaultCapabilities;
 }
 
 /**
@@ -215,16 +233,121 @@ export function setModelCapabilities(
   modelId: string,
   capabilities: Partial<ModelCapabilities>,
 ): void {
-  const existing = modelCapabilities[modelId] ?? { ...defaultCapabilities };
-  modelCapabilities[modelId] = { ...existing, ...capabilities };
+  const baseId = getBaseModelId(modelId);
+  const existing = modelCapabilities[baseId] ?? { ...defaultCapabilities };
+  modelCapabilities[baseId] = { ...existing, ...capabilities };
+}
+
+function finitePositiveNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? value
+    : undefined;
+}
+
+function firstPositiveNumber(...values: unknown[]): number | undefined {
+  for (const value of values) {
+    const number = finitePositiveNumber(value);
+    if (number !== undefined) return number;
+  }
+  return undefined;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object"
+    ? (value as Record<string, unknown>)
+    : {};
 }
 
 export function syncModelContextWindows(
   models: Array<{ id: string; context_window?: number }>,
 ): void {
-  for (const m of models) {
-    if (m.context_window) {
-      modelContextWindows[m.id] = m.context_window;
+  for (const model of models) {
+    const contextWindow = finitePositiveNumber(model.context_window);
+    if (contextWindow !== undefined) {
+      setModelContextWindow(model.id, contextWindow);
+    }
+  }
+}
+
+/**
+ * Sync the model metadata returned by Qwen's `/api/models` endpoint. The API
+ * shape has changed between web versions, so accept the known aliases while
+ * retaining the registry fallback when a field is absent.
+ */
+export function syncModelMetadata(
+  models: Array<Record<string, unknown> & { id: string }>,
+): void {
+  syncModelContextWindows(models);
+
+  for (const model of models) {
+    const info = asRecord(model.info);
+    const meta = asRecord(info.meta ?? model.meta);
+    const capabilities = asRecord(
+      model.capabilities ?? meta.capabilities ?? info.capabilities,
+    );
+    const contextWindow = firstPositiveNumber(
+      model.context_window,
+      model.contextWindow,
+      model.max_context_length,
+      meta.max_context_length,
+      meta.context_window,
+      capabilities.max_context_length,
+      capabilities.context_window,
+    );
+    if (contextWindow !== undefined) {
+      setModelContextWindow(model.id, contextWindow);
+    }
+
+    const maxOutputTokens = firstPositiveNumber(
+      model.max_output_tokens,
+      model.max_tokens,
+      capabilities.max_output_tokens,
+      capabilities.maxOutputTokens,
+      capabilities.max_generation_length,
+      capabilities.maxGenerationLength,
+      meta.max_output_tokens,
+      meta.max_generation_length,
+    );
+    const maxThinkingTokens = firstPositiveNumber(
+      capabilities.max_thinking_tokens,
+      capabilities.maxThinkingTokens,
+      capabilities.max_thinking_generation_length,
+      capabilities.maxThinkingGenerationLength,
+      meta.max_thinking_tokens,
+      meta.max_thinking_generation_length,
+    );
+    const supportsThinking =
+      typeof capabilities.thinking === "boolean"
+        ? capabilities.thinking
+        : typeof capabilities.supports_thinking === "boolean"
+          ? capabilities.supports_thinking
+          : undefined;
+    const supportsVision =
+      typeof capabilities.vision === "boolean"
+        ? capabilities.vision
+        : typeof capabilities.supports_vision === "boolean"
+          ? capabilities.supports_vision
+          : undefined;
+    const modalities = Array.isArray(capabilities.modalities)
+      ? capabilities.modalities.filter(
+          (value): value is string => typeof value === "string",
+        )
+      : undefined;
+
+    if (
+      maxOutputTokens !== undefined ||
+      maxThinkingTokens !== undefined ||
+      supportsThinking !== undefined ||
+      supportsVision !== undefined ||
+      modalities !== undefined
+    ) {
+      setModelCapabilities(model.id, {
+        ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+        ...(maxThinkingTokens !== undefined ? { maxThinkingTokens } : {}),
+        ...(supportsThinking !== undefined ? { supportsThinking } : {}),
+        ...(supportsVision !== undefined ? { supportsVision } : {}),
+        ...(modalities !== undefined ? { modalities } : {}),
+      });
     }
   }
 }

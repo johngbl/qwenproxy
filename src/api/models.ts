@@ -6,7 +6,7 @@ import { getAccountCooldownInfo } from "../core/account-manager.ts";
 import { NotFoundError } from "../core/errors.js";
 import { sendOpenAIError } from "./error-helpers.js";
 import {
-  syncModelContextWindows,
+  syncModelMetadata,
   getModelCapabilities,
 } from "../core/model-registry.ts";
 
@@ -90,7 +90,7 @@ async function loadModelsWithVariants(): Promise<PublicModel[]> {
   const models = (await fetchQwenModels(
     getPreferredModelsAccountId(),
   )) as unknown as PublicModel[];
-  syncModelContextWindows(models);
+  syncModelMetadata(models);
   return expandModelVariants(models);
 }
 

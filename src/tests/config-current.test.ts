@@ -17,6 +17,9 @@ test("config exposes only Playwright/thread-native current auth and context sett
   assert.equal("topicDetection" in config, false);
 
   assert.equal(typeof config.qwen.personalizationFromRequest, "boolean");
+  assert.equal(config.contextMeter.enabled, true);
+  assert.equal(config.contextMeter.windowTokens, 0);
+  assert.equal(config.contextMeter.reportUsage, true);
   assert.equal(typeof config.playwright.initBatchSize, "number");
   assert.equal(typeof config.playwright.contextCloseTimeoutMs, "number");
   assert.equal(typeof config.playwright.idleContextTtlMs, "number");

@@ -64,6 +64,7 @@ interface ChatResponse {
     prompt_tokens: number;
     completion_tokens: number;
     total_tokens: number;
+    context_meter?: ResponsesUsage["context_meter"];
   };
 }
 
@@ -356,6 +357,9 @@ export function chatCompletionsToResponses(
     output_tokens_details: {
       reasoning_tokens: (chatRes.usage as any).completion_tokens_details?.reasoning_tokens ?? 0,
     },
+    ...(chatRes.usage.context_meter
+      ? { context_meter: chatRes.usage.context_meter }
+      : {}),
   };
 
   return {

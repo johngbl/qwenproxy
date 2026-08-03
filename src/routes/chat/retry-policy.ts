@@ -168,6 +168,15 @@ export function shouldRetryInvalidInputOnSameAccount(
   return reason === "invalid_input" && !alreadyRetried;
 }
 
+/** Keep one retry on the current account while an upstream generation settles;
+ * subsequent chat_in_progress failures must be allowed to rotate accounts. */
+export function shouldRetryChatInProgressOnSameAccount(
+  reason: string,
+  alreadyRetried: boolean,
+): boolean {
+  return reason === "chat_in_progress" && !alreadyRetried;
+}
+
 export function isAccountInitializationError(err: unknown): boolean {
   const message = errMessage(err).toLowerCase();
   return (

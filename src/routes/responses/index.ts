@@ -246,8 +246,14 @@ app.post("/v1/responses", async (c) => {
                   });
 
                   if (req.store !== false) {
+                    // Responses `instructions` are request-scoped. Do not persist
+                    // the synthetic system message, otherwise previous_response_id
+                    // repeats it on every turn and silently inflates context.
+                    const persistedInput = req.instructions
+                      ? chatRequest.messages.slice(1)
+                      : chatRequest.messages;
                     storeResponse(responseId, finalResponse, [
-                      ...chatRequest.messages,
+                      ...persistedInput,
                       ...responsesOutputToChatMessages(finalOutput),
                     ]);
                   }
@@ -316,8 +322,13 @@ app.post("/v1/responses", async (c) => {
 
       // Store response for stateful conversations
       if (req.store !== false) {
+        // `instructions` applies only to this response; keep it out of the
+        // persisted chain used by a later previous_response_id turn.
+        const persistedInput = req.instructions
+          ? chatRequest.messages.slice(1)
+          : chatRequest.messages;
         storeResponse(responsesResponse.id, responsesResponse, [
-          ...chatRequest.messages,
+          ...persistedInput,
           ...responsesOutputToChatMessages(responsesResponse.output),
         ]);
       }

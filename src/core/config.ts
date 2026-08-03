@@ -74,8 +74,11 @@ const envSchema = z
     QWEN_CHAT_POOL_MODELS: z.string().default("qwen3.7-plus"),
     QWEN_PERSONALIZATION_FROM_REQUEST: z.string().default("true"),
     QWEN_PERSONALIZATION_VERIFY_GET: z.string().default("true"),
-    QWEN_MAX_PROMPT_BYTES: z.string().default("1048576"),
+    QWEN_MAX_PROMPT_BYTES: z.string().default("0"),
     QWEN_MAX_PERSONALIZATION_BYTES: z.string().default("131072"),
+    CONTEXT_METER_ENABLED: z.string().default("true"),
+    CONTEXT_METER_WINDOW_TOKENS: z.string().default("0"),
+    CONTEXT_METER_REPORT_USAGE: z.string().default("true"),
     DELETE_ALL_CHATS_ON_SHUTDOWN: z.string().default("false"),
     SESSION_KEEP_ALIVE_ENABLED: z.string().default("false"),
     SESSION_KEEP_ALIVE_INTERVAL_MS: z.string().default("180000"),
@@ -214,6 +217,11 @@ export const config = {
       parseInt(env.QWEN_MAX_PERSONALIZATION_BYTES),
     ),
     deleteAllChatsOnShutdown: env.DELETE_ALL_CHATS_ON_SHUTDOWN === "true",
+  },
+  contextMeter: {
+    enabled: env.CONTEXT_METER_ENABLED === "true",
+    windowTokens: Math.max(0, parseInt(env.CONTEXT_METER_WINDOW_TOKENS)),
+    reportUsage: env.CONTEXT_METER_REPORT_USAGE === "true",
   },
 };
 

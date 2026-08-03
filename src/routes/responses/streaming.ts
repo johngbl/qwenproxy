@@ -58,6 +58,7 @@ export interface ResponsesStreamState {
     cachedTokens: number | null;
     reasoningTokens: number | null;
   };
+  contextMeter: ResponsesUsage["context_meter"];
 }
 
 export function createStreamState(
@@ -83,6 +84,7 @@ export function createStreamState(
       cachedTokens: null,
       reasoningTokens: null,
     },
+    contextMeter: undefined,
   };
 }
 
@@ -98,6 +100,9 @@ export function processChatChunk(
 
   // Update token count if available (real upstream usage overwrites)
   if (chunk.usage) {
+    if (chunk.usage.context_meter) {
+      state.contextMeter = chunk.usage.context_meter;
+    }
     if (chunk.usage.prompt_tokens !== undefined) {
       state.inputTokens = chunk.usage.prompt_tokens;
       state.upstreamUsage.inputTokens = chunk.usage.prompt_tokens;
@@ -520,5 +525,6 @@ export function buildFinalUsage(
     output_tokens_details: {
       reasoning_tokens: state.upstreamUsage.reasoningTokens ?? 0,
     },
+    ...(state.contextMeter ? { context_meter: state.contextMeter } : {}),
   };
 }

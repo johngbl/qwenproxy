@@ -21,12 +21,14 @@ import {
 } from "./streaming.ts";
 import { config } from "../../core/config.ts";
 import { logger } from "../../core/logger.ts";
+import { getContextMeterHeaders, type ContextMeterMode } from "../../services/context-meter.ts";
 import {
   getLogicalThreadState,
   RetryableQwenStreamError,
 } from "../../services/qwen.ts";
 import {
   classifyRetryAction,
+  shouldRetryChatInProgressOnSameAccount,
   shouldRetryInvalidInputOnSameAccount,
 } from "./retry-policy.ts";
 
@@ -126,6 +128,9 @@ export async function chatCompletions(c: Context) {
     // Full replay must retain system instructions even when personalization was
     // requested: its update can fail or be invalidated after a profile refresh.
     const fullPromptForRequest = parsed.systemPrompt + parsed.prompt;
+    const initialContextMode: ContextMeterMode = ctx.existingThread
+      ? "delta"
+      : "full";
 
     let streamResult = await acquireUpstreamStream({
       finalPrompt,
@@ -146,6 +151,7 @@ export async function chatCompletions(c: Context) {
       fullMessageCount: parsed.messageCount,
       toolsCount: declaredTools.length || undefined,
       requestPersonalizationInstruction: ctx.requestPersonalizationInstruction,
+      contextMode: initialContextMode,
       requestSignal: c.req.raw.signal,
     });
 
@@ -167,6 +173,12 @@ export async function chatCompletions(c: Context) {
         throw err;
       }
       throw streamResult.error || new Error("All accounts failed");
+    }
+
+    for (const [name, value] of Object.entries(
+      getContextMeterHeaders(streamResult.tokenEstimationContext.contextMeter),
+    )) {
+      c.header(name, value);
     }
 
     // Acquire per-chat lock now that we have a stream, to serialize concurrent
@@ -214,6 +226,7 @@ export async function chatCompletions(c: Context) {
         toolsCount: declaredTools.length || undefined,
         requestPersonalizationInstruction:
           ctx.requestPersonalizationInstruction,
+        contextMode: initialContextMode as ContextMeterMode,
         releaseAccountLease: streamResult.releaseAccountLease,
       },
       onAssistantComplete,
@@ -229,6 +242,7 @@ export async function chatCompletions(c: Context) {
     // Retry loop for mid-stream/create-stream failures (generic policy)
         let streamProcessingRetries = Math.max(0, config.retry.maxAttempts - 1);
         let invalidInputSameAccountRetries = 0;
+        let chatInProgressSameAccountRetries = 0;
         let currentStreamResult = streamResult;
         let currentParams = params;
 
@@ -268,8 +282,18 @@ export async function chatCompletions(c: Context) {
             if (retryInvalidInputOnSameAccount) {
               invalidInputSameAccountRetries++;
             }
+            const retryChatInProgressOnSameAccount =
+              shouldRetryChatInProgressOnSameAccount(
+                policy.reason,
+                chatInProgressSameAccountRetries > 0,
+              );
+            if (retryChatInProgressOnSameAccount) {
+              chatInProgressSameAccountRetries++;
+            }
             const switchAccount =
-              policy.switchAccount && !retryInvalidInputOnSameAccount;
+              (policy.switchAccount && !retryInvalidInputOnSameAccount) ||
+              (policy.reason === "chat_in_progress" &&
+                !retryChatInProgressOnSameAccount);
             const forceRetryNewChat = policy.forceNewChat;
             const retryWithFullPrompt = policy.retryWithFullPrompt;
             const retryFiles = policy.dropFiles ? [] : files;
@@ -352,6 +376,7 @@ export async function chatCompletions(c: Context) {
               toolsCount: declaredTools.length || undefined,
               requestPersonalizationInstruction:
                 ctx.requestPersonalizationInstruction,
+              contextMode: needsFullPromptOnRetry ? "replay" : initialContextMode,
               requestSignal: c.req.raw.signal,
             });
 
@@ -359,6 +384,14 @@ export async function chatCompletions(c: Context) {
               // Prefer a local preflight error over the upstream error that
               // triggered the replay (for example, an oversized full context).
               throw newStreamResult.error ?? streamErr;
+            }
+
+            for (const [name, value] of Object.entries(
+              getContextMeterHeaders(
+                newStreamResult.tokenEstimationContext?.contextMeter,
+              ),
+            )) {
+              c.header(name, value);
             }
 
             console.log(
@@ -404,6 +437,9 @@ export async function chatCompletions(c: Context) {
                 toolsCount: declaredTools.length || undefined,
                 requestPersonalizationInstruction:
                   ctx.requestPersonalizationInstruction,
+                contextMode: needsFullPromptOnRetry
+                  ? "replay"
+                  : initialContextMode,
                 releaseAccountLease: newStreamResult.releaseAccountLease,
               },
               onAssistantComplete,

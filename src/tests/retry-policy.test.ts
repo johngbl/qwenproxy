@@ -8,6 +8,7 @@ import {
   classifyRetryAction,
   isTerminalLocalError,
   parseSseErrorFromBuffer,
+  shouldRetryChatInProgressOnSameAccount,
   shouldRetryInvalidInputOnSameAccount,
   throwFromSseUpstreamError,
   toRetryableStreamError,
@@ -115,6 +116,21 @@ test("invalid_input retries a clean chat once before account rotation", () => {
   );
   assert.equal(
     shouldRetryInvalidInputOnSameAccount("anti_bot", false),
+    false,
+  );
+});
+
+test("chat_in_progress rotates after one same-account retry", () => {
+  assert.equal(
+    shouldRetryChatInProgressOnSameAccount("chat_in_progress", false),
+    true,
+  );
+  assert.equal(
+    shouldRetryChatInProgressOnSameAccount("chat_in_progress", true),
+    false,
+  );
+  assert.equal(
+    shouldRetryChatInProgressOnSameAccount("quota_or_rate_limit", false),
     false,
   );
 });

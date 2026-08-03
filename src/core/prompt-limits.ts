@@ -15,6 +15,11 @@ export interface PromptLimitStats {
   usableInputTokens: number;
 }
 
+export interface PromptLimitOptions {
+  /** Skip the model-token check until live model metadata has been synced. */
+  checkModelContext?: boolean;
+}
+
 export function getUtf8ByteLength(value: string): number {
   return Buffer.byteLength(value, "utf8");
 }
@@ -46,6 +51,7 @@ export function getPromptLimitStats(
 export function assertPromptWithinLimits(
   prompt: string,
   modelId: string,
+  options: PromptLimitOptions = {},
 ): PromptLimitStats {
   const stats = getPromptLimitStats(prompt, modelId);
   const maxPromptBytes = config.qwen.maxPromptBytes;
@@ -56,7 +62,10 @@ export function assertPromptWithinLimits(
     );
   }
 
-  if (stats.estimatedTokens > stats.usableInputTokens) {
+  if (
+    options.checkModelContext !== false &&
+    stats.estimatedTokens > stats.usableInputTokens
+  ) {
     throw new ContextLengthExceededError(
       `Input exceeds the usable context for ${modelId} (${stats.estimatedTokens} estimated tokens; limit ${stats.usableInputTokens}). Reduce or summarize the conversation before retrying.`,
     );

@@ -361,7 +361,12 @@ Fingerprint estável por conta (UA, locale, viewport, hardware/WebGL) é aplicad
 |---|---|---|
 | `CACHE_TTL` | `3600` | TTL do cache (s) |
 | `CACHE_COMPRESSION_ENABLED` | `true` | Compressão Brotli |
-| `QWEN_MAX_PROMPT_BYTES` | `1048576` | Teto local UTF-8 do prompt antes de chamar o upstream (`0` desativa) |
+| `QWEN_MAX_PROMPT_BYTES` | `0` | Teto opcional local UTF-8 do prompt (`0` desativa); não é a janela de tokens. O payload total continua limitado a 50 MiB |
+| `CONTEXT_METER_ENABLED` | `true` | Medição do histórico completo, delta/replay, payload Qwen e percentuais de contexto; já vem ativa por padrão |
+| `CONTEXT_METER_WINDOW_TOKENS` | `0` | Janela usada pelo medidor (`0` usa a janela real registrada para o modelo) |
+| `CONTEXT_METER_REPORT_USAGE` | `true` | Reporta em `usage.prompt_tokens` o valor real `input_tokens` do Qwen quando disponível; só usa a estimativa como fallback |
+
+O medidor de contexto é padrão e não exige nenhuma variável no `.env`. Ele não é um tokenizer nativo do Zed/Cline nem substitui o tokenizer privado do Qwen: calcula uma estimativa local do histórico completo recebido pelo proxy, registra o prompt delta/replay efetivamente enviado e preserva `usage.context_meter` com `measurementSource=qwen` quando o Qwen devolve `input_tokens`, ou `measurementSource=local_estimate` quando não devolve. A janela do modelo é sincronizada automaticamente pelo `/api/models`, e são emitidos headers `X-QwenBridge-Context-*` e logs estruturados. As três variáveis podem ser usadas somente como overrides avançados; por padrão o valor real do Qwen é preferido e a estimativa só é fallback.
 
 ### Observabilidade
 

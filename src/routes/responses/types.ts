@@ -1,5 +1,7 @@
 // OpenAI Responses API types (/v1/responses)
 
+import type { ContextMeterSnapshot } from "../../services/context-meter.ts";
+
 // ============ Request types ============
 
 export interface ResponsesRequest {
@@ -142,6 +144,8 @@ export interface ResponsesUsage {
   output_tokens_details: {
     reasoning_tokens: number;
   };
+  /** Optional QwenBridge diagnostic extension when context metering is enabled. */
+  context_meter?: ContextMeterSnapshot;
 }
 
 export interface ResponsesOutputReasoning {
