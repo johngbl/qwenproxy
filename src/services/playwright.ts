@@ -1026,7 +1026,7 @@ export async function withAccountPage<T>(
       const result = await withTimeout(
         fn(page),
         Math.max(1_000, timeoutMs),
-        `Playwright page operation timed out for ${accountId}`,
+        `Playwright page operation timed out for ${accountId} after ${Math.max(1_000, timeoutMs)}ms`,
       );
       touchAccountActivity(accountId);
       return result;

@@ -732,6 +732,7 @@ async function withQwenBrowserPage<T>(
   accountId: string,
   fn: (page: Page) => Promise<T>,
   targetPath?: string,
+  operationTimeoutMs = config.timeouts.page,
 ): Promise<T> {
   const targetUrl = qwenUrl(targetPath || "/");
   const targetOrigin = new URL(targetUrl).origin;
@@ -758,13 +759,13 @@ async function withQwenBrowserPage<T>(
       ) {
         await page.goto(targetUrl, {
           waitUntil: "domcontentloaded",
-          timeout: Math.min(config.timeouts.navigation, config.timeouts.page),
+          timeout: Math.min(config.timeouts.navigation, operationTimeoutMs),
         });
       }
 
       return fn(page);
     },
-    config.timeouts.page,
+    operationTimeoutMs,
     Math.min(config.timeouts.page, 5_000),
   );
 }
@@ -772,8 +773,14 @@ async function withQwenBrowserPage<T>(
 async function withQwenPersonalizationPage<T>(
   accountId: string,
   fn: (page: Page) => Promise<T>,
+  operationTimeoutMs = config.timeouts.page,
 ): Promise<T> {
-  return withQwenBrowserPage(accountId, fn, "/settings/personalization");
+  return withQwenBrowserPage(
+    accountId,
+    fn,
+    "/settings/personalization",
+    operationTimeoutMs,
+  );
 }
 
 async function ensureQwenPersonalizationPage(accountId?: string): Promise<void> {
@@ -831,6 +838,7 @@ export async function requestQwenTextInBrowser(
   options: {
     settingsPage?: boolean;
     referrer?: string;
+    timeoutMs?: number;
   } = {},
 ): Promise<Response> {
   const url = qwenUrl(path);
@@ -892,10 +900,13 @@ export async function requestQwenTextInBrowser(
     ? await withQwenPersonalizationPage<BrowserTextResponse>(
         accountId,
         evaluateRequest,
+        options.timeoutMs,
       )
     : await withQwenBrowserPage<BrowserTextResponse>(
         accountId,
         evaluateRequest,
+        undefined,
+        options.timeoutMs,
       );
 
   return new Response(response.raw, {
@@ -968,6 +979,7 @@ async function createQwenBrowserResponse(
   body: string,
   signal: AbortSignal,
   referrer?: string,
+  pageOperationTimeoutMs = config.timeouts.page,
 ): Promise<Response> {
   if (isAuthMockEnabled()) {
     return fetch(url, {
@@ -1005,146 +1017,153 @@ async function createQwenBrowserResponse(
 
   let metadata: { status: number; contentType: string };
   try {
-    metadata = await withQwenBrowserPage(accountId, async (page) => {
-      await ensureBrowserStreamBinding(page);
-      return page.evaluate(
-        async ({
-          url,
-          method,
-          headers,
-          body,
-          referrer,
-          requestId,
-          bindingName,
-          abortersKey,
-          flushBytes,
-          flushMs,
-        }: {
-          url: string;
-          method: "POST";
-          headers: Record<string, string>;
-          body: string;
-          referrer?: string;
-          requestId: string;
-          bindingName: string;
-          abortersKey: string;
-          flushBytes: number;
-          flushMs: number;
-        }) => {
-          const globalObject = globalThis as unknown as Record<string, unknown>;
-          const notify = globalObject[bindingName] as (
-            (id: string, event: BrowserStreamEvent) => Promise<void>
-          );
-          if (typeof notify !== "function") {
-            throw new Error("Qwen browser stream binding is unavailable");
-          }
+    metadata = await withQwenBrowserPage(
+      accountId,
+      async (page) => {
+        await ensureBrowserStreamBinding(page);
+        return page.evaluate(
+          async ({
+            url,
+            method,
+            headers,
+            body,
+            referrer,
+            requestId,
+            bindingName,
+            abortersKey,
+            flushBytes,
+            flushMs,
+          }: {
+            url: string;
+            method: "POST";
+            headers: Record<string, string>;
+            body: string;
+            referrer?: string;
+            requestId: string;
+            bindingName: string;
+            abortersKey: string;
+            flushBytes: number;
+            flushMs: number;
+          }) => {
+            const globalObject = globalThis as unknown as Record<string, unknown>;
+            const notify = globalObject[bindingName] as (
+              (id: string, event: BrowserStreamEvent) => Promise<void>
+            );
+            if (typeof notify !== "function") {
+              throw new Error("Qwen browser stream binding is unavailable");
+            }
 
-          let aborters = globalObject[abortersKey] as
-            | Map<string, AbortController>
-            | undefined;
-          if (!aborters) {
-            aborters = new Map<string, AbortController>();
-            globalObject[abortersKey] = aborters;
-          }
-          const abortController = new AbortController();
-          aborters.set(requestId, abortController);
+            let aborters = globalObject[abortersKey] as
+              | Map<string, AbortController>
+              | undefined;
+            if (!aborters) {
+              aborters = new Map<string, AbortController>();
+              globalObject[abortersKey] = aborters;
+            }
+            const abortController = new AbortController();
+            aborters.set(requestId, abortController);
 
-          try {
-            const response = await fetch(url, {
-              method,
-              credentials: "include",
-              headers,
-              body,
-              signal: abortController.signal,
-              ...(referrer ? { referrer } : {}),
-            });
+            try {
+              const response = await fetch(url, {
+                method,
+                credentials: "include",
+                headers,
+                body,
+                signal: abortController.signal,
+                ...(referrer ? { referrer } : {}),
+              });
 
-            await notify(requestId, {
-              type: "headers",
-              status: response.status,
-              contentType: response.headers.get("content-type") || "",
-            });
+              await notify(requestId, {
+                type: "headers",
+                status: response.status,
+                contentType: response.headers.get("content-type") || "",
+              });
 
-            void (async () => {
-              try {
-                if (!response.body) {
-                  await notify(requestId, { type: "done" });
-                  return;
-                }
+              void (async () => {
+                try {
+                  if (!response.body) {
+                    await notify(requestId, { type: "done" });
+                    return;
+                  }
 
-                const reader = response.body.getReader();
-                const decoder = new TextDecoder();
-                let buffered = "";
-                let lastFlushAt = Date.now();
+                  const reader = response.body.getReader();
+                  const decoder = new TextDecoder();
+                  let buffered = "";
+                  let lastFlushAt = Date.now();
 
-                while (true) {
-                  const { done, value } = await reader.read();
-                  if (done) break;
-                  if (value) {
-                    buffered += decoder.decode(value, { stream: true });
-                    if (
-                      buffered.length >= flushBytes ||
-                      Date.now() - lastFlushAt >= flushMs
-                    ) {
-                      const data = buffered;
-                      buffered = "";
-                      lastFlushAt = Date.now();
-                      await notify(requestId, { type: "chunk", data });
+                  while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    if (value) {
+                      buffered += decoder.decode(value, { stream: true });
+                      if (
+                        buffered.length >= flushBytes ||
+                        Date.now() - lastFlushAt >= flushMs
+                      ) {
+                        const data = buffered;
+                        buffered = "";
+                        lastFlushAt = Date.now();
+                        await notify(requestId, { type: "chunk", data });
+                      }
                     }
                   }
+                  buffered += decoder.decode();
+                  if (buffered) {
+                    const data = buffered;
+                    buffered = "";
+                    await notify(requestId, { type: "chunk", data });
+                  }
+                  await notify(requestId, { type: "done" });
+                } catch (error) {
+                  try {
+                    await notify(requestId, {
+                      type: "error",
+                      message:
+                        error instanceof Error ? error.message : String(error),
+                    });
+                  } catch {
+                    // Node may have cancelled the stream already.
+                  }
+                } finally {
+                  aborters?.delete(requestId);
                 }
-                buffered += decoder.decode();
-                if (buffered) {
-                  const data = buffered;
-                  buffered = "";
-                  await notify(requestId, { type: "chunk", data });
-                }
-                await notify(requestId, { type: "done" });
-              } catch (error) {
-                try {
-                  await notify(requestId, {
-                    type: "error",
-                    message: error instanceof Error ? error.message : String(error),
-                  });
-                } catch {
-                  // Node may have cancelled the stream already.
-                }
-              } finally {
-                aborters?.delete(requestId);
-              }
-            })();
+              })();
 
-            return {
-              status: response.status,
-              contentType: response.headers.get("content-type") || "",
-            };
-          } catch (error) {
-            aborters.delete(requestId);
-            try {
-              await notify(requestId, {
-                type: "error",
-                message: error instanceof Error ? error.message : String(error),
-              });
-            } catch {
-              // Preserve the original fetch error for Node.
+              return {
+                status: response.status,
+                contentType: response.headers.get("content-type") || "",
+              };
+            } catch (error) {
+              aborters.delete(requestId);
+              try {
+                await notify(requestId, {
+                  type: "error",
+                  message:
+                    error instanceof Error ? error.message : String(error),
+                });
+              } catch {
+                // Preserve the original fetch error for Node.
+              }
+              throw error;
             }
-            throw error;
-          }
-        },
-        {
-          url,
-          method,
-          headers: browserHeaders,
-          body,
-          referrer,
-          requestId,
-          bindingName: BROWSER_STREAM_BINDING,
-          abortersKey: BROWSER_ABORTERS_KEY,
-          flushBytes: BROWSER_STREAM_FLUSH_BYTES,
-          flushMs: BROWSER_STREAM_FLUSH_MS,
-        },
-      );
-    });
+          },
+          {
+            url,
+            method,
+            headers: browserHeaders,
+            body,
+            referrer,
+            requestId,
+            bindingName: BROWSER_STREAM_BINDING,
+            abortersKey: BROWSER_ABORTERS_KEY,
+            flushBytes: BROWSER_STREAM_FLUSH_BYTES,
+            flushMs: BROWSER_STREAM_FLUSH_MS,
+          },
+        );
+      },
+      undefined,
+      pageOperationTimeoutMs,
+    );
   } catch (error) {
     browserStreamStates.delete(requestId);
     throw error;
@@ -2554,6 +2573,20 @@ export async function createQwenStream(
         BASE_TIMEOUT_MS + Math.ceil(payloadMB * TIMEOUT_PER_MB),
       )
     : BASE_TIMEOUT_MS + Math.ceil(payloadMB * TIMEOUT_PER_MB);
+  // The browser-side fetch waits for the upstream response headers before the
+  // Node stream bridge can continue. Do not apply the generic 30s page timeout
+  // to large/reasoning requests; it resets a healthy context while Qwen is
+  // still accepting the payload. Keep the total-request ceiling as a safety
+  // bound when it is configured.
+  const browserOperationTimeoutMs = Math.max(
+    config.timeouts.page,
+    Math.min(
+      dynamicTimeoutMs,
+      config.timeouts.totalRequestTimeout > 0
+        ? config.timeouts.totalRequestTimeout
+        : dynamicTimeoutMs,
+    ),
+  );
 
   const url = chatSessionId
     ? qwenUrl(`/api/v2/chat/completions?chat_id=${encodeURIComponent(chatSessionId)}`)
@@ -2581,6 +2614,7 @@ export async function createQwenStream(
             ? `/c/${encodeURIComponent(chatSessionId)}`
             : "/c/new-chat",
         ),
+        browserOperationTimeoutMs,
       );
 
     let response: Response;

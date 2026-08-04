@@ -92,6 +92,20 @@ test("classifyRetryAction: account lease timeout is retryable without rebuilding
   assert.equal(action.reason, "account_busy");
 });
 
+test("classifyRetryAction: stuck Playwright page is account initialization failure", () => {
+  const action = classifyRetryAction(
+    new Error(
+      "Playwright page operation timed out for account abc after 120000ms",
+    ),
+  );
+
+  assert.equal(action.retryable, true);
+  assert.equal(action.switchAccount, true);
+  assert.equal(action.forceNewChat, false);
+  assert.equal(action.accountCooldownReason, "AuthInitFailed");
+  assert.equal(action.reason, "account_initialization_failed");
+});
+
 test("classifyRetryAction: invalid_input forces new chat + full prompt + switch", () => {
   const err = Object.assign(
     new Error("invalid_input: Entrada ou anexo inválido. Verifique e tente novamente."),

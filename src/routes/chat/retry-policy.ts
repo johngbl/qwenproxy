@@ -184,6 +184,7 @@ export function isAccountInitializationError(err: unknown): boolean {
     message.includes("required qwen anti-fraud headers are unavailable") ||
     message.includes("playwright not initialized for account") ||
     message.includes("playwright page unavailable") ||
+    message.includes("playwright page operation timed out") ||
     message.includes("playwright re-initialization timed out")
   );
 }
