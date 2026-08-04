@@ -27,6 +27,11 @@ const envSchema = z
     PLAYWRIGHT_IDLE_CONTEXT_TTL_MS: z.string().default("300000"),
     PLAYWRIGHT_JS_HEAP_MB: z.string().default("256"),
     PLAYWRIGHT_LOW_MEMORY_FLAGS: z.string().default("true"),
+    CAPTCHA_SOLVER_ENABLED: z.string().default("true"),
+    CAPTCHA_SOLVER_MAX_ATTEMPTS: z.string().default("3"),
+    CAPTCHA_SOLVER_TIMEOUT_MS: z.string().default("15000"),
+    CAPTCHA_SOLVER_RETRY_DELAY_MS: z.string().default("1000"),
+    CAPTCHA_SOLVER_SETTLE_MS: z.string().default("2000"),
     OSS_MULTIPART_THRESHOLD_MB: z.string().default("5"),
     CHAT_REQUEST_LOG: z.string().default("false"),
     HTTP_TIMEOUT: z.string().default("10000"),
@@ -109,6 +114,13 @@ export const config = {
     idleContextTtlMs: Math.max(0, parseInt(env.PLAYWRIGHT_IDLE_CONTEXT_TTL_MS)),
     jsHeapMb: Math.max(64, parseInt(env.PLAYWRIGHT_JS_HEAP_MB)),
     lowMemoryFlags: env.PLAYWRIGHT_LOW_MEMORY_FLAGS !== "false",
+  },
+  captcha: {
+    enabled: env.CAPTCHA_SOLVER_ENABLED === "true",
+    maxAttempts: Math.max(1, Math.min(5, parseInt(env.CAPTCHA_SOLVER_MAX_ATTEMPTS))),
+    timeoutMs: Math.max(0, parseInt(env.CAPTCHA_SOLVER_TIMEOUT_MS)),
+    retryDelayMs: Math.max(0, parseInt(env.CAPTCHA_SOLVER_RETRY_DELAY_MS)),
+    settleMs: Math.max(0, parseInt(env.CAPTCHA_SOLVER_SETTLE_MS)),
   },
   oss: {
     multipartThresholdBytes: Math.max(

@@ -322,6 +322,16 @@ npm run typecheck  # tipos
 | `SESSION_KEEP_ALIVE_IDLE_MS` | `120000` | Idle mínimo para keep-alive |
 | `SESSION_KEEP_ALIVE_NAVIGATION_INTERVAL_MS` | `480000` | Intervalo de navegação leve |
 
+### CAPTCHA automático
+
+| Variável | Default | Descrição |
+|---|---|---|
+| `CAPTCHA_SOLVER_ENABLED` | `true` | Solver Baxia/TMD ativo por padrão; use `false` somente como desligamento de emergência |
+| `CAPTCHA_SOLVER_MAX_ATTEMPTS` | `3` | Máximo de arrastos por challenge |
+| `CAPTCHA_SOLVER_TIMEOUT_MS` | `15000` | Tempo para o iframe Baxia aparecer |
+| `CAPTCHA_SOLVER_RETRY_DELAY_MS` | `1000` | Espera entre tentativas do slider |
+| `CAPTCHA_SOLVER_SETTLE_MS` | `2000` | Tempo para confirmar cookies/DOM após o arrasto |
+
 ### Headers anti-bot
 
 | Variável | Default | Descrição |
@@ -390,7 +400,7 @@ O proxy tenta recuperar erros transitórios sem quebrar thread-native/tools:
 |---|---|
 | `502` / `503` / `504` | Retry com delay curto |
 | `fetch failed`, `ECONNREFUSED`, `ETIMEDOUT`, `ENOTFOUND` | Retry de rede |
-| Anti-bot (`FAIL_SYS_USER_VALIDATE`, captcha, WAF HTML, etc.) | Identifica o WAF e repete imediatamente na mesma conta; não resolve captcha nem aplica cooldown/rotação |
+| Anti-bot (`FAIL_SYS_USER_VALIDATE`, captcha, WAF HTML, etc.) | Com solver Baxia habilitado: preserva a página, tenta resolver uma vez, atualiza headers e repete na mesma conta; sem solver, mantém o retry simples |
 | Quota / rate limit | Cooldown categorizado (`RateLimited`, `RateLimitTemporary`, …) |
 | `invalid_input` (“entrada ou anexo inválido”) | Retry forçando **novo chat** + contexto completo |
 | Chat not exist / session stale | Força novo chat na sessão lógica |
@@ -419,13 +429,13 @@ Detecta, entre outros:
 **Fluxo:**
 
 1. Identifica o WAF/captcha sem expor o HTML do desafio ao cliente
-2. Repete imediatamente a requisição na mesma conta
-3. Se as tentativas da conta acabarem, retorna o erro sanitizado
-4. Não há solver, cooldown, rotação ou reset específico para captcha
+2. Se `CAPTCHA_SOLVER_ENABLED=true`, detecta o diálogo Baxia visível e procura o iframe aninhado, o iframe legado ou o documento NC diretamente na página da mesma conta; então executa o slider com limite de tentativas
+3. Após sucesso, captura novamente cookies/headers e repete a requisição original na mesma conta
+4. Se o solver estiver desligado ou falhar, retorna ao retry sanitizado existente sem cooldown/rotação de conta
 
 Com Playwright, cada conta usa fingerprint e headers capturados do browser real.
 
-O proxy não tenta resolver o captcha. Quando identifica um desafio WAF, repete a requisição imediatamente na mesma conta para manter o comportamento simples e observável durante a investigação.
+O solver Baxia/TMD fica ativo por padrão e cobre o slider NC visível em iframe ou documento direto. O proxy não salva HTML, screenshot, cookies ou tokens do challenge; desafios não suportados continuam no fluxo sanitizado de retry na mesma conta.
 
 ---
 

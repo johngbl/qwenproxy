@@ -566,9 +566,9 @@ export async function initPlaywrightForAccount(
         didLogin = true;
       }
 
-      // Navigate to Qwen home to validate session and populate cookies
+      // Navigate to the stable chat page to validate the session and populate cookies
       try {
-        await acctPage.goto(qwenUrl("/"), {
+        await acctPage.goto(qwenUrl("/c/new-chat"), {
           waitUntil: "domcontentloaded",
           timeout: config.timeouts.navigation,
         });
@@ -683,7 +683,7 @@ async function loginViaApi(
     );
 
     if (result.ok) {
-      await page.goto(qwenUrl("/"), {
+      await page.goto(qwenUrl("/c/new-chat"), {
         waitUntil: "domcontentloaded",
         timeout: config.timeouts.navigation,
       });
@@ -746,7 +746,7 @@ async function loginViaUi(
       !page.url().includes("auth") && !page.url().includes("login");
 
     if (isLoggedIn) {
-      await page.goto(qwenUrl("/"), {
+      await page.goto(qwenUrl("/c/new-chat"), {
         waitUntil: "domcontentloaded",
         timeout: config.timeouts.navigation,
       });
@@ -856,8 +856,8 @@ export async function captureQwenHeaders(
         }
 
         try {
-          // Navigate to Qwen and trigger a request.
-          await page.goto(qwenUrl("/"), {
+          // Navigate to the stable chat page and trigger a request.
+          await page.goto(qwenUrl("/c/new-chat"), {
             waitUntil: "domcontentloaded",
             timeout: Math.min(config.timeouts.navigation, timeoutMs),
           });
@@ -948,7 +948,7 @@ async function refreshHeadersInternal(
     const page = accountPages.get(accountId);
     if (page) {
       try {
-        await page.goto(qwenUrl("/"), {
+        await page.goto(qwenUrl("/c/new-chat"), {
           waitUntil: "domcontentloaded",
           timeout: Math.min(config.timeouts.navigation, boundedTimeoutMs),
         });
@@ -1193,7 +1193,7 @@ export async function keepAlivePlaywrightAccount(
       now - lastNavigation > config.sessionKeeper.navigationIntervalMs;
 
     if (shouldNavigate) {
-      await page.goto(qwenUrl("/"), {
+      await page.goto(qwenUrl("/c/new-chat"), {
         waitUntil: "domcontentloaded",
         timeout: Math.min(config.timeouts.navigation, 15_000),
       });

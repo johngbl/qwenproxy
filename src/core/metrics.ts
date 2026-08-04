@@ -38,6 +38,12 @@ export class Metrics extends EventEmitter {
       ["streams.active", "gauge", "Active SSE streams"],
       ["streams.errors", "counter", "Stream errors"],
 
+      // CAPTCHA / anti-bot metrics
+      ["captcha.challenges.detected", "counter", "Detected CAPTCHA challenges"],
+      ["captcha.solves.succeeded", "counter", "Successful CAPTCHA solves"],
+      ["captcha.solves.failed", "counter", "Failed CAPTCHA solves"],
+      ["captcha.solve.duration", "histogram", "CAPTCHA solve duration (ms)"],
+
       // Memory metrics
       ["memory.heap.used", "gauge", "Heap memory used (bytes)"],
       ["memory.heap.total", "gauge", "Heap memory total (bytes)"],

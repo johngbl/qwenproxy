@@ -14,6 +14,36 @@ export function humanDelay(
   return Math.round(Math.max(minMs, Math.min(maxMs, midpoint + jitter)));
 }
 
+export async function humanDrag(
+  page: Page,
+  startX: number,
+  startY: number,
+  endX: number,
+  endY: number,
+): Promise<void> {
+  const distance = Math.hypot(endX - startX, endY - startY);
+  const steps = Math.max(12, Math.min(48, Math.round(distance / 8)));
+
+  await page.mouse.move(startX, startY, { steps: 4 });
+  await sleep(humanDelay(60, 140));
+  await page.mouse.down();
+  try {
+    for (let step = 1; step <= steps; step++) {
+      const progress = step / steps;
+      const eased = 1 - (1 - progress) ** 2;
+      const jitter = step === steps ? 0 : (Math.random() - 0.5) * 3;
+      await page.mouse.move(
+        startX + (endX - startX) * eased,
+        startY + (endY - startY) * eased + jitter,
+        { steps: 1 },
+      );
+      await sleep(humanDelay(8, 22));
+    }
+  } finally {
+    await page.mouse.up();
+  }
+}
+
 export async function subtlePageActivity(page: Page): Promise<void> {
   if (page.isClosed()) return;
 
