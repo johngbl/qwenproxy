@@ -5,7 +5,7 @@
 
 import {
   getAccountCredentials,
-  loadConfiguredAccounts,
+  loadAccounts,
   type QwenAccount,
 } from "../core/accounts.ts";
 import { deleteAllQwenChats } from "./qwen.ts";
@@ -18,7 +18,7 @@ import {
 export interface DeleteChatsResult {
   attempted: number;
   succeeded: number;
-  mode: "accounts" | "global";
+  mode: "accounts";
 }
 
 async function ensurePlaywrightSession(account: QwenAccount): Promise<void> {
@@ -44,14 +44,14 @@ async function deleteChatsForAccount(account: QwenAccount): Promise<boolean> {
 }
 
 export async function deleteChatsForConfiguredAccounts(): Promise<DeleteChatsResult> {
-  const accounts = loadConfiguredAccounts();
+  // Playwright requests are account-scoped. Use every account persisted in the
+  // database, including accounts created through `npm run login`, instead of
+  // falling back to a global request without an account context.
+  const accounts = loadAccounts();
   if (accounts.length === 0) {
-    const ok = await deleteAllQwenChats();
-    return {
-      attempted: 1,
-      succeeded: ok ? 1 : 0,
-      mode: "global",
-    };
+    throw new Error(
+      "No Qwen accounts configured. Add an account with npm run login.",
+    );
   }
 
   let succeeded = 0;
