@@ -6,6 +6,7 @@ import { qwenUrl } from "./qwen-url.ts";
 import {
   extractBaxiaChallengeUrl,
   logBaxiaCaptcha,
+  sanitizeCaptchaErrorDetail,
   solveBaxiaCaptcha,
 } from "./captcha-solver.ts";
 
@@ -154,7 +155,12 @@ export async function recoverBaxiaCaptcha(
     lastFailedRecoveryAt.set(accountId, Date.now());
     metrics.increment("captcha.solves.failed", 1, { solver });
     const errorKind = error instanceof Error ? error.name : "UnknownError";
-    logBaxiaCaptcha("recovery_failed", { target: label, error: errorKind });
+    const detail = sanitizeCaptchaErrorDetail(error);
+    logBaxiaCaptcha("recovery_failed", {
+      target: label,
+      error: errorKind,
+      detail,
+    });
     return false;
   }
 }

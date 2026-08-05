@@ -155,7 +155,6 @@ export function acquireAccountLease(
           ),
         );
       }, timeoutMs);
-      entry.timer.unref?.();
     }
 
     // Abort signal

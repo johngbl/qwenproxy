@@ -291,6 +291,19 @@ async function waitForSolvedState(
   return false;
 }
 
+export function sanitizeCaptchaErrorDetail(error: unknown): string {
+  const message =
+    error instanceof Error ? error.message || error.name : String(error);
+  return message
+    .replace(/https?:\/\/[^\s"'`<>]+/gi, "<url>")
+    .replace(/\/[^\s"'`<>]*_____tmd_____[^\s"'`<>]*/gi, "<challenge-path>")
+    .replace(/x5secdata=[^\s"'`<>]*/gi, "x5secdata=<redacted>")
+    .replace(/data:image\/[^\s"'`<>]+/gi, "<image-data>")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 220);
+}
+
 /**
  * Solve a Baxia/TMD slider challenge already present in the account page.
  *
@@ -324,6 +337,8 @@ export async function solveBaxiaCaptcha(
   const scope = detected.target.iframeSelector ? "iframe" : "top_level";
   let lastGeometry: { track?: number; slider?: number; distance?: number } = {};
   let lastReason = "unknown";
+  let lastStage = "detect";
+  let lastDetail = "";
 
   logBaxiaCaptcha("solve_started", { scope });
 
@@ -337,6 +352,7 @@ export async function solveBaxiaCaptcha(
   let sliderMissingReported = false;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    let stage = "slider_wait";
     try {
       const frame: BaxiaLocatorContext = frameSelector
         ? page.frameLocator(frameSelector)
@@ -348,6 +364,7 @@ export async function solveBaxiaCaptcha(
         sliderFoundReported = true;
       }
 
+      stage = "geometry";
       const sliderBox = await slider.boundingBox();
       if (!sliderBox) {
         lastReason = "bounds_unavailable";
@@ -368,6 +385,7 @@ export async function solveBaxiaCaptcha(
         });
 
         if (dragDistance > 0) {
+          stage = "drag";
           await humanDrag(
             page,
             sliderBox.x + sliderBox.width / 2,
@@ -378,6 +396,7 @@ export async function solveBaxiaCaptcha(
         }
       }
 
+      stage = "settle";
       if (
         await waitForSolvedState(
           detected.target.locator,
@@ -403,16 +422,24 @@ export async function solveBaxiaCaptcha(
       logBaxiaCaptcha("attempt_not_solved", { attempt });
     } catch (error) {
       const errorKind = error instanceof Error ? error.name : "UnknownError";
+      const detail = sanitizeCaptchaErrorDetail(error);
       if (!sliderFoundReported && !sliderMissingReported) {
         lastReason = "slider_not_found";
-        logBaxiaCaptcha("slider_not_found", { attempt });
+        logBaxiaCaptcha("slider_not_found", { attempt, stage, detail });
         sliderMissingReported = true;
       } else {
         lastReason = errorKind;
       }
-      // Do not include Playwright's full error: it can contain challenge URLs
-      // or other page details that should never reach application logs.
-      logBaxiaCaptcha("attempt_failed", { attempt, error: errorKind });
+      lastStage = stage;
+      lastDetail = detail;
+      // Include only a sanitized detail: full Playwright errors can contain
+      // challenge URLs or page data that should not reach application logs.
+      logBaxiaCaptcha("attempt_failed", {
+        attempt,
+        stage,
+        error: errorKind,
+        detail,
+      });
     }
 
     if (attempt < maxAttempts && retryDelayMs > 0) {
@@ -430,6 +457,8 @@ export async function solveBaxiaCaptcha(
       scope,
       attempts: maxAttempts,
       reason: lastReason,
+      stage: lastStage,
+      detail: lastDetail || lastReason,
     },
     true,
   );

@@ -1,4 +1,9 @@
-import { readFileSync, writeFileSync, existsSync } from "fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from "fs";
 import { join, resolve } from "path";
 
 interface PriorityData {
@@ -33,6 +38,7 @@ function loadPriority(): PriorityData {
 
 function savePriority(data: PriorityData): void {
   try {
+    mkdirSync(DATA_DIR, { recursive: true });
     writeFileSync(PRIORITY_FILE, JSON.stringify(data, null, 2), "utf-8");
     priorityCache = data;
   } catch (err) {
