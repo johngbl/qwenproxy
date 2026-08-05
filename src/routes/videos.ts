@@ -1,21 +1,16 @@
 import type { Context } from "hono";
-import { generateVideo, pollVideoTask } from "../services/media-generation.ts";
+import {
+  generateVideo,
+  isSupportedMediaSize,
+  MEDIA_SIZE_OPTIONS,
+  pollVideoTask,
+  supportsPromptMediaGeneration,
+} from "../services/media-generation.ts";
 import { logger } from "../core/logger.ts";
 import { sendOpenAIError } from "../api/error-helpers.ts";
 import { NotFoundError, ValidationError } from "../core/errors.ts";
 
 const DEFAULT_SIZE = "16:9";
-
-const VALID_SIZES = new Set([
-  "1024x1024",
-  "1792x1024",
-  "1024x1792",
-  "16:9",
-  "9:16",
-  "1:1",
-  "4:3",
-  "auto",
-]);
 
 const TASK_TTL_MS = 60 * 60_000;
 
@@ -72,10 +67,13 @@ export async function videosGenerations(c: Context): Promise<Response> {
   }
 
   const size = body.size === undefined ? DEFAULT_SIZE : body.size;
-  if (typeof size !== "string" || !VALID_SIZES.has(size)) {
+  if (!isSupportedMediaSize(size)) {
     return sendOpenAIError(
       c,
-      validationError(`\`size\` must be one of: ${[...VALID_SIZES].join(", ")}`, "size"),
+      validationError(
+        `\`size\` must be one of: ${MEDIA_SIZE_OPTIONS.join(", ")}`,
+        "size",
+      ),
     );
   }
 
@@ -87,6 +85,15 @@ export async function videosGenerations(c: Context): Promise<Response> {
     return sendOpenAIError(
       c,
       validationError("`model` must be the model selected by the client", "model"),
+    );
+  }
+  if (!supportsPromptMediaGeneration(model, "video")) {
+    return sendOpenAIError(
+      c,
+      validationError(
+        `Model \`${model}\` requires a reference image and is not available through prompt-only video generation yet`,
+        "model",
+      ),
     );
   }
   const wait = body.wait !== false;

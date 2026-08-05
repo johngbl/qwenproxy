@@ -57,6 +57,30 @@ function delayedSseResponse(firstChunk: string, ...laterChunks: string[]): Respo
   });
 }
 
+function erroringSseResponse(firstChunk: string, message = "network error"): Response {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const stream = new ReadableStream({
+    start(controller) {
+      const encoder = new TextEncoder();
+      controller.enqueue(encoder.encode(firstChunk));
+      timer = setTimeout(() => {
+        timer = null;
+        controller.error(new Error(message));
+      }, 5);
+    },
+    cancel() {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    },
+  });
+  return new Response(stream, {
+    status: 200,
+    headers: { "Content-Type": "text/event-stream" },
+  });
+}
+
 function setupQwenFetchMock(
   completionHandler: (
     callIndex: number,
@@ -120,6 +144,35 @@ async function postChat(messages: any[], stream = false) {
   });
   return app.fetch(req);
 }
+
+test("stream: network error while reading retries before emitting output", async () => {
+  const mock = setupQwenFetchMock((callIndex) => {
+    if (callIndex === 1) {
+      return erroringSseResponse(
+        'data: {"response.created":{"chat_id":"chat-network-before-error","response_id":"resp-network-before-error"}}\n\n',
+      );
+    }
+    return sseResponse(
+      'data: {"response.created":{"chat_id":"chat-network-recovered","response_id":"resp-network-recovered"}}\n\n',
+      'data: {"response_id":"resp-network-recovered","choices":[{"delta":{"phase":"answer","content":"network-recovered"}}]}\n\n',
+      "data: [DONE]\n\n",
+    );
+  });
+
+  try {
+    const res = await postChat([{ role: "user", content: "network retry" }], true);
+    assert.equal(res.status, 200);
+    const text = await res.text();
+    assert.match(text, /network-recovered/);
+    assert.match(text, /data: \[DONE\]/);
+    assert.ok(
+      mock.getCompletionCalls() >= 2,
+      `expected a retry after network error, got ${mock.getCompletionCalls()} completion call(s)`,
+    );
+  } finally {
+    mock.restore();
+  }
+});
 
 test("stream: internal_error mid-stream retries and succeeds", async () => {
   const mock = setupQwenFetchMock((callIndex) => {

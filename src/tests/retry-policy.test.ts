@@ -205,6 +205,11 @@ test("classifyRetryAction: network / abort / upstream error classes retry with s
   const network = classifyRetryAction(new QwenNetworkError("fetch failed"));
   assert.equal(network.retryable, true);
   assert.equal(network.switchAccount, true);
+
+  const browserNetwork = classifyRetryAction(new Error("network error"));
+  assert.equal(browserNetwork.retryable, true);
+  assert.equal(browserNetwork.switchAccount, true);
+  assert.equal(browserNetwork.reason, "network");
   assert.equal(network.forceNewChat, true);
   assert.equal(network.reason, "network");
 

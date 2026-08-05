@@ -43,6 +43,8 @@ export interface OpenAIRequest {
   model: string;
   messages: Message[];
   stream?: boolean;
+  /** QwenBridge media extension used by image/video chat models. */
+  size?: string;
   tools?: FunctionToolDefinition[];
   tool_choice?: ToolChoice;
   user?: string;

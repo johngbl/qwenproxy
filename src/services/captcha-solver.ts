@@ -45,7 +45,7 @@ export function logBaxiaCaptcha(
     .map(([key, value]) => `${key}=${formatCaptchaLogValue(value)}`)
     .join(" ");
   const emoji = CAPTCHA_EVENT_EMOJI[event] ?? "ℹ️";
-  const line = `[Captcha] ${emoji} event=${event}${suffix ? ` ${suffix}` : ""}`;
+  const line = `${emoji} [Captcha] ${event}${suffix ? ` | ${suffix}` : ""}`;
 
   if (important) {
     console.warn(line);

@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { fetchQwenModels } from "../services/qwen.js";
 import { loadAccounts } from "../core/accounts.ts";
 import { getAccountCooldownInfo } from "../core/account-manager.ts";
+import { getAccountsByPriority } from "../core/account-priority.ts";
 import { NotFoundError } from "../core/errors.js";
 import { sendOpenAIError } from "./error-helpers.js";
 import {
@@ -10,16 +11,27 @@ import {
   getModelContextWindow,
   syncModelMetadata,
 } from "../core/model-registry.ts";
+import { listMediaGenerationModels } from "../services/media-generation.ts";
+import { isPlaywrightInitialized } from "../services/playwright.ts";
 
 const app = new Hono();
 
 function getPreferredModelsAccountId(): string | undefined {
   try {
     const accounts = loadAccounts();
-    const available = accounts.find(
+    if (accounts.length === 0) return undefined;
+
+    // Prefer an account whose browser is already open so the models fetch
+    // reuses the running session instead of launching a new browser for a
+    // standby account. Among usable accounts, follow the same priority
+    // order as request routing.
+    const usable = getAccountsByPriority(accounts).filter(
       (account) => !getAccountCooldownInfo(account.id),
     );
-    return (available || accounts[0])?.id;
+    const initialized = usable.find((account) =>
+      isPlaywrightInitialized(account.id),
+    );
+    return (initialized || usable[0] || accounts[0]).id;
   } catch {
     return undefined;
   }
@@ -152,8 +164,41 @@ async function loadModelsWithVariants(): Promise<{
 }> {
   const accountId = getPreferredModelsAccountId();
   const models = (await fetchQwenModels(accountId)) as unknown as PublicModel[];
+  const expanded = expandModelVariants(models, accountId);
+
+  // Advertise media generation models so clients can discover them via
+  // /v1/models, including their supported generation modalities. Annotate a
+  // live model in place when Qwen already returned the same ID.
+  const mediaDefinitions = listMediaGenerationModels();
+  const mediaById = new Map(mediaDefinitions.map((definition) => [definition.id, definition]));
+  const expandedWithMedia = expanded.map((model) => {
+    const definition = mediaById.get(model.id);
+    if (!definition) return model;
+    return {
+      ...model,
+      media_generation: definition.kind,
+      media_modes: definition.modes,
+      media_reference_required: definition.modes.every(
+        (mode) => mode === "i2i" || mode === "i2v",
+      ),
+    };
+  });
+  const existing = new Set(expanded.map((model) => model.id));
+  const mediaModels: PublicModel[] = mediaDefinitions
+    .filter(({ id }) => !existing.has(id))
+    .map(({ id, kind, modes }) => ({
+      id,
+      object: "model",
+      owned_by: "qwen",
+      media_generation: kind,
+      media_modes: modes,
+      media_reference_required: modes.every(
+        (mode) => mode === "i2i" || mode === "i2v",
+      ),
+    }));
+
   return {
-    models: expandModelVariants(models, accountId),
+    models: [...expandedWithMedia, ...mediaModels],
     accountId,
   };
 }

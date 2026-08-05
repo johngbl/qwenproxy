@@ -287,6 +287,29 @@ export function isChatInProgressError(err: unknown): boolean {
 }
 
 /**
+ * Browser fetch and ReadableStream failures often arrive as plain Error
+ * instances, especially when the stream is consumed outside Playwright.
+ * Keep this matcher narrow so local programming errors are not retried as
+ * account/network failures.
+ */
+export function isNetworkLikeError(err: unknown): boolean {
+  if (err instanceof QwenNetworkError) return true;
+  const message = errMessage(err).toLowerCase();
+  return (
+    message === "network error" ||
+    message.includes("failed to fetch") ||
+    message.includes("fetch failed") ||
+    message.includes("network connection was lost") ||
+    message.includes("connection reset") ||
+    message.includes("connection closed") ||
+    message.includes("socket hang up") ||
+    message.includes("econnreset") ||
+    message.includes("econnrefused") ||
+    message.includes("etimedout")
+  );
+}
+
+/**
  * Corrupted chat history: Qwen rejects because the first message in the
  * upstream chat thread is an assistant message (broken parent_id chain).
  * Recovery: force new chat + resend full prompt + switch account.
@@ -450,7 +473,7 @@ export function classifyRetryAction(
     }
 
     if (
-        err instanceof QwenNetworkError ||
+        isNetworkLikeError(err) ||
         err instanceof QwenUpstreamUnavailableError ||
         err instanceof QwenUpstreamError ||
         isAbortError(err)
@@ -463,13 +486,13 @@ export function classifyRetryAction(
           retryWithFullPrompt: typed.retryWithFullPrompt === true,
           retryAfterMs:
             typed.retryAfterMs ??
-            (err instanceof QwenNetworkError
+            (isNetworkLikeError(err)
               ? 3000
               : err instanceof QwenUpstreamUnavailableError
                 ? 2000
                 : Math.min(baseDelayMs * 2, 3000)),
           reason:
-            err instanceof QwenNetworkError
+            isNetworkLikeError(err)
               ? "network"
               : err instanceof QwenUpstreamUnavailableError
                 ? "upstream_unavailable"

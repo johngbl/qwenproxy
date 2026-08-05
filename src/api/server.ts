@@ -29,6 +29,11 @@ let signalHandlersInstalled = false;
 
 const app = new Hono();
 
+function formatAccountId(accountId: string): string {
+  const normalized = accountId.trim();
+  return normalized.length > 12 ? `${normalized.slice(0, 12)}…` : normalized;
+}
+
 // Module-level accessor for cross-module cache access
 export function getCache(): MemoryCache | undefined {
   return cache;
@@ -234,7 +239,7 @@ async function prepareQwenRuntime(params: {
     const cooldownInfo = getAccountCooldownInfo(params.accountId);
     if (cooldownInfo) {
       console.warn(
-        `⚠️  [Server] Account not ready: cooldown ${Math.ceil(cooldownInfo.remainingMs / 1000)}s (${cooldownInfo.reason})`,
+        `⚠️ [Server] Account not ready | account=${formatAccountId(params.accountId)} | cooldown=${Math.ceil(cooldownInfo.remainingMs / 1000)}s | reason=${cooldownInfo.reason}`,
       );
       return false;
     }
@@ -250,7 +255,7 @@ async function prepareQwenRuntime(params: {
       const cooldownInfo = getAccountCooldownInfo(params.accountId);
       if (cooldownInfo) {
         console.warn(
-          `⚠️  [Server] Account not ready: cooldown ${Math.ceil(cooldownInfo.remainingMs / 1000)}s (${cooldownInfo.reason})`,
+          `⚠️ [Server] Account not ready | account=${formatAccountId(params.accountId)} | cooldown=${Math.ceil(cooldownInfo.remainingMs / 1000)}s | reason=${cooldownInfo.reason}`,
         );
         return false;
       }
@@ -471,47 +476,65 @@ export async function startServer(options?: {
       await import("../core/accounts.ts");
     const accounts = loadAccounts();
 
-    // Clear stale cooldowns from previous sessions on startup
-    const { clearAccountCooldown } = await import("../core/account-manager.ts");
-    for (const account of accounts) {
-      clearAccountCooldown(account.id);
-    }
+    // Restore persisted cooldowns (e.g. daily quota windows) from the database
+    // instead of wiping them on restart — retrying a still-rate-limited account
+    // wastes a request and immediately re-trips the same limit. Expired
+    // entries are dropped lazily by the cooldown lookup.
+    const { syncCooldownsFromDb } =
+      await import("../core/account-manager.ts");
+    syncCooldownsFromDb(accounts);
+
+    const { getAccountsByPriority } =
+      await import("../core/account-priority.ts");
 
     const { disableNativeTools, warmQwenChatPool } =
       await import("../services/qwen.ts");
-    const { initPlaywrightForAccount } =
+    const { initPlaywrightForAccount, isPlaywrightInitialized } =
       await import("../services/playwright.ts");
 
     const BATCH_SIZE = config.playwright.initBatchSize;
 
     if (accounts.length > 0) {
-      let readyAccountIndex = -1;
+      let readyAccountId: string | null = null;
       const totalAccounts = accounts.length;
-      for (let i = 0; i < accounts.length; i++) {
+
+      // Warm accounts in priority order (recently successful accounts first),
+      // skipping accounts still on cooldown, so the startup account matches
+      // the one request routing will pick first.
+      const warmOrder = getAccountsByPriority(accounts).filter(
+        (account) => !getAccountCooldownInfo(account.id),
+      );
+
+      for (let i = 0; i < warmOrder.length; i++) {
         const ok = await prepareAccountRuntime(
-          accounts[i],
+          warmOrder[i],
           getAccountCredentials,
           initPlaywrightForAccount,
           disableNativeTools,
           warmQwenChatPool,
         );
         if (ok) {
-          console.log(`✅ [Server] Account ready (${i + 1}/${totalAccounts}): ${maskEmail(accounts[i].email)}`);
-          readyAccountIndex = i;
+          console.log(`✅ [Server] Account ready (${i + 1}/${totalAccounts}): ${maskEmail(warmOrder[i].email)}`);
+          readyAccountId = warmOrder[i].id;
           break;
         }
       }
 
       const remainingAccounts = accounts.filter(
-        (_account, index) => index !== readyAccountIndex,
+        (account) => account.id !== readyAccountId,
       );
-      if (readyAccountIndex === -1) {
+      if (readyAccountId === null) {
         console.warn(
           `⚠️  [Server] No account ready during startup; continuing in background`,
         );
       }
 
-      if (config.playwright.prepareAllOnStartup || readyAccountIndex === -1) {
+      if (config.playwright.prepareAllOnStartup || readyAccountId === null) {
+        if (config.playwright.prepareAllOnStartup && remainingAccounts.length > 0) {
+          console.log(
+            `🪶 [Server] Preparing ${remainingAccounts.length} standby account(s) in background`,
+          );
+        }
         void prepareRemainingAccountsInBackground({
           accounts: remainingAccounts,
           batchSize: BATCH_SIZE,
@@ -557,7 +580,9 @@ export async function startServer(options?: {
 
     const started = buildStartedServerInfo();
     const accountCount = accounts.length;
-    const readyCount = accounts.filter(acc => !getAccountCooldownInfo(acc.id)).length;
+    const warmCount = accounts.filter((account) =>
+      isPlaywrightInitialized(account.id),
+    ).length;
 
     // API key display: just show if it's set or not
     const apiKey = process.env.API_KEY || config.apiKey;
@@ -590,7 +615,7 @@ export async function startServer(options?: {
 |${blank()}|
 |${row("Endpoint", endpoint)}|
 |${row("Port", String(started.port))}|
-|${row("Accounts", `${readyCount}/${accountCount}`)}|
+|${row("Accounts", `${warmCount}/${accountCount} warm`)}|
 |${row("API Key", apiKeyDisplay)}|
 |${row("Status", "● Online")}|
 |${blank()}|

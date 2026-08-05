@@ -1,21 +1,15 @@
 import type { Context } from "hono";
-import { generateImage } from "../services/media-generation.ts";
+import {
+  generateImage,
+  isSupportedMediaSize,
+  MEDIA_SIZE_OPTIONS,
+  supportsPromptMediaGeneration,
+} from "../services/media-generation.ts";
 import { logger } from "../core/logger.ts";
 import { sendOpenAIError } from "../api/error-helpers.ts";
 import { ValidationError } from "../core/errors.ts";
 
-const DEFAULT_SIZE = "1024x1024";
-
-const VALID_SIZES = new Set([
-  "1024x1024",
-  "1792x1024",
-  "1024x1792",
-  "16:9",
-  "9:16",
-  "1:1",
-  "4:3",
-  "auto",
-]);
+const DEFAULT_SIZE = "auto";
 
 interface ImageDataItem {
   url?: string;
@@ -70,10 +64,13 @@ export async function imagesGenerations(c: Context): Promise<Response> {
   }
 
   const size = body.size === undefined ? DEFAULT_SIZE : body.size;
-  if (typeof size !== "string" || !VALID_SIZES.has(size)) {
+  if (!isSupportedMediaSize(size)) {
     return sendOpenAIError(
       c,
-      validationError(`\`size\` must be one of: ${[...VALID_SIZES].join(", ")}`, "size"),
+      validationError(
+        `\`size\` must be one of: ${MEDIA_SIZE_OPTIONS.join(", ")}`,
+        "size",
+      ),
     );
   }
 
@@ -93,6 +90,15 @@ export async function imagesGenerations(c: Context): Promise<Response> {
     return sendOpenAIError(
       c,
       validationError("`model` must be the model selected by the client", "model"),
+    );
+  }
+  if (!supportsPromptMediaGeneration(model, "image")) {
+    return sendOpenAIError(
+      c,
+      validationError(
+        `Model \`${model}\` requires a reference image and is not available through prompt-only image generation yet`,
+        "model",
+      ),
     );
   }
 

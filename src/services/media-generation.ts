@@ -2,7 +2,7 @@ import { v4 as uuidv4 } from "uuid";
 import { getQwenHeaders } from "./auth-playwright.ts";
 import { buildQwenRequestHeaders } from "./qwen-headers.ts";
 import { qwenUrl } from "./qwen-url.ts";
-import { logger } from "../core/logger.ts";
+
 import { config } from "../core/config.ts";
 import {
   getNextAvailableAccount,
@@ -78,26 +78,179 @@ const NODE_COMPLETION_RETRY_DELAY_MS = 1_000;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+export type MediaKind = "image" | "video";
+
+/** Keep media logs compact and prevent signed CDN URLs from leaking into logs. */
+function sanitizeMediaLogValue(value: unknown): string {
+  const text = String(value)
+    .replace(/https?:\/\/\S+/gi, "[redacted-url]")
+    .replace(/[\r\n]+/g, " ");
+  return text.length > 240 ? `${text.slice(0, 240)}…` : text;
+}
+
+export function shortMediaId(value: string, length = 12): string {
+  return value.length > length ? value.slice(0, length) : value;
+}
+
+export function mediaLog(
+  kind: MediaKind,
+  event: string,
+  fields: Record<string, string | number | boolean | undefined> = {},
+): string {
+  const icon = kind === "image" ? "🎨" : "🎬";
+  const details = Object.entries(fields)
+    .filter(([, value]) => value !== undefined)
+    .map(([key, value]) => `${key}=${sanitizeMediaLogValue(value)}`)
+    .join(" | ");
+  return `${icon} [Media] ${event}${details ? ` | ${details}` : ""}`;
+}
+
+export function logMediaInfo(message: string): void {
+  console.log(message);
+}
+
+export function logMediaDebug(message: string): void {
+  if (process.env.LOG_LEVEL === "debug") {
+    console.log(`🔍 ${message}`);
+  }
+}
+
+export function logMediaWarn(message: string): void {
+  console.warn(`⚠️  ${message}`);
+}
+
+export function logMediaError(message: string): void {
+  console.error(`❌ ${message}`);
+}
+
 /**
  * Chat model used for image/video generation via Qwen Chat.
- * Same as FreeQwenApi's CHAT_MEDIA_MODEL — the generation-specific models
- * (qwen-image-*, wan2.*) are passed separately in the payload, never as the
- * chat model itself.
+ * Based on real Qwen traffic: the chat model is qwen3.7-plus, and the
+ * generation-specific models (qwen-image-*, wan2.*) are passed separately
+ * in the payload, never as the chat model itself.
  */
-export const CHAT_MEDIA_MODEL = "qwen3-vl-plus";
+export const CHAT_MEDIA_MODEL = "qwen3.7-plus";
 
 /** Models that are generation-specific (not chat models). */
-const MEDIA_GENERATION_MODELS = new Set<string>([
-  "qwen-image-max",
-  "qwen-image-plus",
-  "qwen-image",
-  "wan2.6-t2i",
-  "wan2.5-t2i-preview",
-  "wan2.2-t2i-flash",
-  "wan2.6-t2v",
-  "wan2.5-t2v-preview",
-  "wan2.2-t2v-flash",
-]);
+export type MediaGenerationMode = "t2i" | "i2i" | "t2v" | "i2v";
+
+type MediaModelDefinition = {
+  id: string;
+  kind: "image" | "video";
+  modes: readonly MediaGenerationMode[];
+};
+
+const MEDIA_MODEL_DEFINITIONS: readonly MediaModelDefinition[] = [
+  // Text-to-image models.
+  { id: "qwen-image-3.0-pro", kind: "image", modes: ["t2i"] },
+  { id: "qwen-image-2.0-pro", kind: "image", modes: ["t2i"] },
+  {
+    id: "qwen-image-2.0-pro-2026-06-22",
+    kind: "image",
+    modes: ["t2i", "i2i"],
+  },
+  { id: "qwen-image-2512", kind: "image", modes: ["t2i"] },
+  { id: "qwen-image-max", kind: "image", modes: ["t2i"] },
+  { id: "qwen-image-plus", kind: "image", modes: ["t2i"] },
+  { id: "qwen-image", kind: "image", modes: ["t2i"] },
+  { id: "wan2.6-t2i", kind: "image", modes: ["t2i"] },
+  { id: "wan2.5-t2i-preview", kind: "image", modes: ["t2i"] },
+  { id: "wan2.2-t2i-flash", kind: "image", modes: ["t2i"] },
+  { id: "wan2.7-image-pro", kind: "image", modes: ["t2i", "i2i"] },
+  { id: "wan2.7-image", kind: "image", modes: ["t2i", "i2i"] },
+  { id: "z-image-turbo", kind: "image", modes: ["t2i"] },
+  { id: "qwen-image-prompt-extend", kind: "image", modes: ["t2i"] },
+
+  // Image-to-image/edit models. Reference-image transport is not enabled yet.
+  { id: "qwen-image-edit", kind: "image", modes: ["i2i"] },
+  { id: "qwen-image-edit-2511", kind: "image", modes: ["i2i"] },
+  { id: "wan2.6-image", kind: "image", modes: ["i2i"] },
+  { id: "wan2.5-i2i-preview", kind: "image", modes: ["i2i"] },
+
+  // Text-to-video models.
+  { id: "wan2.7-t2v", kind: "video", modes: ["t2v"] },
+  { id: "wan2.6-t2v", kind: "video", modes: ["t2v"] },
+  { id: "wan2.5-t2v-preview", kind: "video", modes: ["t2v"] },
+  { id: "wan2.2-t2v-flash", kind: "video", modes: ["t2v"] },
+
+  // Image-to-video models. Reference-image transport is not enabled yet.
+  { id: "wan2.7-i2v", kind: "video", modes: ["i2v"] },
+  { id: "wan2.5-i2v-preview", kind: "video", modes: ["i2v"] },
+  { id: "wan2.6-i2v", kind: "video", modes: ["i2v"] },
+  {
+    id: "wan-v2.2-a14b",
+    kind: "video",
+    modes: ["t2v", "i2v"],
+  },
+];
+
+const MEDIA_IMAGE_MODELS = MEDIA_MODEL_DEFINITIONS.filter(
+  ({ kind }) => kind === "image",
+).map(({ id }) => id);
+const MEDIA_VIDEO_MODELS = MEDIA_MODEL_DEFINITIONS.filter(
+  ({ kind }) => kind === "video",
+).map(({ id }) => id);
+const MEDIA_GENERATION_MODELS = new Set(
+  MEDIA_MODEL_DEFINITIONS.map(({ id }) => id),
+);
+
+/** Shared media sizes accepted by image/video endpoints and chat completions. */
+export const MEDIA_SIZE_OPTIONS = [
+  "auto",
+  "1:1",
+  "3:4",
+  "4:3",
+  "16:9",
+  "9:16",
+  "1024x1024",
+  "1792x1024",
+  "1024x1792",
+] as const;
+
+export function isSupportedMediaSize(
+  value: unknown,
+): value is (typeof MEDIA_SIZE_OPTIONS)[number] {
+  return (
+    typeof value === "string" &&
+    (MEDIA_SIZE_OPTIONS as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * Public media model catalog so `/v1/models` can advertise image/video
+ * generation models alongside the live Qwen chat catalog.
+ */
+export function listMediaGenerationModels(): Array<{
+  id: string;
+  kind: "image" | "video";
+  modes: readonly MediaGenerationMode[];
+}> {
+  return MEDIA_MODEL_DEFINITIONS.map((definition) => ({
+    id: definition.id,
+    kind: definition.kind,
+    modes: definition.modes,
+  }));
+}
+
+export function getMediaModelModes(
+  model?: string | null,
+): readonly MediaGenerationMode[] | null {
+  const id = model?.trim();
+  if (!id) return null;
+  return (
+    MEDIA_MODEL_DEFINITIONS.find((definition) => definition.id === id)?.modes ??
+    null
+  );
+}
+
+export function supportsPromptMediaGeneration(
+  model: string,
+  kind: "image" | "video",
+): boolean {
+  const modes = getMediaModelModes(model);
+  if (!modes) return true;
+  return modes.includes(kind === "image" ? "t2i" : "t2v");
+}
 
 /**
  * Resolves the generation model. When the client requests a generation-specific
@@ -120,8 +273,26 @@ export function resolveMediaModel(
   return { chatModel: explicitModel, generationModel: undefined };
 }
 
+/**
+ * Classifies a client-selected model as a media generation model. Returns
+ * "image"/"video" for generation-specific models, or null for regular chat
+ * models. Chat completions uses this to route image/video requests to the
+ * native generation pipeline instead of the text flow.
+ */
+export function classifyMediaModel(
+  model?: string | null,
+): "image" | "video" | null {
+  const m = model?.trim();
+  if (!m) return null;
+  if ((MEDIA_IMAGE_MODELS as readonly string[]).includes(m)) return "image";
+  if ((MEDIA_VIDEO_MODELS as readonly string[]).includes(m)) return "video";
+  return null;
+}
+
 function normalizeSize(size?: string): string | undefined {
   if (!size) return undefined;
+  // "auto" lets Qwen pick the aspect ratio (seen in real t2i traffic).
+  if (size === "auto") return "auto";
   if (/^\d+:\d+$/.test(size)) return size;
   const match = size.match(/^(\d+)x(\d+)$/);
   if (match) {
@@ -427,6 +598,7 @@ async function requestCompletionsInBrowser(params: {
  * recognize so captcha recovery can run (the chat flow behaves the same way).
  */
 async function requestCompletionsWithBrowserFallback(params: {
+  kind: MediaKind;
   accountId: string;
   url: string;
   payloadJson: string;
@@ -437,6 +609,7 @@ async function requestCompletionsWithBrowserFallback(params: {
   timeoutMs: number;
 }): Promise<{ status: number; rawBody: string }> {
   const {
+    kind,
     accountId,
     url,
     payloadJson,
@@ -475,8 +648,12 @@ async function requestCompletionsWithBrowserFallback(params: {
 
       if (looksLikeAntiBotChallengeText(rawBody)) {
         sawAntiBotChallenge = true;
-        logger.info(
-          `🎨 [MediaGen] Node completions WAF-blocked | account=${accountId} | attempt=${attempt}/${NODE_COMPLETION_ATTEMPTS}`,
+        logMediaDebug(
+          mediaLog(kind, "transport_waf_blocked", {
+            account: shortMediaId(accountId),
+            attempt,
+            attempts: NODE_COMPLETION_ATTEMPTS,
+          }),
         );
         // WAF is intermittent — retry Node before the browser fallback.
         continue;
@@ -495,8 +672,11 @@ async function requestCompletionsWithBrowserFallback(params: {
   }
 
   if (!signal.aborted) {
-    logger.info(
-      `🎨 [MediaGen] Node completions failed; trying browser session | account=${accountId}`,
+    logMediaInfo(
+      mediaLog(kind, "transport_fallback_started", {
+        account: shortMediaId(accountId),
+        transport: "browser",
+      }),
     );
 
     try {
@@ -512,13 +692,20 @@ async function requestCompletionsWithBrowserFallback(params: {
 
       if (browserResult.error) {
         lastFailureDetail = `Browser fetch: ${browserResult.error}`;
-        logger.warn(
-          `🎨 [MediaGen] Browser completions fallback failed | account=${accountId} | error=${browserResult.error}`,
+        logMediaWarn(
+          mediaLog(kind, "transport_fallback_failed", {
+            account: shortMediaId(accountId),
+            transport: "browser",
+            error: browserResult.error,
+          }),
         );
       } else if (looksLikeAntiBotChallengeText(browserResult.rawBody)) {
         sawAntiBotChallenge = true;
-        logger.warn(
-          `🎨 [MediaGen] Browser completions also WAF-blocked | account=${accountId}`,
+        logMediaWarn(
+          mediaLog(kind, "transport_waf_blocked", {
+            account: shortMediaId(accountId),
+            transport: "browser",
+          }),
         );
       } else {
         return { status: browserResult.status, rawBody: browserResult.rawBody };
@@ -529,8 +716,12 @@ async function requestCompletionsWithBrowserFallback(params: {
         sawAntiBotChallenge = true;
       }
       lastFailureDetail = `Browser fallback: ${message}`;
-      logger.warn(
-        `🎨 [MediaGen] Browser completions fallback failed | account=${accountId} | error=${message}`,
+      logMediaWarn(
+        mediaLog(kind, "transport_fallback_failed", {
+          account: shortMediaId(accountId),
+          transport: "browser",
+          error: message,
+        }),
       );
     }
   }
@@ -615,6 +806,8 @@ function buildCompletionsPayload(
   const childId = uuidv4();
   const nowSec = Math.floor(Date.now() / 1000);
 
+  // Based on real Qwen traffic: media generation uses Fast thinking mode
+  // and does not need extended thinking
   const userMessage: Record<string, unknown> = {
     id: null,
     fid,
@@ -629,23 +822,23 @@ function buildCompletionsPayload(
     model: "",
     chat_type: chatType,
     feature_config: {
-      thinking_enabled: true,
+      thinking_enabled: false,
       output_schema: "phase",
       research_mode: "normal",
-      auto_thinking: true,
-      thinking_mode: "Auto",
-      thinking_format: "summary",
+      auto_thinking: false,
+      thinking_mode: "Fast",
       auto_search: true,
     },
-    extra: { meta: { subChatType: chatType } },
+    extra: {
+      meta: {
+        subChatType: chatType,
+        ...(size ? { size } : {}),
+        ...(generationModel ? { model: generationModel } : {}),
+      },
+    },
     sub_chat_type: chatType,
     parent_id: null,
   };
-
-  if (generationModel && (chatType === "t2i" || chatType === "t2v")) {
-    (userMessage.extra as Record<string, unknown>).generation_model =
-      generationModel;
-  }
 
   const payload: Record<string, unknown> = {
     stream: chatType !== "t2v",
@@ -892,6 +1085,7 @@ export async function generateImage(params: {
   } = params;
 
   const normalizedSize = normalizeSize(size);
+  const generationStartedAt = Date.now();
   const triedAccounts = new Set<string>();
   /** Accounts whose Baxia challenge was already solved in this call. */
   const captchaRecoveredAccounts = new Set<string>();
@@ -924,22 +1118,34 @@ export async function generateImage(params: {
 
     try {
       const { chatModel, generationModel } = resolveMediaModel(requestedModel);
-      logger.info(
-        `🎨 [MediaGen] Starting image generation | account=${account.id} | model=${requestedModel} | chatModel=${chatModel} | attempt=${attempt + 1}`,
+      logMediaInfo(
+        mediaLog("image", "generation_started", {
+          operation: "generate",
+          account: shortMediaId(account.id),
+          model: requestedModel,
+          chat_model: chatModel,
+          attempt: attempt + 1,
+          size: normalizedSize ?? "auto",
+          prompt_chars: prompt.length,
+        }),
       );
 
       const { headers } = await getQwenHeaders(forceHeaderRefresh, account.id);
       forceHeaderRefresh = false;
       const chatId = await createMediaChatSession(headers, chatModel, "t2i", signal);
 
-      logger.info(
-        `🎨 [MediaGen] Chat session created | chatId=${chatId}`,
+      logMediaDebug(
+        mediaLog("image", "chat_created", {
+          account: shortMediaId(account.id),
+          chat: shortMediaId(chatId),
+        }),
       );
 
       const payload = buildCompletionsPayload(chatId, prompt, chatModel, "t2i", normalizedSize, generationModel);
       const requestHeaders = buildHeadersFromCaptured(headers, chatId);
 
       const completionsResult = await requestCompletionsWithBrowserFallback({
+        kind: "image",
         accountId: account.id,
         url: qwenUrl(`/api/v2/chat/completions?chat_id=${encodeURIComponent(chatId)}`),
         payloadJson: JSON.stringify(payload),
@@ -968,8 +1174,11 @@ export async function generateImage(params: {
         if (looksLikeAntiBotChallengeText(rawBody)) {
           const match = rawBody.match(/FAIL_SYS_USER_VALIDATE|RGV587_ERROR/i);
           const code = match ? match[0].toUpperCase() : "FAIL_SYS_USER_VALIDATE";
-          logger.warn(
-            `🎨 [MediaGen] Anti-bot challenge in image response | account=${account.id} | code=${code}`,
+          logMediaWarn(
+            mediaLog("image", "captcha_required", {
+              account: shortMediaId(account.id),
+              code,
+            }),
           );
           const err = new UpstreamError(
             `Qwen anti-bot validation required: ${code}`,
@@ -982,8 +1191,13 @@ export async function generateImage(params: {
         );
       }
 
-      logger.info(
-        `🎨 [MediaGen] Image generated successfully | url=${imageUrl.substring(0, 80)}...`,
+      logMediaInfo(
+        mediaLog("image", "generation_completed", {
+          account: shortMediaId(account.id),
+          chat: shortMediaId(chatId),
+          duration_ms: Date.now() - generationStartedAt,
+          output: "url",
+        }),
       );
 
       return {
@@ -1000,16 +1214,23 @@ export async function generateImage(params: {
         throw lastError;
       }
 
-      logger.info(
-        `🎨 [MediaGen] Attempt failed | account=${account.id} | error=${lastError.message}`,
+      logMediaWarn(
+        mediaLog("image", "attempt_failed", {
+          account: shortMediaId(account.id),
+          attempt: attempt + 1,
+          elapsed_ms: Date.now() - generationStartedAt,
+          error: lastError.message,
+        }),
       );
 
       if (
         isAntiBotError(lastError) &&
         !captchaRecoveredAccounts.has(account.id)
       ) {
-        logger.info(
-          `🧩 [MediaGen] Anti-bot challenge detected for account=${account.id}; attempting recovery...`,
+        logMediaInfo(
+          mediaLog("image", "captcha_recovery_started", {
+            account: shortMediaId(account.id),
+          }),
         );
         const recovered = await recoverBaxiaCaptcha(account.id, "media-generation");
         if (recovered) {
@@ -1020,10 +1241,17 @@ export async function generateImage(params: {
           triedAccounts.delete(account.id);
           // bx-* tokens may rotate after a solved challenge — recapture headers.
           forceHeaderRefresh = true;
+          logMediaInfo(
+            mediaLog("image", "captcha_recovery_succeeded", {
+              account: shortMediaId(account.id),
+            }),
+          );
           continue;
         }
-        logger.warn(
-          `🧩 [MediaGen] Anti-bot recovery failed | account=${account.id}`,
+        logMediaWarn(
+          mediaLog("image", "captcha_recovery_failed", {
+            account: shortMediaId(account.id),
+          }),
         );
       }
 
@@ -1067,6 +1295,7 @@ export async function generateVideo(params: {
   } = params;
 
   const normalizedSize = normalizeSize(size);
+  const generationStartedAt = Date.now();
   const triedAccounts = new Set<string>();
   /** Accounts whose Baxia challenge was already solved in this call. */
   const captchaRecoveredAccounts = new Set<string>();
@@ -1099,22 +1328,35 @@ export async function generateVideo(params: {
 
     try {
       const { chatModel, generationModel } = resolveMediaModel(requestedModel);
-      logger.info(
-        `🎬 [MediaGen] Starting video generation | account=${account.id} | model=${requestedModel} | chatModel=${chatModel} | attempt=${attempt + 1}`,
+      logMediaInfo(
+        mediaLog("video", "generation_started", {
+          operation: "generate",
+          account: shortMediaId(account.id),
+          model: requestedModel,
+          chat_model: chatModel,
+          attempt: attempt + 1,
+          size: normalizedSize ?? "16:9",
+          prompt_chars: prompt.length,
+          wait: waitForCompletion,
+        }),
       );
 
       const { headers } = await getQwenHeaders(forceHeaderRefresh, account.id);
       forceHeaderRefresh = false;
       const chatId = await createMediaChatSession(headers, chatModel, "t2v", signal);
 
-      logger.info(
-        `🎬 [MediaGen] Chat session created | chatId=${chatId}`,
+      logMediaDebug(
+        mediaLog("video", "chat_created", {
+          account: shortMediaId(account.id),
+          chat: shortMediaId(chatId),
+        }),
       );
 
       const payload = buildCompletionsPayload(chatId, prompt, chatModel, "t2v", normalizedSize, generationModel);
       const requestHeaders = buildHeadersFromCaptured(headers, chatId);
 
       const completionsResult = await requestCompletionsWithBrowserFallback({
+        kind: "video",
         accountId: account.id,
         url: qwenUrl(`/api/v2/chat/completions?chat_id=${encodeURIComponent(chatId)}`),
         payloadJson: JSON.stringify(payload),
@@ -1144,8 +1386,14 @@ export async function generateVideo(params: {
           extractMediaUrl(sseResult.raw, "video") ||
           extractMediaUrl(parseJsonIfPossible(rawBody), "video");
         if (videoUrl) {
-          logger.info(
-            `🎬 [MediaGen] Video URL received directly | url=${videoUrl.substring(0, 80)}...`,
+          logMediaInfo(
+            mediaLog("video", "generation_completed", {
+              account: shortMediaId(account.id),
+              chat: shortMediaId(chatId),
+              duration_ms: Date.now() - generationStartedAt,
+              output: "url",
+              source: "direct",
+            }),
           );
           return {
             task_id: "",
@@ -1155,16 +1403,26 @@ export async function generateVideo(params: {
             chatId,
           };
         }
-        logger.warn(
-          `🎬 [MediaGen] No task_id or video URL in response | account=${account.id} | status=${completionsStatus} | body=${rawBody.substring(0, 500)}`,
+        logMediaWarn(
+          mediaLog("video", "response_invalid", {
+            account: shortMediaId(account.id),
+            chat: shortMediaId(chatId),
+            http_status: completionsStatus,
+            response_chars: rawBody.length,
+          }),
         );
         throw new UpstreamError(
           "No task_id or video URL found in video generation response",
         );
       }
 
-      logger.info(
-        `🎬 [MediaGen] Video task submitted | task_id=${taskId}`,
+      logMediaInfo(
+        mediaLog("video", "task_submitted", {
+          account: shortMediaId(account.id),
+          chat: shortMediaId(chatId),
+          task: shortMediaId(taskId),
+          wait: waitForCompletion,
+        }),
       );
 
       if (!waitForCompletion) {
@@ -1196,16 +1454,23 @@ export async function generateVideo(params: {
         throw lastError;
       }
 
-      logger.info(
-        `🎬 [MediaGen] Attempt failed | account=${account.id} | error=${lastError.message}`,
+      logMediaWarn(
+        mediaLog("video", "attempt_failed", {
+          account: shortMediaId(account.id),
+          attempt: attempt + 1,
+          elapsed_ms: Date.now() - generationStartedAt,
+          error: lastError.message,
+        }),
       );
 
       if (
         isAntiBotError(lastError) &&
         !captchaRecoveredAccounts.has(account.id)
       ) {
-        logger.info(
-          `🧩 [MediaGen] Anti-bot challenge detected for account=${account.id}; attempting recovery...`,
+        logMediaInfo(
+          mediaLog("video", "captcha_recovery_started", {
+            account: shortMediaId(account.id),
+          }),
         );
         const recovered = await recoverBaxiaCaptcha(
           account.id,
@@ -1219,10 +1484,17 @@ export async function generateVideo(params: {
           triedAccounts.delete(account.id);
           // bx-* tokens may rotate after a solved challenge — recapture headers.
           forceHeaderRefresh = true;
+          logMediaInfo(
+            mediaLog("video", "captcha_recovery_succeeded", {
+              account: shortMediaId(account.id),
+            }),
+          );
           continue;
         }
-        logger.warn(
-          `🧩 [MediaGen] Anti-bot recovery failed | account=${account.id}`,
+        logMediaWarn(
+          mediaLog("video", "captcha_recovery_failed", {
+            account: shortMediaId(account.id),
+          }),
         );
       }
 
@@ -1263,13 +1535,26 @@ export async function pollVideoTask(params: {
   const effectiveSignal = signal
     ? AbortSignal.any([controller.signal, signal])
     : controller.signal;
+  const pollStartedAt = Date.now();
+  let pollCount = 0;
+  let lastProgressLogAt = 0;
+  let lastLoggedStatus = "";
 
   try {
     const { headers } = await getQwenHeaders(false, accountId);
     const requestHeaders = buildHeadersFromCaptured(headers);
     const pollUrl = qwenUrl(`/api/v1/tasks/status/${encodeURIComponent(taskId)}`);
 
+    logMediaDebug(
+      mediaLog("video", "task_polling_started", {
+        account: shortMediaId(accountId),
+        task: shortMediaId(taskId),
+        mode: once ? "once" : "wait",
+      }),
+    );
+
     while (!effectiveSignal.aborted) {
+      pollCount += 1;
       let json: Record<string, unknown> | null = null;
 
       const nodeResponse = await fetch(pollUrl, {
@@ -1287,11 +1572,15 @@ export async function pollVideoTask(params: {
 
       if (!json) {
         try {
-          const browserJson = await fetchJsonInBrowser(accountId, pollUrl, headers);
+          const browserJson = await fetchJsonInBrowser(accountId, pollUrl);
           json = browserJson as Record<string, unknown> | null;
         } catch (error) {
-          logger.warn(
-            `🎬 [MediaGen] Browser task poll fallback failed | account=${accountId} | error=${error instanceof Error ? error.message : String(error)}`,
+          logMediaWarn(
+            mediaLog("video", "task_poll_fallback_failed", {
+              account: shortMediaId(accountId),
+              task: shortMediaId(taskId),
+              error: error instanceof Error ? error.message : String(error),
+            }),
           );
         }
       }
@@ -1327,8 +1616,16 @@ export async function pollVideoTask(params: {
         status === "error"
       ) {
         const finished = status === "completed" || status === "success";
-        logger.info(
-          `🎬 [MediaGen] Video task finished | task_id=${taskId} | status=${status}`,
+        logMediaInfo(
+          mediaLog("video", "task_finished", {
+            account: shortMediaId(accountId),
+            task: shortMediaId(taskId),
+            status,
+            result: finished ? "completed" : "failed",
+            polls: pollCount,
+            elapsed_ms: Date.now() - pollStartedAt,
+            error: finished ? undefined : error,
+          }),
         );
         return {
           status: finished ? "completed" : "failed",
@@ -1337,9 +1634,26 @@ export async function pollVideoTask(params: {
         };
       }
 
-      logger.info(
-        `🎬 [MediaGen] Polling video task | task_id=${taskId} | status=${status}`,
-      );
+      const now = Date.now();
+      if (
+        once ||
+        pollCount === 1 ||
+        status !== lastLoggedStatus ||
+        now - lastProgressLogAt >= 30_000
+      ) {
+        logMediaDebug(
+          mediaLog("video", "task_polling", {
+            account: shortMediaId(accountId),
+            task: shortMediaId(taskId),
+            status,
+            poll: pollCount,
+            elapsed_ms: now - pollStartedAt,
+            mode: once ? "once" : undefined,
+          }),
+        );
+        lastProgressLogAt = now;
+        lastLoggedStatus = status;
+      }
 
       if (once) {
         return {
@@ -1352,6 +1666,14 @@ export async function pollVideoTask(params: {
       await new Promise((resolve) => setTimeout(resolve, VIDEO_POLL_INTERVAL_MS));
     }
 
+    logMediaWarn(
+      mediaLog("video", "task_polling_aborted", {
+        account: shortMediaId(accountId),
+        task: shortMediaId(taskId),
+        polls: pollCount,
+        elapsed_ms: Date.now() - pollStartedAt,
+      }),
+    );
     return { status: "pending", error: "Polling aborted" };
   } finally {
     clearTimeout(timeoutId);
@@ -1362,7 +1684,6 @@ export async function pollVideoTask(params: {
 async function fetchJsonInBrowser(
   accountId: string,
   url: string,
-  headers: Record<string, string>,
 ): Promise<unknown> {
   return withAccountPage(
     accountId,

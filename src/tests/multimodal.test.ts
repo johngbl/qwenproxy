@@ -9,8 +9,18 @@ import assert from "node:assert";
 process.env.TEST_MOCK_QWEN_AUTH = "true";
 
 import { processImagesForQwen } from "../routes/upload.ts";
+import { formatGeneratedVideoContent } from "../routes/chat/media.ts";
 import { fetchQwenModels } from "../services/qwen.ts";
-import { resolveMediaModel } from "../services/media-generation.ts";
+import {
+  resolveMediaModel,
+  classifyMediaModel,
+  isSupportedMediaSize,
+  MEDIA_SIZE_OPTIONS,
+  listMediaGenerationModels,
+  getMediaModelModes,
+  supportsPromptMediaGeneration,
+  mediaLog,
+} from "../services/media-generation.ts";
 
 test("fetchQwenModels caches results per account", async () => {
   const originalFetch = globalThis.fetch;
@@ -66,6 +76,89 @@ test("media generation uses the model selected by the client", async () => {
     () => resolveMediaModel(undefined),
     /model selected by the client/i,
   );
+});
+
+test("classifyMediaModel routes generation models for native chat media", () => {
+  assert.strictEqual(classifyMediaModel("qwen-image-3.0-pro"), "image");
+  assert.strictEqual(classifyMediaModel("qwen-image-max"), "image");
+  assert.strictEqual(classifyMediaModel("wan2.6-t2i"), "image");
+  assert.strictEqual(classifyMediaModel("wan2.6-t2v"), "video");
+  assert.strictEqual(classifyMediaModel("wan2.2-t2v-flash"), "video");
+  assert.strictEqual(classifyMediaModel("qwen3.8-max"), null);
+  assert.strictEqual(classifyMediaModel("qwen3.7-plus"), null);
+  assert.strictEqual(classifyMediaModel(undefined), null);
+  assert.strictEqual(classifyMediaModel("   "), null);
+});
+
+test("media catalog includes the requested model IDs and modality metadata", () => {
+  const models = new Map(
+    listMediaGenerationModels().map((model) => [model.id, model]),
+  );
+  const expectedIds = [
+    "qwen-image-2.0-pro-2026-06-22",
+    "qwen-image-2512",
+    "wan2.7-image-pro",
+    "wan2.7-image",
+    "z-image-turbo",
+    "qwen-image-prompt-extend",
+    "qwen-image-edit",
+    "qwen-image-edit-2511",
+    "wan2.6-image",
+    "wan2.5-i2i-preview",
+    "wan2.7-t2v",
+    "wan-v2.2-a14b",
+    "wan2.7-i2v",
+    "wan2.5-i2v-preview",
+    "wan2.6-i2v",
+  ];
+
+  for (const id of expectedIds) {
+    assert.ok(models.has(id), `missing media model: ${id}`);
+  }
+  assert.deepEqual(getMediaModelModes("qwen-image-2.0-pro-2026-06-22"), [
+    "t2i",
+    "i2i",
+  ]);
+  assert.strictEqual(supportsPromptMediaGeneration("qwen-image-edit", "image"), false);
+  assert.strictEqual(supportsPromptMediaGeneration("wan2.7-i2v", "video"), false);
+  assert.strictEqual(supportsPromptMediaGeneration("wan2.7-t2v", "video"), true);
+});
+
+test("media sizes include the Qwen portrait ratio and reject unknown ratios", () => {
+  assert.ok(isSupportedMediaSize("auto"));
+  assert.ok(isSupportedMediaSize("1:1"));
+  assert.ok(isSupportedMediaSize("3:4"));
+  assert.ok(isSupportedMediaSize("4:3"));
+  assert.ok(isSupportedMediaSize("16:9"));
+  assert.ok(isSupportedMediaSize("9:16"));
+  assert.ok(isSupportedMediaSize("1024x1024"));
+  assert.strictEqual(isSupportedMediaSize("2:5"), false);
+  assert.ok(MEDIA_SIZE_OPTIONS.includes("3:4"));
+});
+
+test("chat video results use a clickable Markdown link", () => {
+  const content = formatGeneratedVideoContent(
+    "https://cdn.qwenlm.ai/output/video.mp4?key=test-token",
+  );
+
+  assert.strictEqual(
+    content,
+    "[🎬 Generated video](https://cdn.qwenlm.ai/output/video.mp4?key=test-token)",
+  );
+});
+
+test("media logs are standardized and redact signed URLs", () => {
+  const message = mediaLog("image", "generation_completed", {
+    account: "1234567890abcdef",
+    url: "https://cdn.qwenlm.ai/output/image.png?key=secret-token",
+    error: "first line\nsecond line",
+  });
+
+  assert.match(message, /^🎨 \[Media\] generation_completed \|/);
+  assert.match(message, /account=1234567890ab/);
+  assert.match(message, /url=\[redacted-url\]/);
+  assert.doesNotMatch(message, /secret-token/);
+  assert.doesNotMatch(message, /\n/);
 });
 
 test("processImagesForQwen re-uploads remote HTTP files to Qwen OSS", async () => {

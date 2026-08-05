@@ -31,6 +31,8 @@ import {
   shouldRetryChatInProgressOnSameAccount,
   shouldRetryInvalidInputOnSameAccount,
 } from "./retry-policy.ts";
+import { classifyMediaModel } from "../../services/media-generation.ts";
+import { handleMediaChatCompletion } from "./media.ts";
 
 
 
@@ -71,6 +73,20 @@ export async function chatCompletions(c: Context) {
     const declaredTools = Array.isArray((body as any).tools)
       ? (body as any).tools
       : [];
+
+    // Intercept image/video generation models: they bypass the text chat flow
+    // and are handled by the native media pipeline (qwen-image-*, wan2.*).
+    const rawModel = typeof body.model === "string" ? body.model.trim() : "";
+    const mediaKind = rawModel ? classifyMediaModel(rawModel) : null;
+    if (mediaKind) {
+      return handleMediaChatCompletion({
+        c,
+        body,
+        model: rawModel,
+        kind: mediaKind,
+        isStream,
+      });
+    }
 
     stepStartedAt = Date.now();
     const ctx = await buildFinalContext({

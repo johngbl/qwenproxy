@@ -46,6 +46,7 @@ type BrowserStreamEvent = {
   contentType?: string;
   data?: string;
   message?: string;
+  errorName?: string;
 };
 
 interface BrowserStreamMetadata {
@@ -89,7 +90,10 @@ function handleBrowserStreamEvent(
   } else if (event.type === "done") {
     state.done = true;
   } else if (event.type === "error") {
-    state.error = browserStreamError(event.message || "Browser Qwen stream failed");
+    state.error = browserStreamError(
+      event.message || "Browser Qwen stream failed",
+      event.errorName,
+    );
     state.done = true;
   }
 
@@ -108,8 +112,13 @@ async function ensureBrowserStreamBinding(page: Page): Promise<void> {
   browserStreamBindingPages.add(page);
 }
 
-function browserStreamError(message: string): Error {
-  return new Error(message || "Browser Qwen stream failed");
+function browserStreamError(message: string, errorName?: string): Error {
+  const normalizedMessage = message || "Browser Qwen stream failed";
+  if (errorName === "AbortError") {
+    const abortError = new DOMException(normalizedMessage, "AbortError");
+    return abortError;
+  }
+  return new QwenNetworkError(normalizedMessage);
 }
 
 function withBrowserTimeout<T>(
@@ -629,6 +638,11 @@ function setPersonalizationHashInDb(accountId: string, hash: string): void {
 
 function shortContentHash(value: string): string {
   return crypto.createHash("sha256").update(value).digest("hex").slice(0, 12);
+}
+
+function shortAccountId(accountId: string): string {
+  const normalized = accountId.trim();
+  return normalized.length > 12 ? normalized.slice(0, 12) : normalized;
 }
 
 function textSize(value: unknown): {
@@ -1331,6 +1345,7 @@ async function createQwenBrowserResponse(
                     type: "error",
                     message:
                       error instanceof Error ? error.message : String(error),
+                    errorName: error instanceof Error ? error.name : undefined,
                   });
                 } catch {
                   // Node may have cancelled the stream already.
@@ -1711,7 +1726,7 @@ export async function syncQwenRequestPersonalization(
   }
 
   console.log(
-    `✅ [Qwen] Personalization synced | ${metadata.model || "?"} | ${metadata.toolsCount ?? 0} tool(s) | ${sent.chars} chars${metadata.sessionId ? ` | chat=${metadata.sessionId.substring(0, 12)}` : ""}${matchStored === null ? "" : ` | verified=${matchStored}`}`,
+    `✅ [Qwen] Personalization synced | account=${shortAccountId(cacheKey)} | model=${metadata.model || "?"} | tools=${metadata.toolsCount ?? 0} | prompt_chars=${sent.chars ?? 0}${metadata.sessionId ? ` | chat=${metadata.sessionId.substring(0, 12)}` : ""}${matchStored === null ? "" : ` | verified=${matchStored}`}`,
   );
   logger.debug("[Qwen] personalization sync details", {
     accountId: cacheKey,

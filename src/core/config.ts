@@ -28,7 +28,7 @@ const envSchema = z
     PLAYWRIGHT_JS_HEAP_MB: z.string().default("256"),
     PLAYWRIGHT_LOW_MEMORY_FLAGS: z.string().default("true"),
     PLAYWRIGHT_MAX_ACTIVE_CONTEXTS: z.string().default("1"),
-    PLAYWRIGHT_PREPARE_ALL_ON_STARTUP: z.string().default("false"),
+    PLAYWRIGHT_PREPARE_ALL_ON_STARTUP: z.string().default("true"),
     CAPTCHA_SOLVER_ENABLED: z.string().default("true"),
     CAPTCHA_SOLVER_MAX_ATTEMPTS: z.string().default("3"),
     CAPTCHA_SOLVER_TIMEOUT_MS: z.string().default("15000"),

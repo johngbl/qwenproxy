@@ -43,13 +43,23 @@ interface ActiveIncrementalToolCall {
 // ─── XML Helpers ───────────────────────────────────────────────────────────────
 
 const TOOL_END = "</" + "tool_call>";
+const TOOL_END_ALIASES = ["</" + "tool_calls>", TOOL_END];
+
+interface ToolEndMatch {
+  index: number;
+  tag: string;
+}
 
 /**
- * Find the closing marker only when it is outside a JSON string. Tool
- * arguments frequently contain source code or tests that mention the literal
+ * Find a closing marker only when it is outside a JSON string. Tool arguments
+ * frequently contain source code or tests that mention the literal
  * `</tool_call>`; using indexOf() would truncate those arguments early.
+ *
+ * Some Qwen-compatible templates emit the plural opening tag `<tool_calls>`
+ * while still using either singular or plural closing tags, so both forms are
+ * accepted here.
  */
-function findToolEndOutsideJsonString(buffer: string): number {
+function findToolEndOutsideJsonString(buffer: string): ToolEndMatch | null {
   const lower = buffer.toLowerCase();
   let inString = false;
   let escaped = false;
@@ -71,13 +81,29 @@ function findToolEndOutsideJsonString(buffer: string): number {
       inString = true;
       continue;
     }
-    if (lower.startsWith(TOOL_END, i)) return i;
+
+    const tag = TOOL_END_ALIASES.find((candidate) =>
+      lower.startsWith(candidate, i),
+    );
+    if (tag) return { index: i, tag };
   }
 
   // Malformed/recovered tool payloads can have an unbalanced quote count.
   // Preserve the historical recovery path in that case; valid JSON above has
   // already protected literal markers inside quoted argument values.
-  return lower.indexOf(TOOL_END);
+  let fallback: ToolEndMatch | null = null;
+  for (const tag of TOOL_END_ALIASES) {
+    const index = lower.indexOf(tag);
+    if (
+      index !== -1 &&
+      (!fallback ||
+        index < fallback.index ||
+        (index === fallback.index && tag.length > fallback.tag.length))
+    ) {
+      fallback = { index, tag };
+    }
+  }
+  return fallback;
 }
 
 function normalizeToolNameForMatch(name: string): string {
@@ -164,7 +190,9 @@ function findNextToolOpenTagOutsideMarkdownCode(
     }
 
     if (delimiterLength === 0) {
-      const match = buffer.substring(i).match(/^<tool_call\b[^>]*>/i);
+      const match = buffer
+        .substring(i)
+        .match(/^<tool_call(?:s)?\b[^>]*>/i);
       if (match) {
         return { index: i, openTag: match[0] };
       }
@@ -295,7 +323,7 @@ function findPartialMissingOpenToolCallIndex(
   buffer: string,
   initialDelimiterLength = 0,
 ): number {
-  if (buffer.toLowerCase().includes(TOOL_END)) return -1;
+  if (findToolEndOutsideJsonString(buffer)) return -1;
 
   const candidateStarts = findCandidateStarts(buffer);
   for (const candidateStart of candidateStarts) {
@@ -319,10 +347,16 @@ function findPartialMissingOpenToolCallIndex(
 function findRecoverableMissingOpenToolCall(
   buffer: string,
   initialDelimiterLength = 0,
-): { textBefore: string; candidate: string; consumeLength: number } | null {
-  const endIdx = findToolEndOutsideJsonString(buffer);
-  if (endIdx === -1) return null;
+): {
+  textBefore: string;
+  candidate: string;
+  consumeLength: number;
+  closeTag: string;
+} | null {
+  const endMatch = findToolEndOutsideJsonString(buffer);
+  if (!endMatch) return null;
 
+  const endIdx = endMatch.index;
   const beforeEnd = buffer.substring(0, endIdx);
   const candidateStarts = findCandidateStarts(beforeEnd);
 
@@ -344,7 +378,8 @@ function findRecoverableMissingOpenToolCall(
     return {
       textBefore: beforeEnd.substring(0, candidateStart),
       candidate,
-      consumeLength: endIdx + TOOL_END.length,
+      consumeLength: endIdx + endMatch.tag.length,
+      closeTag: endMatch.tag,
     };
   }
 
@@ -383,7 +418,7 @@ function coerceParameterValue(rawValue: string): unknown {
 function extractToolName(openTag: string, block: string): string {
   const combined = `${openTag}\n${block}`;
   const attrMatch = combined.match(
-    /<tool_call\b[^>]*\bname\s*=\s*["']([^"']+)["']/i,
+    /<tool_call(?:s)?\b[^>]*\bname\s*=\s*["']([^"']+)["']/i,
   );
   if (attrMatch) return attrMatch[1];
 
@@ -737,6 +772,7 @@ export class StreamingToolParser {
   private buffer = "";
   private insideTool = false;
   private currentOpenTag = TOOL_START_LITERAL;
+  private currentCloseTag = TOOL_END;
   private emittedToolCallCount = 0;
   private pendingLeadIn = "";
   private tools: ToolDefinitionLike[] = [];
@@ -1073,7 +1109,7 @@ export class StreamingToolParser {
     reason: string,
     closed = true,
   ): void {
-    const literalBlock = `${this.currentOpenTag}${content}${closed ? TOOL_END : ""}`;
+    const literalBlock = `${this.currentOpenTag}${content}${closed ? this.currentCloseTag : ""}`;
     logger.warn("[parser] Preserving literal tool_call block as text", {
       reason,
       openTag: this.currentOpenTag,
@@ -1156,11 +1192,13 @@ export class StreamingToolParser {
             }
             this.holdLeadIn(missingOpenRecovery.textBefore);
             this.currentOpenTag = TOOL_START_LITERAL;
+            this.currentCloseTag = missingOpenRecovery.closeTag;
             this.buffer = this.buffer.substring(
               missingOpenRecovery.consumeLength,
             );
             this.processToolContent(missingOpenRecovery.candidate, result);
             this.currentOpenTag = TOOL_START_LITERAL;
+            this.currentCloseTag = TOOL_END;
             continue;
           }
 
@@ -1198,23 +1236,27 @@ export class StreamingToolParser {
           break;
         }
       } else {
-        // Inside tool: look for </tool_call> outside JSON strings.
-        const endIdx = findToolEndOutsideJsonString(this.buffer);
-        if (endIdx !== -1) {
+        // Inside tool: look for a supported closing tag outside JSON strings.
+        const endMatch = findToolEndOutsideJsonString(this.buffer);
+        if (endMatch) {
+          const endIdx = endMatch.index;
           const content = this.buffer.substring(0, endIdx);
           if (isToolcallDebugEnabled()) {
             logger.debug("[parser] tool_call close tag detected", {
               contentLength: content.length,
               contentPreview: content.substring(0, 300),
+              closeTag: endMatch.tag,
               remainingBufferLength:
-                this.buffer.length - endIdx - TOOL_END.length,
+                this.buffer.length - endIdx - endMatch.tag.length,
             });
           }
           this.emitIncrementalToolCallDeltas(content, result);
-          this.buffer = this.buffer.substring(endIdx + TOOL_END.length);
+          this.buffer = this.buffer.substring(endIdx + endMatch.tag.length);
+          this.currentCloseTag = endMatch.tag;
           this.processToolContent(content, result);
           this.insideTool = false;
           this.currentOpenTag = TOOL_START_LITERAL;
+          this.currentCloseTag = TOOL_END;
           this.clearIncrementalToolCall();
         } else {
           this.emitIncrementalToolCallDeltas(this.buffer, result);
@@ -1346,6 +1388,7 @@ export class StreamingToolParser {
     this.buffer = "";
     this.insideTool = false;
     this.currentOpenTag = TOOL_START_LITERAL;
+    this.currentCloseTag = TOOL_END;
     this.markdownCodeDelimiterLength = 0;
     this.clearIncrementalToolCall();
     return result;

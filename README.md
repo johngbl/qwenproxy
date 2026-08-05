@@ -256,16 +256,19 @@ npm start
 
 ### Startup multi-conta
 
-1. Prepara contas em ordem.
-2. Quando a **primeira conta** autentica, warm-up ok e **sem cooldown**, o server sobe.
-3. As demais continuam em **background** (batch = `PLAYWRIGHT_INIT_BATCH_SIZE`).
+1. Prepara as contas em sequência, reutilizando o profile persistente quando ele já está autenticado.
+2. Se o profile não tiver uma sessão válida, autentica com as credenciais da conta e salva a sessão em `data/qwen_profiles/<accountId>`.
+3. O servidor sobe após a primeira conta ficar pronta e continua preparando as demais em background.
+4. Com `PLAYWRIGHT_MAX_ACTIVE_CONTEXTS=1` (padrão), o contexto anterior é fechado antes de abrir o próximo: apenas uma conta fica ativa e as demais ficam em standby com seus profiles salvos.
+5. Use `PLAYWRIGHT_PREPARE_ALL_ON_STARTUP=false` para voltar ao modo econômico, preparando as contas adicionais somente quando forem necessárias.
 
 Exemplo de log:
 
 ```text
-🔐 [Server] Preparing first available Qwen account...
-✅ [Server] Account ready: us***@example.com
-🔄 [Server] Preparing 3 additional account(s) in background...
+✅ [Server] Account ready (1/6): us***@example.com
+🪶 [Server] Preparing 5 standby account(s) in background
+✅ [Server] Account ready (2/6): us***@example.com
+...
 
 🚀✨ [Server] Listening on http://127.0.0.1:3000/v1 ✨🚀
 ```
@@ -575,7 +578,7 @@ base_url = "http://127.0.0.1:3000/v1"
 
 O parser suporta:
 
-- tags `<tool_call>...</tool_call>` (close case-insensitive: `</TOOL_CALL>`)
+- tags `<tool_call>...</tool_call>` e variantes Qwen `<tool_calls>...</tool_call(s)>` (fechamentos case-insensitive)
 - formato Hermes/XML (`<parameter name="...">`)
 - JSON malformado / recovery (aspas/braces faltando)
 - JSON **duplamente escapado** em arguments

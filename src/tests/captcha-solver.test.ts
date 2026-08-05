@@ -141,7 +141,7 @@ test("captcha solver handles the current container with a nested iframe", async 
     assert.ok(
       captured.warnings.some(
         (warning) =>
-          warning.startsWith("[Captcha] ✅ event=solve_succeeded") &&
+          warning.startsWith("✅ [Captcha] solve_succeeded") &&
           warning.includes("scope=\"iframe\"") &&
           warning.includes("attempt=1") &&
           warning.includes("track=300") &&
@@ -196,7 +196,7 @@ test("captcha solver handles a standalone NC document without an iframe", async 
     assert.ok(
       captured.warnings.some(
         (warning) =>
-          warning.startsWith("[Captcha] ✅ event=solve_succeeded") &&
+          warning.startsWith("✅ [Captcha] solve_succeeded") &&
           warning.includes("scope=\"top_level\""),
       ),
     );
@@ -271,13 +271,13 @@ test("captcha solver reports a visible dialog without an iframe", async () => {
     // that the solver returns false without emitting a false success/failure.
     assert.equal(
       captured.warnings.some((warning) =>
-        warning.includes("event=solve_succeeded"),
+        warning.includes("solve_succeeded"),
       ),
       false,
     );
     assert.equal(
       captured.warnings.some((warning) =>
-        warning.includes("event=solve_failed"),
+        warning.includes("solve_failed"),
       ),
       false,
     );
@@ -318,7 +318,7 @@ test("captcha solver reports an iframe with no slider", async () => {
     assert.ok(
       captured.warnings.some(
         (warning) =>
-          warning.startsWith("[Captcha] ❌ event=solve_failed") &&
+          warning.startsWith("❌ [Captcha] solve_failed") &&
           warning.includes("scope=\"iframe\"") &&
           warning.includes("attempts=1") &&
           warning.includes("reason=\"slider_not_found\""),
@@ -451,7 +451,7 @@ test("challenge recovery opens the punish url before solving", async () => {
   ]);
   assert.ok(
     captured.warnings.includes(
-      '[Captcha] 🚪 event=challenge_opened source="response_body"',
+      '🚪 [Captcha] challenge_opened | source="response_body"',
     ),
   );
 });
@@ -480,7 +480,7 @@ test("challenge recovery reloads the chat page when the body carries no url", as
   assert.deepEqual(visited, ["https://chat.qwen.ai"]);
   assert.ok(
     captured.warnings.includes(
-      '[Captcha] 🚪 event=challenge_opened source="chat_reload"',
+      '🚪 [Captcha] challenge_opened | source="chat_reload"',
     ),
   );
 });
