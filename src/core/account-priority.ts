@@ -79,6 +79,25 @@ export function markAccountFailed(accountId: string): void {
 }
 
 /**
+ * Adiciona conta à prioridade se não existir (prioridade inicial).
+ * Contas novas entram no final da lista, mantendo a ordem de configuração.
+ */
+export function ensureAccountInPriority(accountId: string): void {
+  const data = loadPriority();
+  
+  // Se já existe, não faz nada
+  if (data.accountOrder.includes(accountId)) {
+    return;
+  }
+  
+  // Adiciona no final (prioridade inicial baixa)
+  data.accountOrder.push(accountId);
+  data.lastUpdated = Date.now();
+  
+  savePriority(data);
+}
+
+/**
  * Retorna contas ordenadas por prioridade (melhores primeiro)
  */
 export function getAccountsByPriority<T extends { id: string }>(accounts: T[]): T[] {

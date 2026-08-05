@@ -1072,6 +1072,118 @@ export async function initPlaywrightForAccount(
   }
 }
 
+// ─── Standby Validation ──────────────────────────────────────────────────────
+
+/**
+ * Validate that an account can log in without keeping the browser open.
+ * Opens browser, checks session, logs in if needed, then closes browser.
+ * This is much lighter than full initPlaywrightForAccount (no header capture).
+ */
+export async function validateAccountLogin(
+  account: QwenAccount,
+  headless = true,
+  browserType: BrowserType = "chromium",
+): Promise<boolean> {
+  if (accountPages.has(account.id)) {
+    // Already initialized, no need to validate
+    return true;
+  }
+
+  const release = await acquireAccountMutex(
+    account.id,
+    `validate:${account.id.substring(0, 12)}`,
+  );
+  try {
+    if (accountPages.has(account.id)) return true;
+
+    const profilePath = path.resolve("data", "qwen_profiles", account.id);
+    const fingerprint = getFingerprintProfile(account.id);
+    const { engine, channel } = resolveBrowserEngine(browserType);
+    const engineToUse = chromiumWithStealth || engine;
+
+    const acctContext = await engineToUse.launchPersistentContext(profilePath, {
+      headless,
+      channel,
+      userAgent: fingerprint.userAgent,
+      locale: fingerprint.locale,
+      timezoneId: fingerprint.timezoneId,
+      viewport: fingerprint.viewport,
+      screen: fingerprint.viewport,
+      deviceScaleFactor: 1,
+      isMobile: false,
+      hasTouch: false,
+      colorScheme: "light",
+      extraHTTPHeaders: {
+        "sec-ch-ua": fingerprint.secChUa,
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+      },
+      ignoreDefaultArgs: ["--enable-automation", "--enable-blink-features"],
+      args: buildChromiumLaunchArgs(fingerprint.viewport),
+    });
+
+    try {
+      await acctContext.addInitScript(getStealthScript(fingerprint));
+
+      const existingPages = acctContext.pages().filter((p) => !p.isClosed());
+      const acctPage =
+        existingPages.find((p) => p.url().startsWith(qwenOrigin())) ??
+        existingPages[0] ??
+        (await acctContext.newPage());
+
+      // Check if already logged in via cookies
+      const cookies = await acctContext.cookies();
+      const hasAuthCookie = cookies.some(
+        (c) =>
+          c.name.toLowerCase().includes("token") ||
+          c.name.toLowerCase().includes("session"),
+      );
+
+      let loggedIn = hasAuthCookie;
+
+      if (!loggedIn && account.email && account.password) {
+        // Need to register page temporarily for login functions
+        accountPages.set(account.id, acctPage);
+        try {
+          loggedIn = await loginToQwen(account.id, account.email, account.password);
+        } finally {
+          accountPages.delete(account.id);
+        }
+      } else if (hasAuthCookie) {
+        // Validate session by navigating to chat page
+        try {
+          await acctPage.goto(qwenUrl("/"), {
+            waitUntil: "domcontentloaded",
+            timeout: config.timeouts.navigation,
+          });
+          const url = acctPage.url();
+          if (url.includes("auth") || url.includes("login")) {
+            loggedIn = false;
+            if (account.email && account.password) {
+              accountPages.set(account.id, acctPage);
+              try {
+                loggedIn = await loginToQwen(account.id, account.email, account.password);
+              } finally {
+                accountPages.delete(account.id);
+              }
+            }
+          }
+        } catch {
+          loggedIn = false;
+        }
+      }
+
+      return loggedIn;
+    } finally {
+      // Always close browser after validation
+      await closePlaywrightContextBestEffort(account.id, acctContext);
+      cleanupPlaywrightAccountState(account.id);
+    }
+  } finally {
+    release();
+  }
+}
+
 // ─── Login ────────────────────────────────────────────────────────────────────
 
 async function loginToQwen(
