@@ -141,6 +141,27 @@ app.get("/health", async (c) => {
   });
 });
 
+// Token TTL diagnostics: inspect real cookie/header lifetimes
+app.get("/diagnostics/tokens", async (c) => {
+  const error = verifyApiKey(c);
+  if (error) return error;
+
+  const { getTokenDiagnostics } = await import("../services/playwright.ts");
+  const accountId = c.req.query("accountId");
+
+  try {
+    const diagnostics = await getTokenDiagnostics(accountId);
+    return c.json(diagnostics);
+  } catch (err) {
+    return c.json(
+      {
+        error: err instanceof Error ? err.message : String(err),
+      },
+      500,
+    );
+  }
+});
+
 app.get("/metrics", (c) => {
   const error = verifyApiKey(c);
   if (error) return error;

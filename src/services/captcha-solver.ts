@@ -23,6 +23,8 @@ const CAPTCHA_EVENT_EMOJI: Record<string, string> = {
   recovery_failed: "❌",
 };
 
+const captchaDebugEnabled = process.env.CAPTCHA_DEBUG === "true";
+
 function formatCaptchaLogValue(value: string | number | boolean): string {
   if (typeof value === "string") {
     return JSON.stringify(value.replace(/\s+/g, " ").slice(0, 160));
@@ -33,12 +35,21 @@ function formatCaptchaLogValue(value: string | number | boolean): string {
 export function logBaxiaCaptcha(
   event: string,
   fields: Record<string, string | number | boolean> = {},
+  important = false,
 ): void {
+  if (!important && !captchaDebugEnabled) return;
+
   const suffix = Object.entries(fields)
     .map(([key, value]) => `${key}=${formatCaptchaLogValue(value)}`)
     .join(" ");
   const emoji = CAPTCHA_EVENT_EMOJI[event] ?? "ℹ️";
-  console.warn(`[Captcha] ${emoji} event=${event}${suffix ? ` ${suffix}` : ""}`);
+  const line = `[Captcha] ${emoji} event=${event}${suffix ? ` ${suffix}` : ""}`;
+
+  if (important) {
+    console.warn(line);
+  } else {
+    console.log(line);
+  }
 }
 
 const BAXIA_IFRAME_SELECTORS = [
@@ -262,7 +273,11 @@ export async function solveBaxiaCaptcha(
   const detected = await detectBaxiaChallenge(page, waitForMs);
   if (!detected) return false;
 
-  logBaxiaCaptcha("solve_started");
+  const scope = detected.target.iframeSelector ? "iframe" : "top_level";
+  let lastGeometry: { track?: number; slider?: number; distance?: number } = {};
+  let lastReason = "unknown";
+
+  logBaxiaCaptcha("solve_started", { scope });
 
   // A frame selector is deliberately narrowed to the first matching iframe.
   // This matters when an old hidden Baxia iframe remains in the page after a
@@ -287,17 +302,21 @@ export async function solveBaxiaCaptcha(
 
       const sliderBox = await slider.boundingBox();
       if (!sliderBox) {
+        lastReason = "bounds_unavailable";
         logBaxiaCaptcha("attempt_bounds_unavailable", { attempt });
       } else {
         const track = frame.locator(BAXIA_TRACK_SELECTOR);
         const trackBox = await track.boundingBox();
         const trackWidth = trackBox?.width ?? 300;
         const dragDistance = Math.max(0, trackWidth - sliderBox.width);
-        logBaxiaCaptcha("attempt_geometry", {
-          attempt,
+        lastGeometry = {
           track: Math.round(trackWidth),
           slider: Math.round(sliderBox.width),
           distance: Math.round(dragDistance),
+        };
+        logBaxiaCaptcha("attempt_geometry", {
+          attempt,
+          ...lastGeometry,
         });
 
         if (dragDistance > 0) {
@@ -320,16 +339,28 @@ export async function solveBaxiaCaptcha(
           settleMs,
         )
       ) {
-        logBaxiaCaptcha("solve_succeeded");
+        logBaxiaCaptcha(
+          "solve_succeeded",
+          {
+            scope,
+            attempt,
+            ...lastGeometry,
+          },
+          true,
+        );
         return true;
       }
 
+      lastReason = "not_solved";
       logBaxiaCaptcha("attempt_not_solved", { attempt });
     } catch (error) {
       const errorKind = error instanceof Error ? error.name : "UnknownError";
       if (!sliderFoundReported && !sliderMissingReported) {
+        lastReason = "slider_not_found";
         logBaxiaCaptcha("slider_not_found", { attempt });
         sliderMissingReported = true;
+      } else {
+        lastReason = errorKind;
       }
       // Do not include Playwright's full error: it can contain challenge URLs
       // or other page details that should never reach application logs.
@@ -342,9 +373,18 @@ export async function solveBaxiaCaptcha(
   }
 
   if (!sliderFoundReported && !sliderMissingReported) {
+    lastReason = "slider_not_found";
     logBaxiaCaptcha("slider_not_found");
   }
-  logBaxiaCaptcha("solve_failed");
+  logBaxiaCaptcha(
+    "solve_failed",
+    {
+      scope,
+      attempts: maxAttempts,
+      reason: lastReason,
+    },
+    true,
+  );
   return false;
 }
 

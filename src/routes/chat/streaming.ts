@@ -19,7 +19,7 @@ import {
 } from "../../services/qwen.ts";
 import { acquireUpstreamStream } from "./account.ts";
 import { markAccountRateLimited } from "../../core/account-manager.ts";
-import { markAccountTemporarilyBusy } from "../../core/account-concurrency.ts";
+
 import {
   classifyRetryAction,
   shouldRetryChatInProgressOnSameAccount,
@@ -797,19 +797,13 @@ export async function processStreamingResponse(
     let currentUiSessionId = retryContext.uiSessionId;
     let currentAccountId = retryContext.activeAccountId;
     let currentAccountLabel = retryContext.activeAccountLabel;
+    let activeReader: ReadableStreamDefaultReader<Uint8Array> | null = streamReader;
     let invalidInputSameAccountRetries = 0;
     let chatInProgressSameAccountRetries = 0;
 
-    const abortHandler = async () => {
+    const abortHandler = () => {
       if (clientDisconnected) return;
       clientDisconnected = true;
-      // A disconnect can leave Qwen settling the previous generation for a few
-      // seconds even after the stop request is sent. Keep new requests away from
-      // this account briefly instead of immediately reusing the same chat.
-      markAccountTemporarilyBusy(
-        currentAccountId,
-        config.retry.chatInProgressBusyMs,
-      );
 
       console.log(
         `🔌 [Chat] Client disconnected | ${completionId} | stopping Qwen generation`,
@@ -822,62 +816,62 @@ export async function processStreamingResponse(
         });
       }
 
-      try {
-        const streamData = getStream(completionId);
-        if (streamData && currentUiSessionId) {
-          const targetResponseId = streamData.targetResponseId;
-          if (targetResponseId) {
-            console.log(
-              `🛑 [Chat] Stopping Qwen generation | session=${currentUiSessionId} | response=${targetResponseId}`,
-            );
-            await requestQwenTextInBrowser(
-              currentAccountId,
-              "POST",
-              `/api/v2/chat/completions/stop?chat_id=${encodeURIComponent(currentUiSessionId)}`,
-              buildQwenRequestHeaders({
-                cookie: streamData.headers.cookie,
-                userAgent: streamData.headers["user-agent"],
-                bxUa: streamData.headers["bx-ua"],
-                bxUmidtoken: streamData.headers["bx-umidtoken"],
-                bxV: streamData.headers["bx-v"],
-                chatSessionId: currentUiSessionId,
-              }),
-              JSON.stringify({
-                chat_id: currentUiSessionId,
-                response_id: targetResponseId,
-              }),
-              { referrer: qwenUrl(`/c/${encodeURIComponent(currentUiSessionId)}`) },
-            ).catch((err) => {
-              console.error(
-                `❌ [Chat] Stop failed | ${err.message}`,
-              );
-            });
-          } else {
-            console.log(
-              `⏭️  [Chat] Skip Qwen stop | ${completionId} | no response_id yet`,
-            );
-          }
-        }
+      const streamData = getStream(completionId);
+      const targetResponseId = streamData?.targetResponseId || "";
+      const stopSessionId = currentUiSessionId;
+      const stopHeaders = streamData?.headers;
 
-        try {
-          streamData?.abortController.abort();
-        } catch (abortErr: any) {
-          if (abortErr.name !== "AbortError") {
-            console.error(
-              `❌ [Chat] Abort stream failed | ${abortErr.message}`,
-            );
-          }
+      // Abort the browser stream first. This wakes the reader immediately and
+      // lets the normal finally block release the account/stream locks without
+      // waiting for Qwen's stop endpoint.
+      try {
+        streamData?.abortController.abort();
+      } catch (abortErr: any) {
+        if (abortErr.name !== "AbortError") {
+          console.error(`❌ [Chat] Abort stream failed | ${abortErr.message}`);
         }
-      } catch (err: any) {
-        console.error(
-          `❌ [Chat] Disconnect cleanup failed | ${err.message}`,
+      }
+      void activeReader?.cancel().catch(() => undefined);
+
+      // Release the lease immediately. The stop request below is best-effort
+      // and must never hold the account slot or block the next tool turn.
+      retryContext.releaseAccountLease?.();
+      retryContext.releaseAccountLease = null;
+      removeStream(completionId);
+
+      if (stopHeaders && stopSessionId && targetResponseId) {
+        console.log(
+          `🛑 [Chat] Stopping Qwen generation | session=${stopSessionId} | response=${targetResponseId}`,
+        );
+        void requestQwenTextInBrowser(
+          currentAccountId,
+          "POST",
+          `/api/v2/chat/completions/stop?chat_id=${encodeURIComponent(stopSessionId)}`,
+          buildQwenRequestHeaders({
+            cookie: stopHeaders.cookie,
+            userAgent: stopHeaders["user-agent"],
+            bxUa: stopHeaders["bx-ua"],
+            bxUmidtoken: stopHeaders["bx-umidtoken"],
+            bxV: stopHeaders["bx-v"],
+            chatSessionId: stopSessionId,
+          }),
+          JSON.stringify({
+            chat_id: stopSessionId,
+            response_id: targetResponseId,
+          }),
+          { referrer: qwenUrl(`/c/${encodeURIComponent(stopSessionId)}`) },
+        ).catch((err) => {
+          console.error(`❌ [Chat] Stop failed | ${err.message}`);
+        });
+      } else {
+        console.log(
+          `⏭️  [Chat] Skip Qwen stop | ${completionId} | no response_id yet`,
         );
       }
 
       if (heartbeatTimeout) {
         clearTimeout(heartbeatTimeout);
       }
-      removeStream(completionId);
     };
 
     c.req.raw.signal.addEventListener("abort", abortHandler);
@@ -958,6 +952,7 @@ export async function processStreamingResponse(
       });
 
       let reader: ReadableStreamDefaultReader<Uint8Array> = streamReader;
+      activeReader = reader;
       const decoder = new TextDecoder();
 
       let lastThinkingSummary = "";
@@ -1443,6 +1438,7 @@ export async function processStreamingResponse(
                   `🔄 [Chat] Transparent retry switching reader | old=${currentUiSessionId} | new=${newStreamResult.uiSessionId.substring(0, 12)}`,
                 );
                 reader = newStreamResult.stream.getReader();
+                activeReader = reader;
 
                 console.log(
                   `🔄 [Chat] Transparent retry ready to continue`,
@@ -1721,6 +1717,11 @@ export async function processStreamingResponse(
 
             // Read from new stream and continue writing to the same streamWriter
             const retryReader = newStreamResult.stream.getReader();
+            activeReader = retryReader;
+            retryContext.releaseAccountLease = newStreamResult.releaseAccountLease;
+            currentUiSessionId = newStreamResult.uiSessionId;
+            currentAccountId = newStreamResult.activeAccountId;
+            currentAccountLabel = newStreamResult.activeAccountLabel;
             const retryDecoder = new TextDecoder();
             let retryBuffer = "";
 
@@ -1749,12 +1750,8 @@ export async function processStreamingResponse(
             }
 
             // Update state for cleanup
-            currentUiSessionId = newStreamResult.uiSessionId;
-            currentAccountId = newStreamResult.activeAccountId;
-            currentAccountLabel = newStreamResult.activeAccountLabel;
             currentTokenEstimationContext =
               newStreamResult.tokenEstimationContext;
-            retryContext.releaseAccountLease = newStreamResult.releaseAccountLease;
 
             // Skip error injection since we successfully retried
             toolParser.clearMalformedToolCalls();

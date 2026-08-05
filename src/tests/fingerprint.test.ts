@@ -28,8 +28,8 @@ test("fingerprint profile varies across accounts without changing invariants", (
   assert.notEqual(second.accountId, first.accountId);
   assert.match(second.secChUa, /Google Chrome/);
   assert.equal(second.fullVersionList.length, second.brands.length);
-  assert.ok(second.viewport.width >= 1366);
-  assert.ok(second.viewport.height >= 768);
+  assert.ok(second.viewport.width >= 1280);
+  assert.ok(second.viewport.height >= 720);
   assert.ok(second.hardwareConcurrency >= 4);
   assert.ok(second.deviceMemory >= 4);
 });

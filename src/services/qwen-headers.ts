@@ -30,7 +30,7 @@ export function buildQwenRequestHeaders(
       opts.extra?.Referer ??
       (opts.chatSessionId
         ? qwenUrl(`/c/${encodeURIComponent(opts.chatSessionId)}`)
-        : qwenUrl("/c/new-chat")),
+        : qwenUrl("/")),
     "sec-ch-ua":
       '"Google Chrome";v="150", "Chromium";v="150", "Not.A/Brand";v="99"',
     "sec-ch-ua-mobile": "?0",

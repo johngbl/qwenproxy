@@ -450,15 +450,36 @@ export async function acquireUpstreamStream(
 			break;
 		}
 
+		const quotaInfo = (lastError as any)?.quotaInfo as
+			| {
+					email: string;
+					cooldownSeconds: number;
+					untilStr: string;
+					message: string;
+			  }
+			| undefined;
+		if (quotaInfo) {
+			const stickyRotation =
+				stickyThreadAccountId === accountId &&
+				(isAccountUnavailableError(lastError) ||
+					isAccountInitializationError(lastError) ||
+					isChatInProgressError(lastError));
+			console.warn(
+				`⚠️  [Chat] Quota exceeded | ${quotaInfo.email} | cooldown=${quotaInfo.cooldownSeconds}s${quotaInfo.untilStr} | ${quotaInfo.message}${stickyRotation ? " | switching sticky account with full context" : ""}`,
+			);
+		}
+
 		if (stickyThreadAccountId === accountId) {
 			const stickyAccountMustRotate =
 				isAccountUnavailableError(lastError) ||
 				isAccountInitializationError(lastError) ||
 				isChatInProgressError(lastError);
 			if (stickyAccountMustRotate) {
-				console.warn(
-					`⚠️  [Chat] Sticky account unavailable (${isChatInProgressError(lastError) ? "chat_in_progress" : "upstream failure"}); trying another account with full context.`,
-				);
+				if (!quotaInfo) {
+					console.warn(
+						`⚠️  [Chat] Sticky account unavailable (${isChatInProgressError(lastError) ? "chat_in_progress" : "upstream failure"}); trying another account with full context.`,
+					);
+				}
 			} else {
 				break;
 			}
@@ -871,26 +892,35 @@ async function tryCreateStreamWithRetry(
 					continue;
 				}
 
-				// Log consolidated quota error with cooldown info
-				const cooldownSeconds = policy.accountCooldownMs 
+				// Consolidate quota details into a single log emitted by the outer
+				// rotation loop. The cooldown itself is set silently to avoid duplicates.
+				const cooldownSeconds = policy.accountCooldownMs
 					? Math.round(policy.accountCooldownMs / 1000)
 					: 0;
-				const cooldownUntil = policy.accountCooldownMs 
+				const cooldownUntil = policy.accountCooldownMs
 					? new Date(Date.now() + policy.accountCooldownMs)
 					: null;
-				const untilStr = cooldownUntil 
+				const untilStr = cooldownUntil
 					? ` | until=${formatDateTimeBR(cooldownUntil.getTime())}`
 					: "";
-				
-				console.warn(
-					`⚠️  [Chat] Quota exceeded | ${currentAccountEmail} | cooldown=${cooldownSeconds}s${untilStr} | ${quotaMsg.substring(0, 150)}`,
-				);
+
+				try {
+					(err as any).quotaInfo = {
+						email: currentAccountEmail,
+						cooldownSeconds,
+						untilStr,
+						message: quotaMsg.substring(0, 150),
+					};
+				} catch {
+					// Best-effort metadata for logging.
+				}
 
 				markAccountFailed(currentAccountId);
 				markAccountRateLimited(
 					currentAccountId,
 					policy.accountCooldownMs,
 					policy.accountCooldownReason || "QuotaExceeded",
+					{ silent: true },
 				);
 				return { success: false, error: err };
 			}

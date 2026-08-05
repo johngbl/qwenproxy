@@ -136,16 +136,15 @@ test("captcha solver handles the current container with a nested iframe", async 
     assert.equal(mouseDownCalls, 1);
     assert.equal(mouseUpCalls, 1);
     assert.ok(
-      captured.warnings.includes("[Captcha] 🛡️ event=dialog_detected"),
-    );
-    assert.ok(
-      captured.warnings.includes("[Captcha] 🖼️ event=iframe_found"),
-    );
-    assert.ok(
-      captured.warnings.includes("[Captcha] 🎚️ event=slider_found"),
-    );
-    assert.ok(
-      captured.warnings.includes("[Captcha] ✅ event=solve_succeeded"),
+      captured.warnings.some(
+        (warning) =>
+          warning.startsWith("[Captcha] ✅ event=solve_succeeded") &&
+          warning.includes("scope=\"iframe\"") &&
+          warning.includes("attempt=1") &&
+          warning.includes("track=300") &&
+          warning.includes("slider=40") &&
+          warning.includes("distance=260"),
+      ),
     );
   } finally {
     captured.restore();
@@ -192,8 +191,10 @@ test("captcha solver handles a standalone NC document without an iframe", async 
       true,
     );
     assert.ok(
-      captured.warnings.includes(
-        "[Captcha] 🧩 event=challenge_detected scope=\"top_level\"",
+      captured.warnings.some(
+        (warning) =>
+          warning.startsWith("[Captcha] ✅ event=solve_succeeded") &&
+          warning.includes("scope=\"top_level\""),
       ),
     );
   } finally {
@@ -263,13 +264,19 @@ test("captcha solver reports a visible dialog without an iframe", async () => {
       }),
       false,
     );
-    assert.ok(
-      captured.warnings.includes("[Captcha] 🛡️ event=dialog_detected"),
-    );
-    assert.ok(
-      captured.warnings.includes(
-        "[Captcha] 🔎 event=challenge_not_found scope=\"dialog\"",
+    // Intermediate detection events are debug-only; the important behavior is
+    // that the solver returns false without emitting a false success/failure.
+    assert.equal(
+      captured.warnings.some((warning) =>
+        warning.includes("event=solve_succeeded"),
       ),
+      false,
+    );
+    assert.equal(
+      captured.warnings.some((warning) =>
+        warning.includes("event=solve_failed"),
+      ),
+      false,
     );
   } finally {
     captured.restore();
@@ -306,11 +313,12 @@ test("captcha solver reports an iframe with no slider", async () => {
       false,
     );
     assert.ok(
-      captured.warnings.includes("[Captcha] 🖼️ event=iframe_found"),
-    );
-    assert.ok(
-      captured.warnings.includes(
-        "[Captcha] ❌ event=slider_not_found attempt=1",
+      captured.warnings.some(
+        (warning) =>
+          warning.startsWith("[Captcha] ❌ event=solve_failed") &&
+          warning.includes("scope=\"iframe\"") &&
+          warning.includes("attempts=1") &&
+          warning.includes("reason=\"slider_not_found\""),
       ),
     );
   } finally {

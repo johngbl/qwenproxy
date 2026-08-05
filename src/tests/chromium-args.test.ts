@@ -8,7 +8,10 @@ test("buildChromiumLaunchArgs includes low-memory heap cap by default", () => {
   const args = buildChromiumLaunchArgs({ width: 1280, height: 720 });
 
   assert.ok(args.includes("--disable-dev-shm-usage"));
-  assert.ok(args.includes("--disable-gpu"));
+  assert.ok(args.includes("--enable-webgl"));
+  assert.ok(args.includes("--ignore-gpu-blocklist"));
+  assert.ok(args.includes("--enable-accelerated-2d-canvas"));
+  assert.ok(!args.includes("--disable-gpu"), "--disable-gpu is a detection signal and must not be present");
   assert.ok(
     args.some((arg) =>
       arg.startsWith(

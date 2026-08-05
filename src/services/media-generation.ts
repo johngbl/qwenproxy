@@ -76,7 +76,7 @@ function buildHeadersFromCaptured(
     extra: {
       Referer: chatSessionId
         ? qwenUrl(`/c/${encodeURIComponent(chatSessionId)}`)
-        : qwenUrl("/c/new-chat"),
+        : qwenUrl("/"),
     },
   });
 }

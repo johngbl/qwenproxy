@@ -75,7 +75,9 @@ export function buildChromiumLaunchArgs(viewport: {
     "--no-default-browser-check",
     "--no-sandbox",
     "--disable-dev-shm-usage",
-    "--disable-gpu",
+    "--enable-webgl",
+    "--ignore-gpu-blocklist",
+    "--enable-accelerated-2d-canvas",
     `--window-size=${viewport.width},${viewport.height}`,
     "--disable-extensions",
     "--disable-background-networking",
@@ -178,8 +180,11 @@ interface AccountHeaderCache {
 }
 
 const headerCaches = new Map<string, AccountHeaderCache>();
-const HEADER_CACHE_TTL = 5 * 60 * 1000; // 5 minutes (matches Alibaba token lifetime)
-const COOKIE_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+// Real TTL measured from Qwen: auth token = 30 days, shortest cookie (acw_tc) = 24 min.
+// 20 min is safe: under the 24-min acw_tc, and bx-ua expiry is handled by 403 retry.
+const HEADER_CACHE_TTL = 20 * 60 * 1000; // 20 minutes
+const HEADER_REFRESH_THRESHOLD = 0.8; // Background refresh at 80% of TTL (16 min)
+const COOKIE_CACHE_TTL = 15 * 60 * 1000; // 15 minutes
 const cookieCaches = new Map<string, { cookie: string; timestamp: number }>();
 const lastAccountActivity = new Map<string, number>();
 const lastKeepAliveNavigation = new Map<string, number>();
@@ -233,137 +238,400 @@ function touchAccountActivity(accountId: string): void {
 function getStealthScript(profile: FingerprintProfile): string {
   const profileJson = JSON.stringify(profile).replace(/</g, "\\u003c");
   return `
-    const __qwenFingerprint = ${profileJson};
+    (function() {
+      const PROFILE = ${profileJson};
 
-    // navigator.webdriver
-    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-    delete navigator.__proto__.webdriver;
+      function mulberry32(seed) {
+        return function() {
+          seed |= 0;
+          seed = (seed + 0x6d2b79f5) | 0;
+          let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+          t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+          return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+        };
+      }
 
-    // chrome object
-    window.chrome = {
-      runtime: {
-        onMessage: { addListener: function() {} },
-        sendMessage: function() {},
-      },
-      loadTimes: function() { return {}; },
-      csi: function() { return {}; },
-      app: {
-        isInstalled: false,
-        InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
-        RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' },
-      },
-    };
+      const canvasRng = mulberry32(PROFILE.canvasNoiseSeed);
+      const audioRng = mulberry32(PROFILE.audioNoiseSeed);
+      const webglRng = mulberry32(PROFILE.webglNoiseSeed);
 
-    // plugins - realistic set
-    Object.defineProperty(navigator, 'plugins', {
-      get: () => {
-        const plugins = [
-          { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-          { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
-          { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' },
-        ];
-        plugins.length = 3;
-        return plugins;
-      },
-    });
+      // --- Function.prototype.toString spoofing via WeakSet ---
+      const nativeToString = Function.prototype.toString;
+      const spoofedFunctions = new WeakSet();
 
-    // mimeTypes
-    Object.defineProperty(navigator, 'mimeTypes', {
-      get: () => {
-        const types = [
-          { type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' },
-          { type: 'application/x-google-chrome-pdf', suffixes: 'pdf', description: 'Portable Document Format' },
-        ];
-        types.length = 2;
-        return types;
-      },
-    });
+      Function.prototype.toString = function() {
+        if (spoofedFunctions.has(this)) {
+          return 'function ' + (this.name || '') + '() { [native code] }';
+        }
+        return nativeToString.call(this);
+      };
+      spoofedFunctions.add(Function.prototype.toString);
 
-    // identity
-    Object.defineProperty(navigator, 'userAgent', { get: () => __qwenFingerprint.userAgent });
-    Object.defineProperty(navigator, 'appVersion', { get: () => __qwenFingerprint.appVersion });
+      // --- Prototype-chain patching helper (harder to detect) ---
+      function defineOnPrototype(obj, prop, value) {
+        const proto = Object.getPrototypeOf(obj);
+        if (!proto) return;
+        const desc = Object.getOwnPropertyDescriptor(proto, prop);
+        if (desc && desc.configurable) {
+          const getter = typeof value === 'function' ? value : () => value;
+          Object.defineProperty(proto, prop, {
+            get: getter,
+            configurable: true,
+            enumerable: desc.enumerable !== false,
+          });
+          spoofedFunctions.add(getter);
+        }
+      }
 
-    // languages
-    Object.defineProperty(navigator, 'languages', { get: () => __qwenFingerprint.languages });
-    Object.defineProperty(navigator, 'language', { get: () => __qwenFingerprint.locale });
+      // --- navigator.webdriver ---
+      try {
+        const proto = Object.getPrototypeOf(navigator);
+        const desc = Object.getOwnPropertyDescriptor(proto, 'webdriver');
+        if (desc && desc.configurable) {
+          Object.defineProperty(proto, 'webdriver', {
+            get: () => undefined,
+            configurable: true,
+            enumerable: true,
+          });
+          spoofedFunctions.add(Object.getOwnPropertyDescriptor(proto, 'webdriver').get);
+        }
+      } catch(e) {}
 
-    // hardware
-    Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => __qwenFingerprint.hardwareConcurrency });
-    Object.defineProperty(navigator, 'deviceMemory', { get: () => __qwenFingerprint.deviceMemory });
-    Object.defineProperty(navigator, 'platform', { get: () => __qwenFingerprint.platform });
-    Object.defineProperty(navigator, 'maxTouchPoints', { get: () => 0 });
-    Object.defineProperty(navigator, 'vendor', { get: () => 'Google Inc.' });
+      // iframe-based webdriver bypass
+      try {
+        const iframe = document.createElement('iframe');
+        iframe.style.display = 'none';
+        document.documentElement.appendChild(iframe);
+        const iframeNav = iframe.contentWindow.navigator;
+        const cleanWebdriver = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(iframeNav), 'webdriver');
+        if (cleanWebdriver && cleanWebdriver.get) {
+          Object.defineProperty(Object.getPrototypeOf(iframeNav), 'webdriver', {
+            get: () => undefined,
+            configurable: true,
+            enumerable: true,
+          });
+        }
+        document.documentElement.removeChild(iframe);
+      } catch(e) {}
 
-    if ('userAgentData' in navigator) {
-      Object.defineProperty(navigator, 'userAgentData', {
-        get: () => ({
-          brands: __qwenFingerprint.brands,
+      // --- Identity ---
+      defineOnPrototype(navigator, 'userAgent', PROFILE.userAgent);
+      defineOnPrototype(navigator, 'appVersion', PROFILE.appVersion);
+      defineOnPrototype(navigator, 'platform', 'Win32');
+
+      // --- userAgentData ---
+      try {
+        const userAgentData = {
+          brands: PROFILE.brands,
           mobile: false,
           platform: 'Windows',
           getHighEntropyValues: async (hints) => {
-            const values = {
-              architecture: 'x86',
-              bitness: '64',
-              brands: __qwenFingerprint.brands,
-              fullVersionList: __qwenFingerprint.fullVersionList,
+            return {
+              brands: PROFILE.fullVersionList,
               mobile: false,
-              model: '',
               platform: 'Windows',
-              platformVersion: __qwenFingerprint.platformVersion,
-              uaFullVersion: __qwenFingerprint.chromeVersion,
+              platformVersion: PROFILE.platformVersion,
+              architecture: PROFILE.architecture,
+              bitness: PROFILE.bitness,
+              model: '',
+              uaFullVersion: PROFILE.chromeVersion,
+              fullVersionList: PROFILE.fullVersionList,
               wow64: false,
             };
-            return hints.reduce((acc, hint) => {
-              if (hint in values) acc[hint] = values[hint];
-              return acc;
-            }, {});
           },
           toJSON: () => ({
-            brands: __qwenFingerprint.brands,
+            brands: PROFILE.brands,
             mobile: false,
             platform: 'Windows',
           }),
+        };
+        defineOnPrototype(navigator, 'userAgentData', userAgentData);
+      } catch(e) {}
+
+      // --- Languages / hardware ---
+      defineOnPrototype(navigator, 'languages', Object.freeze(PROFILE.languages));
+      defineOnPrototype(navigator, 'language', PROFILE.locale);
+      defineOnPrototype(navigator, 'hardwareConcurrency', PROFILE.hardwareConcurrency);
+      defineOnPrototype(navigator, 'deviceMemory', PROFILE.deviceMemory);
+      defineOnPrototype(navigator, 'maxTouchPoints', 0);
+      defineOnPrototype(navigator, 'vendor', 'Google Inc.');
+      defineOnPrototype(screen, 'colorDepth', PROFILE.colorDepth);
+      defineOnPrototype(screen, 'pixelDepth', PROFILE.pixelDepth);
+
+      // --- outerWidth/outerHeight (headless detection) ---
+      try {
+        if (window.outerWidth === 0 || window.outerHeight === 0) {
+          Object.defineProperty(window, 'outerWidth', { get: () => window.innerWidth + PROFILE.outerWidthOffset });
+          Object.defineProperty(window, 'outerHeight', { get: () => window.innerHeight + PROFILE.outerHeightOffset });
+        }
+      } catch(e) {}
+
+      // --- chrome object (realistic) ---
+      window.chrome = {
+        runtime: {
+          onConnect: Object.create(null),
+          onMessage: Object.create(null),
+          sendMessage: function() {},
+          connect: function() { return { onMessage: Object.create(null), postMessage: function() {} }; },
+        },
+        loadTimes: function() {
+          return {
+            requestTime: Date.now() / 1000,
+            startLoadTime: Date.now() / 1000,
+            commitLoadTime: Date.now() / 1000,
+            finishDocumentLoadTime: Date.now() / 1000,
+            finishLoadTime: Date.now() / 1000,
+            firstPaintTime: Date.now() / 1000,
+            firstPaintAfterLoadTime: 0,
+            navigationType: 'Other',
+            wasFetchedViaSpdy: false,
+            wasNpnNegotiated: true,
+            npnNegotiatedProtocol: 'http/1.1',
+            wasAlternateProtocolAvailable: false,
+            alternateProtocol: '',
+          };
+        },
+        csi: function() {
+          return {
+            startE: Date.now(),
+            onloadT: Date.now(),
+            pageT: Math.random() * 1000,
+            tran: 15,
+          };
+        },
+        app: {
+          isInstalled: false,
+          getDetails: function() { return null; },
+          getIsInstalled: function() { return false; },
+          InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
+          RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' },
+        },
+      };
+
+      // --- permissions ---
+      const originalQuery = window.navigator.permissions.query;
+      window.navigator.permissions.query = (parameters) =>
+        parameters.name === 'notifications'
+          ? Promise.resolve({ state: (typeof Notification !== 'undefined' ? Notification.permission : 'default'), onchange: null })
+          : originalQuery(parameters);
+      spoofedFunctions.add(window.navigator.permissions.query);
+
+      // --- WebGL getParameter ---
+      const getParameter = WebGLRenderingContext.prototype.getParameter;
+      WebGLRenderingContext.prototype.getParameter = function(parameter) {
+        if (parameter === 37445) return PROFILE.webglVendor;
+        if (parameter === 37446) return PROFILE.webglRenderer;
+        return getParameter.apply(this, arguments);
+      };
+      spoofedFunctions.add(WebGLRenderingContext.prototype.getParameter);
+
+      if (typeof WebGL2RenderingContext !== 'undefined') {
+        const getParameter2 = WebGL2RenderingContext.prototype.getParameter;
+        WebGL2RenderingContext.prototype.getParameter = function(parameter) {
+          if (parameter === 37445) return PROFILE.webglVendor;
+          if (parameter === 37446) return PROFILE.webglRenderer;
+          return getParameter2.apply(this, arguments);
+        };
+        spoofedFunctions.add(WebGL2RenderingContext.prototype.getParameter);
+      }
+
+      // --- WebGL readPixels noise ---
+      const _readPixels = WebGLRenderingContext.prototype.readPixels;
+      WebGLRenderingContext.prototype.readPixels = function(x, y, width, height, format, type, pixels) {
+        _readPixels.apply(this, arguments);
+        if (pixels) {
+          const maxPixels = Math.min(pixels.length, 10000);
+          for (let i = 0; i < maxPixels; i++) {
+            if (webglRng() < 0.03) {
+              pixels[i] = Math.min(255, Math.max(0, pixels[i] + (webglRng() > 0.5 ? 1 : -1)));
+            }
+          }
+        }
+      };
+      spoofedFunctions.add(WebGLRenderingContext.prototype.readPixels);
+
+      if (typeof WebGL2RenderingContext !== 'undefined') {
+        const _readPixels2 = WebGL2RenderingContext.prototype.readPixels;
+        WebGL2RenderingContext.prototype.readPixels = function(x, y, width, height, format, type, pixels) {
+          _readPixels2.apply(this, arguments);
+          if (pixels) {
+            const maxPixels = Math.min(pixels.length, 10000);
+            for (let i = 0; i < maxPixels; i++) {
+              if (webglRng() < 0.03) {
+                pixels[i] = Math.min(255, Math.max(0, pixels[i] + (webglRng() > 0.5 ? 1 : -1)));
+              }
+            }
+          }
+        };
+        spoofedFunctions.add(WebGL2RenderingContext.prototype.readPixels);
+      }
+
+      // --- navigator.connection ---
+      Object.defineProperty(navigator, 'connection', {
+        get: () => ({
+          effectiveType: '4g',
+          rtt: 50,
+          downlink: 10,
+          saveData: false,
+          addEventListener: () => {},
+          removeEventListener: () => {},
         }),
       });
-    }
 
-    // screen
-    Object.defineProperty(screen, 'colorDepth', { get: () => __qwenFingerprint.colorDepth });
-    Object.defineProperty(screen, 'pixelDepth', { get: () => __qwenFingerprint.pixelDepth });
+      // --- Plugins / MimeTypes (realistic structure) ---
+      (function() {
+        function makeMime(desc, suffixes, type) {
+          return { description: desc, suffixes: suffixes, type: type };
+        }
+        const pdfMime = makeMime('Portable Document Format', 'pdf', 'application/pdf');
+        const pdfxMime = makeMime('Portable Document Format', 'pdf', 'text/pdf');
+        const pdfPlugin = {
+          name: 'PDF Viewer',
+          description: 'Portable Document Format',
+          filename: 'internal-pdf-viewer',
+          length: 2,
+          0: pdfMime,
+          1: pdfxMime,
+        };
+        pdfMime.enabledPlugin = pdfPlugin;
+        pdfxMime.enabledPlugin = pdfPlugin;
 
-    // permissions
-    const originalQuery = window.navigator.permissions.query;
-    window.navigator.permissions.query = (parameters) =>
-      parameters.name === 'notifications'
-        ? Promise.resolve({ state: Notification.permission })
-        : originalQuery(parameters);
+        const chromePdfMime = makeMime('Portable Document Format', 'pdf', 'application/pdf');
+        const chromePdfMime2 = makeMime('Portable Document Format', 'pdf', 'text/pdf');
+        const chromePdfPlugin = {
+          name: 'Chrome PDF Viewer',
+          description: 'Portable Document Format',
+          filename: 'internal-pdf-viewer',
+          length: 2,
+          0: chromePdfMime,
+          1: chromePdfMime2,
+        };
+        chromePdfMime.enabledPlugin = chromePdfPlugin;
+        chromePdfMime2.enabledPlugin = chromePdfPlugin;
 
-    // WebGL - consistent per account
-    const getParameter = WebGLRenderingContext.prototype.getParameter;
-    WebGLRenderingContext.prototype.getParameter = function(parameter) {
-      if (parameter === 37445) return __qwenFingerprint.webglVendor;
-      if (parameter === 37446) return __qwenFingerprint.webglRenderer;
-      return getParameter.apply(this, arguments);
-    };
+        const nativePlugin = {
+          name: 'Native Client',
+          description: '',
+          filename: 'internal-nacl-plugin',
+          length: 2,
+          0: makeMime('Native Client Executable', '', 'application/x-nacl'),
+          1: makeMime('Portable Native Client Executable', '', 'application/x-pnacl'),
+        };
+        nativePlugin[0].enabledPlugin = nativePlugin;
+        nativePlugin[1].enabledPlugin = nativePlugin;
 
-    // connection
-    Object.defineProperty(navigator, 'connection', {
-      get: () => ({
-        effectiveType: '4g',
-        rtt: 50,
-        downlink: 10,
-        saveData: false,
-      }),
-    });
+        const pluginsList = [pdfPlugin, chromePdfPlugin, nativePlugin];
+        const mimeList = [pdfMime, pdfxMime, chromePdfMime, chromePdfMime2, nativePlugin[0], nativePlugin[1]];
 
-    // toString patching - prevent detection of overridden functions
-    const nativeToString = Function.prototype.toString;
-    const customFunctions = new Map();
-    customFunctions.set(navigator.permissions.query, 'function query() { [native code] }');
-    customFunctions.set(WebGLRenderingContext.prototype.getParameter, 'function getParameter() { [native code] }');
-    Function.prototype.toString = function() {
-      return customFunctions.get(this) || nativeToString.call(this);
-    };
+        function makeNamedNodeMap(items, namedEntries) {
+          const arr = [...items];
+          for (const [k, v] of namedEntries) arr[k] = v;
+          arr.item = function(i) { return this[i] || null; };
+          arr.namedItem = function(name) { return this[name] || null; };
+          arr.refresh = function() {};
+          return arr;
+        }
+
+        const pluginEntries = pluginsList.map((p) => [p.name, p]);
+        const mimeEntries = mimeList.map((m) => [m.type, m]);
+
+        const pluginsArr = makeNamedNodeMap(pluginsList, pluginEntries);
+        const mimeArr = makeNamedNodeMap(mimeList, mimeEntries);
+
+        defineOnPrototype(navigator, 'plugins', pluginsArr);
+        defineOnPrototype(navigator, 'mimeTypes', mimeArr);
+      })();
+
+      // --- Canvas fingerprint noise ---
+      (function() {
+        const _toDataURL = HTMLCanvasElement.prototype.toDataURL;
+        const _toBlob = HTMLCanvasElement.prototype.toBlob;
+        const _getImageData = CanvasRenderingContext2D.prototype.getImageData;
+
+        function addNoise(canvas) {
+          try {
+            const ctx = canvas.getContext('2d');
+            if (!ctx) return;
+            const style = ctx.fillStyle;
+            ctx.fillStyle = 'rgba(255,255,255,0.01)';
+            ctx.fillRect(0, 0, 1, 1);
+            ctx.fillStyle = style;
+          } catch(e) {}
+        }
+
+        HTMLCanvasElement.prototype.toDataURL = function(...args) {
+          addNoise(this);
+          return _toDataURL.apply(this, args);
+        };
+        spoofedFunctions.add(HTMLCanvasElement.prototype.toDataURL);
+
+        HTMLCanvasElement.prototype.toBlob = function(...args) {
+          addNoise(this);
+          return _toBlob.apply(this, args);
+        };
+        spoofedFunctions.add(HTMLCanvasElement.prototype.toBlob);
+
+        CanvasRenderingContext2D.prototype.getImageData = function(x, y, w, h) {
+          const imageData = _getImageData.apply(this, arguments);
+          const data = imageData.data;
+          const maxPixels = Math.min(data.length / 4, 2500);
+          for (let i = 0; i < maxPixels * 4; i += 4) {
+            if (canvasRng() < 0.05) {
+              data[i] = Math.min(255, Math.max(0, data[i] + (canvasRng() > 0.5 ? 1 : -1)));
+              data[i+1] = Math.min(255, Math.max(0, data[i+1] + (canvasRng() > 0.5 ? 1 : -1)));
+              data[i+2] = Math.min(255, Math.max(0, data[i+2] + (canvasRng() > 0.5 ? 1 : -1)));
+            }
+          }
+          return imageData;
+        };
+        spoofedFunctions.add(CanvasRenderingContext2D.prototype.getImageData);
+      })();
+
+      // --- Audio fingerprint noise ---
+      (function() {
+        if (typeof OfflineAudioContext === 'undefined') return;
+        const _startRendering = OfflineAudioContext.prototype.startRendering;
+        OfflineAudioContext.prototype.startRendering = function() {
+          return _startRendering.apply(this, arguments).then(buffer => {
+            try {
+              for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
+                const data = buffer.getChannelData(ch);
+                for (let i = 0; i < Math.min(data.length, 100); i++) {
+                  data[i] += (audioRng() - 0.5) * 1e-7;
+                }
+              }
+            } catch(e) {}
+            return buffer;
+          });
+        };
+        spoofedFunctions.add(OfflineAudioContext.prototype.startRendering);
+      })();
+
+      // --- Remove ChromeDriver artifacts ---
+      try {
+        const keys = Object.keys(document);
+        for (const key of keys) {
+          if (key.startsWith('$cdc_') || key.startsWith('$wdc_')) {
+            delete document[key];
+          }
+        }
+      } catch(e) {}
+
+      // --- Filter performance entries (hide addInitScript traces) ---
+      try {
+        if (window.performance && window.performance.getEntriesByType) {
+          const originalGetEntries = window.performance.getEntriesByType.bind(window.performance);
+          window.performance.getEntriesByType = function(type) {
+            const entries = originalGetEntries(type);
+            if (type === 'resource') {
+              return entries.filter(e => !e.name.includes('__injectedScript') && !e.name.includes('addInitScript'));
+            }
+            return entries;
+          };
+          spoofedFunctions.add(window.performance.getEntriesByType);
+        }
+      } catch(e) {}
+    })();
   `;
 }
 
@@ -384,6 +652,52 @@ export function hasRequiredQwenHeaders(
   headers: Record<string, string>,
 ): boolean {
   return Boolean(headers["bx-ua"]?.trim() && headers["bx-umidtoken"]?.trim());
+}
+
+/**
+ * Validate that all required anti-bot headers are present before making a
+ * request. Fails early instead of sending an incomplete request that will
+ * certainly be blocked by the WAF.
+ */
+export function assertAntiBotHeaders(
+  headers: Record<string, string>,
+  label: string,
+): void {
+  const required = ["cookie", "user-agent", "bx-ua", "bx-umidtoken", "bx-v"];
+  const missing = required.filter((key) => !headers[key]?.trim());
+  if (missing.length > 0) {
+    throw new Error(
+      `${label} missing required browser anti-bot headers: ${missing.join(", ")}`,
+    );
+  }
+}
+
+/**
+ * Lightweight cookie refresh: update only the cookie string without a full
+ * header re-capture. Used when the header cache is still valid but cookies
+ * may have rotated.
+ */
+async function tryLightweightCookieRefresh(
+  accountId: string,
+): Promise<boolean> {
+  const page = accountPages.get(accountId);
+  if (!page || page.isClosed()) return false;
+
+  const cache = getHeaderCache(accountId);
+  if (!hasRequiredQwenHeaders(cache.headers)) return false;
+
+  try {
+    const cookies = await withTimeout(
+      page.context().cookies(),
+      config.timeouts.page,
+      `Cookie refresh timed out for ${accountId}`,
+    );
+    const cookieStr = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+    cookieCaches.set(accountId, { cookie: cookieStr, timestamp: Date.now() });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -442,9 +756,49 @@ export async function getBasicHeaders(accountId: string): Promise<{
     const cache = getHeaderCache(accountId);
     const hadUsableHeaders = hasRequiredQwenHeaders(cache.headers);
 
+    // Fast path: if headers are still fresh, just refresh cookies lightly
+    const headersAge = Date.now() - cache.lastRefresh;
+    if (
+      hadUsableHeaders &&
+      headersAge < HEADER_CACHE_TTL * HEADER_REFRESH_THRESHOLD
+    ) {
+      await tryLightweightCookieRefresh(accountId);
+      const bxUa = cache.headers["bx-ua"];
+      const bxUmidtoken = cache.headers["bx-umidtoken"];
+      const bxV = cache.headers["bx-v"] || "2.5.36";
+      const cookie = await getCookies(accountId);
+      touchAccountActivity(accountId);
+      return { cookie, userAgent, bxV, bxUa, bxUmidtoken };
+    }
+
+    // Extended fast path: headers are stale but auth token is still valid.
+    // Check if we can skip full recapture by verifying cookie validity.
+    // This avoids expensive browser interaction when the 30-day token is fresh.
+    if (hadUsableHeaders && headersAge > HEADER_CACHE_TTL) {
+      const [authValid, shortestValid] = await Promise.all([
+        isAuthTokenValid(accountId),
+        isShortestCookieValid(accountId),
+      ]);
+
+      if (authValid && shortestValid) {
+        // Token is still valid - just refresh cookies, keep cached headers
+        await tryLightweightCookieRefresh(accountId);
+        const bxUa = cache.headers["bx-ua"];
+        const bxUmidtoken = cache.headers["bx-umidtoken"];
+        const bxV = cache.headers["bx-v"] || "2.5.36";
+        const cookie = await getCookies(accountId);
+        // Update lastRefresh to extend the cache
+        cache.lastRefresh = Date.now();
+        touchAccountActivity(accountId);
+        console.log(
+          `🔄 [Playwright] Skipped header recapture for ${accountId} (token still valid, age: ${Math.round(headersAge / 60000)} min)`,
+        );
+        return { cookie, userAgent, bxV, bxUa, bxUmidtoken };
+      }
+    }
+
     // Refresh headers if stale. A valid cached set remains usable when a
     // browser recapture transiently fails; a cold/partial cache must fail.
-    const headersAge = Date.now() - cache.lastRefresh;
     if (headersAge > HEADER_CACHE_TTL && !cache.refreshInProgress) {
       try {
         await refreshHeadersInternal(accountId);
@@ -454,6 +808,22 @@ export async function getBasicHeaders(accountId: string): Promise<{
           `⚠️  [Playwright] Header refresh failed for ${accountId}; retaining the previous valid cache: ${getErrorMessage(error)}`,
         );
       }
+    } else if (
+      hadUsableHeaders &&
+      headersAge > HEADER_CACHE_TTL * HEADER_REFRESH_THRESHOLD &&
+      !cache.refreshInProgress
+    ) {
+      // Background refresh at 70% TTL: keep headers fresh without blocking
+      cache.refreshInProgress = true;
+      refreshHeadersInternal(accountId)
+        .catch((error) => {
+          console.warn(
+            `⚠️  [Playwright] Background header refresh failed for ${accountId}: ${getErrorMessage(error)}`,
+          );
+        })
+        .finally(() => {
+          cache.refreshInProgress = false;
+        });
     }
 
     if (!hasRequiredQwenHeaders(cache.headers)) {
@@ -532,12 +902,16 @@ export async function initPlaywrightForAccount(
       timezoneId: fingerprint.timezoneId,
       viewport: fingerprint.viewport,
       screen: fingerprint.viewport,
+      deviceScaleFactor: 1,
+      isMobile: false,
+      hasTouch: false,
+      colorScheme: "light",
       extraHTTPHeaders: {
         "sec-ch-ua": fingerprint.secChUa,
         "sec-ch-ua-mobile": "?0",
         "sec-ch-ua-platform": '"Windows"',
       },
-      ignoreDefaultArgs: ["--enable-automation"],
+      ignoreDefaultArgs: ["--enable-automation", "--enable-blink-features"],
       args: buildChromiumLaunchArgs(fingerprint.viewport),
     });
 
@@ -545,7 +919,23 @@ export async function initPlaywrightForAccount(
       // Comprehensive stealth scripts for anti-bot evasion
       await acctContext.addInitScript(getStealthScript(fingerprint));
 
-      const acctPage = await acctContext.newPage();
+      // Persistent contexts may already contain an initial about:blank tab.
+      // Reuse it instead of creating a second tab. Prefer a tab already on the
+      // Qwen origin when one exists.
+      const existingPages = acctContext.pages().filter((p) => !p.isClosed());
+      const acctPage =
+        existingPages.find((p) => p.url().startsWith(qwenOrigin())) ??
+        existingPages[0] ??
+        (await acctContext.newPage());
+
+      // Close any extra blank tabs that may have been created by the browser
+      // profile/startup, but keep the primary page selected above.
+      for (const extraPage of existingPages.slice(1)) {
+        if (extraPage !== acctPage && extraPage.url() === "about:blank") {
+          await extraPage.close({ runBeforeUnload: false }).catch(() => {});
+        }
+      }
+
       acctPage.setDefaultTimeout(config.timeouts.page);
       acctPage.setDefaultNavigationTimeout(config.timeouts.navigation);
       accountContexts.set(account.id, acctContext);
@@ -568,7 +958,7 @@ export async function initPlaywrightForAccount(
 
       // Navigate to the stable chat page to validate the session and populate cookies
       try {
-        await acctPage.goto(qwenUrl("/c/new-chat"), {
+        await acctPage.goto(qwenUrl("/"), {
           waitUntil: "domcontentloaded",
           timeout: config.timeouts.navigation,
         });
@@ -594,6 +984,23 @@ export async function initPlaywrightForAccount(
 
       // Capture headers by navigating and intercepting
       await captureQwenHeaders(account.id);
+
+      // Header capture may leave the UI on a generated chat page. Return the
+      // primary tab to the canonical chat home.
+      if (!acctPage.isClosed()) {
+        try {
+          const currentUrl = new URL(acctPage.url());
+          if (currentUrl.origin !== qwenOrigin() || currentUrl.pathname !== "/") {
+            await acctPage.goto(qwenUrl("/"), {
+              waitUntil: "domcontentloaded",
+              timeout: config.timeouts.navigation,
+            });
+          }
+        } catch {
+          // Non-fatal: the next normal operation will navigate back.
+        }
+      }
+
       touchAccountActivity(account.id);
     } catch (error) {
       await closePlaywrightContextBestEffort(account.id, acctContext);
@@ -683,7 +1090,7 @@ async function loginViaApi(
     );
 
     if (result.ok) {
-      await page.goto(qwenUrl("/c/new-chat"), {
+      await page.goto(qwenUrl("/"), {
         waitUntil: "domcontentloaded",
         timeout: config.timeouts.navigation,
       });
@@ -746,7 +1153,7 @@ async function loginViaUi(
       !page.url().includes("auth") && !page.url().includes("login");
 
     if (isLoggedIn) {
-      await page.goto(qwenUrl("/c/new-chat"), {
+      await page.goto(qwenUrl("/"), {
         waitUntil: "domcontentloaded",
         timeout: config.timeouts.navigation,
       });
@@ -810,13 +1217,27 @@ export async function captureQwenHeaders(
       }
 
       const reqHeaders = request.headers();
-      const capturedHeaders = {
+      const capturedHeaders: Record<string, string> = {
         cookie: reqHeaders["cookie"] || "",
         "bx-ua": reqHeaders["bx-ua"] || "",
         "bx-umidtoken": reqHeaders["bx-umidtoken"] || "",
         "bx-v": reqHeaders["bx-v"] || "2.5.36",
         "user-agent": reqHeaders["user-agent"] || "",
+        "x-request-id": reqHeaders["x-request-id"] || "",
       };
+
+      // Extract chat_id and parent_id from POST body for session coherence
+      try {
+        const postData = typeof request.postData === "function" ? request.postData() : null;
+        if (postData) {
+          const payload = JSON.parse(postData);
+          if (payload.chat_id) capturedHeaders["x-chat-id"] = payload.chat_id;
+          if (payload.parent_id !== undefined)
+            capturedHeaders["x-parent-id"] = payload.parent_id || "";
+        }
+      } catch {
+        // Ignore parse errors or missing postData
+      }
 
       if (!hasRequiredQwenHeaders(capturedHeaders)) {
         await route.abort("aborted").catch(() => {});
@@ -857,7 +1278,7 @@ export async function captureQwenHeaders(
 
         try {
           // Navigate to the stable chat page and trigger a request.
-          await page.goto(qwenUrl("/c/new-chat"), {
+          await page.goto(qwenUrl("/"), {
             waitUntil: "domcontentloaded",
             timeout: Math.min(config.timeouts.navigation, timeoutMs),
           });
@@ -933,6 +1354,61 @@ export async function captureQwenHeaders(
   });
 }
 
+/**
+ * Check if the auth token cookie is still valid.
+ * Used to skip unnecessary header recaptures when the token is still fresh.
+ * Returns true if the token cookie exists and is not expired.
+ */
+async function isAuthTokenValid(accountId: string): Promise<boolean> {
+  try {
+    const context = accountContexts.get(accountId);
+    if (!context) return false;
+
+    const cookies = await context.cookies();
+    const tokenCookie = cookies.find(
+      (c) => c.name === "token" && (c.domain === ".qwen.ai" || c.domain === "qwen.ai"),
+    );
+
+    if (!tokenCookie) return false;
+
+    // Session cookie (expires = -1) is valid as long as browser is open
+    if (tokenCookie.expires === -1) return true;
+
+    // Check if expired (with 5-min safety margin)
+    const now = Date.now();
+    const expiresAt = tokenCookie.expires * 1000;
+    return expiresAt > now + 5 * 60 * 1000;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Check if the shortest-lived cookie (acw_tc) is still valid.
+ * This is the 24-min cookie that gates some requests.
+ */
+async function isShortestCookieValid(accountId: string): Promise<boolean> {
+  try {
+    const context = accountContexts.get(accountId);
+    if (!context) return false;
+
+    const cookies = await context.cookies();
+    const acwCookie = cookies.find(
+      (c) => c.name === "acw_tc" && c.domain.includes("qwen.ai"),
+    );
+
+    if (!acwCookie) return true; // If missing, assume OK (will be refreshed by browser)
+
+    if (acwCookie.expires === -1) return true;
+
+    const now = Date.now();
+    const expiresAt = acwCookie.expires * 1000;
+    return expiresAt > now + 60 * 1000; // 1-min safety margin
+  } catch {
+    return false;
+  }
+}
+
 async function refreshHeadersInternal(
   accountId: string,
   timeoutMs = config.timeouts.headers,
@@ -948,7 +1424,7 @@ async function refreshHeadersInternal(
     const page = accountPages.get(accountId);
     if (page) {
       try {
-        await page.goto(qwenUrl("/c/new-chat"), {
+        await page.goto(qwenUrl("/"), {
           waitUntil: "domcontentloaded",
           timeout: Math.min(config.timeouts.navigation, boundedTimeoutMs),
         });
@@ -978,6 +1454,22 @@ async function refreshHeadersInternal(
     }
 
     await captureQwenHeaders(accountId, undefined, boundedTimeoutMs);
+
+    // Best-effort restore: header capture can leave the tab on a chat page.
+    const capturedPage = accountPages.get(accountId);
+    if (capturedPage && !capturedPage.isClosed()) {
+      try {
+        const currentUrl = new URL(capturedPage.url());
+        if (currentUrl.origin !== qwenOrigin() || currentUrl.pathname !== "/") {
+          await capturedPage.goto(qwenUrl("/"), {
+            waitUntil: "domcontentloaded",
+            timeout: Math.min(config.timeouts.navigation, boundedTimeoutMs),
+          });
+        }
+      } catch {
+        // Non-fatal: the next normal operation will navigate back.
+      }
+    }
   } finally {
     touchAccountActivity(accountId);
     cache.refreshInProgress = false;
@@ -1193,7 +1685,7 @@ export async function keepAlivePlaywrightAccount(
       now - lastNavigation > config.sessionKeeper.navigationIntervalMs;
 
     if (shouldNavigate) {
-      await page.goto(qwenUrl("/c/new-chat"), {
+      await page.goto(qwenUrl("/"), {
         waitUntil: "domcontentloaded",
         timeout: Math.min(config.timeouts.navigation, 15_000),
       });
@@ -1341,4 +1833,125 @@ export function getPlaywrightStatus(): Record<
     };
   }
   return status;
+}
+
+// ─── Token TTL Diagnostics ───────────────────────────────────────────────────
+
+export interface CookieDiagnostic {
+  name: string;
+  domain: string;
+  category: "auth" | "anti-fraud" | "tracking" | "other";
+  expiresAt: number | null; // epoch seconds, null = session cookie
+  expiresInMin: number | null; // minutes until expiry, null = session
+  isExpired: boolean;
+  isSession: boolean;
+}
+
+export interface HeaderDiagnostic {
+  accountId: string;
+  hasHeaders: boolean;
+  headerAgeMin: number;
+  headersTtlMin: number;
+  refreshThresholdMin: number;
+  refreshInProgress: boolean;
+}
+
+function cookieCategory(name: string): CookieDiagnostic["category"] {
+  const n = name.toLowerCase();
+  if (n.includes("token") || n.includes("session") || n.includes("auth")) return "auth";
+  if (n.includes("umid") || n.includes("baxia") || n.includes("_m_h5")) return "anti-fraud";
+  if (n.includes("cna") || n.includes("isg") || n.includes("_uab_")) return "tracking";
+  return "other";
+}
+
+/**
+ * Get diagnostic info about cookie lifetimes and header cache state.
+ * Useful for determining the real TTL of Qwen tokens.
+ */
+export async function getTokenDiagnostics(
+  accountId?: string,
+): Promise<{
+  cookies: CookieDiagnostic[];
+  headers: HeaderDiagnostic[];
+  summary: {
+    totalCookies: number;
+    sessionCookies: number;
+    shortestTtlMin: number | null;
+    shortestTtlCookie: string | null;
+  };
+}> {
+  const targetAccounts = accountId
+    ? [accountId]
+    : Array.from(accountContexts.keys());
+
+  const allCookies: CookieDiagnostic[] = [];
+  const headerDiags: HeaderDiagnostic[] = [];
+
+  for (const accId of targetAccounts) {
+    const context = accountContexts.get(accId);
+    if (!context) continue;
+
+    // Get cookies
+    try {
+      const cookies = await context.cookies();
+      const now = Date.now();
+
+      for (const cookie of cookies) {
+        const isSession = cookie.expires === -1;
+        const expiresAt = isSession ? null : cookie.expires;
+        const expiresInMin = isSession
+          ? null
+          : Math.round((cookie.expires * 1000 - now) / 60000);
+
+        allCookies.push({
+          name: cookie.name,
+          domain: cookie.domain.replace(/^\./, ""),
+          category: cookieCategory(cookie.name),
+          expiresAt,
+          expiresInMin,
+          isExpired: !isSession && cookie.expires * 1000 < now,
+          isSession,
+        });
+      }
+    } catch {
+      // Context may be closing
+    }
+
+    // Get header cache info
+    const cache = headerCaches.get(accId);
+    if (cache) {
+      const ageMin = Math.round((Date.now() - cache.lastRefresh) / 60000);
+      headerDiags.push({
+        accountId: accId,
+        hasHeaders: !!cache.headers["bx-ua"],
+        headerAgeMin: ageMin,
+        headersTtlMin: Math.round(HEADER_CACHE_TTL / 60000),
+        refreshThresholdMin: Math.round((HEADER_CACHE_TTL * HEADER_REFRESH_THRESHOLD) / 60000),
+        refreshInProgress: cache.refreshInProgress,
+      });
+    }
+  }
+
+  // Find shortest TTL among persistent cookies
+  const persistentCookies = allCookies.filter(c => !c.isSession && !c.isExpired);
+  const shortest = persistentCookies.length > 0
+    ? persistentCookies.reduce((min, c) =>
+        (c.expiresInMin ?? Infinity) < (min.expiresInMin ?? Infinity) ? c : min
+      )
+    : null;
+
+  return {
+    cookies: allCookies.sort((a, b) => {
+      if (a.isSession && !b.isSession) return 1;
+      if (!a.isSession && b.isSession) return -1;
+      return (a.expiresInMin ?? Infinity) - (b.expiresInMin ?? Infinity);
+    }),
+    headers: headerDiags,
+    summary: {
+      totalCookies: allCookies.length,
+      sessionCookies: allCookies.filter(c => c.isSession).length,
+      shortestTtlMin: shortest?.expiresInMin ?? null,
+      shortestTtlCookie: shortest?.name ?? null,
+    },
+  };
 }
