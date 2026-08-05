@@ -887,6 +887,9 @@ export async function initPlaywrightForAccount(
       return;
     }
 
+    // If a context limit is configured, make room by closing idle contexts.
+    await evictIdlePlaywrightContextsToLimit().catch(() => {});
+
     const profilePath = path.resolve("data", "qwen_profiles", account.id);
     const fingerprint = getFingerprintProfile(account.id);
     const { engine, channel } = resolveBrowserEngine(browserType);
@@ -1644,18 +1647,74 @@ export async function closeIdlePlaywrightAccounts(
   idleMs: number,
 ): Promise<number> {
   if (idleMs <= 0) return 0;
-  const accountIds = getIdlePlaywrightAccountIds(idleMs);
+
+  const maxActiveContexts = config.playwright.maxActiveContexts;
+
+  // With an active-context limit, preserve at least that many warm contexts
+  // so one account remains ready for immediate use.
+  if (maxActiveContexts > 0 && accountPages.size <= maxActiveContexts) {
+    return 0;
+  }
+
+  const candidates = getIdlePlaywrightAccountIds(idleMs)
+    .map((accountId) => ({
+      accountId,
+      lastActivity: lastAccountActivity.get(accountId) ?? 0,
+    }))
+    .sort((a, b) => a.lastActivity - b.lastActivity);
+
   let closed = 0;
-  for (const accountId of accountIds) {
-    const mutex = accountMutexes.get(accountId);
+  for (const candidate of candidates) {
+    if (maxActiveContexts > 0 && accountPages.size <= maxActiveContexts) {
+      break;
+    }
+
+    const mutex = accountMutexes.get(candidate.accountId);
     if (!mutex?.isIdle()) continue;
-    await closePlaywrightForAccount(accountId).catch((error) => {
+
+    await closePlaywrightForAccount(candidate.accountId).catch((error) => {
       console.warn(
-        `[Playwright] Failed to close idle context for ${accountId}: ${getErrorMessage(error)}`,
+        `[Playwright] Failed to close idle context for ${candidate.accountId}: ${getErrorMessage(error)}`,
       );
     });
     closed++;
   }
+  return closed;
+}
+
+/**
+ * Close idle browser contexts until the number of active contexts is within
+ * PLAYWRIGHT_MAX_ACTIVE_CONTEXTS. Never closes a context whose account mutex
+ * is busy, so active streams are preserved.
+ */
+export async function evictIdlePlaywrightContextsToLimit(): Promise<number> {
+  const max = config.playwright.maxActiveContexts;
+  if (max <= 0) return 0;
+  if (accountPages.size <= max) return 0;
+
+  const candidates = Array.from(accountPages.keys())
+    .map((accountId) => ({
+      accountId,
+      mutex: accountMutexes.get(accountId),
+      lastActivity: lastAccountActivity.get(accountId) ?? 0,
+    }))
+    .filter((candidate) => candidate.mutex?.isIdle())
+    .sort((a, b) => a.lastActivity - b.lastActivity);
+
+  let closed = 0;
+  for (const candidate of candidates) {
+    if (accountPages.size <= max) break;
+    const mutex = accountMutexes.get(candidate.accountId);
+    if (!mutex?.isIdle()) continue;
+
+    await closePlaywrightForAccount(candidate.accountId).catch((error) => {
+      console.warn(
+        `[Playwright] Failed to evict idle context for ${candidate.accountId}: ${getErrorMessage(error)}`,
+      );
+    });
+    closed++;
+  }
+
   return closed;
 }
 

@@ -510,19 +510,26 @@ export async function startServer(options?: {
           `⚠️  [Server] No account ready during startup; continuing in background`,
         );
       }
-      void prepareRemainingAccountsInBackground({
-        accounts: remainingAccounts,
-        batchSize: BATCH_SIZE,
-        totalAccounts,
-        getAccountCredentials,
-        initPlaywrightForAccount,
-        disableNativeTools,
-        warmQwenChatPool,
-      }).catch((error) => {
-        console.warn(
-          `❌ [Server] Background account preparation failed: ${getErrorMessage(error)}`,
+
+      if (config.playwright.prepareAllOnStartup || readyAccountIndex === -1) {
+        void prepareRemainingAccountsInBackground({
+          accounts: remainingAccounts,
+          batchSize: BATCH_SIZE,
+          totalAccounts,
+          getAccountCredentials,
+          initPlaywrightForAccount,
+          disableNativeTools,
+          warmQwenChatPool,
+        }).catch((error) => {
+          console.warn(
+            `❌ [Server] Background account preparation failed: ${getErrorMessage(error)}`,
+          );
+        });
+      } else if (remainingAccounts.length > 0) {
+        console.log(
+          `🪶 [Server] ${remainingAccounts.length} standby account(s) will initialize on demand`,
         );
-      });
+      }
     } else {
       console.warn(
         `⚠️  [Server] No Qwen accounts configured. Add accounts with npm run login before sending requests.`,

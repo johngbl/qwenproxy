@@ -47,6 +47,15 @@ async function ensurePlaywrightInitialized(accountId: string): Promise<void> {
     config.playwright.headless,
     config.playwright.browser,
   );
+
+  // Standby accounts are initialized lazily. Apply the same account-level
+  // settings that startup preparation would apply.
+  try {
+    const { disableNativeTools } = await import("./qwen.ts");
+    await disableNativeTools(accountId).catch(() => {});
+  } catch {
+    // Non-fatal: chat creation will still work with default account settings.
+  }
 }
 
 export async function getBasicHeaders(accountId?: string): Promise<{

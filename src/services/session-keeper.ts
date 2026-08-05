@@ -1,6 +1,7 @@
 import { config } from "../core/config.ts";
 import {
   closeIdlePlaywrightAccounts,
+  evictIdlePlaywrightContextsToLimit,
   getActivePlaywrightAccountIds,
   keepAlivePlaywrightAccount,
 } from "./playwright.ts";
@@ -40,9 +41,11 @@ async function runKeepAliveCycle(): Promise<void> {
     const closed = await closeIdlePlaywrightAccounts(
       config.playwright.idleContextTtlMs,
     );
-    if (closed > 0) {
+    const evicted = await evictIdlePlaywrightContextsToLimit();
+    const totalClosed = closed + evicted;
+    if (totalClosed > 0) {
       console.log(
-        `🧹 [SessionKeeper] Closed ${closed} idle Playwright context(s)`,
+        `🧹 [SessionKeeper] Closed ${totalClosed} idle Playwright context(s)`,
       );
     }
   } finally {
