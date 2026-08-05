@@ -3,7 +3,23 @@ import path from "path";
 import fs from "fs";
 import { encrypt, isEncrypted } from "./crypto-utils.ts";
 
-const DATA_DIR = path.resolve("data");
+/**
+ * Several suites exercise account rotation by deleting every row and restoring
+ * it in a `finally`. Pointed at the real database that is one crashed test away
+ * from wiping the operator's configured accounts — which is exactly how a whole
+ * account set was lost once. Tests get their own file so the blast radius of a
+ * failed restore is a throwaway directory.
+ */
+function isRunningUnderNodeTest(): boolean {
+  return process.argv.some(
+    (arg) =>
+      arg === "--test" ||
+      arg.includes("src/tests/") ||
+      arg.includes("src\\tests\\"),
+  );
+}
+
+const DATA_DIR = path.resolve(isRunningUnderNodeTest() ? "data-test" : "data");
 const DB_DIR = path.join(DATA_DIR, "db");
 const DB_PATH = path.join(DB_DIR, "qwenbridge.db");
 const LEGACY_DB_PATH = path.join(DATA_DIR, "qwenproxy.db");

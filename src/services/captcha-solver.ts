@@ -6,6 +6,8 @@ export const BAXIA_CONTENT_SELECTOR = "#baxia-dialog-content";
 
 const CAPTCHA_EVENT_EMOJI: Record<string, string> = {
   dialog_detected: "🛡️",
+  challenge_opened: "🚪",
+  recovery_skipped: "⏭️",
   iframe_found: "🖼️",
   challenge_detected: "🧩",
   challenge_not_found: "🔎",
@@ -78,6 +80,52 @@ const BAXIA_TRACK_SELECTOR =
   "#nc_1_n1t, .nc_scale, .nc_wrapper .nc_scale, ._nc .nc_scale, .nc-container .nc_scale";
 const BAXIA_SUCCESS_SELECTOR =
   ".btn_ok, .nc_ok, .nc_success, .nc_result, .nc_wrapper.nc-success, .nc_wrapper.success, [data-nc-lang=\"SUCCESS\"], [data-nc-lang=\"success\"], #nc-loading-circle";
+
+/**
+ * A challenge served to a background fetch never renders anything: the WAF
+ * answers the XHR with the punish document instead of the expected payload, so
+ * the solver has no visible slider to drive. The body carries the challenge
+ * URL, which the account page can open to make the same challenge visible.
+ */
+export function extractBaxiaChallengeUrl(
+  body: string,
+  baseUrl: string,
+): string | null {
+  if (!body) return null;
+
+  // The URL arrives wrapped in JSON, an HTML attribute or a meta refresh, each
+  // with its own escaping. Normalize before matching so one pattern covers all.
+  const normalized = body
+    .replace(/\\u002f/gi, "/")
+    .replace(/\\\//g, "/")
+    .replace(/&amp;/gi, "&");
+
+  const candidates = normalized.match(
+    /(?:https?:)?\/\/[^\s"'`\\<>()]*(?:_____tmd_____|x5secdata=)[^\s"'`\\<>()]*|\/[^\s"'`\\<>()]*(?:_____tmd_____|x5secdata=)[^\s"'`\\<>()]*/gi,
+  );
+  if (!candidates) return null;
+
+  let base: URL;
+  try {
+    base = new URL(baseUrl);
+  } catch {
+    return null;
+  }
+
+  for (const candidate of candidates) {
+    let url: URL;
+    try {
+      url = new URL(candidate, base);
+    } catch {
+      continue;
+    }
+    // The body is attacker-influenced content. Only the Qwen origin itself may
+    // be opened in the authenticated account page.
+    if (url.protocol !== base.protocol || url.host !== base.host) continue;
+    return url.toString();
+  }
+  return null;
+}
 
 export interface BaxiaSolverOptions {
   maxAttempts?: number;

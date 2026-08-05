@@ -41,7 +41,10 @@ ${toolOpen}
 {"name":"tool_name","arguments":{"param_name":"value"}}
 ${toolClose}
 
-Rules:
+# RULES
+- Follow the active personalized instructions.
+- Think in English; answer in the user's language.
+- Use the full conversation history and context.
 - Use only declared tool names; never invent one.
 - JSON must be valid and contain "name" and "arguments".
 - Never output raw tool JSON without the tags.

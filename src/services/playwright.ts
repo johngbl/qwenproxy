@@ -11,6 +11,10 @@ import path from "path";
 import fs from "fs";
 import crypto from "crypto";
 import type { QwenAccount } from "../core/accounts.ts";
+// Imported here rather than injected from session-keeper.ts: account-concurrency
+// only depends on config/logger, so playwright -> account-concurrency stays
+// acyclic, while the reverse direction would drag the browser layer into core.
+import { hasActiveAccountLease } from "../core/account-concurrency.ts";
 import { config } from "../core/config.ts";
 import { maskEmail } from "../core/logger.ts";
 import { Mutex } from "../core/mutex.ts";
@@ -20,6 +24,7 @@ import {
   type FingerprintProfile,
 } from "./fingerprint.ts";
 import { subtlePageActivity } from "./human-behavior.ts";
+import { solveBaxiaCaptcha } from "./captcha-solver.ts";
 import { qwenOrigin, qwenUrl } from "./qwen-url.ts";
 
 // Try to import playwright-extra and stealth, fallback to regular playwright
@@ -201,6 +206,41 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const HEADER_CAPTURE_SETTLE_MS = 1500;
 const PLAYWRIGHT_MUTEX_WAIT_MS = 60_000;
 const ACCOUNT_PAGE_OPERATION_TIMEOUT_MS = config.timeouts.page;
+/**
+ * The session probe in front of a header refresh only answers "is this account
+ * still logged in". Header capture navigates again right after, so paying the
+ * full navigation timeout here doubles the stall of a WAF-blocked account for
+ * no extra information.
+ */
+const SESSION_PROBE_NAVIGATION_TIMEOUT_MS = 15_000;
+/** Grace period for the intercepted completion request after the send is triggered. */
+const HEADER_CAPTURE_TRIGGER_GRACE_MS = 15_000;
+/**
+ * Sends (the initial one plus re-triggers) header capture may spend on getting a
+ * completion request that actually carries the bx headers. The in-page SDK can
+ * fire one before it finished computing its token, and dropping the account on
+ * that first unlucky request costs five minutes of cooldown; a couple of extra
+ * sends cover it while still failing a page that never produces them.
+ */
+const HEADER_CAPTURE_TRIGGER_ATTEMPTS = 3;
+
+/**
+ * A challenge blocking the chat page makes the send button inert, so header
+ * capture would wait out its whole timeout and report the account as broken.
+ * Clearing the challenge first is what keeps that from cooling down a healthy
+ * account for five minutes.
+ */
+async function clearVisibleChallenge(page: Page): Promise<void> {
+  if (!config.captcha.enabled) return;
+  // waitForMs 0: a single detection pass, so the common no-challenge case adds
+  // no measurable cost to header capture.
+  await solveBaxiaCaptcha(page, {
+    waitForMs: 0,
+    maxAttempts: config.captcha.maxAttempts,
+    retryDelayMs: config.captcha.retryDelayMs,
+    settleMs: config.captcha.settleMs,
+  }).catch(() => false);
+}
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -233,6 +273,23 @@ function getBrowserProcess(context: BrowserContext): KillableProcess | null {
 
 function touchAccountActivity(accountId: string): void {
   lastAccountActivity.set(accountId, Date.now());
+}
+
+/**
+ * A browser generation hands the renderer the upstream fetch and returns
+ * immediately, so the account mutex is free and no page operation happens for
+ * the whole stream (see createQwenBrowserResponse in qwen.ts). Mutex idleness
+ * plus a stale timestamp therefore describes a mid-flight account exactly like
+ * a parked one — the stream lease is the only state held end to end, so the
+ * maintenance paths have to ask for it before touching the page.
+ */
+function isAccountServingStream(accountId: string): boolean {
+  if (!hasActiveAccountLease(accountId)) return false;
+  // Keep the idle clock honest while the stream runs: without this the account
+  // would count as idle since the request started, and a 10-minute generation
+  // would be collectable the instant its lease is released.
+  touchAccountActivity(accountId);
+  return true;
 }
 
 function getStealthScript(profile: FingerprintProfile): string {
@@ -1180,6 +1237,7 @@ export async function captureQwenHeaders(
   accountId: string,
   pageOverride?: Page,
   timeoutMs = config.timeouts.headers,
+  triggerGraceMs = HEADER_CAPTURE_TRIGGER_GRACE_MS,
 ): Promise<void> {
   const page = pageOverride ?? accountPages.get(accountId);
   if (!page || page.isClosed()) {
@@ -1194,6 +1252,12 @@ export async function captureQwenHeaders(
     let routeRegistered = false;
     let timeout: ReturnType<typeof setTimeout> | undefined;
     let routeHandler: (route: any, request: any) => Promise<void>;
+    let sawIncompleteHeaders = false;
+    let headersCaptured = false;
+    let retriggerRequested = false;
+    let wakeTriggerLoop: (() => void) | undefined;
+    const deadline = Date.now() + timeoutMs;
+    const remainingBudgetMs = () => deadline - Date.now();
 
     const cleanupRoute = () => {
       if (!routeRegistered) return;
@@ -1202,13 +1266,72 @@ export async function captureQwenHeaders(
         .catch(() => {});
     };
 
+    const wakeTrigger = () => {
+      const wake = wakeTriggerLoop;
+      wakeTriggerLoop = undefined;
+      wake?.();
+    };
+
     const settle = (error?: Error) => {
       if (settled) return;
       settled = true;
       if (timeout) clearTimeout(timeout);
       cleanupRoute();
+      // A trigger loop parked between attempts has to be released, otherwise it
+      // stays pending forever behind an already-settled capture.
+      wakeTrigger();
       if (error) reject(error);
       else resolve();
+    };
+
+    const incompleteHeadersError = () =>
+      new Error(
+        `Header capture returned incomplete anti-fraud headers for ${accountId}`,
+      );
+
+    /**
+     * Once a request has been intercepted without bx headers, that is the
+     * diagnosis worth reporting: whatever ran out afterwards (budget, a failed
+     * re-trigger) is only how the capture ran out of road. The wording is also
+     * what the retry policy maps to an account-init cooldown.
+     */
+    const captureFailure = (fallback: Error) =>
+      sawIncompleteHeaders ? incompleteHeadersError() : fallback;
+
+    const armOverallDeadline = () => {
+      if (settled) return;
+      if (timeout) clearTimeout(timeout);
+      timeout = setTimeout(
+        () => {
+          console.warn(`⏱️  [Playwright] Header capture timeout for ${accountId}`);
+          settle(
+            captureFailure(new Error(`Header capture timed out for ${accountId}`)),
+          );
+        },
+        Math.max(1, remainingBudgetMs()),
+      );
+    };
+
+    // The send either produces the completion request within a second or two,
+    // or the UI is blocked and never will. Waiting out the whole header budget
+    // past this point only stalls the caller and, during account init, buys a
+    // five-minute cooldown for nothing.
+    const armTriggerGrace = () => {
+      // A capture that already landed is only waiting out its settle delay, so
+      // the send that produced it must not arm a deadline against it.
+      if (settled || headersCaptured) return;
+      if (timeout) clearTimeout(timeout);
+      timeout = setTimeout(
+        () => {
+          console.warn(
+            `⏱️  [Playwright] Header capture produced no completion request for ${accountId}`,
+          );
+          settle(
+            captureFailure(new Error(`Header capture timed out for ${accountId}`)),
+          );
+        },
+        Math.max(1, Math.min(remainingBudgetMs(), triggerGraceMs)),
+      );
     };
 
     routeHandler = async (route: any, request: any) => {
@@ -1243,15 +1366,19 @@ export async function captureQwenHeaders(
       }
 
       if (!hasRequiredQwenHeaders(capturedHeaders)) {
+        // Not evidence the page is broken: the SDK also fires completions
+        // before it has computed its token. The request still must never reach
+        // Qwen, but the capture keeps its route and spends another send —
+        // failing here would throw away a budget that is still nearly full.
+        sawIncompleteHeaders = true;
         await route.abort("aborted").catch(() => {});
-        settle(
-          new Error(
-            `Header capture returned incomplete anti-fraud headers for ${accountId}`,
-          ),
-        );
+        // Aborting kills the UI's send, so nothing will re-fire on its own.
+        retriggerRequested = true;
+        wakeTrigger();
         return;
       }
 
+      headersCaptured = true;
       if (timeout) clearTimeout(timeout);
       cache.headers = capturedHeaders;
       cache.lastRefresh = Date.now();
@@ -1265,10 +1392,122 @@ export async function captureQwenHeaders(
       settle();
     };
 
-    timeout = setTimeout(() => {
-      console.warn(`⏱️  [Playwright] Header capture timeout for ${accountId}`);
-      settle(new Error(`Header capture timed out for ${accountId}`));
-    }, timeoutMs);
+    // Navigate to the stable chat page. Only the first attempt pays for this:
+    // a re-trigger types into the page that is already loaded, and reloading
+    // would throw away the bx SDK state that just finished warming up.
+    const openChatPage = async () => {
+      await page.goto(qwenUrl("/"), {
+        waitUntil: "domcontentloaded",
+        timeout: Math.min(config.timeouts.navigation, timeoutMs),
+      });
+      if (settled) return;
+      await sleep(2000);
+    };
+
+    /** Type the probe message and send it, then wait out the grace window. */
+    const triggerSend = async () => {
+      if (settled) return;
+      await clearVisibleChallenge(page);
+      if (settled) return;
+
+      const inputSelector = 'textarea:visible, [contenteditable="true"]:visible';
+      await page.focus(inputSelector);
+      if (settled) return;
+      await page.fill(inputSelector, "");
+      if (settled) return;
+      await page.type(inputSelector, "a", { delay: 100 });
+      if (settled) return;
+      await sleep(2000);
+      if (settled) return;
+
+      const sendSelectors = [
+        ".message-input-right-button-send .send-button",
+        ".chat-prompt-send-button",
+        "button.send-button",
+      ];
+
+      let clicked = false;
+      for (const selector of sendSelectors) {
+        if (settled) return;
+        try {
+          const btn = await page.$(selector);
+          if (btn && (await btn.isVisible())) {
+            await page.evaluate((sel) => {
+              const element = document.querySelector(sel) as HTMLElement;
+              if (element) {
+                element.focus();
+                element.click();
+              }
+            }, selector);
+            if (!settled) {
+              await btn.click({ force: true, delay: 50 }).catch(() => {});
+            }
+            clicked = true;
+            break;
+          }
+        } catch {
+          // Try the next selector.
+        }
+      }
+
+      if (!clicked && !settled) {
+        await page.keyboard.press("Enter");
+      }
+
+      armTriggerGrace();
+    };
+
+    /** Park until the interception asks for another send, or the capture ends. */
+    const waitForRetrigger = () =>
+      new Promise<void>((wake) => {
+        if (settled || retriggerRequested) {
+          wake();
+          return;
+        }
+        wakeTriggerLoop = wake;
+      });
+
+    const runTriggerLoop = async () => {
+      for (
+        let attempt = 1;
+        attempt <= HEADER_CAPTURE_TRIGGER_ATTEMPTS;
+        attempt++
+      ) {
+        retriggerRequested = false;
+        // Driving a send is not the grace window: restore the overall budget
+        // so the previous attempt's grace timer cannot expire mid-typing.
+        armOverallDeadline();
+
+        try {
+          if (attempt === 1) await openChatPage();
+          if (settled) return;
+          await triggerSend();
+        } catch (error) {
+          console.warn(
+            `❌ [Playwright] Error triggering header capture for ${accountId}: ${getErrorMessage(error)}`,
+          );
+          settle(
+            captureFailure(
+              error instanceof Error
+                ? error
+                : new Error(`Header capture failed for ${accountId}`),
+            ),
+          );
+          return;
+        }
+
+        if (settled) return;
+        await waitForRetrigger();
+        if (settled) return;
+        if (remainingBudgetMs() <= 0) break;
+      }
+
+      // Attempts (or the budget) spent on requests that never carried the
+      // headers: a page stuck that way has to fail instead of sending forever.
+      settle(incompleteHeadersError());
+    };
+
+    armOverallDeadline();
 
     void page
       .route("**/api/v2/chat/completions*", routeHandler)
@@ -1279,70 +1518,7 @@ export async function captureQwenHeaders(
           return;
         }
 
-        try {
-          // Navigate to the stable chat page and trigger a request.
-          await page.goto(qwenUrl("/"), {
-            waitUntil: "domcontentloaded",
-            timeout: Math.min(config.timeouts.navigation, timeoutMs),
-          });
-          if (settled) return;
-          await sleep(2000);
-          if (settled) return;
-
-          const inputSelector =
-            'textarea:visible, [contenteditable="true"]:visible';
-          await page.focus(inputSelector);
-          if (settled) return;
-          await page.fill(inputSelector, "");
-          if (settled) return;
-          await page.type(inputSelector, "a", { delay: 100 });
-          if (settled) return;
-          await sleep(2000);
-          if (settled) return;
-
-          const sendSelectors = [
-            ".message-input-right-button-send .send-button",
-            ".chat-prompt-send-button",
-            "button.send-button",
-          ];
-
-          let clicked = false;
-          for (const selector of sendSelectors) {
-            if (settled) return;
-            try {
-              const btn = await page.$(selector);
-              if (btn && (await btn.isVisible())) {
-                await page.evaluate((sel) => {
-                  const element = document.querySelector(sel) as HTMLElement;
-                  if (element) {
-                    element.focus();
-                    element.click();
-                  }
-                }, selector);
-                if (!settled) {
-                  await btn.click({ force: true, delay: 50 }).catch(() => {});
-                }
-                clicked = true;
-                break;
-              }
-            } catch {
-              // Try the next selector.
-            }
-          }
-
-          if (!clicked && !settled) {
-            await page.keyboard.press("Enter");
-          }
-        } catch (error) {
-          console.warn(
-            `❌ [Playwright] Error triggering header capture for ${accountId}: ${getErrorMessage(error)}`,
-          );
-          settle(
-            error instanceof Error
-              ? error
-              : new Error(`Header capture failed for ${accountId}`),
-          );
-        }
+        await runTriggerLoop();
       })
       .catch((error) => {
         console.warn(
@@ -1429,7 +1605,11 @@ async function refreshHeadersInternal(
       try {
         await page.goto(qwenUrl("/"), {
           waitUntil: "domcontentloaded",
-          timeout: Math.min(config.timeouts.navigation, boundedTimeoutMs),
+          timeout: Math.min(
+            config.timeouts.navigation,
+            boundedTimeoutMs,
+            SESSION_PROBE_NAVIGATION_TIMEOUT_MS,
+          ),
         });
         const url = page.url();
         if (url.includes("auth") || url.includes("login")) {
@@ -1636,6 +1816,7 @@ export function getActivePlaywrightAccountIds(): string[] {
 export function getIdlePlaywrightAccountIds(idleMs: number): string[] {
   const now = Date.now();
   return Array.from(accountPages.keys()).filter((accountId) => {
+    if (isAccountServingStream(accountId)) return false;
     const mutex = accountMutexes.get(accountId);
     if (!mutex?.isIdle()) return false;
     const lastActivity = lastAccountActivity.get(accountId) ?? 0;
@@ -1669,6 +1850,10 @@ export async function closeIdlePlaywrightAccounts(
       break;
     }
 
+    // Re-checked per account: closing the previous one is awaited, and a
+    // request can have claimed this account in the meantime.
+    if (isAccountServingStream(candidate.accountId)) continue;
+
     const mutex = accountMutexes.get(candidate.accountId);
     if (!mutex?.isIdle()) continue;
 
@@ -1699,11 +1884,13 @@ export async function evictIdlePlaywrightContextsToLimit(): Promise<number> {
       lastActivity: lastAccountActivity.get(accountId) ?? 0,
     }))
     .filter((candidate) => candidate.mutex?.isIdle())
+    .filter((candidate) => !isAccountServingStream(candidate.accountId))
     .sort((a, b) => a.lastActivity - b.lastActivity);
 
   let closed = 0;
   for (const candidate of candidates) {
     if (accountPages.size <= max) break;
+    if (isAccountServingStream(candidate.accountId)) continue;
     const mutex = accountMutexes.get(candidate.accountId);
     if (!mutex?.isIdle()) continue;
 
@@ -1721,6 +1908,11 @@ export async function evictIdlePlaywrightContextsToLimit(): Promise<number> {
 export async function keepAlivePlaywrightAccount(
   accountId: string,
 ): Promise<boolean> {
+  // The keep-alive navigates the same page the renderer is streaming from, so
+  // a mid-flight account must be skipped for the same reason it must not be
+  // closed: the free mutex does not mean the page is free.
+  if (isAccountServingStream(accountId)) return false;
+
   const mutex = accountMutexes.get(accountId);
   if (!mutex?.isIdle()) return false;
 
@@ -1877,6 +2069,22 @@ export async function closeAllPlaywright(): Promise<void> {
 
 export function isPlaywrightInitialized(accountId: string): boolean {
   return accountPages.has(accountId);
+}
+
+/**
+ * Register an account as if it had been initialized, with a chosen last
+ * activity timestamp. Lets the idle/keep-alive selection be exercised without
+ * launching a browser; the mutex is materialized because an account without
+ * one is never selected. For tests only.
+ */
+export function registerPlaywrightAccountForTests(
+  accountId: string,
+  page: Page,
+  lastActivityAt: number,
+): void {
+  getAccountMutex(accountId);
+  accountPages.set(accountId, page);
+  lastAccountActivity.set(accountId, lastActivityAt);
 }
 
 export function getPlaywrightStatus(): Record<

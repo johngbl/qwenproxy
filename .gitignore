@@ -11,6 +11,7 @@ dist/
 
 # Persistent runtime data (DB, profiles, benchmarks, diagnostics)
 data/
+data-test/
 *.db
 *.db-wal
 *.db-shm

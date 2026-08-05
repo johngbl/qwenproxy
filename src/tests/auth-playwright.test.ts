@@ -145,6 +145,130 @@ test("playwright header capture rejects empty headers and timeouts", async () =>
   assert.equal(incompleteUnroutes, 1);
 });
 
+test("playwright header capture gives up shortly after a send that fires no request", async () => {
+  const { captureQwenHeaders } = await import("../services/playwright.ts");
+
+  const invisible = {
+    first: () => invisible,
+    isVisible: async () => false,
+    waitFor: async () => undefined,
+    boundingBox: async () => null,
+  };
+  const silentPage = {
+    isClosed: () => false,
+    route: async () => {},
+    unroute: async () => {},
+    goto: async () => {},
+    locator: () => invisible,
+    frameLocator: () => ({ locator: () => invisible }),
+    focus: async () => {},
+    fill: async () => {},
+    type: async () => {},
+    $: async () => null,
+    keyboard: { press: async () => {} },
+  };
+
+  const startedAt = Date.now();
+  await assert.rejects(
+    // The overall budget is 30s; the send completes but no completion request
+    // ever arrives, so only the trigger grace period may be spent.
+    () => captureQwenHeaders("test-header-silent", silentPage as any, 30_000, 50),
+    /timed out/,
+  );
+  assert.ok(
+    Date.now() - startedAt < 15_000,
+    "capture must not wait out the full header budget after the send",
+  );
+});
+
+/**
+ * Fake page whose send produces one completion request per attempt, with the
+ * headers taken from `headerSets` in order (the last entry repeats).
+ */
+function makeRetriggerPage(headerSets: Record<string, string>[]) {
+  const invisible = {
+    first: () => invisible,
+    isVisible: async () => false,
+    waitFor: async () => undefined,
+    boundingBox: async () => null,
+  };
+  const state = { sends: 0, unroutes: 0, aborts: 0 };
+  let handler: any;
+
+  const page = {
+    isClosed: () => false,
+    route: async (_pattern: string, routeHandler: any) => {
+      handler = routeHandler;
+    },
+    unroute: async () => {
+      state.unroutes++;
+    },
+    goto: async () => {},
+    locator: () => invisible,
+    frameLocator: () => ({ locator: () => invisible }),
+    focus: async () => {
+      // Stands in for the completion request the previous/next send fires: one
+      // interception per trigger attempt, at a point the attempt is still alive.
+      const headers = headerSets[Math.min(state.sends, headerSets.length - 1)];
+      state.sends++;
+      await handler(
+        {
+          abort: async () => {
+            state.aborts++;
+          },
+        },
+        { headers: () => headers },
+      );
+    },
+    fill: async () => {},
+    type: async () => {},
+    $: async () => null,
+    keyboard: { press: async () => {} },
+  };
+
+  return { page, state };
+}
+
+test("playwright header capture re-triggers the send after incomplete headers", async () => {
+  const { captureQwenHeaders } = await import("../services/playwright.ts");
+
+  // First interception is missing bx-umidtoken (the bx SDK had not computed it
+  // yet); the re-triggered send carries both headers.
+  const { page, state } = makeRetriggerPage([
+    { "bx-ua": "present" },
+    { "bx-ua": "present", "bx-umidtoken": "present", cookie: "token=x" },
+  ]);
+
+  // 30s budget: the two hard-coded 2s sleeps in the trigger sequence plus the
+  // settle delay have to fit, the grace window never should.
+  await captureQwenHeaders("test-header-retrigger", page as any, 30_000, 50);
+
+  assert.equal(state.sends, 2, "the incomplete interception must cost one extra send");
+  assert.equal(state.aborts, 2, "no intercepted request may reach Qwen");
+  assert.equal(state.unroutes, 1);
+});
+
+test("playwright header capture stops re-triggering when headers stay incomplete", async () => {
+  const { captureQwenHeaders } = await import("../services/playwright.ts");
+
+  const { page, state } = makeRetriggerPage([{ "bx-ua": "present" }]);
+
+  const startedAt = Date.now();
+  await assert.rejects(
+    () => captureQwenHeaders("test-header-retrigger-exhausted", page as any, 30_000, 50),
+    /incomplete anti-fraud headers/,
+  );
+  assert.ok(
+    state.sends <= 3,
+    `bounded re-triggers expected, got ${state.sends} sends`,
+  );
+  assert.ok(
+    Date.now() - startedAt < 20_000,
+    "capture must not keep re-sending for the whole header budget",
+  );
+  assert.equal(state.unroutes, 1);
+});
+
 test("auth-playwright: falls back to first configured account when no account id is provided", async () => {
   const existing = snapshotAccounts();
   delete process.env.TEST_MOCK_QWEN_AUTH;

@@ -34,6 +34,7 @@ const envSchema = z
     CAPTCHA_SOLVER_TIMEOUT_MS: z.string().default("15000"),
     CAPTCHA_SOLVER_RETRY_DELAY_MS: z.string().default("1000"),
     CAPTCHA_SOLVER_SETTLE_MS: z.string().default("2000"),
+    CAPTCHA_ACCOUNT_COOLDOWN_MS: z.string().default("120000"),
     OSS_MULTIPART_THRESHOLD_MB: z.string().default("5"),
     CHAT_REQUEST_LOG: z.string().default("false"),
     HTTP_TIMEOUT: z.string().default("15000"),
@@ -77,7 +78,7 @@ const envSchema = z
     QWEN_PERSONALIZATION_FROM_REQUEST: z.string().default("true"),
     QWEN_PERSONALIZATION_VERIFY_GET: z.string().default("true"),
     QWEN_MAX_PROMPT_BYTES: z.string().default("0"),
-    QWEN_MAX_PERSONALIZATION_BYTES: z.string().default("131072"),
+    QWEN_MAX_PERSONALIZATION_BYTES: z.string().default("200000"),
     CONTEXT_METER_ENABLED: z.string().default("true"),
     CONTEXT_METER_WINDOW_TOKENS: z.string().default("0"),
     CONTEXT_METER_REPORT_USAGE: z.string().default("true"),
@@ -125,6 +126,8 @@ export const config = {
     timeoutMs: Math.max(0, parseInt(env.CAPTCHA_SOLVER_TIMEOUT_MS)),
     retryDelayMs: Math.max(0, parseInt(env.CAPTCHA_SOLVER_RETRY_DELAY_MS)),
     settleMs: Math.max(0, parseInt(env.CAPTCHA_SOLVER_SETTLE_MS)),
+    /** Rest an account whose challenge could not be cleared before reusing it. */
+    accountCooldownMs: Math.max(0, parseInt(env.CAPTCHA_ACCOUNT_COOLDOWN_MS)),
   },
   oss: {
     multipartThresholdBytes: Math.max(

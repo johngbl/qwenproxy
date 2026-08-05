@@ -56,6 +56,9 @@ import {
 	shouldRetryInvalidInputOnSameAccount,
 } from "./retry-policy.ts";
 
+/** How many alternate accounts a single request may try after a WAF challenge. */
+const MAX_ANTI_BOT_ROTATIONS = 1;
+
 // Per-chat lock: serializes requests to the same Qwen chat session
 const chatLocks = new Map<string, Mutex>();
 // Account-level personalization is global mutable Qwen state; keep update+stream
@@ -297,6 +300,7 @@ export async function acquireUpstreamStream(
 	const configuredAccounts = resolved.configuredAccounts;
 	const triedAccountIds = new Set<string>();
 	let lastError: any = null;
+	let antiBotRotations = 0;
 
 	while (account) {
 		const accountId = account.id;
@@ -470,14 +474,18 @@ export async function acquireUpstreamStream(
 		}
 
 		if (stickyThreadAccountId === accountId) {
+			// A challenged sticky account must be allowed to fall through to the
+			// anti-bot handling below; otherwise the whole conversation dies on the
+			// account the WAF happened to pick.
 			const stickyAccountMustRotate =
 				isAccountUnavailableError(lastError) ||
 				isAccountInitializationError(lastError) ||
-				isChatInProgressError(lastError);
+				isChatInProgressError(lastError) ||
+				isAntiBotError(lastError);
 			if (stickyAccountMustRotate) {
 				if (!quotaInfo) {
 					console.warn(
-						`⚠️  [Chat] Sticky account unavailable (${isChatInProgressError(lastError) ? "chat_in_progress" : "upstream failure"}); trying another account with full context.`,
+						`⚠️  [Chat] Sticky account unavailable (${isChatInProgressError(lastError) ? "chat_in_progress" : isAntiBotError(lastError) ? "waf_challenge" : "upstream failure"}); trying another account with full context.`,
 					);
 				}
 			} else {
@@ -485,14 +493,40 @@ export async function acquireUpstreamStream(
 			}
 		}
 
-		// A WAF challenge is only identified here. The inner retry loop already
-		// retried this same account; do not rotate, cool down, or reset it as a
-		// side effect of captcha handling.
+		// The inner retry loop already replayed this account and tried to clear the
+		// challenge. Hand the request to one other account rather than failing it
+		// outright, then stop: walking the whole pool would only get every account
+		// challenged in turn and multiply the solver budget by the pool size.
 		if (isAntiBotError(lastError)) {
+			if (config.captcha.accountCooldownMs > 0) {
+				markAccountRateLimited(
+					accountId,
+					config.captcha.accountCooldownMs,
+					"WafChallenge",
+				);
+			}
+
+			if (antiBotRotations >= MAX_ANTI_BOT_ROTATIONS) {
+				console.warn(
+					`⚠️  [Chat] WAF challenge retries exhausted | ${accountEmail} | no further rotation`,
+				);
+				break;
+			}
+
+			const nextAfterChallenge = getNextAvailableAccount(triedAccountIds);
+			if (!nextAfterChallenge) {
+				console.warn(
+					`⚠️  [Chat] WAF challenge retries exhausted | ${accountEmail} | no other account available`,
+				);
+				break;
+			}
+
+			antiBotRotations++;
 			console.warn(
-				`⚠️  [Chat] WAF challenge retries exhausted on the same account | ${accountEmail}`,
+				`🔄 [Chat] WAF challenge on ${accountEmail}; retrying on ${maskEmail(nextAfterChallenge.email)}`,
 			);
-			break;
+			account = nextAfterChallenge;
+			continue;
 		}
 
 		if (isToolcallDebugEnabled()) {

@@ -188,6 +188,18 @@ export function isAccountBusy(accountId: string): boolean {
 }
 
 /**
+ * Check whether an account is currently serving at least one stream.
+ * Different question from isAccountBusy: that one answers "are all slots
+ * taken", while callers that must not disturb a generation in flight care
+ * about a single active lease even when spare slots remain.
+ */
+export function hasActiveAccountLease(accountId: string): boolean {
+  const slot = slots.get(accountId);
+  if (!slot) return false;
+  return slot.active > 0;
+}
+
+/**
  * Mark an account as temporarily busy (e.g. after chat_in_progress).
  * This is a lightweight hint that prevents immediate re-selection without
  * consuming a lease slot.

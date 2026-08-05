@@ -37,6 +37,8 @@ const BROWSER_STREAM_BINDING = "__qwenBridgeStreamEvent";
 const BROWSER_ABORTERS_KEY = "__qwenBridgeAborters";
 const BROWSER_STREAM_FLUSH_BYTES = 4096;
 const BROWSER_STREAM_FLUSH_MS = 25;
+const METADATA_TIMEOUT_PER_PAYLOAD_MB_MS = 10_000;
+const POST_CAPTCHA_METADATA_GRACE_MS = 20_000;
 
 type BrowserStreamEvent = {
   type: "headers" | "chunk" | "done" | "error";
@@ -802,6 +804,12 @@ function buildQwenSettingsUpdatePayload(
   currentSettings: any,
   instruction: string,
 ): Record<string, unknown> {
+  const currentPersonalization =
+    currentSettings?.personalization &&
+    typeof currentSettings.personalization === "object"
+      ? currentSettings.personalization
+      : {};
+
   return {
     ...(currentSettings && typeof currentSettings === "object"
       ? currentSettings
@@ -827,13 +835,8 @@ function buildQwenSettingsUpdatePayload(
       ...QWEN_SAFE_SETTINGS_PATCH.tools_enabled,
     },
     personalization: {
-      ...(currentSettings?.personalization &&
-      typeof currentSettings.personalization === "object"
-        ? currentSettings.personalization
-        : {}),
+      ...currentPersonalization,
       name: "",
-      description:
-        "Always follow the active personalized instructions. Always think in English, and always answer in the language of the user's question. Always remember and consider the full conversation history and context when responding.",
       style: null,
       instruction,
       enable_for_new_chat: true,
@@ -1185,11 +1188,15 @@ async function createQwenBrowserResponse(
   };
   signal.addEventListener("abort", abortListener, { once: true });
 
+  const payloadMbForMetadata = Math.ceil(
+    Buffer.byteLength(body, "utf8") / (1024 * 1024),
+  );
   const metadataTimeoutMs = Math.max(
     5_000,
     Math.min(
       pageOperationTimeoutMs,
-      Math.max(60_000, config.timeouts.timeToFirstByte),
+      Math.max(60_000, config.timeouts.timeToFirstByte) +
+        payloadMbForMetadata * METADATA_TIMEOUT_PER_PAYLOAD_MB_MS,
     ),
   );
   let captchaWatcher: ReturnType<typeof startBaxiaCaptchaWatcher> | undefined;
@@ -1361,11 +1368,63 @@ async function createQwenBrowserResponse(
       throw new Error("Qwen browser stream failed to start");
     }
 
-    const metadata = await withBrowserTimeout(
-      waitForBrowserStreamMetadata(requestId, metadataTimeoutMs),
-      metadataTimeoutMs,
-      `Qwen browser stream timed out waiting for response headers after ${metadataTimeoutMs}ms`,
-    );
+    let captchaSolvedDuringMetadata = false;
+    let metadataTimer: ReturnType<typeof setTimeout> | undefined;
+    const metadataTimeoutPromise = new Promise<never>((_, reject) => {
+      const fail = () =>
+        reject(
+          new Error(
+            `Qwen browser stream timed out waiting for response headers after ${metadataTimeoutMs}ms${
+              captchaSolvedDuringMetadata
+                ? " (captcha solved; original request did not resume)"
+                : ""
+            }`,
+          ),
+        );
+      metadataTimer = setTimeout(fail, metadataTimeoutMs);
+      metadataTimer.unref?.();
+
+      // When the watcher solves a challenge while headers have not arrived, the
+      // original background fetch often remains stalled. Give it a short grace
+      // window; if nothing arrives, the caller retries with fresh headers.
+      if (captchaWatcher) {
+        void captchaWatcher.promise
+          .then((solved) => {
+            if (!solved) return;
+            captchaSolvedDuringMetadata = true;
+            if (metadataTimer) {
+              clearTimeout(metadataTimer);
+              metadataTimer = setTimeout(fail, POST_CAPTCHA_METADATA_GRACE_MS);
+              metadataTimer.unref?.();
+            }
+          })
+          .catch(() => undefined);
+      }
+    });
+
+    let metadata: BrowserStreamMetadata;
+    try {
+      metadata = await Promise.race([
+        waitForBrowserStreamMetadata(
+          requestId,
+          metadataTimeoutMs + POST_CAPTCHA_METADATA_GRACE_MS,
+        ),
+        metadataTimeoutPromise,
+      ]);
+    } catch (error) {
+      if (
+        captchaSolvedDuringMetadata &&
+        error instanceof Error &&
+        error.message.includes("timed out waiting for response headers")
+      ) {
+        const retryableError = new Error(error.message);
+        (retryableError as any).captchaSolvedDuringMetadata = true;
+        throw retryableError;
+      }
+      throw error;
+    } finally {
+      if (metadataTimer) clearTimeout(metadataTimer);
+    }
 
     if (signal.aborted) {
       throw new DOMException("The operation was aborted", "AbortError");
@@ -2960,13 +3019,18 @@ async function createQwenStreamInternal(
         browserStreamBudgetMs,
       );
 
-    let response: Response;
+    let response!: Response;
     let captchaRecoveryAttempted = false;
-    const retryAfterCaptchaRecovery = async (label: string): Promise<boolean> => {
+    const retryAfterCaptchaRecovery = async (
+      label: string,
+      challengeBody: string,
+    ): Promise<boolean> => {
       if (captchaRecoveryAttempted || !accountId) return false;
       captchaRecoveryAttempted = true;
 
-      const solved = await recoverBaxiaCaptcha(accountId, label);
+      const solved = await recoverBaxiaCaptcha(accountId, label, {
+        challengeBody,
+      });
       if (!solved) return false;
 
       // The challenge may have rotated bx-* values or session cookies. Refresh
@@ -2981,9 +3045,8 @@ async function createQwenStreamInternal(
       return true;
     };
 
-    try {
-      response = await fetchCompletion(activeHeaders);
-    } catch (error) {
+    let captchaMetadataRetryAttempted = false;
+    const throwFetchCompletionError = (error: unknown): never => {
       const errorMsg = error instanceof Error ? error.message : String(error);
       // Treat network errors (fetch failed, timeout, DNS, etc.) as retryable
       if (
@@ -2999,6 +3062,40 @@ async function createQwenStreamInternal(
       throw withCreatedChatMetadata(
         error instanceof Error ? error : new Error(errorMsg),
       );
+    };
+
+    try {
+      response = await fetchCompletion(activeHeaders);
+    } catch (error) {
+      // The challenge was solved while waiting for headers, but the original
+      // background fetch did not resume. Replay the same payload on the same
+      // account with fresh headers instead of failing as an unknown error.
+      if (
+        (error as any)?.captchaSolvedDuringMetadata &&
+        accountId &&
+        !captchaMetadataRetryAttempted
+      ) {
+        captchaMetadataRetryAttempted = true;
+        logger.warn(
+          "[Qwen] Completion headers timed out after captcha recovery; retrying with fresh headers",
+          {
+            accountId,
+            chatId: chatSessionId ?? "new",
+          },
+        );
+        const refreshed = await getQwenHeaders(true, accountId);
+        activeHeaders = refreshed.headers;
+        if (config.captcha.retryDelayMs > 0) {
+          await sleep(config.captcha.retryDelayMs);
+        }
+        try {
+          response = await fetchCompletion(activeHeaders);
+        } catch (retryError) {
+          throwFetchCompletionError(retryError);
+        }
+      } else {
+        throwFetchCompletionError(error);
+      }
     }
 
     let responseContentType = response.headers.get("content-type") || "";
@@ -3037,7 +3134,10 @@ async function createQwenStreamInternal(
 
         if (
           antiBotChallenge &&
-          (await retryAfterCaptchaRecovery(`chat ${chatSessionId ?? "new"}`))
+          (await retryAfterCaptchaRecovery(
+            `chat ${chatSessionId ?? "new"}`,
+            preview,
+          ))
         ) {
           retriedNonSseResponse = true;
           continue;
@@ -3107,7 +3207,10 @@ async function createQwenStreamInternal(
 
           if (
             antiBotChallenge &&
-            (await retryAfterCaptchaRecovery(`chat ${chatSessionId ?? "new"}`))
+            (await retryAfterCaptchaRecovery(
+              `chat ${chatSessionId ?? "new"}`,
+              errText,
+            ))
           ) {
             retriedNonSseResponse = true;
             continue;
@@ -3154,7 +3257,10 @@ async function createQwenStreamInternal(
 
       if (
         antiBotChallenge &&
-        (await retryAfterCaptchaRecovery(`chat ${chatSessionId ?? "new"}`))
+        (await retryAfterCaptchaRecovery(
+          `chat ${chatSessionId ?? "new"}`,
+          errText,
+        ))
       ) {
         const recoveredContentType = response.headers.get("content-type") || "";
         if (

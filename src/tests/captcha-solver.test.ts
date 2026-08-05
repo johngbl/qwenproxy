@@ -1,7 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { FrameLocator, Locator, Page } from "playwright";
-import { solveBaxiaCaptcha } from "../services/captcha-solver.ts";
+import {
+  extractBaxiaChallengeUrl,
+  solveBaxiaCaptcha,
+} from "../services/captcha-solver.ts";
 
 type LocatorOptions = {
   isVisible?: () => Promise<boolean>;
@@ -324,4 +327,160 @@ test("captcha solver reports an iframe with no slider", async () => {
   } finally {
     captured.restore();
   }
+});
+
+const QWEN_BASE = "https://chat.qwen.ai";
+
+test("extractBaxiaChallengeUrl reads a protocol-relative punish url", () => {
+  const body =
+    '{"host":"chat.qwen.ai","action":"captcha","url":"//chat.qwen.ai/_____tmd_____/punish?x5secdata=abc&x5step=2"}';
+
+  assert.equal(
+    extractBaxiaChallengeUrl(body, QWEN_BASE),
+    "https://chat.qwen.ai/_____tmd_____/punish?x5secdata=abc&x5step=2",
+  );
+});
+
+test("extractBaxiaChallengeUrl unescapes JSON and HTML wrappers", () => {
+  const jsonEscaped =
+    '{"url":"https:\/\/chat.qwen.ai\/_____tmd_____\/punish?x5secdata=abc"}';
+  assert.equal(
+    extractBaxiaChallengeUrl(jsonEscaped, QWEN_BASE),
+    "https://chat.qwen.ai/_____tmd_____/punish?x5secdata=abc",
+  );
+
+  const metaRefresh =
+    '<meta http-equiv="refresh" content="0;url=/_____tmd_____/punish?x5secdata=abc&amp;x5step=2">';
+  assert.equal(
+    extractBaxiaChallengeUrl(metaRefresh, QWEN_BASE),
+    "https://chat.qwen.ai/_____tmd_____/punish?x5secdata=abc&x5step=2",
+  );
+});
+
+test("extractBaxiaChallengeUrl accepts a punish url identified only by x5secdata", () => {
+  const body = '{"url":"https://chat.qwen.ai/punish?x5secdata=abc&action=captcha"}';
+
+  assert.equal(
+    extractBaxiaChallengeUrl(body, QWEN_BASE),
+    "https://chat.qwen.ai/punish?x5secdata=abc&action=captcha",
+  );
+});
+
+test("extractBaxiaChallengeUrl never navigates the account page off the Qwen origin", () => {
+  const foreignHost =
+    '{"url":"https://evil.example.com/_____tmd_____/punish?x5secdata=abc"}';
+  assert.equal(extractBaxiaChallengeUrl(foreignHost, QWEN_BASE), null);
+
+  // A non-http scheme can never survive: anything returned is resolved against
+  // the Qwen origin, so the account page cannot be sent somewhere else.
+  const foreignScheme = '{"url":"javascript:alert(1)/_____tmd_____/punish"}';
+  const resolved = extractBaxiaChallengeUrl(foreignScheme, QWEN_BASE);
+  assert.ok(resolved === null || resolved.startsWith(`${QWEN_BASE}/`));
+});
+
+test("extractBaxiaChallengeUrl returns null for a challenge body without a url", () => {
+  assert.equal(
+    extractBaxiaChallengeUrl(
+      '<!doctype html><meta name="aliyun_waf_aa" content="challenge">',
+      QWEN_BASE,
+    ),
+    null,
+  );
+  assert.equal(extractBaxiaChallengeUrl("", QWEN_BASE), null);
+});
+
+test("challenge recovery opens the punish url before solving", async () => {
+  const { solveChallengeOnPage } = await import(
+    "../services/captcha-coordinator.ts"
+  );
+
+  const visited: string[] = [];
+  let currentUrl = "https://chat.qwen.ai/";
+  let challengeVisible = false;
+  const challenge = locator({ isVisible: async () => challengeVisible });
+  const slider = locator({
+    waitFor: async () => undefined,
+    boundingBox: async () => ({ x: 10, y: 20, width: 40, height: 40 }),
+  });
+  const track = locator({
+    boundingBox: async () => ({ x: 10, y: 20, width: 300, height: 40 }),
+  });
+
+  const page = {
+    ...pageWithLocators(
+      {
+        "#nocaptcha": challenge,
+        "#baxia-punish": challenge,
+        "#nc_1_n1z": slider,
+        "#nc_1_n1t": track,
+      },
+      baxiaFrame(slider, track),
+      {
+        move: async () => undefined,
+        down: async () => undefined,
+        up: async () => {
+          challengeVisible = false;
+        },
+      } as unknown as Page["mouse"],
+    ),
+    url: () => currentUrl,
+    goto: async (url: string) => {
+      visited.push(url);
+      currentUrl = url;
+      // The WAF renders the slider only once the page opens the punish document.
+      challengeVisible = url.includes("_____tmd_____");
+    },
+  } as unknown as Page;
+
+  const captured = captureWarnings();
+  try {
+    assert.equal(
+      await solveChallengeOnPage(
+        page,
+        "https://chat.qwen.ai/_____tmd_____/punish?x5secdata=abc",
+      ),
+      true,
+    );
+  } finally {
+    captured.restore();
+  }
+
+  assert.deepEqual(visited, [
+    "https://chat.qwen.ai/_____tmd_____/punish?x5secdata=abc",
+    "https://chat.qwen.ai",
+  ]);
+  assert.ok(
+    captured.warnings.includes(
+      '[Captcha] 🚪 event=challenge_opened source="response_body"',
+    ),
+  );
+});
+
+test("challenge recovery reloads the chat page when the body carries no url", async () => {
+  const { solveChallengeOnPage } = await import(
+    "../services/captcha-coordinator.ts"
+  );
+
+  const visited: string[] = [];
+  const page = {
+    ...pageWithLocators({}, baxiaFrame(locator(), locator())),
+    url: () => "https://chat.qwen.ai/",
+    goto: async (url: string) => {
+      visited.push(url);
+    },
+  } as unknown as Page;
+
+  const captured = captureWarnings();
+  try {
+    assert.equal(await solveChallengeOnPage(page, null, 50), false);
+  } finally {
+    captured.restore();
+  }
+
+  assert.deepEqual(visited, ["https://chat.qwen.ai"]);
+  assert.ok(
+    captured.warnings.includes(
+      '[Captcha] 🚪 event=challenge_opened source="chat_reload"',
+    ),
+  );
 });
