@@ -529,6 +529,57 @@ export async function startServer(options?: {
         console.log(
           `🪶 [Server] ${remainingAccounts.length} standby account(s) will initialize on demand`,
         );
+
+        // Validate standby accounts in background: check login, add to priority,
+        // but keep browser closed until actually needed
+        void (async () => {
+          const { validateAccountLogin } = await import("../services/playwright.ts");
+          const { ensureAccountInPriority } = await import("../core/account-priority.ts");
+
+          let validated = 0;
+          let failed = 0;
+
+          for (const account of remainingAccounts) {
+            try {
+              // Add to priority list first (initial priority based on config order)
+              ensureAccountInPriority(account.id);
+
+              // Validate login in background
+              const ok = await validateAccountLogin(
+                account,
+                config.playwright.headless,
+                config.playwright.browser,
+              );
+
+              if (ok) {
+                validated++;
+                console.log(
+                  `✅ [Server] Standby account validated: ${maskEmail(account.email)}`,
+                );
+              } else {
+                failed++;
+                console.warn(
+                  `⚠️  [Server] Standby account login failed: ${maskEmail(account.email)}`,
+                );
+              }
+            } catch (error) {
+              failed++;
+              console.warn(
+                `⚠️  [Server] Standby account validation error: ${maskEmail(account.email)}: ${getErrorMessage(error)}`,
+              );
+            }
+          }
+
+          if (validated > 0 || failed > 0) {
+            console.log(
+              `🪶 [Server] Standby validation complete: ${validated} ok, ${failed} failed`,
+            );
+          }
+        })().catch((error) => {
+          console.warn(
+            `❌ [Server] Background standby validation failed: ${getErrorMessage(error)}`,
+          );
+        });
       }
     } else {
       console.warn(
