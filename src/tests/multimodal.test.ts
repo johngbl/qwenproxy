@@ -58,7 +58,10 @@ test("fetchQwenModels caches results per account", async () => {
 });
 
 test("media generation uses the model selected by the client", async () => {
-  assert.equal(resolveMediaModel("caller-selected-model"), "caller-selected-model");
+  assert.deepEqual(resolveMediaModel("caller-selected-model"), {
+    chatModel: "caller-selected-model",
+    generationModel: undefined,
+  });
   assert.throws(
     () => resolveMediaModel(undefined),
     /model selected by the client/i,
