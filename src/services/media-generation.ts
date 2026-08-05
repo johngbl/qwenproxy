@@ -125,11 +125,11 @@ export function logMediaError(message: string): void {
 
 /**
  * Chat model used for image/video generation via Qwen Chat.
- * Based on real Qwen traffic: the chat model is qwen3.7-plus, and the
- * generation-specific models (qwen-image-*, wan2.*) are passed separately
+ * Based on real Qwen traffic: qwen3.8-max is used as the chat model, and
+ * the generation-specific models (qwen-image-*, wan2.*) are passed separately
  * in the payload, never as the chat model itself.
  */
-export const CHAT_MEDIA_MODEL = "qwen3.7-plus";
+export const CHAT_MEDIA_MODEL = "qwen3.8-max";
 
 /** Models that are generation-specific (not chat models). */
 export type MediaGenerationMode = "t2i" | "i2i" | "t2v" | "i2v";

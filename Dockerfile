@@ -1,12 +1,15 @@
-FROM mcr.microsoft.com/playwright:v1.61.1-jammy
+FROM mcr.microsoft.com/playwright:v1.62.1-jammy
 
 # Upgrade Node.js to v24 (base image ships with Node 22)
 RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
   && apt-get install -y --no-install-recommends nodejs \
   && rm -rf /var/lib/apt/lists/*
 
-# Install dumb-init to handle process signals correctly and gosu for privilege drop
-RUN apt-get update && apt-get install -y --no-install-recommends dumb-init gosu && rm -rf /var/lib/apt/lists/*
+# Install native build tools for better-sqlite3, plus process helpers.
+# better-sqlite3 may compile from source on ARM64 when no prebuilt binary exists.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends build-essential python3 dumb-init gosu \
+  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
