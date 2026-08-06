@@ -1194,16 +1194,27 @@ async function loginToQwen(
   const page = accountPages.get(accountId);
   if (!page) return false;
 
-  // Try API login first
-  const apiResult = await loginViaApi(page, email, password);
-  if (apiResult) {
-    return true;
-  }
+  const maxAttempts = 3;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    // Try API login first
+    const apiResult = await loginViaApi(page, email, password);
+    if (apiResult) {
+      return true;
+    }
 
-  // Fallback to UI login
-  const uiResult = await loginViaUi(page, email, password);
-  if (uiResult) {
-    return true;
+    // Fallback to UI login
+    const uiResult = await loginViaUi(page, email, password);
+    if (uiResult) {
+      return true;
+    }
+
+    if (attempt < maxAttempts) {
+      const backoffMs = attempt * 5_000;
+      console.warn(
+        `⚠️  [Playwright] Login attempt ${attempt}/${maxAttempts} failed for ${maskEmail(email)}, retrying in ${backoffMs / 1000}s`,
+      );
+      await sleep(backoffMs);
+    }
   }
 
   console.error(
@@ -1294,30 +1305,62 @@ async function loginViaUi(
     }
 
     // Wait for email input
-    const emailSelector = 'input[type="email"], input[placeholder*="Email"]';
+    const emailSelector = [
+      'input[type="email"]',
+      'input[name="email"]',
+      'input[autocomplete="email"]',
+      'input[placeholder*="Email" i]',
+      'input[placeholder*="email" i]',
+    ].join(", ");
     try {
       await page.waitForSelector(emailSelector, {
         timeout: config.timeouts.page,
       });
     } catch {
       if (!page.url().includes("/auth")) return true;
+      console.warn(
+        `⚠️  [Playwright] Email input not found on ${page.url()} (possible captcha or anti-bot challenge)`,
+      );
       throw new Error("Email input not found");
     }
 
     // Fill email
     await page.fill(emailSelector, email);
-    await page.keyboard.press("Enter");
-    await sleep(1500);
 
-    // Wait for password input
-    const passwordSelector = 'input[type="password"]';
-    await page.waitForSelector(passwordSelector, {
-      timeout: config.timeouts.page,
-    });
+    // The password field may already be visible (single-step form) or only
+    // appear after submitting the email (two-step flow).
+    const passwordSelector =
+      'input[type="password"], input[name="password"]';
+    const passwordAlreadyVisible = await page
+      .locator(passwordSelector)
+      .first()
+      .isVisible()
+      .catch(() => false);
+
+    if (!passwordAlreadyVisible) {
+      await page.keyboard.press("Enter");
+      await page.waitForSelector(passwordSelector, {
+        timeout: config.timeouts.page,
+      });
+    }
+    await sleep(500);
 
     // Fill password
     await page.fill(passwordSelector, password);
-    await page.keyboard.press("Enter");
+
+    // Prefer clicking the submit button; fall back to pressing Enter.
+    // The button starts disabled and only enables once both fields are filled.
+    const submitSelector =
+      'button[type="submit"].qwenchat-auth-pc-submit-button, button[type="submit"]';
+    const submitButton = page.locator(submitSelector).first();
+    try {
+      await page.waitForSelector('button[type="submit"]:not([disabled])', {
+        timeout: 5_000,
+      });
+      await submitButton.click();
+    } catch {
+      await page.keyboard.press("Enter");
+    }
     await sleep(3000);
 
     // Check if login was successful
