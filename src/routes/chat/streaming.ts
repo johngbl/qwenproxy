@@ -385,6 +385,8 @@ export async function processNonStreamingResponse(
                     }
                     // Next turn appends with parent_id = this assistant response
                     rememberParent(chunk["response.created"].response_id);
+                    // Qwen-internal metadata event — never forward to the client.
+                    continue;
                   } else if (chunk.response_id && !targetResponseId) {
                     targetResponseId = chunk.response_id;
                     rememberParent(chunk.response_id);
@@ -1398,6 +1400,8 @@ export async function processStreamingResponse(
                         }
                         // Next turn must parent to this assistant response (append, not edit)
                         rememberParent(chunk["response.created"].response_id);
+                        // Qwen-internal metadata event — never forward to the client.
+                        continue;
                       } else if (chunk.response_id && !targetResponseId) {
                         targetResponseId = chunk.response_id;
                         if (targetResponseId) {
