@@ -56,7 +56,7 @@ test("model-registry: keeps account metadata isolated", () => {
 
   assert.equal(getModelContextWindow("account-model", "account-a"), 900_000);
   assert.equal(getModelContextWindow("account-model", "account-b"), 120_000);
-  assert.equal(getModelContextWindow("account-model", "account-c"), 131_072);
+  assert.equal(getModelContextWindow("account-model", "account-c"), 1_048_576);
 });
 
 test("model-registry: replaces a complete account catalog", () => {
@@ -69,13 +69,13 @@ test("model-registry: replaces a complete account catalog", () => {
     "replace-account",
   );
 
-  assert.equal(getModelContextWindow("stale-model", "replace-account"), 131_072);
+  assert.equal(getModelContextWindow("stale-model", "replace-account"), 1_048_576);
   assert.equal(getModelContextWindow("current-model", "replace-account"), 800_000);
 });
 
 test("model-registry: returns defaults for unknown models", () => {
   const contextWindow = getModelContextWindow("unknown-model");
-  assert.equal(contextWindow, 131072); // defaultContextWindow
+  assert.equal(contextWindow, 1_048_576); // defaultContextWindow
   assert.equal(getModelContextWindowSource("unknown-model"), "default");
 });
 

@@ -26,7 +26,7 @@ import {
   shouldRetryChatInProgressOnSameAccount,
   shouldRetryInvalidInputOnSameAccount,
 } from "./retry-policy.ts";
-import type { OpenAIRequest, Usage } from "../../utils/types.ts";
+import type { Message, OpenAIRequest, Usage } from "../../utils/types.ts";
 import { StreamingToolParser } from "../../tools/parser.ts";
 import {
   getStream,
@@ -194,6 +194,7 @@ export interface StreamProcessingParams {
     requestPersonalizationInstruction?: string | null;
     contextMode?: ContextMeterMode;
     releaseAccountLease: () => void;
+    messages?: Message[];
   };
   onAssistantComplete?: AssistantCompleteHandler;
   onStreamComplete?: () => void;
@@ -612,6 +613,7 @@ export async function processNonStreamingResponse(
         requestPersonalizationInstruction: midStreamRetry.requestPersonalizationInstruction,
         contextMode: "replay",
         requestSignal: c.req.raw.signal,
+        messages: midStreamRetry.messages,
       });
 
       if ("error" in newStreamResult) {
@@ -1264,6 +1266,7 @@ export async function processStreamingResponse(
             : (midStreamRetry.contextMode ?? "delta"),
           requestSignal: c.req.raw.signal,
           allowTemporarilyBusyAccountId: currentAccountId,
+          messages: midStreamRetry.messages,
         });
 
         if ("error" in newStreamResult) {
@@ -1772,6 +1775,7 @@ export async function processStreamingResponse(
             requestPersonalizationInstruction: midStreamRetry.requestPersonalizationInstruction,
             contextMode: "replay",
             requestSignal: c.req.raw.signal,
+            messages: midStreamRetry.messages,
           });
 
           if ("error" in newStreamResult) {

@@ -177,6 +177,7 @@ export async function chatCompletions(c: Context) {
       requestPersonalizationInstruction: ctx.requestPersonalizationInstruction,
       contextMode: initialContextMode,
       requestSignal: c.req.raw.signal,
+      messages,
     });
 
 
@@ -252,6 +253,7 @@ export async function chatCompletions(c: Context) {
           ctx.requestPersonalizationInstruction,
         contextMode: initialContextMode as ContextMeterMode,
         releaseAccountLease: streamResult.releaseAccountLease,
+        messages,
       },
       onAssistantComplete,
       onStreamComplete: () => {
@@ -402,6 +404,7 @@ export async function chatCompletions(c: Context) {
                 ctx.requestPersonalizationInstruction,
               contextMode: needsFullPromptOnRetry ? "replay" : initialContextMode,
               requestSignal: c.req.raw.signal,
+              messages,
             });
 
             if ("error" in newStreamResult) {
@@ -465,6 +468,7 @@ export async function chatCompletions(c: Context) {
                   ? "replay"
                   : initialContextMode,
                 releaseAccountLease: newStreamResult.releaseAccountLease,
+                messages,
               },
               onAssistantComplete,
               onStreamComplete: () => {

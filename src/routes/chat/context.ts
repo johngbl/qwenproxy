@@ -4,7 +4,6 @@ import { getModelContextWindow } from "../../core/model-registry.ts";
 import {
   assertPromptWithinLimits,
   isRequestPersonalizationWithinLimit,
-  truncatePromptToIntelligentLimit,
 } from "../../core/prompt-limits.ts";
 import type { Message } from "../../utils/types.ts";
 import { estimateTokenCount } from "../../utils/context-truncation.ts";
@@ -124,39 +123,17 @@ export async function buildFinalContext(
       ? `${completeInstructions}\n${activePrompt}`
       : activePrompt;
 
-  // Intelligent truncation: if prompt exceeds model context, truncate older messages
-  const truncationResult = truncatePromptToIntelligentLimit(
-    finalPrompt,
-    modelId,
-    undefined, // accountId not available yet
-    messages,
-  );
-
-  if (truncationResult.wasTruncated) {
-    logger.warn(
-      "[chat] prompt exceeded model context limit; intelligent truncation applied",
-      {
-        originalTokens: truncationResult.originalTokens,
-        truncatedTokens: truncationResult.truncatedTokens,
-        messagesKept: truncationResult.messagesKept,
-        messagesDropped: truncationResult.messagesDropped,
-        modelContextWindow,
-      },
-    );
-  }
-
-  const truncatedFinalPrompt = truncationResult.prompt;
-
-  // Model metadata is synchronized after account selection. Keep the early
-  // context build from rejecting an unknown model with the registry fallback;
-  // the account attempt performs the authoritative preflight check.
-  assertPromptWithinLimits(truncatedFinalPrompt, modelId, { checkModelContext: false });
+  // Truncation is deferred to tryCreateStreamWithRetry, which runs after the
+  // account is selected and the real model context window has been synced from
+  // Qwen's /api/models catalog. The early context build only performs the byte
+  // limit check; the authoritative token check happens downstream.
+  assertPromptWithinLimits(finalPrompt, modelId, { checkModelContext: false });
 
   const isThinkingModel = enableThinking;
   const shouldResetUpstreamThread = false;
 
   return {
-    finalPrompt: truncatedFinalPrompt,
+    finalPrompt,
     sessionId,
     existingThread: !!existingThread,
     shouldResetUpstreamThread,
@@ -166,7 +143,7 @@ export async function buildFinalContext(
     // This ensures the thread state is saved even for new sessions
     updateLogicalThread: useThreadNative,
     isThinkingModel,
-    estimatedTokens: truncationResult.truncatedTokens,
+    estimatedTokens,
     modelContextWindow,
     isTitleGenerationRequest,
     requestPersonalizationInstruction: useRequestPersonalization

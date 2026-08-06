@@ -11,7 +11,10 @@ import { markAccountSuccessful, markAccountFailed } from "../../core/account-pri
 import { loadAccounts } from "../../core/accounts.ts";
 import { config } from "../../core/config.ts";
 import { UpstreamRateLimit } from "../../core/errors.ts";
-import { assertPromptWithinLimits } from "../../core/prompt-limits.ts";
+import {
+  assertPromptWithinLimits,
+  truncatePromptToIntelligentLimit,
+} from "../../core/prompt-limits.ts";
 import {
 	isToolcallDebugEnabled,
 	logger,
@@ -46,6 +49,7 @@ import {
   type ContextMeterMode,
 } from "../../services/context-meter.ts";
 import type { QwenFileEntry } from "../upload.ts";
+import type { Message } from "../../utils/types.ts";
 import {
 	classifyRetryAction,
 	isAntiBotError as isAntiBotPolicyError,
@@ -134,6 +138,8 @@ export interface AcquireParams {
 	useThreadNative: boolean;
 	updateLogicalThread: boolean;
 	allowThreadReuse: boolean;
+	/** Full message history for intelligent context truncation after model sync. */
+	messages?: Message[];
 	forceNewChat?: boolean;
 	/**
 	 * Prefer this account when available.
@@ -404,6 +410,7 @@ export async function acquireUpstreamStream(
 						? "replay"
 						: params.contextMode,
 					requestSignal: params.requestSignal,
+					messages: params.messages,
 				},
 				accountId,
 				accountEmail,
@@ -615,6 +622,7 @@ async function tryCreateStreamWithRetry(
 		contextModelId?: string;
 		contextMode?: ContextMeterMode;
 		requestSignal?: AbortSignal;
+		messages?: Message[];
 	},
 	accountId: string,
 	accountEmail: string,
@@ -645,26 +653,46 @@ async function tryCreateStreamWithRetry(
 		let accountLease: AccountLease | null = null;
 
 		try {
-			if (config.contextMeter.enabled) {
-				try {
-					// Qwen publishes the actual context window in /api/models. The
-					// cached sync is best-effort; the registry remains the fallback if
-					// this account is temporarily behind a WAF or unavailable.
-					await fetchQwenModels(currentAccountId);
-				} catch (metadataError) {
-					logger.warn("[context_meter] model metadata sync unavailable; using registry fallback", {
-						model: params.contextModelId ?? params.model,
-						error:
-							metadataError instanceof Error
-									? metadataError.message
-									: String(metadataError),
-					});
-				}
+			// Always sync the model catalog so the truncation and prompt-limit
+			// checks use the real context window published by Qwen, not the
+			// conservative registry fallback. The call is cached per account.
+			try {
+				await fetchQwenModels(currentAccountId);
+			} catch (metadataError) {
+				logger.warn("[chat] model metadata sync unavailable; using registry fallback", {
+					model: params.contextModelId ?? params.model,
+					error:
+						metadataError instanceof Error
+							? metadataError.message
+							: String(metadataError),
+				});
 			}
 
-			assertPromptWithinLimits(
+			// Truncate after the real context window is known so long conversations
+			// are not cut down to the conservative 128K fallback.
+			const contextModelId = params.contextModelId ?? params.model;
+			const truncation = truncatePromptToIntelligentLimit(
 				params.finalPrompt,
-				params.contextModelId ?? params.model,
+				contextModelId,
+				currentAccountId,
+				params.messages,
+			);
+			if (truncation.wasTruncated) {
+				logger.warn(
+					"[chat] prompt exceeded model context limit; intelligent truncation applied",
+					{
+						originalTokens: truncation.originalTokens,
+						truncatedTokens: truncation.truncatedTokens,
+						messagesKept: truncation.messagesKept,
+						messagesDropped: truncation.messagesDropped,
+					},
+				);
+			}
+			const effectivePrompt = truncation.prompt;
+
+			assertPromptWithinLimits(
+				effectivePrompt,
+				contextModelId,
 				{ accountId: currentAccountId },
 			);
 
@@ -690,7 +718,7 @@ async function tryCreateStreamWithRetry(
 				: null;
 			let result: Awaited<ReturnType<typeof createQwenStream>>;
 			try {
-				let promptForUpstream = params.finalPrompt;
+				let promptForUpstream = effectivePrompt;
 				if (hasRequestPersonalization) {
 					// Let the hash-based cache in syncQwenRequestPersonalization decide
 					// whether to actually POST. A new chat does not imply the account's
@@ -706,7 +734,7 @@ async function tryCreateStreamWithRetry(
 								model: params.model,
 								toolsCount: params.toolsCount ?? 0,
 								sessionId: params.sessionId,
-								promptChars: params.finalPrompt.length,
+								promptChars: effectivePrompt.length,
 								forceSync: false,
 							},
 						);
