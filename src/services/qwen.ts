@@ -232,6 +232,8 @@ function addIdleTimeoutToStream(
 
 export class RetryableQwenStreamError extends UpstreamRateLimit {
   readonly retryAfterMs: number;
+  /** Original upstream category; avoids exposing the inherited rate-limit code. */
+  upstreamCode?: string;
 
   constructor(message: string, retryAfterMs: number) {
     super(message);
@@ -268,6 +270,7 @@ export class QwenUpstreamUnavailableError extends RetryableQwenStreamError {
   constructor(message: string, httpStatusCode: number) {
     super(message, 5000);
     this.name = "QwenUpstreamUnavailableError";
+    this.upstreamCode = "upstream_unavailable";
     this.httpStatusCode = httpStatusCode;
   }
 }
@@ -276,7 +279,45 @@ export class QwenNetworkError extends RetryableQwenStreamError {
   constructor(message: string) {
     super(message, 3000);
     this.name = "QwenNetworkError";
+    this.upstreamCode = "network_error";
   }
+}
+
+/**
+ * Return the meaningful upstream category for logs and OpenAI error payloads.
+ * RetryableQwenStreamError inherits the rate-limit base class for legacy retry
+ * handling, so its inherited `code` must not be used as the actual category.
+ */
+export function getQwenErrorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== "object") return undefined;
+
+  const typed = error as {
+    upstreamCode?: unknown;
+    code?: unknown;
+    message?: unknown;
+  };
+  if (typeof typed.upstreamCode === "string" && typed.upstreamCode) {
+    return typed.upstreamCode;
+  }
+
+  if (error instanceof QwenNetworkError) return "network_error";
+  if (error instanceof QwenUpstreamUnavailableError) {
+    return "upstream_unavailable";
+  }
+
+  if (error instanceof RetryableQwenStreamError) {
+    const message = typeof typed.message === "string" ? typed.message.toLowerCase() : "";
+    if (message.includes("chat is in progress")) return "chat_in_progress";
+    if (message.includes("not exist") || message.includes("does not exist")) {
+      return "chat_not_exist";
+    }
+    if (message.includes("anti-bot") || message.includes("captcha")) {
+      return "waf_challenge";
+    }
+    return "upstream_retryable";
+  }
+
+  return typeof typed.code === "string" && typed.code ? typed.code : undefined;
 }
 
 interface SessionEntry {
@@ -2541,10 +2582,12 @@ function parseQwenJsonError(
       retStr.includes("FAIL_SYS_USER_VALIDATE") ||
       retStr.includes("RGV587_ERROR")
     ) {
-      return new RetryableQwenStreamError(
+      const error = new RetryableQwenStreamError(
         `Qwen anti-bot: ${retStr.substring(0, 200)}`,
         0,
       );
+      error.upstreamCode = "waf_challenge";
+      return error;
     }
   }
 
@@ -2556,10 +2599,12 @@ function parseQwenJsonError(
 
   if (typeof details === "string" && isQwenChatNotExistMessage(details)) {
     const attempt = errorJson?.data?.retryCount ?? 1;
-    return new RetryableQwenStreamError(
+    const error = new RetryableQwenStreamError(
       `Qwen: ${details}`,
       retryDelay(attempt),
     );
+    error.upstreamCode = "chat_not_exist";
+    return error;
   }
 
   // Anti-bot detection: FAIL_SYS_USER_VALIDATE / RGV587_ERROR
@@ -2569,22 +2614,26 @@ function parseQwenJsonError(
       details.includes("RGV587_ERROR") ||
       details.includes("user validate"))
   ) {
-    return new RetryableQwenStreamError(
+    const error = new RetryableQwenStreamError(
       `Qwen anti-bot: ${details}`,
       0,
     );
+    error.upstreamCode = "waf_challenge";
+    return error;
   }
 
   if (
     typeof details === "string" &&
-    (details.includes("chat is in progress") ||
-      details.includes("The chat is in progress"))
+    (details.toLowerCase().includes("chat is in progress") ||
+      details.toLowerCase().includes("the chat is in progress"))
   ) {
     const attempt = errorJson?.data?.retryCount ?? 1;
-    return new RetryableQwenStreamError(
+    const error = new RetryableQwenStreamError(
       `Qwen: ${details}`,
       retryDelay(attempt),
     );
+    error.upstreamCode = "chat_in_progress";
+    return error;
   }
 
   if (errorJson?.success === false) {

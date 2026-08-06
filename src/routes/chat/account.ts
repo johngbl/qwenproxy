@@ -24,6 +24,7 @@ import { Mutex } from "../../core/mutex.ts";
 import { registerStream, removeStream } from "../../core/stream-registry.ts";
 import {
 	acquireAccountLease,
+	isAccountBusy,
 	isAccountTemporarilyBusy,
 	markAccountTemporarilyBusy,
 	type AccountLease,
@@ -31,10 +32,11 @@ import {
 import { isAuthMockEnabled } from "../../services/auth-playwright.ts";
 import { refreshHeaders } from "../../services/playwright.ts";
 import {
-	  clearAllSessionsForAccount,
-	  createQwenStream,
-	  deleteQwenChat,
-	  fetchQwenModels,
+	clearAllSessionsForAccount,
+	createQwenStream,
+	deleteQwenChat,
+	fetchQwenModels,
+	getQwenErrorCode,
 	getLogicalThreadState,
 	type LogicalThreadEntry,
 	QwenSessionExpiredError,
@@ -228,6 +230,20 @@ function isAntiBotError(err: any): boolean {
 	return isAntiBotPolicyError(err);
 }
 
+function hasFreeAlternateAccount(
+	accounts: SelectedAccount[],
+	currentAccountId: string,
+	triedAccountIds: Set<string>,
+): boolean {
+	return accounts.some(
+		(candidate) =>
+			candidate.id !== currentAccountId &&
+			!triedAccountIds.has(candidate.id) &&
+			!getAccountCooldownInfo(candidate.id) &&
+			!isAccountTemporarilyBusy(candidate.id) &&
+			!isAccountBusy(candidate.id),
+	);
+}
 
 
 async function attemptRelogin(
@@ -318,13 +334,27 @@ export async function acquireUpstreamStream(
 		}
 		triedAccountIds.add(accountId);
 
-		// Skip accounts that recently returned chat_in_progress (temporary busy)
+		// Skip accounts that recently returned chat_in_progress (temporary busy).
 		if (
 			isAccountTemporarilyBusy(accountId) &&
 			params.allowTemporarilyBusyAccountId !== accountId
 		) {
 			console.log(
 				`⏭️  [Chat] Skipping account ${accountEmail} (${accountId}) temporarily busy (chat in progress)`,
+			);
+			account = getNextAvailableAccount(triedAccountIds);
+			continue;
+		}
+
+		// Do not wait 30 seconds on a saturated account when another account is
+		// already free. Keep the queue behavior only when this is the last usable
+		// account, so single-account deployments remain lossless.
+		if (
+			isAccountBusy(accountId) &&
+			hasFreeAlternateAccount(configuredAccounts, accountId, triedAccountIds)
+		) {
+			console.log(
+				`⏭️  [Chat] Skipping account ${accountEmail} (${accountId}) busy; rotating to a free account`,
 			);
 			account = getNextAvailableAccount(triedAccountIds);
 			continue;
@@ -635,6 +665,7 @@ async function tryCreateStreamWithRetry(
 	let quotaRetried = false;
 	let accountSwitches = 0;
 	let chatInProgressCount = 0;
+	let lastAttemptError: any = null;
 	let invalidInputSameAccountRetried = false;
 	const accounts = loadAccounts();
 	const isSingleAccount = accounts.length <= 1;
@@ -880,6 +911,7 @@ async function tryCreateStreamWithRetry(
 			};
 		} catch (err: any) {
 			attemptError = err;
+			lastAttemptError = err;
 			// Release the lease on failure — the stream was never created or
 			// will not be consumed by the caller.
 			accountLease?.release();
@@ -897,10 +929,10 @@ async function tryCreateStreamWithRetry(
 		// Log the error details for debugging (skip quota errors — logged separately below)
 			const errMsg = err instanceof Error ? err.message : String(err || "");
 			if (err && !isAccountUnavailableError(err)) {
-				const errCode = err.upstreamCode || err.code || "unknown";
+				const errCode = getQwenErrorCode(err) || "unknown";
 				console.warn(
-					`❌ [Chat] Request failed | ${currentAccountEmail} | ${errCode} | ${errMsg.substring(0, 200)}`,
-				);
+						`❌ [Chat] Request failed | ${currentAccountEmail} | ${errCode} | ${errMsg.substring(0, 200)}`,
+					);
 			}
 
 
@@ -1166,5 +1198,10 @@ async function tryCreateStreamWithRetry(
 		retryDelay = Math.min(retryDelay * 2, config.retry.maxDelayMs);
 	}
 
-	return { success: false, error: new Error("Retry exhausted") };
+	return {
+		success: false,
+		error:
+			lastAttemptError ??
+			new Error("Qwen stream retry attempts were exhausted"),
+	};
 }

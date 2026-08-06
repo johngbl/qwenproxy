@@ -207,6 +207,18 @@ test("StreamingToolParser: robust parsing of malformed JSON", () => {
   assert.deepStrictEqual(res.toolCalls[0].arguments, { a: 1 });
 });
 
+test("StreamingToolParser: repairs Qwen arguments greater-than typo", () => {
+  const parser = new StreamingToolParser(TOOLS);
+
+  const res = parser.feed(
+    '<tool_call>{"name":"read_file","arguments>{"path":"a.txt"}}</tool_call>',
+  );
+
+  assert.strictEqual(res.toolCalls.length, 1);
+  assert.strictEqual(res.toolCalls[0].name, "read_file");
+  assert.deepStrictEqual(res.toolCalls[0].arguments, { path: "a.txt" });
+});
+
 test("StreamingToolParser: recovers missing opening tag and flattens nested arguments", () => {
   const parser = new StreamingToolParser([
     {

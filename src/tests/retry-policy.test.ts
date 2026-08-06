@@ -14,10 +14,12 @@ import {
   toRetryableStreamError,
 } from "../routes/chat/retry-policy.ts";
 import {
+  getQwenErrorCode,
   QwenNetworkError,
   QwenUpstreamError,
   RetryableQwenStreamError,
 } from "../services/qwen.ts";
+import { classifyError } from "../api/error-classifier.ts";
 import {
   ValidationError,
   AuthError,
@@ -235,6 +237,24 @@ test("classifyRetryAction: network / abort / upstream error classes retry with s
   assert.equal(abortAction.reason, "stream_aborted");
 });
 
+test("error classification keeps network and chat state out of rate limits", () => {
+  const network = new QwenNetworkError("network error");
+  assert.equal(getQwenErrorCode(network), "network_error");
+  const networkResult = classifyError(network);
+  assert.equal(networkResult.statusCode, 502);
+  assert.equal(networkResult.code, "upstream_unavailable");
+
+  const chatInProgress = new RetryableQwenStreamError(
+    "Qwen: The chat is in progress!",
+    2000,
+  );
+  chatInProgress.upstreamCode = "chat_in_progress";
+  assert.equal(getQwenErrorCode(chatInProgress), "chat_in_progress");
+  const chatResult = classifyError(chatInProgress);
+  assert.equal(chatResult.statusCode, 502);
+  assert.equal(chatResult.code, "upstream_unavailable");
+});
+
 test("classifyRetryAction: chat not exist is not treated as quota", () => {
   const err = new RetryableQwenStreamError(
     "Qwen: Invalid input the chat stale-chat is not exist.",
@@ -303,6 +323,22 @@ test("throwFromSseUpstreamError maps any SSE error to RetryableQwenStreamError",
       assert.equal(typed.retryWithFullPrompt, true);
       assert.equal(typed.switchAccount, true);
       assert.match(String((err as Error).message), /invalid input/i);
+      return true;
+    },
+  );
+
+  assert.throws(
+    () =>
+      throwFromSseUpstreamError(
+        "RateLimited",
+        "Qwen: The chat is in progress!",
+      ),
+    (err: unknown) => {
+      assert.ok(err instanceof RetryableQwenStreamError);
+      assert.equal(
+        (err as RetryableQwenStreamError).upstreamCode,
+        "chat_in_progress",
+      );
       return true;
     },
   );

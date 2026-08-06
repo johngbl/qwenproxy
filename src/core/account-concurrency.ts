@@ -149,11 +149,11 @@ export function acquireAccountLease(
     if (timeoutMs > 0) {
       entry.timer = setTimeout(() => {
         removeSelf();
-        reject(
-          new Error(
-            `Account ${accountId} busy: timed out after ${timeoutMs}ms waiting for a free slot`,
-          ),
-        );
+        const busyError = new Error(
+          `Account ${accountId} busy: timed out after ${timeoutMs}ms waiting for a free slot`,
+        ) as Error & { code?: string };
+        busyError.code = "account_busy";
+        reject(busyError);
       }, timeoutMs);
     }
 
@@ -208,8 +208,12 @@ const temporaryBusyUntil = new Map<string, number>();
 export function markAccountTemporarilyBusy(
   accountId: string,
   durationMs: number,
-): void {
-  temporaryBusyUntil.set(accountId, Date.now() + durationMs);
+): number {
+  const requestedUntil = Date.now() + Math.max(0, durationMs);
+  const currentUntil = temporaryBusyUntil.get(accountId) ?? 0;
+  const effectiveUntil = Math.max(currentUntil, requestedUntil);
+  temporaryBusyUntil.set(accountId, effectiveUntil);
+  return effectiveUntil;
 }
 
 export function isAccountTemporarilyBusy(accountId: string): boolean {
@@ -222,7 +226,16 @@ export function isAccountTemporarilyBusy(accountId: string): boolean {
   return true;
 }
 
-export function clearTemporaryBusy(accountId: string): void {
+export function clearTemporaryBusy(
+  accountId: string,
+  expectedUntil?: number,
+): void {
+  if (
+    expectedUntil !== undefined &&
+    temporaryBusyUntil.get(accountId) !== expectedUntil
+  ) {
+    return;
+  }
   temporaryBusyUntil.delete(accountId);
 }
 

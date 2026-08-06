@@ -9,9 +9,12 @@ import {
   UpstreamError,
 } from "../core/errors.js";
 import {
+  QwenNetworkError,
+  QwenUpstreamUnavailableError,
   RetryableQwenStreamError,
   QwenUpstreamError,
   QwenSessionExpiredError,
+  getQwenErrorCode,
 } from "../services/qwen.js";
 
 /**
@@ -19,11 +22,30 @@ import {
  * Preserves specific error metadata when possible.
  */
 export function classifyError(err: unknown): QwenBridgeError {
-  if (err instanceof RetryableQwenStreamError) {
-    if (err.retryAfterMs > 0 && err.retryAfterMs < 60000) {
-      return new UpstreamRateLimit(err.message);
-    }
+  // These errors are retryable upstream failures, not rate-limit responses.
+  // RetryableQwenStreamError inherits UpstreamRateLimit for legacy behavior,
+  // so classify the concrete network/upstream types before that base class.
+  if (
+    err instanceof QwenNetworkError ||
+    err instanceof QwenUpstreamUnavailableError
+  ) {
     return new UpstreamError(err.message);
+  }
+
+  if (err instanceof RetryableQwenStreamError) {
+    const upstreamCode = getQwenErrorCode(err)?.toLowerCase() || "";
+    const message = err.message.toLowerCase();
+    const isActualRateLimit =
+      upstreamCode === "quota_limit" ||
+      upstreamCode === "ratelimited" ||
+      upstreamCode === "rate_limit" ||
+      upstreamCode === "rate_limit_exceeded" ||
+      message.includes("quota") ||
+      message.includes("upper limit for today");
+
+    return isActualRateLimit
+      ? new UpstreamRateLimit(err.message)
+      : new UpstreamError(err.message);
   }
 
   if (err instanceof QwenUpstreamError) {

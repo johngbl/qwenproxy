@@ -368,6 +368,7 @@ export function classifyRetryAction(
   }
 
   const message = errMessage(err).toLowerCase();
+  const code = errCode(err).toLowerCase();
   if (isAccountInitializationError(err)) {
     return {
       retryable: true,
@@ -382,6 +383,7 @@ export function classifyRetryAction(
   }
 
   if (
+    code === "account_busy" ||
     message.includes("waiting for a free slot") ||
     message.includes("busy: timed out")
   ) {
@@ -574,6 +576,15 @@ export function throwFromSseUpstreamError(
   errCode: string,
   errDetails: string,
 ): never {
+  const detailsLower = errDetails.toLowerCase();
+  // Qwen sometimes labels the chat-state error as RateLimited. Normalize it
+  // before retry/logging so it cannot be mistaken for account quota exhaustion.
+  const normalizedErrCode =
+    detailsLower.includes("chat is in progress") ||
+    detailsLower.includes("the chat is in progress")
+      ? "chat_in_progress"
+      : errCode;
+
   // Log upstream errors. Expected retryable codes (quota, rate limit, chat
   // state) use warn level to avoid noisy stderr stack traces in production.
   const expectedCodes = new Set([
@@ -583,16 +594,17 @@ export function throwFromSseUpstreamError(
     "chat_in_progress",
     "invalid_input",
   ]);
-  if (expectedCodes.has(errCode.toLowerCase())) {
-    logger.warn(`[Upstream] Error | ${errCode} | ${errDetails.substring(0, 200)}`);
+  if (expectedCodes.has(normalizedErrCode.toLowerCase())) {
+    logger.warn(
+      `[Upstream] Error | ${normalizedErrCode} | ${errDetails.substring(0, 200)}`,
+    );
   } else {
     console.error(
-      `[Upstream] Error | ${errCode} | ${errDetails.substring(0, 200)}`,
+      `[Upstream] Error | ${normalizedErrCode} | ${errDetails.substring(0, 200)}`,
     );
   }
 
   // invalid_input keeps dedicated wording for logs/tests (not "chat is not exist")
-  const detailsLower = errDetails.toLowerCase();
   const isChatMissing =
     detailsLower.includes("is not exist") ||
     detailsLower.includes("does not exist") ||
@@ -639,7 +651,7 @@ export function throwFromSseUpstreamError(
     throw error;
   }
 
-  throw toRetryableStreamError(errCode, errDetails);
+  throw toRetryableStreamError(normalizedErrCode, errDetails);
 }
 
 export function parseSseErrorFromBuffer(

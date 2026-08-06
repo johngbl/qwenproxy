@@ -733,6 +733,18 @@ function inspectIncrementalJsonToolObject(
   return snapshot;
 }
 
+/**
+ * Repair one narrow typo observed in Qwen tool-call output:
+ * `"arguments>{...}` should be `"arguments": {...}`. Do not apply broad JSON
+ * mutation here because tool arguments can legitimately contain arbitrary text.
+ */
+function repairCommonMalformedToolJson(content: string): string {
+  return content.replace(
+    /([,{]\s*)"arguments\s*>\s*(?=\{|\[|")/g,
+    '$1"arguments": ',
+  );
+}
+
 // ─── StreamingToolParser ───────────────────────────────────────────────────────
 
 type FlatToolDefinition = {
@@ -1538,7 +1550,16 @@ export class StreamingToolParser {
           "[parser] processToolContent: attempting JSON object parse",
         );
       }
-      const tcs = this.parseToolContent(t);
+      let tcs = this.parseToolContent(t);
+      if (tcs.length === 0) {
+        const repaired = repairCommonMalformedToolJson(t);
+        if (repaired !== t) {
+          if (isToolcallDebugEnabled()) {
+            logger.debug("[parser] Repaired narrow malformed tool JSON typo");
+          }
+          tcs = this.parseToolContent(repaired);
+        }
+      }
       if (tcs.length > 0) {
         for (const tc of tcs) {
           const resolvedName = this.resolveDeclaredToolName(tc.name);

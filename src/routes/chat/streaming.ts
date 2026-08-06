@@ -15,11 +15,15 @@ import {
   requestQwenTextInBrowser,
   updateLogicalThreadParent,
   updateSessionParent,
+  getQwenErrorCode,
   RetryableQwenStreamError,
 } from "../../services/qwen.ts";
 import { acquireUpstreamStream } from "./account.ts";
 import { markAccountRateLimited } from "../../core/account-manager.ts";
-import { markAccountTemporarilyBusy } from "../../core/account-concurrency.ts";
+import {
+  clearTemporaryBusy,
+  markAccountTemporarilyBusy,
+} from "../../core/account-concurrency.ts";
 
 import {
   classifyRetryAction,
@@ -836,7 +840,20 @@ export async function processStreamingResponse(
       const streamData = getStream(completionId);
       const targetResponseId = streamData?.targetResponseId || "";
       const stopSessionId = currentUiSessionId;
+      const stopAccountId = currentAccountId;
       const stopHeaders = streamData?.headers;
+
+      // Qwen may keep the generation alive briefly after the browser stream is
+      // aborted. Mark the account busy during that settlement window so the next
+      // request does not race the stop endpoint and receive chat_in_progress.
+      const stopSettlementMs = Math.max(
+        config.retry.chatInProgressBusyMs,
+        1_000,
+      );
+      const stopBusyUntil = markAccountTemporarilyBusy(
+        stopAccountId,
+        stopSettlementMs,
+      );
 
       // Abort the browser stream first. This wakes the reader immediately and
       // lets the normal finally block release the account/stream locks without
@@ -861,7 +878,7 @@ export async function processStreamingResponse(
           `🛑 [Chat] Stopping Qwen generation | session=${stopSessionId} | response=${targetResponseId}`,
         );
         void requestQwenTextInBrowser(
-          currentAccountId,
+          stopAccountId,
           "POST",
           `/api/v2/chat/completions/stop?chat_id=${encodeURIComponent(stopSessionId)}`,
           buildQwenRequestHeaders({
@@ -877,9 +894,15 @@ export async function processStreamingResponse(
             response_id: targetResponseId,
           }),
           { referrer: qwenUrl(`/c/${encodeURIComponent(stopSessionId)}`) },
-        ).catch((err) => {
-          console.error(`❌ [Chat] Stop failed | ${err.message}`);
-        });
+        )
+          .then(() => {
+            // A successful stop response means the account no longer needs the
+            // protective busy window.
+            clearTemporaryBusy(stopAccountId, stopBusyUntil);
+          })
+          .catch((err) => {
+            console.error(`❌ [Chat] Stop failed | ${err.message}`);
+          });
       } else {
         console.log(
           `⏭️  [Chat] Skip Qwen stop | ${completionId} | no response_id yet`,
@@ -1963,8 +1986,17 @@ export async function processStreamingResponse(
     }
   }, async (err: Error, errorStream: any) => {
     const retryable = err instanceof RetryableQwenStreamError;
-    const errorCode = (err as any).upstreamCode || (err as any).code || "stream_error";
-    const errorType = (err as any).type || "upstream_error";
+    const errorCode =
+      getQwenErrorCode(err) ||
+      (isNetworkLikeError(err) ? "network_error" : "stream_error");
+    const normalizedErrorCode = errorCode.toLowerCase();
+    const errorType =
+      normalizedErrorCode === "quota_limit" ||
+      normalizedErrorCode === "ratelimited" ||
+      normalizedErrorCode === "rate_limit" ||
+      normalizedErrorCode === "rate_limit_exceeded"
+        ? "rate_limit_error"
+        : "upstream_error";
 
     const errorDetails = {
       account: activeAccountLabel,
