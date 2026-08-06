@@ -19,6 +19,7 @@ import {
 } from "../../services/qwen.ts";
 import { acquireUpstreamStream } from "./account.ts";
 import { markAccountRateLimited } from "../../core/account-manager.ts";
+import { markAccountTemporarilyBusy } from "../../core/account-concurrency.ts";
 
 import {
   classifyRetryAction,
@@ -98,6 +99,39 @@ function extractChatSessionId(chunk: any): string | null {
 // Retry/switch policy lives in ./retry-policy.ts (generic by default).
 
 const MAX_INITIAL_PROTOCOL_BYTES = 64 * 1024;
+
+// Mid-stream network failures (stream died after the response was committed)
+// cannot rotate accounts in-flight. If one account suffers several of these in a
+// short window, mark it temporarily busy so the *next* request fails over to a
+// healthier account instead of sticking to a flaky one.
+const MID_STREAM_FAILURE_WINDOW_MS = 5 * 60 * 1000;
+const midStreamNetworkFailures = new Map<string, number[]>();
+
+function noteMidStreamNetworkFailure(accountId: string): void {
+  const threshold = config.retry.midStreamFailoverThreshold;
+  if (threshold <= 0) return;
+
+  const now = Date.now();
+  const recent = (midStreamNetworkFailures.get(accountId) ?? []).filter(
+    (t) => now - t < MID_STREAM_FAILURE_WINDOW_MS,
+  );
+  recent.push(now);
+
+  if (recent.length >= threshold) {
+    midStreamNetworkFailures.delete(accountId);
+    markAccountTemporarilyBusy(accountId, config.retry.midStreamFailoverBusyMs);
+    logger.warn(
+      "[Chat] Account marked temporarily busy after repeated mid-stream network failures; next request will rotate",
+      {
+        accountId,
+        failures: recent.length,
+        busyMs: config.retry.midStreamFailoverBusyMs,
+      },
+    );
+  } else {
+    midStreamNetworkFailures.set(accountId, recent);
+  }
+}
 
 function hasSseProtocolStart(buffer: string): boolean {
   const trimmed = buffer.trimStart();
@@ -1979,6 +2013,9 @@ export async function processStreamingResponse(
     };
 
     if (retryable) {
+      if (activeAccountId && isNetworkLikeError(err)) {
+        noteMidStreamNetworkFailure(activeAccountId);
+      }
       logger.warn(
         "[Chat] Stream ended after retryable error (no more retries)",
         errorDetails,

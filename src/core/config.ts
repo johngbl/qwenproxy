@@ -70,6 +70,8 @@ const envSchema = z
     ACCOUNT_INIT_FAILURE_COOLDOWN_MS: z.string().default("300000"),
     CHAT_IN_PROGRESS_RETRY_DELAY_MS: z.string().default("2000"),
     CHAT_IN_PROGRESS_BUSY_MS: z.string().default("5000"),
+    MID_STREAM_FAILOVER_THRESHOLD: z.string().default("2"),
+    MID_STREAM_FAILOVER_BUSY_MS: z.string().default("60000"),
 
 
     QWEN_BASE_URL: z.string().default("https://chat.qwen.ai"),
@@ -179,6 +181,14 @@ export const config = {
     onUnknownUpstream: env.RETRY_ON_UNKNOWN_UPSTREAM !== "false",
     chatInProgressDelayMs: Math.max(0, parseInt(env.CHAT_IN_PROGRESS_RETRY_DELAY_MS)),
     chatInProgressBusyMs: Math.max(0, parseInt(env.CHAT_IN_PROGRESS_BUSY_MS)),
+    midStreamFailoverThreshold: Math.max(
+      0,
+      parseInt(env.MID_STREAM_FAILOVER_THRESHOLD),
+    ),
+    midStreamFailoverBusyMs: Math.max(
+      0,
+      parseInt(env.MID_STREAM_FAILOVER_BUSY_MS),
+    ),
     autoRetryMalformedTools: env.RETRY_AUTO_MALFORMED_TOOLS !== "false",
     autoRetryMalformedToolsMax: Math.max(1, parseInt(env.RETRY_AUTO_MALFORMED_TOOLS_MAX)),
   },
