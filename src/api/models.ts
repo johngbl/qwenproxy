@@ -16,6 +16,13 @@ import { isPlaywrightInitialized } from "../services/playwright.ts";
 
 const app = new Hono();
 
+/**
+ * Stable creation timestamp for synthetic media models.
+ * Uses a fixed value so the ETag remains stable across requests.
+ * 2025-01-01T00:00:00Z
+ */
+const MEDIA_MODELS_CREATED_AT = 1735689600;
+
 function getPreferredModelsAccountId(): string | undefined {
   try {
     const accounts = loadAccounts();
@@ -189,6 +196,7 @@ async function loadModelsWithVariants(): Promise<{
     .map(({ id, kind, modes }) => ({
       id,
       object: "model",
+      created: MEDIA_MODELS_CREATED_AT,
       owned_by: "qwen",
       media_generation: kind,
       media_modes: modes,
