@@ -1016,30 +1016,47 @@ export async function initPlaywrightForAccount(
         didLogin = true;
       }
 
-      // Navigate to the stable chat page to validate the session and populate cookies
-      try {
-        await acctPage.goto(qwenUrl("/"), {
-          waitUntil: "domcontentloaded",
-          timeout: config.timeouts.navigation,
-        });
-        const url = acctPage.url();
-        if (url.includes("auth") || url.includes("login")) {
-          if (account.email && account.password) {
-          console.warn(
-            `⚠️  [Playwright] Session expired for ${maskEmail(account.email)}, re-authenticating...`,
-          );
-            await loginToQwen(account.id, account.email, account.password);
-            didLogin = true;
-          } else {
+      // Navigate to the stable chat page to validate the session and populate cookies.
+      // Retry up to 2 times on transient timeouts before giving up.
+      const maxValidationAttempts = 2;
+      let validationError: Error | null = null;
+      for (let vAttempt = 1; vAttempt <= maxValidationAttempts; vAttempt++) {
+        try {
+          await acctPage.goto(qwenUrl("/"), {
+            waitUntil: "domcontentloaded",
+            timeout: config.timeouts.navigation,
+          });
+          const url = acctPage.url();
+          if (url.includes("auth") || url.includes("login")) {
+            if (account.email && account.password) {
+              console.warn(
+                `⚠️  [Playwright] Session expired for ${maskEmail(account.email)}, re-authenticating...`,
+              );
+              await loginToQwen(account.id, account.email, account.password);
+              didLogin = true;
+            } else {
+              console.warn(
+                `[Playwright] Session expired for account ${account.id} but no credentials available.`,
+              );
+            }
+          }
+          validationError = null;
+          break;
+        } catch (err: any) {
+          validationError = err;
+          if (vAttempt < maxValidationAttempts) {
             console.warn(
-              `[Playwright] Session expired for account ${account.id} but no credentials available.`,
+              `⚠️  [Playwright] Session validation attempt ${vAttempt}/${maxValidationAttempts} failed for ${maskEmail(account.email)}: ${err.message}, retrying...`,
             );
+            await sleep(3000);
           }
         }
-      } catch (err: any) {
+      }
+      if (validationError) {
         console.warn(
-          `❌ [Playwright] Failed to validate session for ${maskEmail(account.email)}: ${err.message}`,
+          `❌ [Playwright] Failed to validate session for ${maskEmail(account.email)} after ${maxValidationAttempts} attempts: ${validationError.message}`,
         );
+        throw validationError;
       }
 
       // Capture headers by navigating and intercepting
