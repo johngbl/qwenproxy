@@ -11,6 +11,16 @@ interface PriorityData {
   lastUpdated: number;
 }
 
+/**
+ * Mock account used by test suites (TEST_MOCK_QWEN_AUTH). Must never be
+ * persisted to the real priority file or it pollutes production routing.
+ */
+const MOCK_ACCOUNT_ID = "mock-account";
+
+function isPersistableAccount(accountId: string): boolean {
+  return accountId !== MOCK_ACCOUNT_ID;
+}
+
 const DATA_DIR = resolve("data");
 const PRIORITY_FILE = join(DATA_DIR, "account-priority.json");
 
@@ -22,8 +32,12 @@ function loadPriority(): PriorityData {
   try {
     if (existsSync(PRIORITY_FILE)) {
       const data = JSON.parse(readFileSync(PRIORITY_FILE, "utf-8"));
+      // Filter out any mock/test accounts that may have leaked into the file
+      const accountOrder: string[] = (data.accountOrder || []).filter(
+        isPersistableAccount,
+      );
       priorityCache = {
-        accountOrder: data.accountOrder || [],
+        accountOrder,
         lastUpdated: data.lastUpdated || 0,
       };
       return priorityCache!;
@@ -50,6 +64,7 @@ function savePriority(data: PriorityData): void {
  * Reordena contas: conta que funcionou vai para o topo
  */
 export function markAccountSuccessful(accountId: string): void {
+  if (!isPersistableAccount(accountId)) return;
   const data = loadPriority();
   
   // Remove se já existe
@@ -66,6 +81,7 @@ export function markAccountSuccessful(accountId: string): void {
  * Reordena contas: conta que falhou vai para o final
  */
 export function markAccountFailed(accountId: string): void {
+  if (!isPersistableAccount(accountId)) return;
   const data = loadPriority();
   
   // Remove se já existe
@@ -83,6 +99,7 @@ export function markAccountFailed(accountId: string): void {
  * Contas novas entram no final da lista, mantendo a ordem de configuração.
  */
 export function ensureAccountInPriority(accountId: string): void {
+  if (!isPersistableAccount(accountId)) return;
   const data = loadPriority();
   
   // Se já existe, não faz nada
