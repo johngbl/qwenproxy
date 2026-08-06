@@ -644,44 +644,22 @@ export async function processNonStreamingResponse(
       });
     }
 
-    // Check for malformed tool calls and inject error feedback
+    // Log malformed tool calls but do NOT inject error into content.
+    // The auto-retry above handles sending the error back to Qwen.
+    // If we reach here, retries were exhausted or unavailable — just log it.
     if (toolParser && toolParser.getMalformedToolCalls().length > 0) {
       const malformedCalls = toolParser.getMalformedToolCalls();
       const malformedCount = malformedCalls.length;
-
-      // Build detailed error message with available tools list
       const undeclaredNames = malformedCalls
-        .flatMap((mc) => mc.undeclaredNames || [])
-        .filter((name, index, self) => self.indexOf(name) === index);
+        .map((mc) => mc.undeclaredNames)
+        .flat()
+        .filter((n): n is string => !!n);
 
-      const availableToolNames = declaredTools
-        .map((t: any) => t.type === "function" ? t.function?.name : t.name)
-        .filter((n: string | undefined): n is string => !!n);
-      const toolsHint = availableToolNames.length > 0
-        ? `\n\nAvailable tools: ${availableToolNames.join(", ")}`
-        : "";
-
-      let errorMessage: string;
-      if (undeclaredNames.length > 0) {
-        errorMessage = `\n\n⚠️ [TOOL CALL ERROR] ${malformedCount} tool call(s) used undeclared tool names: ${undeclaredNames.join(", ")}. Only declared tools can be executed. Please retry with valid tool names.${toolsHint}\n\n`;
-      } else {
-        errorMessage = `\n\n⚠️ [TOOL CALL ERROR] ${malformedCount} tool call(s) were malformed and could not be executed. The JSON was invalid or the tool call was truncated. Please retry the tool call with valid JSON.${toolsHint}\n\n`;
-      }
-
-      finalContent += errorMessage;
-      if (message.content) {
-        message.content += errorMessage;
-      } else {
-        message.content = errorMessage;
-      }
-
-      logger.debug("[chat] non-stream: injected malformed tool call error feedback", {
+      logger.warn("[chat] non-stream: malformed tool calls not retried (retries exhausted or unavailable)", {
         malformedCount,
         undeclaredNames,
         completionId,
       });
-
-      toolParser.clearMalformedToolCalls();
     }
 
     if (isToolcallDebugEnabled()) {
@@ -1700,14 +1678,14 @@ export async function processStreamingResponse(
 
       if (!clientDisconnected) {
         // Auto-retry if all tool calls were malformed (no successful tool calls)
-        // Only retry if we haven't emitted any content to the client yet
+        // Retry regardless of whether content was emitted, since the tool calls
+        // are the primary output and the error must go back to Qwen, not the user.
         const allToolsFailed = toolParser && toolParser.getMalformedToolCalls().length > 0 && toolParser.getEmittedToolCallCount() === 0;
         if (
           allToolsFailed &&
           toolParser &&
           config.retry.autoRetryMalformedTools !== false &&
-          midStreamRetry &&
-          !emittedModelOutput
+          midStreamRetry
         ) {
           const malformedCalls = toolParser.getMalformedToolCalls();
           const malformedCount = malformedCalls.length;
@@ -1830,44 +1808,22 @@ export async function processStreamingResponse(
           }
         }
 
-        // Check for malformed tool calls and inject error feedback
+        // Log malformed tool calls but do NOT inject error as visible content.
+        // The auto-retry above handles sending the error back to Qwen.
+        // If we reach here, retries were exhausted or unavailable — just log it.
         if (toolParser && toolParser.getMalformedToolCalls().length > 0) {
           const malformedCalls = toolParser.getMalformedToolCalls();
           const malformedCount = malformedCalls.length;
-
-          // Build detailed error message with available tools list
           const undeclaredNames = malformedCalls
-            .flatMap((mc) => mc.undeclaredNames || [])
-            .filter((name, index, self) => self.indexOf(name) === index);
+            .map((mc) => mc.undeclaredNames)
+            .flat()
+            .filter((n): n is string => !!n);
 
-          const availableToolNames = declaredTools
-            .map((t: any) => t.type === "function" ? t.function?.name : t.name)
-            .filter((n: string | undefined): n is string => !!n);
-          const toolsHint = availableToolNames.length > 0
-            ? `\n\nAvailable tools: ${availableToolNames.join(", ")}`
-            : "";
-
-          let errorMessage: string;
-          if (undeclaredNames.length > 0) {
-            errorMessage = `\n\n⚠️ [TOOL CALL ERROR] ${malformedCount} tool call(s) used undeclared tool names: ${undeclaredNames.join(", ")}. Only declared tools can be executed. Please retry with valid tool names.${toolsHint}\n\n`;
-          } else {
-            errorMessage = `\n\n⚠️ [TOOL CALL ERROR] ${malformedCount} tool call(s) were malformed and could not be executed. The JSON was invalid or the tool call was truncated. Please retry the tool call with valid JSON.${toolsHint}\n\n`;
-          }
-
-          await writeEvent({
-            id: completionId,
-            object: "chat.completion.chunk",
-            created: createdTimestamp,
-            model: body.model,
-            choices: [makeChoice({ content: errorMessage })],
-          });
-
-          logger.debug("[chat] stream: injected malformed tool call error feedback", {
+          logger.warn("[chat] stream: malformed tool calls not retried (retries exhausted or unavailable)", {
             malformedCount,
             undeclaredNames,
             completionId,
           });
-
           toolParser.clearMalformedToolCalls();
         }
 

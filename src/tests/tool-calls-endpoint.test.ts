@@ -776,9 +776,11 @@ test("stream: malformed nameless tool_call restores lead-in text", async () => {
       result.content.startsWith("Need tool result: "),
       `Expected content to start with lead-in text, got: ${result.content}`,
     );
+    // Error feedback should NOT be injected into content — it goes back to
+    // Qwen via auto-retry instead of being shown to the user.
     assert.ok(
-      result.content.includes("[TOOL CALL ERROR]"),
-      `Expected error feedback for malformed tool call, got: ${result.content}`,
+      !result.content.includes("[TOOL CALL ERROR]"),
+      `Expected no error feedback in content (should retry internally), got: ${result.content}`,
     );
     assert.strictEqual(result.toolCalls.length, 0);
     assert.strictEqual(result.finishReason, "stop");
