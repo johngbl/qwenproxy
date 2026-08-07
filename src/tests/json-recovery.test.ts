@@ -41,3 +41,31 @@ test("robustParseJSON: preserves valid JSON without modification", () => {
   const result = robustParseJSON(valid);
   assert.deepEqual(result, { path: "file.txt", command: "ls -la" });
 });
+
+test("robustParseJSON: handles Python code with URLs and newlines in strings", () => {
+  // Bug: global Windows path check caused false positives with https://
+  const code = `import requests\n\ndef test_api():\n    url = "https://api.example.com/data"\n    response = requests.get(url)\n    assert response.status_code == 200`;
+  const json = JSON.stringify({ name: "patch", arguments: { mode: "replace", new_string: code } });
+  const result = robustParseJSON(json);
+  assert.ok(result !== null);
+  assert.strictEqual(result.name, "patch");
+  assert.strictEqual(result.arguments.new_string, code);
+});
+
+test("robustParseJSON: handles Windows paths with newlines in strings", () => {
+  // Bug: C:\path triggered double-escaping of \n elsewhere in the string
+  const code = `path = "C:\\Users\\test\\file.txt"\nprint(path)`;
+  const json = JSON.stringify({ name: "patch", arguments: { mode: "replace", new_string: code } });
+  const result = robustParseJSON(json);
+  assert.ok(result !== null);
+  assert.strictEqual(result.name, "patch");
+  assert.strictEqual(result.arguments.new_string, code);
+});
+
+test("robustParseJSON: handles double-escaped quotes only after parse fails", () => {
+  // Valid JSON with \\ (literal backslash + quote) should parse directly
+  const validWithBackslash = '{"path": "C:\\\\Users\\\\test"}';
+  const result = robustParseJSON(validWithBackslash);
+  assert.ok(result !== null);
+  assert.strictEqual(result.path, "C:\\Users\\test");
+});

@@ -23,8 +23,11 @@ function sanitizeAndBalance(input: string): {
           const next4 = input.substring(i + 1, i + 5);
           out += /^[0-9a-fA-F]{4}$/.test(next4) ? "\\" + char : "\\\\" + char;
         } else if (["n", "r", "t"].includes(char)) {
-          const isWinPath =
-            /[a-zA-Z]:\\/i.test(input) || /[a-zA-Z]:\//i.test(input);
+          // Local check: only double-escape if the 2 chars before this
+          // backslash form a Windows drive letter + colon (e.g. C:\, D:/).
+          // Scanning the whole input causes false positives with URLs
+          // like https:// or paths embedded elsewhere in the string.
+          const isWinPath = i >= 2 && /[a-zA-Z]:/.test(input.substring(i - 2, i));
           const nextChar = input[i + 1] || "";
           out +=
             isWinPath && /^[a-zA-Z0-9]/.test(nextChar)
@@ -126,9 +129,6 @@ export function robustParseJSON(str: string): any {
     .replace(/```$/, "")
     .trim();
 
-  // Fix double-escaped quotes (e.g., \\" -> ")
-  sanitized = sanitized.replace(/\\\\"/g, '\\"');
-
   const firstBrace = sanitized.indexOf("{");
   if (firstBrace === -1) {
     if (isDebug) {
@@ -153,7 +153,9 @@ export function robustParseJSON(str: string): any {
         error: e instanceof Error ? e.message : String(e),
       });
     }
-    /* continue */
+    // Fix double-escaped quotes (e.g., \\" -> ") only after direct parse
+    // fails, to avoid corrupting valid JSON with legitimate \\ sequences.
+    jsonPart = jsonPart.replace(/\\\\"/g, '\\"');
   }
 
   let currentJson = jsonPart.replace(
