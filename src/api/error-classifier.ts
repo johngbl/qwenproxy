@@ -35,6 +35,21 @@ export function classifyError(err: unknown): QwenBridgeError {
   if (err instanceof RetryableQwenStreamError) {
     const upstreamCode = getQwenErrorCode(err)?.toLowerCase() || "";
     const message = err.message.toLowerCase();
+
+    // Content moderation rejections are client-side content policy violations,
+    // not upstream failures. Return 400 so the client can adjust its input.
+    if (
+      upstreamCode === "data_inspection_failed" ||
+      message.includes("content moderation") ||
+      message.includes("data_inspection_failed")
+    ) {
+      const moderationError = new ValidationError(
+        `Content rejected by Qwen safety filter: ${err.message.replace(/^Qwen content moderation: [^:]+: /, "")}`,
+      );
+      (moderationError as any).code = "content_policy_violation";
+      return moderationError;
+    }
+
     const isActualRateLimit =
       upstreamCode === "quota_limit" ||
       upstreamCode === "ratelimited" ||

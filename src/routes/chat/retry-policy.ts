@@ -159,6 +159,24 @@ export function isInvalidInputError(err: unknown): boolean {
   );
 }
 
+/**
+ * Qwen content-safety moderation rejections (data_inspection_failed).
+ * These are deterministic: the same content will be rejected on any account,
+ * so retrying or switching accounts only wastes resources and time.
+ */
+export function isContentModerationError(err: unknown): boolean {
+  const code = errCode(err).toLowerCase();
+  const message = errMessage(err).toLowerCase();
+  return (
+    code === "data_inspection_failed" ||
+    message.includes("data_inspection_failed") ||
+    message.includes("conteúdo inadequado") ||
+    message.includes("inappropriate content") ||
+    message.includes("aviso de segurança do conteúdo") ||
+    message.includes("content safety")
+  );
+}
+
 /** Prefer a clean chat on the current account before paying the cost of replaying
  * the full context on another account. Callers keep their own per-request count. */
 export function shouldRetryInvalidInputOnSameAccount(
@@ -442,6 +460,20 @@ export function classifyRetryAction(
       };
     }
 
+    // Content moderation rejections are deterministic — retrying on any
+    // account with the same content produces the same rejection. Fail fast
+    // instead of burning through accounts, personalization syncs and captchas.
+    if (isContentModerationError(err)) {
+      return {
+        retryable: false,
+        switchAccount: false,
+        forceNewChat: false,
+        retryWithFullPrompt: false,
+        retryAfterMs: 0,
+        reason: "content_moderation",
+      };
+    }
+
     if (isAntiBotError(err)) {
       // WAF/captcha is only identified here. Retry the same request on the
       // same account immediately; recovery, cooldown and account rotation are
@@ -593,6 +625,7 @@ export function throwFromSseUpstreamError(
     "rate_limit_exceeded",
     "chat_in_progress",
     "invalid_input",
+    "data_inspection_failed",
   ]);
   if (expectedCodes.has(normalizedErrCode.toLowerCase())) {
     logger.warn(
@@ -634,6 +667,23 @@ export function throwFromSseUpstreamError(
     error.retryWithFullPrompt = true;
     error.switchAccount = true;
     error.dropFiles = true; // Drop files on retry to isolate file-related errors
+    throw error;
+  }
+
+  // Content moderation rejections are deterministic — the same content will
+  // be rejected on every account. Throw as RetryableQwenStreamError so it
+  // propagates through the streaming catch blocks, but classifyRetryAction
+  // will mark it non-retryable.
+  if (isContentModerationError({ upstreamCode: normalizedErrCode, message: errDetails })) {
+    logger.warn(
+      `[Upstream] Content moderation rejection (not retrying): ${normalizedErrCode}`,
+    );
+    const error = new RetryableQwenStreamError(
+      `Qwen content moderation: ${normalizedErrCode}: ${errDetails.substring(0, 200)}`,
+      0,
+    ) as RetryableStreamError;
+    error.upstreamCode = normalizedErrCode;
+    error.switchAccount = false;
     throw error;
   }
 

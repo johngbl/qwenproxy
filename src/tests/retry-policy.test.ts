@@ -384,3 +384,59 @@ test("parseSseErrorFromBuffer extracts first data error chunk", () => {
     null,
   );
 });
+
+test("classifyRetryAction: content moderation (data_inspection_failed) is not retryable", () => {
+  // Simulates the error thrown by throwFromSseUpstreamError for content moderation
+  const err = Object.assign(
+    new RetryableQwenStreamError(
+      "Qwen content moderation: data_inspection_failed: Aviso de segurança do conteúdo",
+      0,
+    ),
+    { upstreamCode: "data_inspection_failed", switchAccount: false },
+  );
+  const action = classifyRetryAction(err);
+
+  assert.equal(action.retryable, false);
+  assert.equal(action.switchAccount, false);
+  assert.equal(action.forceNewChat, false);
+  assert.equal(action.retryWithFullPrompt, false);
+  assert.equal(action.reason, "content_moderation");
+});
+
+test("classifyError: content moderation maps to ValidationError with content_policy_violation", () => {
+  const err = Object.assign(
+    new RetryableQwenStreamError(
+      "Qwen content moderation: data_inspection_failed: Aviso de segurança do conteúdo: os dados inseridos podem conter conteúdo inadequado!",
+      0,
+    ),
+    { upstreamCode: "data_inspection_failed" },
+  );
+  const classified = classifyError(err);
+
+  assert.equal(classified.statusCode, 400);
+  assert.equal((classified as any).code, "content_policy_violation");
+  assert.ok(classified.message.includes("Content rejected by Qwen safety filter"));
+  assert.ok(!classified.message.includes("data_inspection_failed"));
+});
+
+test("throwFromSseUpstreamError: data_inspection_failed throws non-retryable moderation error", () => {
+  assert.throws(
+    () =>
+      throwFromSseUpstreamError(
+        "data_inspection_failed",
+        "Aviso de segurança do conteúdo: os dados inseridos podem conter conteúdo inadequado!",
+      ),
+    (err: unknown) => {
+      const e = err as RetryableQwenStreamError & { switchAccount?: boolean };
+      assert.ok(e instanceof RetryableQwenStreamError);
+      assert.ok(e.message.includes("content moderation"));
+      assert.equal(e.upstreamCode, "data_inspection_failed");
+      assert.equal(e.switchAccount, false);
+      // Verify classifyRetryAction marks it non-retryable
+      const action = classifyRetryAction(e);
+      assert.equal(action.retryable, false);
+      assert.equal(action.reason, "content_moderation");
+      return true;
+    },
+  );
+});
