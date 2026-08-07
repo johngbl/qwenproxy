@@ -219,6 +219,74 @@ test("StreamingToolParser: repairs Qwen arguments greater-than typo", () => {
   assert.deepStrictEqual(res.toolCalls[0].arguments, { path: "a.txt" });
 });
 
+test("StreamingToolParser: repairs unquoted arguments key with colon", () => {
+  const parser = new StreamingToolParser(TOOLS);
+
+  const res = parser.feed(
+    '<tool_call>{"name":"read_file",arguments:{"path":"a.txt"}}</tool_call>',
+  );
+
+  assert.strictEqual(res.toolCalls.length, 1);
+  assert.strictEqual(res.toolCalls[0].name, "read_file");
+  assert.deepStrictEqual(res.toolCalls[0].arguments, { path: "a.txt" });
+});
+
+test("StreamingToolParser: repairs unquoted arguments key with greater-than", () => {
+  const parser = new StreamingToolParser(TOOLS);
+
+  const res = parser.feed(
+    '<tool_call>{"name":"read_file",arguments>{"path":"a.txt"}}</tool_call>',
+  );
+
+  assert.strictEqual(res.toolCalls.length, 1);
+  assert.strictEqual(res.toolCalls[0].name, "read_file");
+  assert.deepStrictEqual(res.toolCalls[0].arguments, { path: "a.txt" });
+});
+
+test("StreamingToolParser: recovers flattened top-level parameters without arguments wrapper", () => {
+  const parser = new StreamingToolParser(TOOLS);
+
+  const res = parser.feed(
+    '<tool_call>{"name":"read_file","path":"a.txt"}</tool_call>',
+  );
+
+  assert.strictEqual(res.toolCalls.length, 1);
+  assert.strictEqual(res.toolCalls[0].name, "read_file");
+  assert.deepStrictEqual(res.toolCalls[0].arguments, { path: "a.txt" });
+});
+
+test("StreamingToolParser: truncated flattened write_file is preserved not dropped", () => {
+  const writeTools = [
+    {
+      type: "function" as const,
+      function: {
+        name: "write_file",
+        description: "Write a file",
+        parameters: {
+          type: "object",
+          properties: {
+            path: { type: "string" },
+            content: { type: "string" },
+          },
+          required: ["path", "content"],
+        },
+      },
+    },
+  ];
+  const parser = new StreamingToolParser(writeTools);
+
+  // Emulate a truncated/flattened tool call that would previously be dropped.
+  const res = parser.feed(
+    `<tool_call>{"name":"write_file","content":"import sqlite3
+from datetime import",
+"path":"a.py"}</tool_call>`,
+  );
+
+  assert.ok(res.toolCalls.length >= 1);
+  assert.strictEqual(res.toolCalls[0].name, "write_file");
+  assert.ok(res.toolCalls[0].arguments.path);
+});
+
 test("StreamingToolParser: recovers missing opening tag and flattens nested arguments", () => {
   const parser = new StreamingToolParser([
     {

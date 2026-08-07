@@ -379,7 +379,7 @@ test("non-stream: valid tool_call becomes structured tool_calls", async () => {
   }
 });
 
-test("non-stream: undeclared tool name in literal example is preserved as text", async () => {
+test("non-stream: undeclared tool name in literal example is preserved as text and triggers retry warning", async () => {
   const literal =
     '<tool_call>{"name":"nome_da_ferramenta","arguments":{"parametro":"valor"}}</tool_call>';
   const restore = setupFetchMock(() =>
@@ -407,9 +407,22 @@ test("non-stream: undeclared tool name in literal example is preserved as text",
 
     const body = await res.json();
     const message = body.choices[0].message;
-    assert.strictEqual(message.content, literal);
     assert.strictEqual(message.tool_calls, undefined);
     assert.strictEqual(body.choices[0].finish_reason, "stop");
+    // The undeclared call is preserved as literal text, and the unretried drop
+    // is surfaced to the next turn as an AI-visible warning.
+    assert.ok(
+      message.content.includes(literal),
+      "literal tool call should be preserved in content",
+    );
+    assert.ok(
+      message.content.includes("undeclared tool names"),
+      "expected an undeclared-tool warning to be appended: " + message.content,
+    );
+    assert.ok(
+      message.content.includes("nome_da_ferramenta"),
+      "warning should name the undeclared tool",
+    );
   } finally {
     restore();
   }
@@ -585,10 +598,11 @@ test("stream: write_file arguments are emitted incrementally before tool close",
 
 test("stream: malformed tool call without successful tools is recovered via auto-retry (2 streams)", async () => {
   // Mirrors the log's read_file corruption (`arguments> {` instead of
-  // `"arguments": {`): the block is unparseable, no tool call is emitted, so the
-  // auto-retry asks the model again and the second stream is re-parsed.
+  // `"arguments": {`): use a variant the in-stream repair cannot fix, so the
+  // block is unparseable, no tool call is emitted, and the auto-retry asks the
+  // model again and the second stream is re-parsed.
   const malformed =
-    '<tool_call>{"name":"read_file",arguments>{"path":"a.txt"}}</tool_call>';
+    '<tool_call>{"name":"read_file"(oops){"path":"a.txt"}}</tool_call>';
   const valid =
     '<tool_call>{"name":"read_file","arguments":{"path":"a.txt"}}</tool_call>';
 

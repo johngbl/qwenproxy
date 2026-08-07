@@ -749,6 +749,14 @@ function repairCommonMalformedToolJson(content: string): string {
     .replace(
       /([,{]\s*)arguments"\s*:/g,
       '$1"arguments":',
+    )
+    .replace(
+      /([,{]\s*)arguments\s*:\s*(?=\{|\[|")/g,
+      '$1"arguments":',
+    )
+    .replace(
+      /([,{]\s*)arguments\s*>\s*(?=\{|\[|")/g,
+      '$1"arguments":',
     );
 }
 
@@ -807,6 +815,7 @@ export class StreamingToolParser {
     contentLength: number;
     timestamp: number;
     undeclaredNames?: string[];
+    category: "malformed" | "undeclared" | "truncated";
   }> = [];
 
   /**
@@ -1145,6 +1154,35 @@ export class StreamingToolParser {
     this.pendingLeadIn = "";
   }
 
+  private recordMalformedToolCall(
+    content: string,
+    options: {
+      undeclaredNames?: string[];
+      category?: "malformed" | "undeclared" | "truncated";
+    } = {},
+  ): void {
+    this.malformedToolCalls.push({
+      contentPreview: content.substring(0, 150),
+      contentLength: content.length,
+      timestamp: Date.now(),
+      undeclaredNames: options.undeclaredNames,
+      category: options.category ?? "malformed",
+    });
+  }
+
+  private extractUndeclaredNamesFromContent(text: string): string[] {
+    const candidates: string[] = [];
+    for (const m of text.matchAll(/"name"\s*:\s*"([^"]+)"/g)) {
+      candidates.push(m[1]);
+    }
+    for (const m of text.matchAll(/<name[^>]*>\s*([^<]+?)\s*<\/name>/g)) {
+      candidates.push(m[1]);
+    }
+    return [...new Set(candidates)].filter(
+      (name) => !this.isDeclaredToolName(name),
+    );
+  }
+
   feed(chunk: string): ParserResult {
     if (isToolcallDebugEnabled()) {
       logger.debug("[parser] feed() called", {
@@ -1470,6 +1508,10 @@ export class StreamingToolParser {
     if (xmlParsed) {
       const resolvedXmlName = this.resolveDeclaredToolName(xmlParsed.name);
       if (!resolvedXmlName) {
+        this.recordMalformedToolCall(content, {
+          undeclaredNames: [xmlParsed.name],
+          category: "undeclared",
+        });
         this.preserveLiteralToolCall(
           content,
           result,
@@ -1522,6 +1564,10 @@ export class StreamingToolParser {
           .map((tc) => tc.name)
           .filter((name) => !this.isDeclaredToolName(name));
         if (undeclaredToolNames.length > 0) {
+          this.recordMalformedToolCall(content, {
+            undeclaredNames: undeclaredToolNames,
+            category: "undeclared",
+          });
           this.preserveLiteralToolCall(
             content,
             result,
@@ -1576,6 +1622,10 @@ export class StreamingToolParser {
           .map((tc) => tc.name)
           .filter((name) => !this.isDeclaredToolName(name));
         if (undeclaredToolNames.length > 0) {
+          this.recordMalformedToolCall(content, {
+            undeclaredNames: undeclaredToolNames,
+            category: "undeclared",
+          });
           this.preserveLiteralToolCall(
             content,
             result,
@@ -1645,14 +1695,11 @@ export class StreamingToolParser {
     // 4) Tool call is malformed and unrecoverable.
     // Never leak internal XML to user-visible content.
     // Restore lead-in text if no tools were emitted.
-    const malformedInfo = {
-      contentPreview: t.substring(0, 150),
-      contentLength: t.length,
-      timestamp: Date.now(),
-    };
-    
-    this.malformedToolCalls.push(malformedInfo);
-    
+    this.recordMalformedToolCall(t, {
+      undeclaredNames: this.extractUndeclaredNamesFromContent(t),
+      category: "malformed",
+    });
+
     logger.warn(`[parser] Dropping malformed tool call (${t.length} chars): ${t.substring(0, 80).replace(/\n/g, " ")}...`);
     if (
       this.emittedToolCallCount === 0 &&
@@ -1965,11 +2012,7 @@ export class StreamingToolParser {
     }
 
     // Fallback: extract JSON tool call via balanced-brace search for large payloads
-    if (
-      calls.length === 0 &&
-      str.includes('"name"') &&
-      str.includes('"arguments"')
-    ) {
+    if (calls.length === 0 && str.includes('"name"')) {
       const extracted = this.extractJsonToolCallByBraceMatching(str);
       if (extracted) {
         const tc = this.parseToolCall(extracted);
@@ -2083,6 +2126,32 @@ export class StreamingToolParser {
       args = parseJsonishString(args) ?? {};
     }
     if (typeof args !== "object" || args === null) args = {};
+
+    // Recover flattened tool calls where the model put the parameters at the
+    // top level instead of inside an `arguments`/`params` wrapper, e.g.
+    // `{"name":"write_file","path":"...","content":"..."}`. Only do this when
+    // no explicit args wrapper was present.
+    if (Object.keys(args).length === 0) {
+      const reservedKeys = new Set([
+        "name",
+        "type",
+        "id",
+        "tool_call_id",
+        "function",
+        "tool_name",
+        "tool",
+        "raw",
+      ]);
+      const flattened: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(parsed)) {
+        if (!reservedKeys.has(key)) {
+          flattened[key] = value;
+        }
+      }
+      if (Object.keys(flattened).length > 0) {
+        args = flattened;
+      }
+    }
 
     const resolvedName = this.resolveDeclaredToolName(name) ?? name;
     args = this.normalizeArgumentsForTool(resolvedName, args);

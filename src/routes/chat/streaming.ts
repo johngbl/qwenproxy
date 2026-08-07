@@ -75,6 +75,43 @@ import {
   buildUsage,
 } from "./helpers.ts";
 
+type DroppedToolInfo = {
+  contentPreview: string;
+  contentLength: number;
+  timestamp: number;
+  undeclaredNames?: string[];
+  category: "malformed" | "undeclared" | "truncated";
+};
+
+/**
+ * Build a safe (no raw XML/JSON), AI-visible note for tool calls that were
+ * dropped and NOT recovered by the auto-retry. Appended to the assistant
+ * content so a subsequent turn lets the model correct itself.
+ */
+function buildToolDropWarning(malformedCalls: DroppedToolInfo[], availableToolNames: string[]): string {
+  if (!malformedCalls || malformedCalls.length === 0) return "";
+  const undeclaredNames = malformedCalls
+    .flatMap((mc) => mc.undeclaredNames || [])
+    .filter((name, index, self) => self.indexOf(name) === index);
+  const count = malformedCalls.length;
+
+  let body: string;
+  if (undeclaredNames.length > 0) {
+    body = `${count} tool call(s) used undeclared tool names: ${undeclaredNames.join(", ")}. Only declared tools can be executed.`;
+  } else {
+    const previews = malformedCalls
+      .slice(0, 3)
+      .map((mc) => mc.contentPreview?.substring(0, 120) || "(empty)")
+      .join("\n  - ");
+    body = `${count} tool call(s) could not be parsed (invalid or truncated JSON). The call(s) was/were not executed.\n\nFailed attempt(s):\n  - ${previews}`;
+  }
+  const toolsHint =
+    availableToolNames.length > 0
+      ? `\n\nAvailable tools: ${availableToolNames.join(", ")}`
+      : "";
+  return `\n\n[WARNING: ${body}${toolsHint}]\n\n`;
+}
+
 function firstString(...values: unknown[]): string | null {
   for (const value of values) {
     if (typeof value === "string" && value.trim()) return value;
@@ -615,7 +652,11 @@ export async function processNonStreamingResponse(
       const retryPrompt = `${midStreamRetry.fullPrompt}\n\n[SYSTEM CORRECTION]\n${errorMessage}\n\nPlease retry your tool call(s) with correct JSON and valid tool names from the available tools list above.`;
 
       // Release current stream and lease
-      await stream.cancel();
+      try {
+        await stream.cancel();
+      } catch (cancelErr) {
+        // Ignore cancel errors
+      }
       midStreamRetry.releaseAccountLease();
 
       // Acquire new stream for retry - keep same account, force new chat
@@ -691,9 +732,10 @@ export async function processNonStreamingResponse(
       });
     }
 
-    // Log malformed tool calls but do NOT inject error into content.
+    // Log malformed tool calls and append a safe, AI-visible warning to the
+    // assistant content so a subsequent turn lets the model correct itself.
     // The auto-retry above handles sending the error back to Qwen.
-    // If we reach here, retries were exhausted or unavailable — just log it.
+    // If we reach here, retries were exhausted or unavailable — note it.
     if (toolParser && toolParser.getMalformedToolCalls().length > 0) {
       const malformedCalls = toolParser.getMalformedToolCalls();
       const malformedCount = malformedCalls.length;
@@ -702,9 +744,19 @@ export async function processNonStreamingResponse(
         .flat()
         .filter((n): n is string => !!n);
 
+      const availableToolNames = declaredTools
+        .map((t: any) => t.type === "function" ? t.function?.name : t.name)
+        .filter((n: string | undefined): n is string => !!n);
+      const warning = buildToolDropWarning(malformedCalls, availableToolNames);
+      if (warning) {
+        finalContent += warning;
+        message.content = finalContent;
+      }
+
       logger.warn("[chat] non-stream: malformed tool calls not retried (retries exhausted or unavailable)", {
         malformedCount,
         undeclaredNames,
+        warningInjected: warning.length > 0,
         completionId,
       });
     }
@@ -1429,18 +1481,12 @@ export async function processStreamingResponse(
           if (dataStr === "[DONE]") {
             upstreamDone = true;
             if (!clientDisconnected) {
-              // Drain buffered deltas first: writing [DONE] directly would
-              // overtake unflushed content and end the stream out of order.
+              // Drain buffered deltas first; the single final [DONE] is
+              // emitted by the stream tail below so we exit the read loop
+              // immediately without waiting on the keep-alive connection.
               flushWrites();
-              // Hold [DONE] when a malformed-tool auto-retry may follow. The
-              // retry can produce more chunks; the single final [DONE] is
-              // emitted after all retries complete. Without midStreamRetry the
-              // upstream [DONE] is the terminal event and is forwarded now.
-              if (!midStreamRetry) {
-                await streamWriter.write("data: [DONE]\n\n");
-              }
             }
-            break; // Exit loop immediately - no need to wait for connection close
+            break; // Exit the for loop; the while check below leaves the read loop
           }
 
           if (upstreamDebugEnabled) {
@@ -1531,6 +1577,16 @@ export async function processStreamingResponse(
             ) {
               const delta = chunk.choices[0].delta;
 
+              // Qwen streams may end with a {"status":"finished",
+              // "phase":"answer"} delta and NO trailing [DONE]. Treat it as
+              // the terminal event so we don't wait on the keep-alive
+              // connection to close (up to the 60s/10min idle timeout).
+              if (delta.phase === "answer" && delta.status === "finished") {
+                upstreamDone = true;
+                if (!clientDisconnected) flushWrites();
+                break; // Exit the for loop; the while check leaves the read loop
+              }
+
               if (delta.phase === "thinking_summary") {
                 isThinkingChunk = true;
                 const formattedSummary = formatThinkingSummaryContent(delta);
@@ -1600,6 +1656,12 @@ export async function processStreamingResponse(
             // Ignore partial chunk parse errors.
           }
         }
+
+        // A terminal [DONE] / answer-finished delta exits via `break` from
+        // the for loop above; leave the while loop instead of re-reading so a
+        // lingering keep-alive upstream connection doesn't stall the tail
+        // (finish_reason + [DONE]) until the idle timeout or connection close.
+        if (upstreamDone) break;
 
         buffer = lineStart > 0 ? buffer.slice(lineStart) : buffer;
       }
@@ -1912,7 +1974,7 @@ export async function processStreamingResponse(
               // after all retries complete.
               if (dataStr === "[DONE]") {
                 upstreamDone = true;
-                continue;
+                break retryReadLoop;
               }
 
               // Parse the retry stream exactly like the main stream: metadata
@@ -1961,6 +2023,14 @@ export async function processStreamingResponse(
               if (!delta) {
                 // Non-metadata event without a delta — consume, don't forward.
                 continue;
+              }
+
+              // The retry stream may also terminate with an answer-finished
+              // delta when upstream sends no [DONE]. Leave the read loop
+              // immediately so we don't stall on the keep-alive connection.
+              if (delta.phase === "answer" && delta.status === "finished") {
+                upstreamDone = true;
+                break retryReadLoop;
               }
 
               let vStr = "";
@@ -2113,6 +2183,32 @@ export async function processStreamingResponse(
         });
       }
 
+      // Tool calls that were dropped and NOT recovered by the auto-retry:
+      // append a safe, AI-visible warning as a content delta (before the
+      // finish-reason event) so the client and the next turn can react.
+      if (!clientDisconnected && toolParser && toolParser.getMalformedToolCalls().length > 0) {
+        const malformedCalls = toolParser.getMalformedToolCalls();
+        const undeclaredNames = malformedCalls
+          .map((mc) => mc.undeclaredNames)
+          .flat()
+          .filter((n): n is string => !!n);
+        const availableToolNames = declaredTools
+          .map((t: any) => t.type === "function" ? t.function?.name : t.name)
+          .filter((n: string | undefined): n is string => !!n);
+        const warning = buildToolDropWarning(malformedCalls, availableToolNames);
+        if (warning) {
+          finalContent += warning;
+          writeDeltaEvent({ content: warning });
+        }
+
+        logger.warn("[chat] stream: malformed tool calls not retried (retries exhausted or unavailable)", {
+          malformedCount: malformedCalls.length,
+          undeclaredNames,
+          warningInjected: warning.length > 0,
+          completionId,
+        });
+      }
+
       await writeEvent({
         id: completionId,
         object: "chat.completion.chunk",
@@ -2137,22 +2233,7 @@ export async function processStreamingResponse(
       }
 
       if (!clientDisconnected) {
-        // Log malformed tool calls but do NOT inject error as visible content.
-        // The auto-retry above handles sending the error back to Qwen.
-        // If we reach here, retries were exhausted or unavailable — just log it.
-        if (toolParser && toolParser.getMalformedToolCalls().length > 0) {
-          const malformedCalls = toolParser.getMalformedToolCalls();
-          const malformedCount = malformedCalls.length;
-          const undeclaredNames = malformedCalls
-            .map((mc) => mc.undeclaredNames)
-            .flat()
-            .filter((n): n is string => !!n);
-
-          logger.warn("[chat] stream: malformed tool calls not retried (retries exhausted or unavailable)", {
-            malformedCount,
-            undeclaredNames,
-            completionId,
-          });
+        if (toolParser) {
           toolParser.clearMalformedToolCalls();
         }
 
