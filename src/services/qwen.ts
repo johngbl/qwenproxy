@@ -2795,6 +2795,7 @@ export async function createQwenStream(
     forceNewChat?: boolean;
     reasoningMode?: "auto" | "thinking" | "fast";
   },
+  signal?: AbortSignal,
 ): Promise<{
   stream: ReadableStream;
   headers: Record<string, string>;
@@ -2804,6 +2805,9 @@ export async function createQwenStream(
   createdNewChat: boolean;
   tokenEstimationContext: TokenEstimationContext;
 }> {
+  if (signal?.aborted) {
+    throw new Error("client aborted before stream creation");
+  }
   // Serialize streams per account: one active stream at a time per browser context
   const streamLockKey = accountId || "global";
   const releaseStreamLock = await acquireAccountStreamLock(streamLockKey);
@@ -2823,6 +2827,7 @@ export async function createQwenStream(
       accountId,
       files,
       options,
+      signal,
       releaseStreamLockOnce,
     );
   } catch (error) {
@@ -2843,6 +2848,7 @@ async function createQwenStreamInternal(
     forceNewChat?: boolean;
     reasoningMode?: "auto" | "thinking" | "fast";
   } | undefined,
+  signal: AbortSignal | undefined,
   releaseStreamLock: () => void,
 ): Promise<{
   stream: ReadableStream;
@@ -2853,6 +2859,12 @@ async function createQwenStreamInternal(
   createdNewChat: boolean;
   tokenEstimationContext: TokenEstimationContext;
 }> {
+  const ensureNotAborted = () => {
+    if (signal?.aborted) {
+      throw new Error("client aborted before completion request");
+    }
+  };
+
   // A new logical chat session should reuse the warmed header cache when available.
   // Header recapture is much more expensive and should be reserved for real refresh/login cases,
   // not for ordinary first prompts that simply need parent_id reset.
@@ -2860,6 +2872,7 @@ async function createQwenStreamInternal(
     options?.forceNewChat === true,
     accountId,
   );
+  ensureNotAborted();
   const { headers, parentMessageId } = captured;
   let activeHeaders = headers;
   // The upstream always receives the real base model ID. Reasoning mode is
@@ -2894,6 +2907,8 @@ async function createQwenStreamInternal(
       createdNewChat = true;
     }
   }
+
+  ensureNotAborted();
 
   let warmChatReleased = false;
   const releaseLeasedWarmChat = () => {
@@ -3155,6 +3170,7 @@ async function createQwenStreamInternal(
       if (config.captcha.retryDelayMs > 0) {
         await sleep(config.captcha.retryDelayMs);
       }
+      ensureNotAborted();
       response = await fetchCompletion(activeHeaders);
       return true;
     };
@@ -3179,6 +3195,7 @@ async function createQwenStreamInternal(
     };
 
     try {
+      ensureNotAborted();
       response = await fetchCompletion(activeHeaders);
     } catch (error) {
       // The challenge was solved while waiting for headers, but the original
@@ -3203,6 +3220,7 @@ async function createQwenStreamInternal(
           await sleep(config.captcha.retryDelayMs);
         }
         try {
+          ensureNotAborted();
           response = await fetchCompletion(activeHeaders);
         } catch (retryError) {
           throwFetchCompletionError(retryError);

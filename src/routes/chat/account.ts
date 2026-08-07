@@ -700,6 +700,16 @@ async function tryCreateStreamWithRetry(
 		let accountLease: AccountLease | null = null;
 
 		try {
+			// The client may have cancelled between account selection and this
+			// attempt (or while a previous attempt was running). Bail before
+			// spending time on model sync, truncation or personalization.
+			if (params.requestSignal?.aborted) {
+				return {
+					success: false,
+					error: new Error("client aborted before stream creation"),
+				};
+			}
+
 			// Always sync the model catalog so the truncation and prompt-limit
 			// checks use the real context window published by Qwen, not the
 			// conservative registry fallback. The call is cached per account.
@@ -839,7 +849,8 @@ async function tryCreateStreamWithRetry(
 									reasoningMode: params.reasoningMode,
 								}
 							: params.reasoningMode ? { reasoningMode: params.reasoningMode } : undefined,
-					);
+					params.requestSignal,
+				);
 
 				const contextMeter = buildContextMeterSnapshot({
 					modelId: params.contextModelId ?? params.model,
@@ -882,6 +893,16 @@ async function tryCreateStreamWithRetry(
 				}
 			} finally {
 				releasePersonalization?.();
+			}
+
+			// Client cancelled during the (potentially slow) personalization sync.
+			// Bail before createQwenStream spends time on header capture / captcha.
+			if (params.requestSignal?.aborted) {
+				accountLease?.release();
+				return {
+					success: false,
+					error: new Error("client aborted during stream creation"),
+				};
 			}
 
 			if (
