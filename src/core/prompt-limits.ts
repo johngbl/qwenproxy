@@ -68,8 +68,23 @@ export function assertPromptWithinLimits(
   modelId: string,
   options: PromptLimitOptions = {},
 ): PromptLimitStats {
-  const stats = getPromptLimitStats(prompt, modelId, options.accountId);
   const maxPromptBytes = config.qwen.maxPromptBytes;
+  const checkModelContext = options.checkModelContext !== false;
+
+  // Nothing to enforce: skip the byte scan and the O(n) token estimation
+  // entirely (the default QWEN_MAX_PROMPT_BYTES=0 makes the byte check a
+  // no-op, and callers pass checkModelContext:false before the live model
+  // context window is known).
+  if (maxPromptBytes <= 0 && !checkModelContext) {
+    return {
+      bytes: 0,
+      estimatedTokens: 0,
+      modelContextWindow: getModelContextWindow(modelId, options.accountId),
+      usableInputTokens: 1,
+    };
+  }
+
+  const stats = getPromptLimitStats(prompt, modelId, options.accountId);
 
   if (maxPromptBytes > 0 && stats.bytes > maxPromptBytes) {
     throw new ContextLengthExceededError(

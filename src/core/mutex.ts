@@ -23,7 +23,9 @@ export class Mutex {
 
     const enqueuedAt = Date.now();
     const logKey = key || "anon";
-    logger.debug(`[Mutex:${this.name}] enqueue key=${logKey} queue=${this.queue.length + 1} heldBy=${this.lockedByKey || "unknown"} heldFor=${Date.now() - this.lockedAt}ms`);
+    if (logger.isLevelEnabled("debug")) {
+      logger.debug(`[Mutex:${this.name}] enqueue key=${logKey} queue=${this.queue.length + 1} heldBy=${this.lockedByKey || "unknown"} heldFor=${Date.now() - this.lockedAt}ms`);
+    }
 
     return new Promise<() => void>((resolve, reject) => {
       const waiter = () => {
@@ -66,7 +68,7 @@ export class Mutex {
     const next = this.queue.shift();
     if (next) {
       const waitTime = Date.now() - next.enqueuedAt;
-      if (waitTime > 1_000) {
+      if (waitTime > 1_000 && logger.isLevelEnabled("debug")) {
         logger.debug(`[Mutex:${this.name}] dequeued key=${next.key} waited=${waitTime}ms`);
       }
       next.waiter();

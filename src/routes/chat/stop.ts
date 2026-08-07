@@ -13,7 +13,6 @@ import { qwenUrl } from "../../services/qwen-url.ts";
 import {
   getStream,
   getStreamKeyBySessionAndResponse,
-  getStreamKeyBySessionId,
   getStreamKeysBySessionId,
   removeStream,
 } from "../../core/stream-registry.ts";
@@ -32,31 +31,30 @@ export async function chatCompletionsStop(c: Context) {
       );
     }
 
+    // Resolve the stream key with the minimum number of registry scans:
+    // exact (session, response) match first, then a single session scan.
     const exactStreamKey = getStreamKeyBySessionAndResponse(
       chat_id,
       response_id,
     );
-    const matchingSessionStreamKeys = getStreamKeysBySessionId(chat_id);
-    const streamKey =
-      exactStreamKey ||
-      (matchingSessionStreamKeys.length === 1
-        ? matchingSessionStreamKeys[0]
-        : getStreamKeyBySessionId(chat_id)) ||
-      chat_id;
+    let streamKey = exactStreamKey ?? chat_id;
+    if (!exactStreamKey) {
+      const matchingSessionStreamKeys = getStreamKeysBySessionId(chat_id);
+      if (matchingSessionStreamKeys.length > 1) {
+        return sendOpenAIError(
+          c,
+          createError(
+            400,
+            "Multiple active streams for this chat_id; wait for response_id registration and retry",
+            "chat_id",
+          ),
+        );
+      }
+      streamKey = matchingSessionStreamKeys[0] ?? chat_id;
+    }
     const stream = getStream(streamKey);
     if (!stream) {
       return sendOpenAIError(c, createError(404, "Stream not found"));
-    }
-
-    if (!exactStreamKey && matchingSessionStreamKeys.length > 1) {
-      return sendOpenAIError(
-        c,
-        createError(
-          400,
-          "Multiple active streams for this chat_id; wait for response_id registration and retry",
-          "chat_id",
-        ),
-      );
     }
 
     if (stream.targetResponseId && stream.targetResponseId !== response_id) {

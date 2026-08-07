@@ -176,6 +176,7 @@ async function acquireAccountMutex(
 // Per-account browser contexts and pages
 const accountContexts = new Map<string, BrowserContext>();
 const accountPages = new Map<string, Page>();
+const cachedUserAgents = new Map<string, string>();
 
 // Header cache per account
 interface AccountHeaderCache {
@@ -711,6 +712,14 @@ export function hasRequiredQwenHeaders(
   return Boolean(headers["bx-ua"]?.trim() && headers["bx-umidtoken"]?.trim());
 }
 
+const REQUIRED_ANTI_BOT_HEADERS = [
+  "cookie",
+  "user-agent",
+  "bx-ua",
+  "bx-umidtoken",
+  "bx-v",
+];
+
 /**
  * Validate that all required anti-bot headers are present before making a
  * request. Fails early instead of sending an incomplete request that will
@@ -720,8 +729,7 @@ export function assertAntiBotHeaders(
   headers: Record<string, string>,
   label: string,
 ): void {
-  const required = ["cookie", "user-agent", "bx-ua", "bx-umidtoken", "bx-v"];
-  const missing = required.filter((key) => !headers[key]?.trim());
+  const missing = REQUIRED_ANTI_BOT_HEADERS.filter((key) => !headers[key]?.trim());
   if (missing.length > 0) {
     throw new Error(
       `${label} missing required browser anti-bot headers: ${missing.join(", ")}`,
@@ -736,11 +744,11 @@ export function assertAntiBotHeaders(
  */
 async function tryLightweightCookieRefresh(
   accountId: string,
+  cache: AccountHeaderCache,
 ): Promise<boolean> {
   const page = accountPages.get(accountId);
   if (!page || page.isClosed()) return false;
 
-  const cache = getHeaderCache(accountId);
   if (!hasRequiredQwenHeaders(cache.headers)) return false;
 
   try {
@@ -798,16 +806,21 @@ export async function getBasicHeaders(accountId: string): Promise<{
   );
   try {
     touchAccountActivity(accountId);
-    // Get real user agent from browser
-    let userAgent = config.auth.userAgent;
+    // Get real user agent from browser. It is constant for the lifetime of the
+    // context, so it is fetched once and cached per account to avoid a CDP
+    // round-trip on every request.
+    let userAgent = cachedUserAgents.get(accountId) ?? "";
     try {
-      userAgent = await withTimeout(
-        page.evaluate(() => navigator.userAgent),
-        config.timeouts.page,
-        `User-agent lookup timed out for ${accountId}`,
-      );
+      if (!userAgent) {
+        userAgent = await withTimeout(
+          page.evaluate(() => navigator.userAgent),
+          config.timeouts.page,
+          `User-agent lookup timed out for ${accountId}`,
+        );
+        cachedUserAgents.set(accountId, userAgent);
+      }
     } catch {
-      // Use default
+      userAgent = config.auth.userAgent;
     }
 
     const cache = getHeaderCache(accountId);
@@ -819,12 +832,11 @@ export async function getBasicHeaders(accountId: string): Promise<{
       hadUsableHeaders &&
       headersAge < HEADER_CACHE_TTL * HEADER_REFRESH_THRESHOLD
     ) {
-      await tryLightweightCookieRefresh(accountId);
+      await tryLightweightCookieRefresh(accountId, cache);
       const bxUa = cache.headers["bx-ua"];
       const bxUmidtoken = cache.headers["bx-umidtoken"];
       const bxV = cache.headers["bx-v"] || "2.5.36";
       const cookie = await getCookies(accountId);
-      touchAccountActivity(accountId);
       return { cookie, userAgent, bxV, bxUa, bxUmidtoken };
     }
 
@@ -832,21 +844,25 @@ export async function getBasicHeaders(accountId: string): Promise<{
     // Check if we can skip full recapture by verifying cookie validity.
     // This avoids expensive browser interaction when the 30-day token is fresh.
     if (hadUsableHeaders && headersAge > HEADER_CACHE_TTL) {
-      const [authValid, shortestValid] = await Promise.all([
-        isAuthTokenValid(accountId),
-        isShortestCookieValid(accountId),
-      ]);
-
-      if (authValid && shortestValid) {
+      // A single CDP cookies() snapshot feeds both validity checks and the
+      // cookie string (previously 3 round-trips: 2 validators + lightweight
+      // refresh).
+      const cookieSnapshot = await getCookieSnapshot(accountId);
+      if (
+        cookieSnapshot &&
+        isAuthTokenValidFrom(cookieSnapshot) &&
+        isShortestCookieValidFrom(cookieSnapshot)
+      ) {
         // Token is still valid - just refresh cookies, keep cached headers
-        await tryLightweightCookieRefresh(accountId);
+        const cookie = cookieSnapshot
+          .map((c) => `${c.name}=${c.value}`)
+          .join("; ");
+        cookieCaches.set(accountId, { cookie, timestamp: Date.now() });
         const bxUa = cache.headers["bx-ua"];
         const bxUmidtoken = cache.headers["bx-umidtoken"];
         const bxV = cache.headers["bx-v"] || "2.5.36";
-        const cookie = await getCookies(accountId);
         // Update lastRefresh to extend the cache
         cache.lastRefresh = Date.now();
-        touchAccountActivity(accountId);
         console.log(
           `🔄 [Playwright] Skipped header recapture for ${accountId} (token still valid, age: ${Math.round(headersAge / 60000)} min)`,
         );
@@ -909,7 +925,6 @@ export async function getBasicHeaders(accountId: string): Promise<{
     // Read cookie AFTER all refreshes (re-login may have updated it)
     const cookie = await getCookies(accountId);
 
-    touchAccountActivity(accountId);
     return {
       cookie,
       userAgent,
@@ -1427,6 +1442,7 @@ export async function captureQwenHeaders(
     let sawIncompleteHeaders = false;
     let headersCaptured = false;
     let retriggerRequested = false;
+    let lastAttemptGraceTimedOut = false;
     let wakeTriggerLoop: (() => void) | undefined;
     const deadline = Date.now() + timeoutMs;
     const remainingBudgetMs = () => deadline - Date.now();
@@ -1498,9 +1514,12 @@ export async function captureQwenHeaders(
           console.warn(
             `⏱️  [Playwright] Header capture produced no completion request for ${accountId}`,
           );
-          settle(
-            captureFailure(new Error(`Header capture timed out for ${accountId}`)),
-          );
+          // The page is likely blocked by WAF/captcha or in a broken state.
+          // Instead of settling immediately, trigger a retry with a page
+          // reload so the next attempt starts from a fresh state.
+          lastAttemptGraceTimedOut = true;
+          retriggerRequested = true;
+          wakeTrigger();
         },
         Math.max(1, Math.min(remainingBudgetMs(), triggerGraceMs)),
       );
@@ -1651,7 +1670,13 @@ export async function captureQwenHeaders(
         armOverallDeadline();
 
         try {
-          if (attempt === 1) await openChatPage();
+          // Navigate on the first attempt, or reload when the previous attempt
+          // produced no completion request (the page is likely blocked by
+          // WAF/captcha and needs a fresh load).
+          if (attempt === 1 || lastAttemptGraceTimedOut) {
+            lastAttemptGraceTimedOut = false;
+            await openChatPage();
+          }
           if (settled) return;
           await triggerSend();
         } catch (error) {
@@ -1674,9 +1699,13 @@ export async function captureQwenHeaders(
         if (remainingBudgetMs() <= 0) break;
       }
 
-      // Attempts (or the budget) spent on requests that never carried the
-      // headers: a page stuck that way has to fail instead of sending forever.
-      settle(incompleteHeadersError());
+      // Distinguish between "requests fired but lacked bx headers" and "no
+      // request fired at all" so the caller gets an actionable diagnosis.
+      settle(
+        sawIncompleteHeaders
+          ? incompleteHeadersError()
+          : new Error(`Header capture timed out for ${accountId}`),
+      );
     };
 
     armOverallDeadline();
@@ -1705,59 +1734,65 @@ export async function captureQwenHeaders(
   });
 }
 
+type CookieSnapshot = Awaited<ReturnType<BrowserContext["cookies"]>>;
+
+/**
+ * Fetch the account context cookies once. The snapshot feeds every validity
+ * check and the cookie string build, avoiding repeated CDP round-trips.
+ */
+async function getCookieSnapshot(
+  accountId: string,
+): Promise<CookieSnapshot | null> {
+  const context = accountContexts.get(accountId);
+  if (!context) return null;
+
+  try {
+    return await withTimeout(
+      context.cookies(),
+      config.timeouts.page,
+      `Cookie snapshot timed out for ${accountId}`,
+    );
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Check if the auth token cookie is still valid.
  * Used to skip unnecessary header recaptures when the token is still fresh.
  * Returns true if the token cookie exists and is not expired.
  */
-async function isAuthTokenValid(accountId: string): Promise<boolean> {
-  try {
-    const context = accountContexts.get(accountId);
-    if (!context) return false;
+function isAuthTokenValidFrom(cookies: CookieSnapshot): boolean {
+  const tokenCookie = cookies.find(
+    (c) =>
+      c.name === "token" && (c.domain === ".qwen.ai" || c.domain === "qwen.ai"),
+  );
 
-    const cookies = await context.cookies();
-    const tokenCookie = cookies.find(
-      (c) => c.name === "token" && (c.domain === ".qwen.ai" || c.domain === "qwen.ai"),
-    );
+  if (!tokenCookie) return false;
 
-    if (!tokenCookie) return false;
+  // Session cookie (expires = -1) is valid as long as browser is open
+  if (tokenCookie.expires === -1) return true;
 
-    // Session cookie (expires = -1) is valid as long as browser is open
-    if (tokenCookie.expires === -1) return true;
-
-    // Check if expired (with 5-min safety margin)
-    const now = Date.now();
-    const expiresAt = tokenCookie.expires * 1000;
-    return expiresAt > now + 5 * 60 * 1000;
-  } catch {
-    return false;
-  }
+  // Check if expired (with 5-min safety margin)
+  const expiresAt = tokenCookie.expires * 1000;
+  return expiresAt > Date.now() + 5 * 60 * 1000;
 }
 
 /**
  * Check if the shortest-lived cookie (acw_tc) is still valid.
  * This is the 24-min cookie that gates some requests.
  */
-async function isShortestCookieValid(accountId: string): Promise<boolean> {
-  try {
-    const context = accountContexts.get(accountId);
-    if (!context) return false;
+function isShortestCookieValidFrom(cookies: CookieSnapshot): boolean {
+  const acwCookie = cookies.find(
+    (c) => c.name === "acw_tc" && c.domain.includes("qwen.ai"),
+  );
 
-    const cookies = await context.cookies();
-    const acwCookie = cookies.find(
-      (c) => c.name === "acw_tc" && c.domain.includes("qwen.ai"),
-    );
+  if (!acwCookie) return true; // If missing, assume OK (will be refreshed by browser)
 
-    if (!acwCookie) return true; // If missing, assume OK (will be refreshed by browser)
+  if (acwCookie.expires === -1) return true;
 
-    if (acwCookie.expires === -1) return true;
-
-    const now = Date.now();
-    const expiresAt = acwCookie.expires * 1000;
-    return expiresAt > now + 60 * 1000; // 1-min safety margin
-  } catch {
-    return false;
-  }
+  const expiresAt = acwCookie.expires * 1000;
+  return expiresAt > Date.now() + 60 * 1000; // 1-min safety margin
 }
 
 async function refreshHeadersInternal(

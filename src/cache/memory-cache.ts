@@ -46,6 +46,7 @@ export class MemoryCache {
 
   private startCleanup(): void {
     this.cleanupInterval = setInterval(() => {
+      if (this.store.size === 0) return;
       const now = Date.now();
       for (const [key, entry] of this.store.entries()) {
         if (entry.expiresAt <= now) {
@@ -62,41 +63,45 @@ export class MemoryCache {
 
   async set<T>(key: CacheKey, value: T, ttl?: number): Promise<void> {
     const serialized = this.serialize(value);
-    const originalSize = Buffer.byteLength(serialized);
     let storedValue: string | Buffer = serialized;
     let compressed = false;
+    let originalSize: number;
 
-    // Apply Brotli compression if enabled and value exceeds threshold
-    if (
-      config.cache.compression.enabled &&
-      originalSize >= config.cache.compression.threshold
-    ) {
-      try {
-        const compressedBuffer = await compressAsync(Buffer.from(serialized), {
-          params: {
-            [constants.BROTLI_PARAM_QUALITY]: config.cache.compression.level,
-          },
-        });
+    if (config.cache.compression.enabled) {
+      // Encode once and reuse for both the size check and compression,
+      // avoiding a second UTF-8 pass over large values.
+      const encoded = Buffer.from(serialized);
+      originalSize = encoded.length;
+      if (originalSize >= config.cache.compression.threshold) {
+        try {
+          const compressedBuffer = await compressAsync(encoded, {
+            params: {
+              [constants.BROTLI_PARAM_QUALITY]: config.cache.compression.level,
+            },
+          });
 
-        const compressedSize = compressedBuffer.length;
-        const saved = originalSize - compressedSize;
+          const compressedSize = compressedBuffer.length;
+          const saved = originalSize - compressedSize;
 
-        if (saved > 0) {
-          storedValue = compressedBuffer;
-          compressed = true;
-          this.totalBytesSaved += saved;
-          this.totalCompressedBytes += compressedSize;
-          this.compressionCount++;
+          if (saved > 0) {
+            storedValue = compressedBuffer;
+            compressed = true;
+            this.totalBytesSaved += saved;
+            this.totalCompressedBytes += compressedSize;
+            this.compressionCount++;
 
-          metrics.increment("cache.compression.bytes.saved", saved);
-          metrics.histogram(
-            "cache.compression.ratio",
-            originalSize / compressedSize,
-          );
+            metrics.increment("cache.compression.bytes.saved", saved);
+            metrics.histogram(
+              "cache.compression.ratio",
+              originalSize / compressedSize,
+            );
+          }
+        } catch (err) {
+          // Compression failed, store uncompressed
         }
-      } catch (err) {
-        // Compression failed, store uncompressed
       }
+    } else {
+      originalSize = Buffer.byteLength(serialized);
     }
 
     const effectiveTTL = ttl || this.defaultTTL;
@@ -113,23 +118,18 @@ export class MemoryCache {
   }
 
   async get<T>(key: CacheKey): Promise<T | null> {
-    const start = Date.now();
     const fullKey = this.prefix + key;
     const entry = this.store.get(fullKey);
-
-    metrics.histogram("cache.get.latency", Date.now() - start);
 
     if (!entry || entry.expiresAt <= Date.now()) {
       if (entry) this.store.delete(fullKey);
       this.misses++;
       metrics.increment("cache.miss");
-      this.updateHitRatio();
       return null;
     }
 
     this.hits++;
     metrics.increment("cache.hit");
-    this.updateHitRatio();
 
     // Decompress if needed
     if (entry.compressed && Buffer.isBuffer(entry.value)) {
@@ -360,13 +360,6 @@ export class MemoryCache {
       return JSON.parse(serialized) as T;
     } catch {
       return serialized as T;
-    }
-  }
-
-  private updateHitRatio(): void {
-    const total = this.hits + this.misses;
-    if (total > 0) {
-      metrics.gauge("cache.hit.ratio", this.hits / total);
     }
   }
 

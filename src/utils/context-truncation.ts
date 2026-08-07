@@ -1,11 +1,56 @@
-export function estimateTokenCount(text: string): number {
-  if (!text) return 0;
+/**
+ * Heuristic token estimation.
+ *
+ * Accepts one or more string parts so callers can avoid concatenating large
+ * strings just to estimate them (the parts are accumulated before a single
+ * final Math.ceil, keeping the result identical to the concatenated form).
+ */
+export function estimateTokenCount(...parts: string[]): number {
+  let tokens = 0;
+  for (const part of parts) {
+    if (part) tokens += estimatePart(part);
+  }
+  return Math.ceil(tokens);
+}
 
+function estimatePart(text: string): number {
   let tokens = 0;
   let i = 0;
+  const n = text.length;
 
-  while (i < text.length) {
-    const char = text[i];
+  while (i < n) {
+    const c = text.charCodeAt(i);
+
+    // Fast path: ASCII (the overwhelmingly common case in OpenAI payloads).
+    // charCodeAt avoids the per-char string allocation and codePointAt decode.
+    if (c < 0x80) {
+      if (c >= 0x20 && c <= 0x7e) {
+        // Printable ASCII: structural characters weigh more than prose.
+        tokens +=
+          c === 0x7b || // {
+          c === 0x7d || // }
+          c === 0x5b || // [
+          c === 0x5d || // ]
+          c === 0x22 || // "
+          c === 0x3a || // :
+          c === 0x2c || // ,
+          c === 0x3b || // ;
+          c === 0x28 || // (
+          c === 0x29 || // )
+          c === 0x2f || // /
+          c === 0x5c // \
+            ? 0.4
+            : 0.25;
+      } else if (c === 0x0a || c === 0x0d || c === 0x09) {
+        tokens += 0.2; // \n \r \t
+      } else {
+        tokens += 1.0; // remaining control characters
+      }
+      i += 1;
+      continue;
+    }
+
+    // Non-ASCII path: code-point based heuristics (CJK/kana/hangul/other).
     const codePoint = text.codePointAt(i) || 0;
 
     // CJK Unified Ideographs (U+4E00-U+9FFF)
@@ -28,33 +73,6 @@ export function estimateTokenCount(text: string): number {
       tokens += 1.3;
       i += 1;
     }
-    // ASCII printable (space to ~)
-    else if (codePoint >= 0x20 && codePoint <= 0x7e) {
-      if (
-        char === "{" ||
-        char === "}" ||
-        char === "[" ||
-        char === "]" ||
-        char === '"' ||
-        char === ":" ||
-        char === "," ||
-        char === ";" ||
-        char === "(" ||
-        char === ")" ||
-        char === "/" ||
-        char === "\\"
-      ) {
-        tokens += 0.4;
-      } else {
-        tokens += 0.25;
-      }
-      i += 1;
-    }
-    // Newlines and whitespace
-    else if (char === "\n" || char === "\r" || char === "\t") {
-      tokens += 0.2;
-      i += 1;
-    }
     // Other Unicode (emoji, symbols, etc.)
     else {
       tokens += 1.0;
@@ -62,5 +80,5 @@ export function estimateTokenCount(text: string): number {
     }
   }
 
-  return Math.ceil(tokens);
+  return tokens;
 }

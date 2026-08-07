@@ -111,7 +111,8 @@ export async function buildFinalContext(
     );
   }
   const estimatedTokens = estimateTokenCount(
-    completeInstructions + activePrompt,
+    completeInstructions,
+    activePrompt,
   );
   // Send the complete instruction block in the prompt for NEW chats to establish
   // context immediately. Continuations rely on the account-level personalization.
@@ -184,10 +185,9 @@ function detectTitleGenerationRequest(messages: Message[]): boolean {
   const text = extractMessageText(last).toLowerCase();
   if (!text) return false;
 
+  // The first pattern is strictly subsumed by the second (which does not
+  // require the leading verb), so it is redundant and was removed.
   return (
-    /\b(generate|create|suggest|write)\b[\s\S]{0,80}\btitle\b[\s\S]{0,80}\bconversation\b/.test(
-      text,
-    ) ||
     /\btitle\b[\s\S]{0,80}\bconversation\b/.test(text) ||
     /\bconversation\b[\s\S]{0,80}\btitle\b/.test(text)
   );

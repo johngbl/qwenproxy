@@ -4,6 +4,7 @@ import { qwenUrl, qwenOrigin } from "./qwen-url.ts";
 export const QWEN_WEB_VERSION = "0.2.80";
 export const DEFAULT_QWEN_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36";
+const QWEN_TIMEZONE_HEADER = new Date().toString().split(" (")[0];
 
 export interface BuildQwenHeadersOptions {
   cookie: string;
@@ -44,7 +45,7 @@ export function buildQwenRequestHeaders(
     "bx-v": opts.bxV || "2.5.36",
     source: "web",
     version: QWEN_WEB_VERSION,
-    timezone: new Date().toString().split(" (")[0],
+    timezone: QWEN_TIMEZONE_HEADER,
   };
 
   if (opts.bxUa) headers["bx-ua"] = opts.bxUa;

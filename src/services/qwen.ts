@@ -3004,16 +3004,18 @@ async function createQwenStreamInternal(
     timestamp: timestamp + 1,
   };
 
-  const contentSize = textSize(prompt);
-  const contentPreview = prompt.replace(/\s+/g, " ").trim().slice(0, 160);
-  logger.debug("[Qwen] chat payload", {
-    accountId: accountId ?? "global",
-    model,
-    chatId: chatSessionId || "new",
-    parentId: actualParentId || null,
-    content: contentSize,
-    preview: contentPreview,
-  });
+  // Debug-only: textSize hashes/scans the whole prompt and the preview runs a
+  // full-string regex, so build the payload only when it will actually log.
+  if (logger.isLevelEnabled("debug")) {
+    logger.debug("[Qwen] chat payload", {
+      accountId: accountId ?? "global",
+      model,
+      chatId: chatSessionId || "new",
+      parentId: actualParentId || null,
+      content: textSize(prompt),
+      preview: prompt.replace(/\s+/g, " ").trim().slice(0, 160),
+    });
+  }
 
   // Dynamic timeout based on payload size
   const BASE_TIMEOUT_MS = 120000;

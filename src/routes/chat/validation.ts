@@ -336,7 +336,9 @@ function logIncomingChatRequest(c: Context, body: OpenAIRequest): void {
     });
   }
 
-  if (!config.logging.chatRequests) return;
+  // The debug payload below scans every message (regex previews + JSON
+  // stringify), so skip building it unless it will actually be logged.
+  if (!config.logging.chatRequests || !logger.isLevelEnabled("debug")) return;
 
   const last = messages[messages.length - 1];
   const firstUser = messages.find((msg) => msg.role === "user");

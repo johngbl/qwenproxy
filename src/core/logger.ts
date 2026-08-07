@@ -13,6 +13,13 @@ export function maskEmail(email: string | undefined | null): string {
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
+const LEVEL_RANK: Record<LogLevel, number> = {
+  debug: 0,
+  info: 1,
+  warn: 2,
+  error: 3,
+};
+
 /**
  * TOOLCALL_DEBUG levels:
  *   "0" or undefined = disabled
@@ -42,8 +49,12 @@ export class Logger {
   }
 
   private shouldLog(level: LogLevel): boolean {
-    const levels: LogLevel[] = ["debug", "info", "warn", "error"];
-    return levels.indexOf(level) >= levels.indexOf(this.minLevel);
+    return LEVEL_RANK[level] >= LEVEL_RANK[this.minLevel];
+  }
+
+  /** Cheap level check so callers can skip building expensive log payloads. */
+  isLevelEnabled(level: LogLevel): boolean {
+    return this.shouldLog(level);
   }
 
   private formatEntry(entry: LogEntry): string {
@@ -143,6 +154,10 @@ const initialLevel: LogLevel =
       : "info";
 
 export const logger = new Logger(initialLevel);
+
+export function isDebugEnabled(): boolean {
+  return logger.isLevelEnabled("debug");
+}
 
 // Helper to check if toolcall debug is enabled
 export function isToolcallDebugEnabled(): boolean {

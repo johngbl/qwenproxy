@@ -134,18 +134,14 @@ export class Metrics extends EventEmitter {
     if (!metric || metric.type !== "counter") return;
 
     const key = labels ? JSON.stringify(labels) : "default";
-    const current = metric.values.get(key)?.value || 0;
-    metric.values.set(key, {
-      value: current + value,
-      timestamp: Date.now(),
-      labels,
-    });
-    this.emit("metric", {
-      name,
-      type: "counter",
-      value: current + value,
-      labels,
-    });
+    // Mutate in place to avoid reallocating a MetricPoint on every increment.
+    const point = metric.values.get(key);
+    if (point) {
+      point.value += value;
+      point.timestamp = Date.now();
+    } else {
+      metric.values.set(key, { value, timestamp: Date.now(), labels });
+    }
   }
 
   gauge(name: string, value: number, labels?: Record<string, string>): void {
@@ -153,8 +149,13 @@ export class Metrics extends EventEmitter {
     if (!metric || metric.type !== "gauge") return;
 
     const key = labels ? JSON.stringify(labels) : "default";
-    metric.values.set(key, { value, timestamp: Date.now(), labels });
-    this.emit("metric", { name, type: "gauge", value, labels });
+    const point = metric.values.get(key);
+    if (point) {
+      point.value = value;
+      point.timestamp = Date.now();
+    } else {
+      metric.values.set(key, { value, timestamp: Date.now(), labels });
+    }
   }
 
   histogram(
@@ -167,29 +168,35 @@ export class Metrics extends EventEmitter {
 
     const key = labels ? JSON.stringify(labels) : "default";
     const existing = metric.values.get(key);
-    const data = existing?.value || {
-      count: 0,
-      sum: 0,
-      buckets: new Map<number, number>(),
-    };
+    // Reuse the stored aggregate object instead of re-wrapping it each call.
+    let data: { count: number; sum: number; buckets: Map<number, number> };
+    if (existing && typeof existing.value === "object" && existing.value !== null) {
+      data = existing.value as { count: number; sum: number; buckets: Map<number, number> };
+    } else {
+      data = { count: 0, sum: 0, buckets: new Map<number, number>() };
+    }
 
-    if (typeof data === "object" && data !== null) {
-      data.count++;
-      data.sum += value;
-      for (const bucket of metric.histogramBuckets || []) {
-        data.buckets.set(
-          bucket,
-          (data.buckets.get(bucket) || 0) + (value <= bucket ? 1 : 0),
-        );
+    data.count++;
+    data.sum += value;
+    const buckets = metric.histogramBuckets;
+    if (buckets) {
+      for (let i = 0; i < buckets.length; i++) {
+        const bucket = buckets[i];
+        if (value <= bucket) {
+          data.buckets.set(bucket, (data.buckets.get(bucket) || 0) + 1);
+        } else if (!data.buckets.has(bucket)) {
+          // Keep every bucket present for stable output, but skip redundant writes.
+          data.buckets.set(bucket, 0);
+        }
       }
     }
 
-    metric.values.set(key, {
-      value: data as any,
-      timestamp: Date.now(),
-      labels,
-    });
-    this.emit("metric", { name, type: "histogram", value, labels });
+    if (existing) {
+      existing.value = data as any;
+      existing.timestamp = Date.now();
+    } else {
+      metric.values.set(key, { value: data as any, timestamp: Date.now(), labels });
+    }
   }
 
   startCollection(): void {

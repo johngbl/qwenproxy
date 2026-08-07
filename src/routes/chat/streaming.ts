@@ -138,8 +138,14 @@ function noteMidStreamNetworkFailure(accountId: string): void {
 }
 
 function hasSseProtocolStart(buffer: string): boolean {
-  const trimmed = buffer.trimStart();
-  return trimmed.startsWith("data:") || trimmed.startsWith(":");
+  // Skip leading whitespace without allocating a trimmed copy, then test the
+  // first significant char: ":" (SSE comment) or "data:" prefix.
+  for (let i = 0; i < buffer.length; i++) {
+    const ch = buffer.charCodeAt(i);
+    if (ch === 32 || ch === 9 || ch === 10 || ch === 13) continue;
+    return ch === 58 || buffer.startsWith("data:", i);
+  }
+  return false;
 }
 
 function throwParsedUpstreamError(
@@ -266,6 +272,7 @@ export async function processNonStreamingResponse(
     const toolCallsOut: any[] = [];
     let buffer = "";
     let protocolBuffer = "";
+    let protocolProbeBytes = 0;
     let sawSseProtocol = false;
     const usageAccumulator = createUsageAccumulator(0);
 
@@ -335,10 +342,9 @@ export async function processNonStreamingResponse(
       if (!sawSseProtocol) {
         protocolBuffer += decoded;
         sawSseProtocol = hasSseProtocolStart(protocolBuffer);
-        if (
-          !sawSseProtocol &&
-          Buffer.byteLength(protocolBuffer, "utf8") > MAX_INITIAL_PROTOCOL_BYTES
-        ) {
+        // Count bytes incrementally instead of re-scanning the growing buffer.
+        protocolProbeBytes += value.byteLength;
+        if (!sawSseProtocol && protocolProbeBytes > MAX_INITIAL_PROTOCOL_BYTES) {
           throw toRetryableStreamError(
             "non_sse_response",
             "Qwen did not start an SSE response before the protocol probe limit.",
@@ -351,12 +357,16 @@ export async function processNonStreamingResponse(
       let lineEnd = buffer.indexOf("\n", lineStart);
 
       for (; lineEnd !== -1; lineEnd = buffer.indexOf("\n", lineStart)) {
-        const line = buffer.slice(lineStart, lineEnd);
+        let dataStr = "";
+        if (buffer.startsWith("data:", lineStart)) {
+          let s = lineStart + 5;
+          if (buffer.charCodeAt(s) === 32) s++;
+          let e = lineEnd;
+          if (e > s && buffer.charCodeAt(e - 1) === 13) e--;
+          dataStr = buffer.substring(s, e);
+        }
         lineStart = lineEnd + 1;
-        const trimmed = line.trim();
-        if (!trimmed || !trimmed.startsWith("data:")) continue;
-
-        const dataStr = trimmed.slice(5).trimStart();
+        if (!dataStr) continue;
         if (dataStr === "[DONE]") continue;
 
         if (upstreamDebugEnabled) {
@@ -757,6 +767,7 @@ export async function processStreamingResponse(
   const streamReader = stream.getReader();
   const streamDecoder = new TextDecoder();
   let initialStreamBuffer = "";
+  let initialProbeBytes = 0;
 
   while (true) {
     const { done, value } = await streamReader.read();
@@ -766,14 +777,12 @@ export async function processStreamingResponse(
     }
 
     initialStreamBuffer += streamDecoder.decode(value, { stream: true });
-    const trimmedInitialBuffer = initialStreamBuffer.trimStart();
-    if (hasSseProtocolStart(trimmedInitialBuffer)) {
+    if (hasSseProtocolStart(initialStreamBuffer)) {
       break;
     }
-    if (
-      Buffer.byteLength(initialStreamBuffer, "utf8") >
-      MAX_INITIAL_PROTOCOL_BYTES
-    ) {
+    // Count bytes incrementally instead of re-scanning the growing buffer.
+    initialProbeBytes += value.byteLength;
+    if (initialProbeBytes > MAX_INITIAL_PROTOCOL_BYTES) {
       await streamReader.cancel().catch(() => undefined);
       throw toRetryableStreamError(
         "non_sse_response",
@@ -966,7 +975,8 @@ export async function processStreamingResponse(
       // Batch buffer: when non-null, writeEvent accumulates instead of flushing
       let flushBuffer: string[] | null = null;
 
-      const writeEvent = async (data: any) => {
+      // Synchronous: avoids per-call Promise allocation on the hot path.
+      const writeEvent = (data: any) => {
         const serialized = `data: ${JSON.stringify(data)}\n\n`;
         if (Array.isArray(flushBuffer)) {
           flushBuffer.push(serialized);
@@ -982,14 +992,34 @@ export async function processStreamingResponse(
         finish_reason: finishReason,
       });
 
-      // Initial role chunk
-      await writeEvent({
+      // Pre-computed SSE event head for the hot-path text/reasoning deltas.
+      // Byte-identical to JSON.stringify of the equivalent object (verified).
+      const eventHead =
+        `"id":${JSON.stringify(completionId)},"object":"chat.completion.chunk"` +
+        `,"created":${createdTimestamp},"model":${JSON.stringify(body.model)}` +
+        `,"choices":[{"index":0,"delta":`;
+      const eventTail = `,"logprobs":null,"finish_reason":null}]}`;
+
+      const writeDeltaEvent = (delta: Record<string, unknown>) => {
+        const serialized =
+          `data: {${eventHead}${JSON.stringify(delta)}${eventTail}\n\n`;
+        if (Array.isArray(flushBuffer)) {
+          flushBuffer.push(serialized);
+          return;
+        }
+        bufferedWrite(serialized);
+      };
+
+      // Initial role chunk. Flush immediately so the first data event is not
+      // held back by the 3 ms coalescing timer (time-to-first-data).
+      writeEvent({
         id: completionId,
         object: "chat.completion.chunk",
         created: createdTimestamp,
         model: body.model,
         choices: [makeChoice({ role: "assistant", content: "" })],
       });
+      flushWrites();
 
       let reader: ReadableStreamDefaultReader<Uint8Array> = streamReader;
       activeReader = reader;
@@ -1034,13 +1064,7 @@ export async function processStreamingResponse(
         if (textChunk) emittedModelOutput = true;
         if (!toolParser) {
           finalContent += textChunk;
-          await writeEvent({
-            id: completionId,
-            object: "chat.completion.chunk",
-            created: createdTimestamp,
-            model: body.model,
-            choices: [makeChoice({ content: textChunk })],
-          });
+          writeDeltaEvent({ content: textChunk });
           return;
         }
 
@@ -1064,13 +1088,7 @@ export async function processStreamingResponse(
 
         if (text) {
           finalContent += text;
-          await writeEvent({
-            id: completionId,
-            object: "chat.completion.chunk",
-            created: createdTimestamp,
-            model: body.model,
-            choices: [makeChoice({ content: text })],
-          });
+          writeDeltaEvent({ content: text });
         }
 
         for (const delta of toolCallDeltas) {
@@ -1330,7 +1348,12 @@ export async function processStreamingResponse(
           break;
         }
 
-        if (!buffer.includes("\n")) {
+        // Single indexOf scan: also serves as the "need more data" guard,
+        // avoiding a second full-buffer pass via includes().
+        let lineStart = 0;
+        let lineEnd = buffer.indexOf("\n");
+
+        if (lineEnd === -1) {
           let readResult: ReadableStreamReadResult<Uint8Array>;
           try {
             readResult = await reader.read();
@@ -1341,20 +1364,29 @@ export async function processStreamingResponse(
           if (readResult.done) break;
 
           buffer += decoder.decode(readResult.value, { stream: true });
+          lineEnd = buffer.indexOf("\n");
+          if (lineEnd === -1) continue;
         }
 
-        let lineStart = 0;
-        let lineEnd = buffer.indexOf("\n", lineStart);
-
         for (; lineEnd !== -1; lineEnd = buffer.indexOf("\n", lineStart)) {
-          const line = buffer.slice(lineStart, lineEnd);
+          // Extract the data payload with a single substring (no slice/trim
+          // cascade). Qwen SSE lines are well-formed `data: <json>` + LF/CRLF.
+          let dataStr = "";
+          if (buffer.startsWith("data:", lineStart)) {
+            let s = lineStart + 5;
+            if (buffer.charCodeAt(s) === 32) s++; // single space after "data:"
+            let e = lineEnd;
+            if (e > s && buffer.charCodeAt(e - 1) === 13) e--; // \r of CRLF
+            dataStr = buffer.substring(s, e);
+          }
           lineStart = lineEnd + 1;
-          const trimmed = line.trim();
-          if (!trimmed || !trimmed.startsWith("data:")) continue;
+          if (!dataStr) continue;
 
-          const dataStr = trimmed.slice(5).trimStart();
           if (dataStr === "[DONE]") {
             if (!clientDisconnected) {
+              // Drain buffered deltas first: writing [DONE] directly would
+              // overtake unflushed content and end the stream out of order.
+              flushWrites();
               await streamWriter.write("data: [DONE]\n\n");
             }
             break; // Exit loop immediately - no need to wait for connection close
@@ -1493,13 +1525,7 @@ export async function processStreamingResponse(
               if (isThinkingChunk) {
                 emittedModelOutput = true;
                 reasoningBuffer += vStr;
-                await writeEvent({
-                  id: completionId,
-                  object: "chat.completion.chunk",
-                  created: createdTimestamp,
-                  model: body.model,
-                  choices: [makeChoice({ reasoning_content: vStr })],
-                });
+                writeDeltaEvent({ reasoning_content: vStr });
               } else {
                 await emitAnswerText(vStr);
               }
@@ -1544,6 +1570,7 @@ export async function processStreamingResponse(
           model: body.model,
           choices: [makeChoice({}, "stop")],
         });
+        flushWrites();
         await streamWriter.write("data: [DONE]\n\n");
         return;
       }
@@ -1811,16 +1838,21 @@ export async function processStreamingResponse(
               let lineEnd = retryBuffer.indexOf("\n", lineStart);
 
               for (; lineEnd !== -1; lineEnd = retryBuffer.indexOf("\n", lineStart)) {
-                const line = retryBuffer.slice(lineStart, lineEnd);
+                let dataStr = "";
+                if (retryBuffer.startsWith("data:", lineStart)) {
+                  let s = lineStart + 5;
+                  if (retryBuffer.charCodeAt(s) === 32) s++;
+                  let e = lineEnd;
+                  if (e > s && retryBuffer.charCodeAt(e - 1) === 13) e--;
+                  dataStr = retryBuffer.substring(s, e);
+                }
                 lineStart = lineEnd + 1;
-                const trimmed = line.trim();
-                if (!trimmed || !trimmed.startsWith("data:")) continue;
-
-                const dataStr = trimmed.slice(5).trimStart();
+                if (!dataStr) continue;
                 if (dataStr === "[DONE]") continue;
 
-                // Forward the chunk to the client
-                await streamWriter.write(`data: ${dataStr}\n\n`);
+                // Forward the chunk through the write buffer so it stays
+                // ordered with previously buffered deltas.
+                bufferedWrite(`data: ${dataStr}\n\n`);
               }
 
               retryBuffer = lineStart > 0 ? retryBuffer.slice(lineStart) : retryBuffer;
