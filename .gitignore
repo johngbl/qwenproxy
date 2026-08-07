@@ -33,3 +33,6 @@ Thumbs.db
 # IDE / Editor
 .kilo
 .roo
+
+# Session/diagnostic dumps
+completions.txt

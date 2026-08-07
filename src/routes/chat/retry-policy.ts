@@ -308,6 +308,23 @@ export function isChatInProgressError(err: unknown): boolean {
 }
 
 /**
+ * Qwen rejects a model the account cannot serve with Not_Found: Model not found.
+ * This is deterministic per request — retrying on the same (or any) account
+ * with the same model can never succeed, so it must terminate instead of
+ * burning retry attempts / account cooldowns and ending in a misleading 502.
+ */
+export function isModelNotFoundError(err: unknown): boolean {
+  const code = errCode(err).toLowerCase();
+  const message = errMessage(err).toLowerCase();
+  return (
+    (code === "not_found" &&
+      message.includes("model") &&
+      message.includes("not found")) ||
+    message.includes("model not found")
+  );
+}
+
+/**
  * Browser fetch and ReadableStream failures often arrive as plain Error
  * instances, especially when the stream is consumed outside Playwright.
  * Keep this matcher narrow so local programming errors are not retried as
@@ -476,6 +493,20 @@ export function classifyRetryAction(
         retryWithFullPrompt: false,
         retryAfterMs: 0,
         reason: "content_moderation",
+      };
+    }
+
+    // Model not found is equally deterministic (the account cannot serve the
+    // requested model). Fail fast with a clear error instead of retrying the
+    // same doomed request and cooldown-marking accounts for ~5 hours.
+    if (isModelNotFoundError(err)) {
+      return {
+        retryable: false,
+        switchAccount: false,
+        forceNewChat: false,
+        retryWithFullPrompt: false,
+        retryAfterMs: 0,
+        reason: "model_not_found",
       };
     }
 
@@ -685,6 +716,21 @@ export function throwFromSseUpstreamError(
     );
     const error = new RetryableQwenStreamError(
       `Qwen content moderation: ${normalizedErrCode}: ${errDetails.substring(0, 200)}`,
+      0,
+    ) as RetryableStreamError;
+    error.upstreamCode = normalizedErrCode;
+    error.switchAccount = false;
+    throw error;
+  }
+
+  // A model the account cannot serve is a deterministic rejection too — never
+  // transparently retrofit this doomed model request on the same/other account.
+  if (isModelNotFoundError({ upstreamCode: normalizedErrCode, message: errDetails })) {
+    logger.warn(
+      `[Upstream] Model not available (not retrying): ${normalizedErrCode}`,
+    );
+    const error = new RetryableQwenStreamError(
+      `Qwen model not found: ${normalizedErrCode}: ${errDetails.substring(0, 200)}`,
       0,
     ) as RetryableStreamError;
     error.upstreamCode = normalizedErrCode;

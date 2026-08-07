@@ -188,6 +188,28 @@ test("classifyRetryAction: WAF challenges retry the same account immediately", (
   assert.equal(action.reason, "anti_bot");
 });
 
+test("classifyRetryAction: Not_Found model not found is terminal (no retry)", () => {
+  const err = Object.assign(
+    new Error("Qwen upstream error: Not_Found: Model not found."),
+    { upstreamCode: "Not_Found", upstreamStatus: 404 },
+  );
+  const action = classifyRetryAction(err);
+  assert.equal(action.retryable, false);
+  assert.equal(action.switchAccount, false);
+  assert.equal(action.forceNewChat, false);
+  assert.equal(action.reason, "model_not_found");
+});
+
+test("classifyRetryAction: generic Qwen 404 for missing chat remains retryable", () => {
+  const err = Object.assign(
+    new Error("Qwen upstream error: Not_Found: chat is not exist."),
+    { upstreamCode: "Not_Found", upstreamStatus: 404 },
+  );
+  const action = classifyRetryAction(err);
+  assert.equal(action.retryable, true);
+  assert.equal(action.reason, "chat_not_exist");
+});
+
 test("parseQwenErrorPayload sanitizes an HTML WAF page", () => {
   const parsed = parseQwenErrorPayload(
     '<!doctype html><meta name="aliyun_waf_aa" content="do-not-expose-this-page">',
