@@ -111,6 +111,7 @@ export function expandModelVariants(
 
     if (!variants.has(model.id)) variants.set(model.id, model);
     addVariant("-fast", " (Fast)");
+    addVariant("-thinking", " (Thinking)");
   }
 
   return [...variants.values()];

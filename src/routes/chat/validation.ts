@@ -14,6 +14,7 @@ import { buildToolInstructions } from "../../tools/instructions.ts";
 import {
   mapClientModelToQwen,
   stripThinkingSuffix,
+  type ReasoningMode,
 } from "../../core/model-alias.ts";
 
 // Tag literals split to avoid proxy parser misinterpretation
@@ -34,6 +35,7 @@ export interface ParsedRequest {
   shouldParseToolCalls: boolean;
   modelId: string;
   enableThinking: boolean;
+  reasoningMode: ReasoningMode;
   messageCount: number;
   currentMessageCount: number;
 }
@@ -69,7 +71,7 @@ export async function parseRequestBody(c: Context): Promise<ParsedRequest> {
   const currentPrompt = currentPromptParts.join("");
 
   // Thinking suffixes + GPT/Claude aliases → Qwen ids (shared with Responses/Anthropic)
-  const { baseModel, enableThinking } = stripThinkingSuffix(body.model);
+  const { baseModel, enableThinking, reasoningMode } = stripThinkingSuffix(body.model);
   const modelId = mapClientModelToQwen(baseModel);
 
   return {
@@ -86,6 +88,7 @@ export async function parseRequestBody(c: Context): Promise<ParsedRequest> {
     shouldParseToolCalls,
     modelId,
     enableThinking,
+    reasoningMode,
     messageCount: promptParts.length,
     currentMessageCount: currentPromptParts.length,
   };

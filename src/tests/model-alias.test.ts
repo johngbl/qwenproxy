@@ -26,22 +26,27 @@ test("stripThinkingSuffix maps base and public Fast variants", () => {
   assert.deepEqual(stripThinkingSuffix("qwen3.7-plus-fast"), {
     baseModel: "qwen3.7-plus",
     enableThinking: false,
+    reasoningMode: "fast",
   });
   assert.deepEqual(stripThinkingSuffix("qwen3.7-plus"), {
     baseModel: "qwen3.7-plus",
     enableThinking: true,
+    reasoningMode: "auto",
   });
   assert.deepEqual(stripThinkingSuffix("qwen3.7-plus-no-thinking"), {
     baseModel: "qwen3.7-plus",
     enableThinking: false,
+    reasoningMode: "fast",
   });
   assert.deepEqual(stripThinkingSuffix("qwen3.7-plus-thinking"), {
     baseModel: "qwen3.7-plus",
     enableThinking: true,
+    reasoningMode: "thinking",
   });
   assert.deepEqual(stripThinkingSuffix("gpt-5-mini"), {
     baseModel: "gpt-5-mini",
     enableThinking: true,
+    reasoningMode: "auto",
   });
 });
 

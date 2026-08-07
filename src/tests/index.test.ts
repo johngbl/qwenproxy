@@ -63,10 +63,7 @@ test("Models endpoint returns live models and supported variants", async () => {
     assert.ok(Array.isArray(body.data));
     assert.ok(body.data.some((m: any) => m.id === "qwen3.6-plus"));
     assert.ok(body.data.some((m: any) => m.id === "qwen3.6-plus-fast"));
-    assert.equal(
-      body.data.some((m: any) => m.id === "qwen3.6-plus-thinking"),
-      false,
-    );
+    assert.ok(body.data.some((m: any) => m.id === "qwen3.6-plus-thinking"));
     assert.equal(
       body.data.some((m: any) => m.id === "qwen3.6-plus-no-thinking"),
       false,

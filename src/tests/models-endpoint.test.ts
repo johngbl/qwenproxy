@@ -72,10 +72,9 @@ test("models endpoint returns ETag and supports 304", async () => {
       body.data.some((m: any) => m.id === "qwen-test-model-fast"),
       "models should expose the public Fast variant",
     );
-    assert.equal(
+    assert.ok(
       body.data.some((m: any) => m.id === "qwen-test-model-thinking"),
-      false,
-      "legacy thinking variants must not be published",
+      "models should expose the public Thinking variant",
     );
     assert.equal(
       body.data.some((m: any) => m.id === "qwen-test-model-no-thinking"),
@@ -123,10 +122,9 @@ test("models endpoint returns Anthropic format with Fast variants when anthropic
       body.data.some((m: any) => m.id === "qwen-test-model-fast"),
       "Anthropic models list should include the public Fast variant",
     );
-    assert.equal(
+    assert.ok(
       body.data.some((m: any) => m.id === "qwen-test-model-thinking"),
-      false,
-      "Anthropic models list must not publish legacy thinking variants",
+      "Anthropic models list should include the public Thinking variant",
     );
     assert.equal(
       body.data.find((m: any) => m.id === "qwen-test-model").type,

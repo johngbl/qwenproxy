@@ -58,16 +58,26 @@ const CLIENT_MODEL_ALIASES: Record<string, string> = {
 };
 
 /**
+ * Reasoning mode for Qwen models.
+ * - "auto": Qwen decides whether to use thinking (default)
+ * - "thinking": Force thinking mode ON
+ * - "fast": Force thinking mode OFF
+ */
+export type ReasoningMode = "auto" | "thinking" | "fast";
+
+/**
  * Resolve the public Qwen reasoning variants.
  *
- * The public contract is deliberately small: the base model means Thinking
- * and `-fast` means Fast. The old suffixes are accepted only as an internal
- * compatibility shim so existing clients do not send those IDs upstream; they
- * are never published by `/v1/models`.
+ * The public contract is deliberately small: the base model means Auto
+ * (Qwen decides), `-fast` means Fast (no thinking), and `-thinking` means
+ * Thinking (forced). The old suffixes are accepted only as an internal
+ * compatibility shim so existing clients do not send those IDs upstream;
+ * they are never published by `/v1/models`.
  */
 export function stripThinkingSuffix(model: string): {
   baseModel: string;
   enableThinking: boolean;
+  reasoningMode: ReasoningMode;
 } {
   const normalizedModel = model.trim();
 
@@ -75,6 +85,7 @@ export function stripThinkingSuffix(model: string): {
     return {
       baseModel: normalizedModel.slice(0, -"-fast".length),
       enableThinking: false,
+      reasoningMode: "fast",
     };
   }
 
@@ -83,16 +94,19 @@ export function stripThinkingSuffix(model: string): {
     return {
       baseModel: normalizedModel.slice(0, -"-no-thinking".length),
       enableThinking: false,
+      reasoningMode: "fast",
     };
   }
   if (normalizedModel.endsWith("-thinking")) {
     return {
       baseModel: normalizedModel.slice(0, -"-thinking".length),
       enableThinking: true,
+      reasoningMode: "thinking",
     };
   }
 
-  return { baseModel: normalizedModel, enableThinking: true };
+  // Default: auto thinking (Qwen decides)
+  return { baseModel: normalizedModel, enableThinking: true, reasoningMode: "auto" };
 }
 
 /**
