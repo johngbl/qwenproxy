@@ -1392,11 +1392,16 @@ export class StreamingToolParser {
           }
           this.finalizeSuccessfulToolCall(recovered, result);
         } else {
-          // Recovery failed. Emit warning text so the client knows content was lost.
+          // Recovery failed. Do NOT emit an assistant-visible warning: the
+          // bridge must never inject its own text into the user-facing reply.
+          // The malformed call is still tracked so the stream auto-retry can
+          // send a [SYSTEM CORRECTION] to Qwen in the upstream prompt.
           const toolName = this.extractToolNameFromTruncated(trimmed);
-          const warningMsg = toolName
-            ? `\n\n[WARNING: Tool call "${toolName}" was truncated by the model's token limit and could not be recovered. The response was cut off before the tool call completed. You may need to retry with a smaller request or split the operation.]\n\n`
-            : `\n\n[WARNING: A tool call was truncated by the model's token limit and could not be recovered. The response was cut off before the tool call completed.]\n\n`;
+          this.recordMalformedToolCall(trimmed, {
+            category: "truncated",
+            undeclaredNames:
+              this.extractUndeclaredNamesFromContent(trimmed),
+          });
           logger.warn(
             "[parser] Dropping unrecoverable unclosed tool call at end of stream",
             {
@@ -1404,7 +1409,6 @@ export class StreamingToolParser {
               toolName,
             },
           );
-          result.text += warningMsg;
           if (
             this.emittedToolCallCount === 0 &&
             this.pendingLeadIn.trim().length > 0

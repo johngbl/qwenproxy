@@ -183,17 +183,21 @@ test("StreamingToolParser: flush partial content", () => {
   assert.strictEqual(flushed.toolCalls.length, 1);
   assert.strictEqual(flushed.toolCalls[0].name, "healable");
 
-  // Invalid JSON in tool call - flush drops it with warning, restores lead-in
+  // Invalid JSON in tool call - flush drops it (tracked internally for
+  // auto-retry) and restores lead-in, without user-facing bridge text
   const parser3 = new StreamingToolParser();
   parser3.feed("Invalid <tool_call>NOT_JSON");
   const flushed2 = parser3.flush();
-  // Invalid JSON is dropped with a warning message, and "Invalid " lead-in is restored
   assert.ok(
-    flushed2.text.includes("[WARNING:"),
-    "should include truncation warning",
+    !flushed2.text.includes("[WARNING:"),
+    "must not surface a bridge-authored warning in the reply",
   );
   assert.ok(flushed2.text.includes("Invalid "), "should restore lead-in text");
   assert.strictEqual(flushed2.toolCalls.length, 0);
+  assert.ok(
+    parser3.getMalformedToolCalls().length > 0,
+    "drop must be tracked so the auto-retry can correct Qwen",
+  );
 });
 
 test("StreamingToolParser: robust parsing of malformed JSON", () => {

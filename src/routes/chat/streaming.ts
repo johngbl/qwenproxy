@@ -75,43 +75,6 @@ import {
   buildUsage,
 } from "./helpers.ts";
 
-type DroppedToolInfo = {
-  contentPreview: string;
-  contentLength: number;
-  timestamp: number;
-  undeclaredNames?: string[];
-  category: "malformed" | "undeclared" | "truncated";
-};
-
-/**
- * Build a safe (no raw XML/JSON), AI-visible note for tool calls that were
- * dropped and NOT recovered by the auto-retry. Appended to the assistant
- * content so a subsequent turn lets the model correct itself.
- */
-function buildToolDropWarning(malformedCalls: DroppedToolInfo[], availableToolNames: string[]): string {
-  if (!malformedCalls || malformedCalls.length === 0) return "";
-  const undeclaredNames = malformedCalls
-    .flatMap((mc) => mc.undeclaredNames || [])
-    .filter((name, index, self) => self.indexOf(name) === index);
-  const count = malformedCalls.length;
-
-  let body: string;
-  if (undeclaredNames.length > 0) {
-    body = `${count} tool call(s) used undeclared tool names: ${undeclaredNames.join(", ")}. Only declared tools can be executed.`;
-  } else {
-    const previews = malformedCalls
-      .slice(0, 3)
-      .map((mc) => mc.contentPreview?.substring(0, 120) || "(empty)")
-      .join("\n  - ");
-    body = `${count} tool call(s) could not be parsed (invalid or truncated JSON). The call(s) was/were not executed.\n\nFailed attempt(s):\n  - ${previews}`;
-  }
-  const toolsHint =
-    availableToolNames.length > 0
-      ? `\n\nAvailable tools: ${availableToolNames.join(", ")}`
-      : "";
-  return `\n\n[WARNING: ${body}${toolsHint}]\n\n`;
-}
-
 function firstString(...values: unknown[]): string | null {
   for (const value of values) {
     if (typeof value === "string" && value.trim()) return value;
@@ -732,31 +695,20 @@ export async function processNonStreamingResponse(
       });
     }
 
-    // Log malformed tool calls and append a safe, AI-visible warning to the
-    // assistant content so a subsequent turn lets the model correct itself.
-    // The auto-retry above handles sending the error back to Qwen.
-    // If we reach here, retries were exhausted or unavailable — note it.
+    // Tool calls dropped and NOT recovered by the auto-retry. Keep this out of
+    // the user-visible response entirely: the retry path already told Qwen what
+    // went wrong in the upstream prompt, and an echoed [WARNING] text block
+    // would leak bridge editorializing into the client's UI.
     if (toolParser && toolParser.getMalformedToolCalls().length > 0) {
       const malformedCalls = toolParser.getMalformedToolCalls();
-      const malformedCount = malformedCalls.length;
       const undeclaredNames = malformedCalls
         .map((mc) => mc.undeclaredNames)
         .flat()
         .filter((n): n is string => !!n);
 
-      const availableToolNames = declaredTools
-        .map((t: any) => t.type === "function" ? t.function?.name : t.name)
-        .filter((n: string | undefined): n is string => !!n);
-      const warning = buildToolDropWarning(malformedCalls, availableToolNames);
-      if (warning) {
-        finalContent += warning;
-        message.content = finalContent;
-      }
-
       logger.warn("[chat] non-stream: malformed tool calls not retried (retries exhausted or unavailable)", {
-        malformedCount,
+        malformedCount: malformedCalls.length,
         undeclaredNames,
-        warningInjected: warning.length > 0,
         completionId,
       });
     }
@@ -2183,28 +2135,20 @@ export async function processStreamingResponse(
         });
       }
 
-      // Tool calls that were dropped and NOT recovered by the auto-retry:
-      // append a safe, AI-visible warning as a content delta (before the
-      // finish-reason event) so the client and the next turn can react.
+      // Tool calls that were dropped and NOT recovered by the auto-retry. Do NOT
+      // surface a [WARNING] text block to the client: the auto-retry already
+      // sent the correction to Qwen in the upstream prompt, and echoing it here
+      // would leak a bridge-authored text note into the user-facing UI.
       if (!clientDisconnected && toolParser && toolParser.getMalformedToolCalls().length > 0) {
         const malformedCalls = toolParser.getMalformedToolCalls();
         const undeclaredNames = malformedCalls
           .map((mc) => mc.undeclaredNames)
           .flat()
           .filter((n): n is string => !!n);
-        const availableToolNames = declaredTools
-          .map((t: any) => t.type === "function" ? t.function?.name : t.name)
-          .filter((n: string | undefined): n is string => !!n);
-        const warning = buildToolDropWarning(malformedCalls, availableToolNames);
-        if (warning) {
-          finalContent += warning;
-          writeDeltaEvent({ content: warning });
-        }
 
         logger.warn("[chat] stream: malformed tool calls not retried (retries exhausted or unavailable)", {
           malformedCount: malformedCalls.length,
           undeclaredNames,
-          warningInjected: warning.length > 0,
           completionId,
         });
       }

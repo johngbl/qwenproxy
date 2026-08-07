@@ -379,7 +379,7 @@ test("non-stream: valid tool_call becomes structured tool_calls", async () => {
   }
 });
 
-test("non-stream: undeclared tool name in literal example is preserved as text and triggers retry warning", async () => {
+test("non-stream: undeclared tool name in literal example is preserved as text without surfacing a warning", async () => {
   const literal =
     '<tool_call>{"name":"nome_da_ferramenta","arguments":{"parametro":"valor"}}</tool_call>';
   const restore = setupFetchMock(() =>
@@ -409,19 +409,16 @@ test("non-stream: undeclared tool name in literal example is preserved as text a
     const message = body.choices[0].message;
     assert.strictEqual(message.tool_calls, undefined);
     assert.strictEqual(body.choices[0].finish_reason, "stop");
-    // The undeclared call is preserved as literal text, and the unretried drop
-    // is surfaced to the next turn as an AI-visible warning.
+    // The undeclared call is preserved as literal text. The bridge must NOT
+    // inject its own warning into the user-visible reply — any correction is
+    // sent to Qwen through the auto-retry upstream prompt instead.
     assert.ok(
       message.content.includes(literal),
       "literal tool call should be preserved in content",
     );
     assert.ok(
-      message.content.includes("undeclared tool names"),
-      "expected an undeclared-tool warning to be appended: " + message.content,
-    );
-    assert.ok(
-      message.content.includes("nome_da_ferramenta"),
-      "warning should name the undeclared tool",
+      !message.content.includes("[WARNING"),
+      "no bridge-authored warning expected: " + message.content,
     );
   } finally {
     restore();
