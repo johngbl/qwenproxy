@@ -17,7 +17,13 @@ export interface AccountLease {
 
 export interface AcquireAccountLeaseOptions {
   signal?: AbortSignal;
-  timeoutMs?: number;
+  /**
+   * Deadline for hanging on a free slot.
+   * - `number`: reject with `account_busy` after this many ms.
+   * - `null`: wait without a deadline until a slot frees or `signal` aborts.
+   * - `undefined`: fall back to `concurrency.busyWaitMs`.
+   */
+  timeoutMs?: number | null;
 }
 
 interface QueueEntry {
@@ -125,7 +131,12 @@ export function acquireAccountLease(
     return Promise.resolve(createLease(accountId));
   }
 
-  const timeoutMs = options?.timeoutMs ?? config.concurrency.busyWaitMs;
+  const hasExplicitTimeout =
+    options != null &&
+    Object.prototype.hasOwnProperty.call(options, "timeoutMs");
+  const timeoutMs = hasExplicitTimeout
+    ? options?.timeoutMs
+    : config.concurrency.busyWaitMs;
 
   return new Promise<AccountLease>((resolve, reject) => {
     const entry: QueueEntry = {
@@ -145,8 +156,10 @@ export function acquireAccountLease(
       }
     };
 
-    // Timeout
-    if (timeoutMs > 0) {
+    // Timeout — only when the caller supplied a finite deadline. `null` means
+    // "wait as long as it takes" (bounded by the abort signal), which is what
+    // the last-usable account or the thread owner must do to stay lossless.
+    if (typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs > 0) {
       entry.timer = setTimeout(() => {
         removeSelf();
         const busyError = new Error(

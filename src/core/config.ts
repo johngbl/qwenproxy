@@ -194,7 +194,12 @@ export const config = {
   },
   concurrency: {
     maxStreamsPerAccount: Math.max(1, parseInt(env.ACCOUNT_MAX_CONCURRENT_STREAMS)),
-    busyWaitMs: Math.max(0, parseInt(env.ACCOUNT_BUSY_WAIT_MS)),
+    busyWaitMs: Math.max(
+      0,
+      Number.isFinite(parseInt(env.ACCOUNT_BUSY_WAIT_MS as string))
+        ? parseInt(env.ACCOUNT_BUSY_WAIT_MS as string)
+        : 30_000,
+    ),
     initFailureCooldownMs: Math.max(
       30_000,
       parseInt(env.ACCOUNT_INIT_FAILURE_COOLDOWN_MS),

@@ -361,8 +361,12 @@ export async function acquireUpstreamStream(
 		// Do not wait 30 seconds on a saturated account when another account is
 		// already free. Keep the queue behavior only when this is the last usable
 		// account, so single-account deployments remain lossless.
+		// The thread owner is excluded: rotating the sticky account during a
+		// tool/think pause splinters the conversation across upstream chats, so
+		// it must queue on its own slot instead of being skipped.
 		if (
 			isAccountBusy(accountId) &&
+			accountId !== stickyThreadAccountId &&
 			hasFreeAlternateAccount(configuredAccounts, accountId, triedAccountIds)
 		) {
 			console.log(
@@ -424,6 +428,17 @@ export async function acquireUpstreamStream(
 			const attemptFinalPrompt = mustReplayFullContext
 				? params.fullPrompt
 				: finalPrompt;
+			// The thread owner (or a deployment where no alternate account is
+			// free) must queue on its own slot until generation finishes. A hard
+			// 30s busy timeout here would needlessly 500 the same conversation
+			// while the model is paused mid-tool/think.
+			const waitForSlot =
+				(!!stickyThreadAccountId && accountId === stickyThreadAccountId) ||
+				!hasFreeAlternateAccount(
+					configuredAccounts,
+					accountId,
+					triedAccountIds,
+				);
 			const result = await tryCreateStreamWithRetry(
 				{
 					finalPrompt: attemptFinalPrompt,
@@ -455,6 +470,7 @@ export async function acquireUpstreamStream(
 						? "replay"
 						: params.contextMode,
 					requestSignal: params.requestSignal,
+					queueSlotUntilFree: waitForSlot,
 					messages: params.messages,
 				},
 				accountId,
@@ -668,6 +684,7 @@ async function tryCreateStreamWithRetry(
 		contextModelId?: string;
 		contextMode?: ContextMeterMode;
 		requestSignal?: AbortSignal;
+		queueSlotUntilFree?: boolean;
 		messages?: Message[];
 	},
 	accountId: string,
@@ -763,8 +780,19 @@ async function tryCreateStreamWithRetry(
 			// Acquire account concurrency lease before personalization + stream creation.
 			// The lease is held for the entire stream lifetime and released by the caller
 			// via the returned releaseAccountLease function.
+			// The thread owner or the last usable account waits without a hard
+			// deadline (bounded by the client's abort signal): a fixed 30s timeout
+			// here rejects a single conversation while the model is paused
+			// mid-tool/thinking, which burns the request instead of serving it.
+			const hasFreeAlt =
+				!isSingleAccount &&
+				hasFreeAlternateAccount(accounts, currentAccountId, triedAccounts);
+			const waitQueueForever =
+				params.queueSlotUntilFree === true || hasFreeAlt === false;
 			accountLease = await acquireAccountLease(currentAccountId, {
-				timeoutMs: config.concurrency.busyWaitMs,
+				timeoutMs: waitQueueForever
+					? null
+					: config.concurrency.busyWaitMs,
 				signal: params.requestSignal,
 			});
 			// Client may have disconnected while waiting for the lease. Bail before

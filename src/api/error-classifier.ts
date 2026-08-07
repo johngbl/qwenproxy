@@ -75,6 +75,16 @@ export function classifyError(err: unknown): QwenBridgeError {
     return err;
   }
 
+  // Capacity saturation on the bridge's own account pool: this is a "try again
+  // later" condition, not a server fault. A hard 500 is misleading for the
+  // client (and for the retry classifier it hides a recoverable slot wait).
+  if (
+    err instanceof Error &&
+    (err as Error & { code?: string }).code === "account_busy"
+  ) {
+    return new UpstreamRateLimit(err.message);
+  }
+
   if (err instanceof ZodError) {
     return new ValidationError(err.message);
   }

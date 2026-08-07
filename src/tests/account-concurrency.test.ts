@@ -94,6 +94,28 @@ test("AccountConcurrency: timeout removes waiter and rejects", async () => {
   assert.strictEqual(isAccountBusy("acc-timeout"), false);
 });
 
+test("AccountConcurrency: null timeoutMs waits until slot frees (lossless queue)", async () => {
+  resetAccountConcurrencyForTests();
+  const lease1 = await acquireAccountLease("acc-null-timeout");
+
+  let resolved = false;
+  const waiter = acquireAccountLease("acc-null-timeout", {
+    timeoutMs: null,
+  }).then((lease) => {
+    resolved = true;
+    return lease;
+  });
+
+  // Must NOT reject on its own: the lease stays queued for the whole wait.
+  await new Promise((r) => setTimeout(r, 60));
+  assert.strictEqual(resolved, false);
+
+  lease1.release();
+  const lease2 = await waiter;
+  assert.strictEqual(resolved, true);
+  lease2.release();
+});
+
 test("AccountConcurrency: abort signal removes waiter and rejects", async () => {
   resetAccountConcurrencyForTests();
   const lease1 = await acquireAccountLease("acc-abort");
