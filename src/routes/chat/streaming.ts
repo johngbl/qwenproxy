@@ -15,6 +15,7 @@ import {
   requestQwenTextInBrowser,
   updateLogicalThreadParent,
   updateSessionParent,
+  invalidateLogicalThreadParent,
   getQwenErrorCode,
   RetryableQwenStreamError,
 } from "../../services/qwen.ts";
@@ -192,6 +193,8 @@ export interface StreamProcessingParams {
     fullPrompt: string;
     isThinkingModel: boolean;
     contextModelId?: string;
+    reasoningMode?: "auto" | "thinking" | "fast";
+    activeAccountId?: string;
     allFiles: any[];
     isNewSession: boolean;
     sessionId: string | null;
@@ -205,6 +208,8 @@ export interface StreamProcessingParams {
     contextMode?: ContextMeterMode;
     releaseAccountLease: () => void;
     messages?: Message[];
+    /** How many malformed-tool-call auto-retries have already run (0-based). */
+    malformedRetryCount?: number;
   };
   onAssistantComplete?: AssistantCompleteHandler;
   onStreamComplete?: () => void;
@@ -265,6 +270,7 @@ export async function processNonStreamingResponse(
     let lastRawContentSuffix = "";
     let finalContent = "";
     let targetResponseId: string | null = null;
+    let pendingParentId: string | null = null;
     let currentUiSessionId = uiSessionId;
     const toolParser = shouldParseToolCalls
       ? new StreamingToolParser(declaredTools)
@@ -397,13 +403,13 @@ export async function processNonStreamingResponse(
                     if (!targetResponseId) {
                       targetResponseId = chunk["response.created"].response_id;
                     }
-                    // Next turn appends with parent_id = this assistant response
-                    rememberParent(chunk["response.created"].response_id);
+                    // Commit the parent only after the whole response succeeds.
+                    pendingParentId = chunk["response.created"].response_id;
                     // Qwen-internal metadata event — never forward to the client.
                     continue;
                   } else if (chunk.response_id && !targetResponseId) {
                     targetResponseId = chunk.response_id;
-                    rememberParent(chunk.response_id);
+                    pendingParentId = chunk.response_id;
                   }
 
           applyUpstreamUsage(usageAccumulator, chunk.usage);
@@ -566,7 +572,13 @@ export async function processNonStreamingResponse(
 
     // Auto-retry if all tool calls were malformed (no successful tool calls)
     const allToolsFailed = toolParser && toolParser.getMalformedToolCalls().length > 0 && toolCallsOut.length === 0;
-    if (allToolsFailed && config.retry.autoRetryMalformedTools !== false && midStreamRetry) {
+    const malformedRetryCount = midStreamRetry?.malformedRetryCount ?? 0;
+    if (
+      allToolsFailed &&
+      config.retry.autoRetryMalformedTools !== false &&
+      midStreamRetry &&
+      malformedRetryCount < config.retry.autoRetryMalformedToolsMax
+    ) {
       const malformedCalls = toolParser.getMalformedToolCalls();
       const malformedCount = malformedCalls.length;
 
@@ -606,13 +618,13 @@ export async function processNonStreamingResponse(
       await stream.cancel();
       midStreamRetry.releaseAccountLease();
 
-      // Acquire new stream for retry
+      // Acquire new stream for retry - keep same account, force new chat
       const newStreamResult = await acquireUpstreamStream({
         finalPrompt: retryPrompt,
         fullPrompt: retryPrompt,
         isThinkingModel: midStreamRetry.isThinkingModel,
         model: body.model,
-        contextModelId: midStreamRetry.contextModelId,
+        reasoningMode: midStreamRetry.reasoningMode,
         shouldResetUpstreamThread: true,
         allFiles: midStreamRetry.allFiles,
         isNewSession: midStreamRetry.isNewSession,
@@ -621,7 +633,7 @@ export async function processNonStreamingResponse(
         updateLogicalThread: midStreamRetry.updateLogicalThread,
         allowThreadReuse: midStreamRetry.allowThreadReuse,
         forceNewChat: true,
-        preferredAccountId: null,
+        preferredAccountId: midStreamRetry.activeAccountId,
         excludeAccountIds: undefined,
         messageCount: midStreamRetry.messageCount,
         fullMessageCount: midStreamRetry.fullMessageCount,
@@ -641,9 +653,23 @@ export async function processNonStreamingResponse(
         return sendOpenAIError(c, newStreamResult.error);
       }
 
-      console.log(`🔄 [Chat] Auto-retry | ${newStreamResult.activeAccountLabel} | ${body.model} | chat=${newStreamResult.uiSessionId.substring(0, 12)} | reason=malformed_tool_calls`);
+      // Critical detail 3: non-streaming has no clientDisconnected flag; the
+      // guard is the request signal. If the client aborted while acquiring the
+      // retry stream, release the fresh lease (idempotent) and bail so the
+      // lease is not orphaned.
+      if (c.req.raw.signal.aborted) {
+        newStreamResult.releaseAccountLease();
+        return sendOpenAIError(
+          c,
+          new Error("client aborted during malformed-tool retry"),
+        );
+      }
 
-      // Process the new stream (recursive call with retry disabled)
+      console.log(`🔄 [Chat] Auto-retry (${malformedRetryCount + 1}/${config.retry.autoRetryMalformedToolsMax}) | ${newStreamResult.activeAccountLabel} | ${body.model} | chat=${newStreamResult.uiSessionId.substring(0, 12)} | reason=malformed_tool_calls`);
+
+      // Process the new stream. Propagate the retry context with an incremented
+      // counter so a subsequent malformed response can retry again up to
+      // autoRetryMalformedToolsMax, and hand over the fresh lease/account.
       return processNonStreamingResponse({
         ...params,
         stream: newStreamResult.stream,
@@ -652,7 +678,12 @@ export async function processNonStreamingResponse(
         activeAccountLabel: newStreamResult.activeAccountLabel,
         finalPrompt: retryPrompt,
         tokenEstimationContext: newStreamResult.tokenEstimationContext,
-        midStreamRetry: undefined, // Prevent infinite retry loop
+        midStreamRetry: {
+          ...midStreamRetry,
+          malformedRetryCount: malformedRetryCount + 1,
+          activeAccountId: newStreamResult.activeAccountId,
+          releaseAccountLease: newStreamResult.releaseAccountLease,
+        },
         onStreamComplete: () => {
           newStreamResult.releaseAccountLease();
           onStreamComplete?.();
@@ -700,11 +731,16 @@ export async function processNonStreamingResponse(
       context: currentTokenEstimationContext,
     });
 
+    // The response was fully processed: persist the next-turn parent.
+    if (pendingParentId) {
+      rememberParent(pendingParentId);
+    }
+
     scheduleAssistantComplete(onAssistantComplete, {
       sessionId: logicalSessionId,
       accountId: activeAccountId,
       chatSessionId: currentUiSessionId,
-      parentId: null,
+      parentId: pendingParentId,
       responseId: targetResponseId,
       userPrompt,
       finalPrompt,
@@ -1043,6 +1079,8 @@ export async function processStreamingResponse(
 
       let buffer = initialStreamBuffer;
       const usageAccumulator = createUsageAccumulator(0);
+      let pendingParentId: string | null = null;
+      let upstreamDone = false;
       const rememberSession = (sessionId: string | null) => {
         if (!sessionId || sessionId === currentUiSessionId) return;
         currentUiSessionId = sessionId;
@@ -1206,6 +1244,10 @@ export async function processStreamingResponse(
         });
         if (!policy.retryable) return false;
 
+        if (policy.reason === "corrupted_chat_history") {
+          invalidateLogicalThreadParent(midStreamRetry.sessionId);
+        }
+
         retryContext.retriesLeft--;
         console.warn(
           `🔄 [Chat] Stream recovery | account=${currentAccountId} | reason=${policy.reason} | error=${normalizedError.message.substring(0, 150)} | retries_left=${retryContext.retriesLeft}`,
@@ -1321,6 +1363,8 @@ export async function processStreamingResponse(
           : null;
         Object.assign(usageAccumulator, createUsageAccumulator(0));
         buffer = "";
+        pendingParentId = null;
+        upstreamDone = false;
 
         const newEntry = getStream(newStreamResult.completionId);
         removeStream(newStreamResult.completionId);
@@ -1383,11 +1427,18 @@ export async function processStreamingResponse(
           if (!dataStr) continue;
 
           if (dataStr === "[DONE]") {
+            upstreamDone = true;
             if (!clientDisconnected) {
               // Drain buffered deltas first: writing [DONE] directly would
               // overtake unflushed content and end the stream out of order.
               flushWrites();
-              await streamWriter.write("data: [DONE]\n\n");
+              // Hold [DONE] when a malformed-tool auto-retry may follow. The
+              // retry can produce more chunks; the single final [DONE] is
+              // emitted after all retries complete. Without midStreamRetry the
+              // upstream [DONE] is the terminal event and is forwarded now.
+              if (!midStreamRetry) {
+                await streamWriter.write("data: [DONE]\n\n");
+              }
             }
             break; // Exit loop immediately - no need to wait for connection close
           }
@@ -1453,8 +1504,8 @@ export async function processStreamingResponse(
                             updateStreamTargetResponseId(completionId, targetResponseId);
                           }
                         }
-                        // Next turn must parent to this assistant response (append, not edit)
-                        rememberParent(chunk["response.created"].response_id);
+                        // Commit the parent only after the stream finishes successfully.
+                        pendingParentId = chunk["response.created"].response_id;
                         // Qwen-internal metadata event — never forward to the client.
                         continue;
                       } else if (chunk.response_id && !targetResponseId) {
@@ -1462,7 +1513,7 @@ export async function processStreamingResponse(
                         if (targetResponseId) {
                           updateStreamTargetResponseId(completionId, targetResponseId);
                         }
-                        rememberParent(chunk.response_id);
+                        pendingParentId = chunk.response_id;
                       }
 
             applyUpstreamUsage(usageAccumulator, chunk.usage);
@@ -1688,6 +1739,361 @@ export async function processStreamingResponse(
         });
       }
 
+      // ── Auto-retry malformed tool calls BEFORE finish reason ────────────
+      // Must run before finish-reason/[DONE] so the client never sees a
+      // premature finish_reason or [DONE] before the retry's chunks.
+      if (
+        !clientDisconnected &&
+        midStreamRetry &&
+        toolParser &&
+        config.retry.autoRetryMalformedTools !== false
+      ) {
+        let malformedRetryCount = midStreamRetry.malformedRetryCount ?? 0;
+        const maxMalformedRetries = config.retry.autoRetryMalformedToolsMax;
+        let activeRetryStream: ReadableStream<Uint8Array> | null = null;
+
+        while (malformedRetryCount < maxMalformedRetries) {
+          if (!toolParser) break;
+          const allToolsFailed =
+            toolParser.getMalformedToolCalls().length > 0 &&
+            toolParser.getEmittedToolCallCount() === 0;
+          if (!allToolsFailed) break;
+
+          const malformedCalls = toolParser.getMalformedToolCalls();
+          const malformedCount = malformedCalls.length;
+
+          const undeclaredNames = malformedCalls
+            .flatMap((mc) => mc.undeclaredNames || [])
+            .filter((name, index, self) => self.indexOf(name) === index);
+
+          const availableToolNames = declaredTools
+            .map((t: any) => (t.type === "function" ? t.function?.name : t.name))
+            .filter((n: string | undefined): n is string => !!n);
+          const toolsHint =
+            availableToolNames.length > 0
+              ? `\n\nAvailable tools: ${availableToolNames.join(", ")}`
+              : "";
+
+          let errorMessage: string;
+          if (undeclaredNames.length > 0) {
+            errorMessage = `Your previous ${malformedCount} tool call(s) used undeclared tool names: ${undeclaredNames.join(", ")}. Only declared tools can be executed. Please retry with valid tool names.${toolsHint}`;
+          } else {
+            const previews = malformedCalls
+              .slice(0, 3)
+              .map((mc) => mc.contentPreview?.substring(0, 100) || "(empty)")
+              .join("\n  - ");
+            errorMessage = `Your previous ${malformedCount} tool call(s) were malformed and could not be executed. The JSON was invalid or truncated. Please retry with valid JSON.\n\nFailed attempt(s):\n  - ${previews}${toolsHint}`;
+          }
+
+          logger.warn("[chat] stream: auto-retrying malformed tool calls", {
+            malformedCount,
+            undeclaredNames,
+            completionId,
+            retryAttempt: malformedRetryCount + 1,
+            maxRetries: maxMalformedRetries,
+          });
+
+          const retryPrompt = `${midStreamRetry.fullPrompt}\n\n[SYSTEM CORRECTION]\n${errorMessage}\n\nPlease retry your tool call(s) with correct JSON and valid tool names from the available tools list above.`;
+
+          // Release the current stream (original or previous retry) and lease.
+          const streamToCancel = activeRetryStream ?? stream;
+          try {
+            await streamToCancel.cancel();
+          } catch (cancelErr) {
+            // Ignore cancel errors
+          }
+          midStreamRetry.releaseAccountLease();
+
+          const newStreamResult = await acquireUpstreamStream({
+            finalPrompt: retryPrompt,
+            fullPrompt: retryPrompt,
+            isThinkingModel: midStreamRetry.isThinkingModel,
+            model: body.model,
+            reasoningMode: midStreamRetry.reasoningMode,
+            shouldResetUpstreamThread: true,
+            allFiles: midStreamRetry.allFiles,
+            isNewSession: midStreamRetry.isNewSession,
+            sessionId: midStreamRetry.sessionId,
+            useThreadNative: midStreamRetry.useThreadNative,
+            updateLogicalThread: midStreamRetry.updateLogicalThread,
+            allowThreadReuse: midStreamRetry.allowThreadReuse,
+            forceNewChat: true,
+            preferredAccountId: midStreamRetry.activeAccountId,
+            excludeAccountIds: undefined,
+            messageCount: midStreamRetry.messageCount,
+            fullMessageCount: midStreamRetry.fullMessageCount,
+            toolsCount: midStreamRetry.toolsCount,
+            requestPersonalizationInstruction:
+              midStreamRetry.requestPersonalizationInstruction,
+            contextMode: "replay",
+            requestSignal: c.req.raw.signal,
+            messages: midStreamRetry.messages,
+          });
+
+          if ("error" in newStreamResult) {
+            logger.error("[chat] stream: auto-retry failed to acquire stream", {
+              error: newStreamResult.error?.message,
+              completionId,
+            });
+            break;
+          }
+
+          // P1.1: client may have disconnected while acquiring the retry stream.
+          // Release the fresh lease (idempotent) and stop — nobody will read it.
+          if (clientDisconnected || c.req.raw.signal.aborted) {
+            newStreamResult.releaseAccountLease();
+            break;
+          }
+
+          console.log(
+            `🔄 [Chat] Auto-retry (${malformedRetryCount + 1}/${maxMalformedRetries}) | ${newStreamResult.activeAccountLabel} | ${body.model} | chat=${newStreamResult.uiSessionId.substring(0, 12)} | reason=malformed_tool_calls`,
+          );
+
+          // Transfer the retry's stream registry entry to the original
+          // completionId so abort/stop target the active upstream stream.
+          const retryEntry = getStream(newStreamResult.completionId);
+          removeStream(newStreamResult.completionId);
+          if (retryEntry) {
+            registerStream(completionId, {
+              ...retryEntry,
+              targetResponseId: "",
+            });
+          }
+
+          // Reset to a fresh parser + dedup state so this attempt's stream is
+          // parsed exactly like the main stream: cumulative deltas are deduped
+          // via getIncrementalDelta, tool calls are re-emitted, and malformed
+          // detection is re-evaluated on the retry output.
+          toolParser = shouldParseToolCalls
+            ? new StreamingToolParser(declaredTools, { incrementalToolCalls: true })
+            : null;
+          lastRawContent = "";
+          lastRawContentLength = 0;
+          lastRawContentSuffix = "";
+          lastThinkingSummary = "";
+          lastThinkingSummaryLength = 0;
+          lastThinkingSummarySuffix = "";
+          targetResponseId = null;
+          pendingParentId = null;
+          upstreamDone = false;
+          let retryErrorPayload: unknown = null;
+
+          const retryReader = newStreamResult.stream.getReader();
+          activeReader = retryReader;
+          activeRetryStream = newStreamResult.stream;
+          retryContext.releaseAccountLease = newStreamResult.releaseAccountLease;
+          currentUiSessionId = newStreamResult.uiSessionId;
+          currentAccountId = newStreamResult.activeAccountId;
+          currentAccountLabel = newStreamResult.activeAccountLabel;
+          const retryDecoder = new TextDecoder();
+          let retryBuf = "";
+
+          retryReadLoop: while (true) {
+            const { done, value } = await retryReader.read();
+            if (done) break;
+
+            retryBuf += retryDecoder.decode(value, { stream: true });
+            let lineStart = 0;
+            let lineEnd = retryBuf.indexOf("\n", lineStart);
+
+            for (; lineEnd !== -1; lineEnd = retryBuf.indexOf("\n", lineStart)) {
+              let dataStr = "";
+              if (retryBuf.startsWith("data:", lineStart)) {
+                let s = lineStart + 5;
+                if (retryBuf.charCodeAt(s) === 32) s++;
+                let e = lineEnd;
+                if (e > s && retryBuf.charCodeAt(e - 1) === 13) e--;
+                dataStr = retryBuf.substring(s, e);
+              }
+              lineStart = lineEnd + 1;
+              if (!dataStr) continue;
+              // Critical detail 2: skip upstream [DONE] so a duplicate [DONE]
+              // does not leak to the client. The single final [DONE] is emitted
+              // after all retries complete.
+              if (dataStr === "[DONE]") {
+                upstreamDone = true;
+                continue;
+              }
+
+              // Parse the retry stream exactly like the main stream: metadata
+              // events are consumed (never forwarded), cumulative deltas are
+              // deduped, and text/tool deltas stream through emitAnswerText.
+              let parsedChunk: any;
+              try {
+                parsedChunk = JSON.parse(dataStr);
+              } catch {
+                // Incomplete/partial chunk — drop it instead of leaking raw JSON.
+                continue;
+              }
+
+              if (parsedChunk.error) {
+                // Upstream error on the retry channel. Abort retries and let the
+                // normal streaming error path surface it to the client.
+                retryErrorPayload = parsedChunk.error;
+                break retryReadLoop;
+              }
+
+              if (parsedChunk["response.created"]) {
+                if (parsedChunk["response.created"].chat_id) {
+                  rememberSession(parsedChunk["response.created"].chat_id);
+                }
+                if (!targetResponseId) {
+                  targetResponseId = parsedChunk["response.created"].response_id;
+                  if (targetResponseId) {
+                    updateStreamTargetResponseId(completionId, targetResponseId);
+                  }
+                }
+                pendingParentId = parsedChunk["response.created"].response_id;
+                // Qwen-internal metadata event — never forward to the client.
+                continue;
+              } else if (parsedChunk.response_id && !targetResponseId) {
+                rememberSession(extractChatSessionId(parsedChunk));
+                targetResponseId = parsedChunk.response_id;
+                if (targetResponseId) {
+                  updateStreamTargetResponseId(completionId, targetResponseId);
+                }
+                pendingParentId = parsedChunk.response_id;
+              }
+
+              applyUpstreamUsage(usageAccumulator, parsedChunk.usage);
+
+              const delta = parsedChunk?.choices?.[0]?.delta;
+              if (!delta) {
+                // Non-metadata event without a delta — consume, don't forward.
+                continue;
+              }
+
+              let vStr = "";
+              let foundStr = false;
+              let isThinkingChunk = false;
+
+              if (delta.phase === "thinking_summary") {
+                isThinkingChunk = true;
+                const formattedSummary = formatThinkingSummaryContent(delta);
+                if (formattedSummary) {
+                  const result = getIncrementalDelta(
+                    lastThinkingSummary,
+                    formattedSummary,
+                    lastThinkingSummaryLength,
+                    lastThinkingSummarySuffix,
+                  );
+                  vStr = result.delta;
+                  lastThinkingSummary = result.matchedContent;
+                  lastThinkingSummaryLength = result.contentLength;
+                  lastThinkingSummarySuffix = result.contentSuffix;
+                  if (vStr) foundStr = true;
+                }
+              } else if (delta.content !== undefined) {
+                const newContent = delta.content || "";
+                const result = getIncrementalDelta(
+                  lastRawContent,
+                  newContent,
+                  lastRawContentLength,
+                  lastRawContentSuffix,
+                );
+                vStr = result.delta;
+                if (vStr) {
+                  lastRawContent = result.matchedContent;
+                  lastRawContentLength = result.contentLength;
+                  lastRawContentSuffix = result.contentSuffix;
+                  foundStr = true;
+                }
+              }
+
+              if (foundStr && vStr !== "") {
+                if (vStr === "FINISHED") continue;
+                if (isThinkingChunk) {
+                  emittedModelOutput = true;
+                  reasoningBuffer += vStr;
+                  writeDeltaEvent({ reasoning_content: vStr });
+                } else {
+                  await emitAnswerText(vStr);
+                }
+              }
+            }
+
+            retryBuf = lineStart > 0 ? retryBuf.slice(lineStart) : retryBuf;
+          }
+
+          // Upstream error on the retry channel: surface it and stop retrying.
+          if (retryErrorPayload) {
+            const errSummary =
+              typeof retryErrorPayload === "object" && retryErrorPayload !== null
+                ? (retryErrorPayload as any).message ??
+                  JSON.stringify(retryErrorPayload).substring(0, 240)
+                : String(retryErrorPayload);
+            throw new Error(
+              `Qwen stream error during malformed-tool retry: ${errSummary}`,
+            );
+          }
+
+          // Flush the retry parser (now the active toolParser) to emit any
+          // remaining buffered content.
+          if (toolParser) {
+            const retryFlush = toolParser.flush();
+            if (retryFlush.text) {
+              finalContent += retryFlush.text;
+              writeDeltaEvent({ content: retryFlush.text });
+            }
+            for (const tcDelta of retryFlush.toolCallDeltas) {
+              writeDeltaEvent({
+                tool_calls: [
+                  {
+                    index: tcDelta.index,
+                    ...(tcDelta.id ? { id: tcDelta.id } : {}),
+                    ...(tcDelta.type ? { type: tcDelta.type } : {}),
+                    function: {
+                      ...(tcDelta.function.name
+                        ? { name: tcDelta.function.name }
+                        : {}),
+                      ...(tcDelta.function.arguments !== undefined
+                        ? { arguments: tcDelta.function.arguments }
+                        : {}),
+                    },
+                  },
+                ],
+              });
+            }
+            for (const tc of retryFlush.toolCalls) {
+              writeDeltaEvent({
+                tool_calls: [
+                  {
+                    index: toolParser.getEmittedToolCallCount() - 1,
+                    id: tc.id,
+                    type: "function",
+                    function: {
+                      name: tc.name,
+                      arguments: JSON.stringify(tc.arguments),
+                    },
+                  },
+                ],
+              });
+            }
+          }
+
+          // Update state for cleanup.
+          currentTokenEstimationContext = newStreamResult.tokenEstimationContext;
+          // The active toolParser already points at this attempt's parser, so
+          // finish-reason + malformed detection use its results.
+
+          // Propagate retry bookkeeping so a subsequent iteration (or the
+          // non-streaming recursion) sees the updated lease / account / count.
+          midStreamRetry.releaseAccountLease = newStreamResult.releaseAccountLease;
+          midStreamRetry.activeAccountId = newStreamResult.activeAccountId;
+          midStreamRetry.malformedRetryCount = malformedRetryCount + 1;
+
+          malformedRetryCount++;
+        }
+      }
+
+      // The active upstream attempt completed: persist the next-turn parent.
+      // Failed/aborted attempts simply never commit, leaving the last successful
+      // parent as the append point for the next turn.
+      if (pendingParentId && upstreamDone) {
+        rememberParent(pendingParentId);
+        pendingParentId = null;
+      }
+
       // Finish reason + usage + [DONE]
       const usage = enrichUsageWithContextMeter(
         buildUsage(usageAccumulator),
@@ -1731,142 +2137,6 @@ export async function processStreamingResponse(
       }
 
       if (!clientDisconnected) {
-        // Auto-retry if all tool calls were malformed (no successful tool calls)
-        // Retry regardless of whether content was emitted, since the tool calls
-        // are the primary output and the error must go back to Qwen, not the user.
-        const allToolsFailed = toolParser && toolParser.getMalformedToolCalls().length > 0 && toolParser.getEmittedToolCallCount() === 0;
-        if (
-          allToolsFailed &&
-          toolParser &&
-          config.retry.autoRetryMalformedTools !== false &&
-          midStreamRetry
-        ) {
-          const malformedCalls = toolParser.getMalformedToolCalls();
-          const malformedCount = malformedCalls.length;
-
-          // Build detailed error message with available tools list
-          const undeclaredNames = malformedCalls
-            .flatMap((mc) => mc.undeclaredNames || [])
-            .filter((name, index, self) => self.indexOf(name) === index);
-
-          const availableToolNames = declaredTools
-            .map((t: any) => t.type === "function" ? t.function?.name : t.name)
-            .filter((n: string | undefined): n is string => !!n);
-          const toolsHint = availableToolNames.length > 0
-            ? `\n\nAvailable tools: ${availableToolNames.join(", ")}`
-            : "";
-
-          let errorMessage: string;
-          if (undeclaredNames.length > 0) {
-            errorMessage = `Your previous ${malformedCount} tool call(s) used undeclared tool names: ${undeclaredNames.join(", ")}. Only declared tools can be executed. Please retry with valid tool names.${toolsHint}`;
-          } else {
-            const previews = malformedCalls
-              .slice(0, 3)
-              .map((mc) => mc.contentPreview?.substring(0, 100) || "(empty)")
-              .join("\n  - ");
-            errorMessage = `Your previous ${malformedCount} tool call(s) were malformed and could not be executed. The JSON was invalid or truncated. Please retry with valid JSON.\n\nFailed attempt(s):\n  - ${previews}${toolsHint}`;
-          }
-
-          logger.warn("[chat] stream: auto-retrying malformed tool calls", {
-            malformedCount,
-            undeclaredNames,
-            completionId,
-          });
-
-          // Build retry prompt with error context
-          const retryPrompt = `${midStreamRetry.fullPrompt}\n\n[SYSTEM CORRECTION]\n${errorMessage}\n\nPlease retry your tool call(s) with correct JSON and valid tool names from the available tools list above.`;
-
-          // Release current stream and lease
-          try {
-            await stream.cancel();
-          } catch (cancelErr) {
-            // Ignore cancel errors
-          }
-          midStreamRetry.releaseAccountLease();
-
-          // Acquire new stream for retry
-          const newStreamResult = await acquireUpstreamStream({
-            finalPrompt: retryPrompt,
-            fullPrompt: retryPrompt,
-            isThinkingModel: midStreamRetry.isThinkingModel,
-            model: body.model,
-            contextModelId: midStreamRetry.contextModelId,
-            shouldResetUpstreamThread: true,
-            allFiles: midStreamRetry.allFiles,
-            isNewSession: midStreamRetry.isNewSession,
-            sessionId: midStreamRetry.sessionId,
-            useThreadNative: midStreamRetry.useThreadNative,
-            updateLogicalThread: midStreamRetry.updateLogicalThread,
-            allowThreadReuse: midStreamRetry.allowThreadReuse,
-            forceNewChat: true,
-            preferredAccountId: null,
-            excludeAccountIds: undefined,
-            messageCount: midStreamRetry.messageCount,
-            fullMessageCount: midStreamRetry.fullMessageCount,
-            toolsCount: midStreamRetry.toolsCount,
-            requestPersonalizationInstruction: midStreamRetry.requestPersonalizationInstruction,
-            contextMode: "replay",
-            requestSignal: c.req.raw.signal,
-            messages: midStreamRetry.messages,
-          });
-
-          if ("error" in newStreamResult) {
-            // Retry failed, log and fall through to error injection
-            logger.error("[chat] stream: auto-retry failed to acquire stream", {
-              error: newStreamResult.error?.message,
-              completionId,
-            });
-          } else {
-            console.log(`🔄 [Chat] Auto-retry | ${newStreamResult.activeAccountLabel} | ${body.model} | chat=${newStreamResult.uiSessionId.substring(0, 12)} | reason=malformed_tool_calls`);
-
-            // Read from new stream and continue writing to the same streamWriter
-            const retryReader = newStreamResult.stream.getReader();
-            activeReader = retryReader;
-            retryContext.releaseAccountLease = newStreamResult.releaseAccountLease;
-            currentUiSessionId = newStreamResult.uiSessionId;
-            currentAccountId = newStreamResult.activeAccountId;
-            currentAccountLabel = newStreamResult.activeAccountLabel;
-            const retryDecoder = new TextDecoder();
-            let retryBuffer = "";
-
-            while (true) {
-              const { done, value } = await retryReader.read();
-              if (done) break;
-
-              retryBuffer += retryDecoder.decode(value, { stream: true });
-              let lineStart = 0;
-              let lineEnd = retryBuffer.indexOf("\n", lineStart);
-
-              for (; lineEnd !== -1; lineEnd = retryBuffer.indexOf("\n", lineStart)) {
-                let dataStr = "";
-                if (retryBuffer.startsWith("data:", lineStart)) {
-                  let s = lineStart + 5;
-                  if (retryBuffer.charCodeAt(s) === 32) s++;
-                  let e = lineEnd;
-                  if (e > s && retryBuffer.charCodeAt(e - 1) === 13) e--;
-                  dataStr = retryBuffer.substring(s, e);
-                }
-                lineStart = lineEnd + 1;
-                if (!dataStr) continue;
-                if (dataStr === "[DONE]") continue;
-
-                // Forward the chunk through the write buffer so it stays
-                // ordered with previously buffered deltas.
-                bufferedWrite(`data: ${dataStr}\n\n`);
-              }
-
-              retryBuffer = lineStart > 0 ? retryBuffer.slice(lineStart) : retryBuffer;
-            }
-
-            // Update state for cleanup
-            currentTokenEstimationContext =
-              newStreamResult.tokenEstimationContext;
-
-            // Skip error injection since we successfully retried
-            toolParser?.clearMalformedToolCalls();
-          }
-        }
-
         // Log malformed tool calls but do NOT inject error as visible content.
         // The auto-retry above handles sending the error back to Qwen.
         // If we reach here, retries were exhausted or unavailable — just log it.

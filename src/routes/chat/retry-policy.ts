@@ -183,7 +183,10 @@ export function shouldRetryInvalidInputOnSameAccount(
   reason: string,
   alreadyRetried: boolean,
 ): boolean {
-  return reason === "invalid_input" && !alreadyRetried;
+  return (
+    (reason === "invalid_input" || reason === "corrupted_chat_history") &&
+    !alreadyRetried
+  );
 }
 
 /** Keep one retry on the current account while an upstream generation settles;
@@ -417,10 +420,12 @@ export function classifyRetryAction(
 
   // Specialized recoveries first (even if wrapped as RetryableQwenStreamError)
     // Corrupted chat history must win over broad "invalid input" matches.
+    // Try a fresh chat on the SAME account first — the corruption is in the
+    // upstream parent chain, not the account. Only rotate if the rebuild fails.
     if (isCorruptedChatHistoryError(err)) {
       return {
         retryable: true,
-        switchAccount: true,
+        switchAccount: false,
         forceNewChat: true,
         retryWithFullPrompt: true,
         retryAfterMs: 0,

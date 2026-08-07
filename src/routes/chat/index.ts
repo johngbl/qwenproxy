@@ -24,6 +24,7 @@ import { logger } from "../../core/logger.ts";
 import { getContextMeterHeaders, type ContextMeterMode } from "../../services/context-meter.ts";
 import {
   getLogicalThreadState,
+  invalidateLogicalThreadParent,
   RetryableQwenStreamError,
 } from "../../services/qwen.ts";
 import {
@@ -63,6 +64,7 @@ export async function chatCompletions(c: Context) {
       currentPrompt,
       modelId,
       enableThinking,
+      reasoningMode,
       allFiles,
       currentFiles,
       shouldParseToolCalls,
@@ -161,6 +163,7 @@ export async function chatCompletions(c: Context) {
       fullPrompt: fullPromptForRequest,
       isThinkingModel: ctx.isThinkingModel,
       model: modelId,
+      reasoningMode,
       contextModelId: modelId,
       shouldResetUpstreamThread: ctx.shouldResetUpstreamThread,
       allFiles: files,
@@ -240,6 +243,8 @@ export async function chatCompletions(c: Context) {
         fullPrompt: fullPromptForRequest,
         isThinkingModel: ctx.isThinkingModel,
         contextModelId: modelId,
+        reasoningMode,
+        activeAccountId: streamResult.activeAccountId,
         allFiles: files,
         isNewSession: ctx.isNewSession,
         sessionId: ctx.sessionId,
@@ -281,6 +286,10 @@ export async function chatCompletions(c: Context) {
             const policy = classifyRetryAction(streamErr, {
               requestAborted: c.req.raw.signal.aborted,
             });
+
+            if (policy.reason === "corrupted_chat_history") {
+              invalidateLogicalThreadParent(ctx.sessionId);
+            }
 
             // Prefer explicit RetryableQwenStreamError OR generic retryable policy
             const canRetry =
@@ -453,6 +462,8 @@ export async function chatCompletions(c: Context) {
                 fullPrompt: fullPromptForRequest,
                 isThinkingModel: ctx.isThinkingModel,
                 contextModelId: modelId,
+                reasoningMode,
+                activeAccountId: newStreamResult.activeAccountId,
                 allFiles: retryFiles,
                 isNewSession: ctx.isNewSession,
                 sessionId: ctx.sessionId,

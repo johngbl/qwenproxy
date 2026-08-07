@@ -38,6 +38,7 @@ import {
 	fetchQwenModels,
 	getQwenErrorCode,
 	getLogicalThreadState,
+	invalidateLogicalThreadParent,
 	type LogicalThreadEntry,
 	QwenSessionExpiredError,
 	RetryableQwenStreamError,
@@ -133,6 +134,7 @@ export interface AcquireParams {
 	fullPrompt: string;
 	isThinkingModel: boolean;
 	model: string;
+	reasoningMode?: "auto" | "thinking" | "fast";
 	shouldResetUpstreamThread: boolean;
 	allFiles: QwenFileEntry[];
 	isNewSession: boolean;
@@ -277,6 +279,7 @@ export async function acquireUpstreamStream(
 		finalPrompt,
 		isThinkingModel,
 		model,
+		reasoningMode,
 		shouldResetUpstreamThread,
 		allFiles,
 		isNewSession,
@@ -300,7 +303,16 @@ export async function acquireUpstreamStream(
 		!!threadState &&
 		!forceNewChat &&
 		!!threadState.chatSessionId &&
-		threadState.chatSessionId.length > 0;
+		threadState.chatSessionId.length > 0 &&
+		!!threadState.parentId;
+	// A thread with an upstream chat but no committed parent is dirty (failed
+	// first turn, interrupted generation, corrupted history). It must not be
+	// appended to; rebuild a fresh chat with the full prompt instead.
+	const threadMissingParent =
+		!!threadState &&
+		!!threadState.chatSessionId &&
+		threadState.chatSessionId.length > 0 &&
+		!threadState.parentId;
 	const existingThread = canReuseUpstreamChat ? threadState : null;
 
 	// preferredAccountId:
@@ -406,8 +418,10 @@ export async function acquireUpstreamStream(
 			// a rollover summary or a full-history rebuild from the retry layer).
 			const recreatingOnNewAccount =
 				!!stickyThreadAccountId && accountId !== stickyThreadAccountId;
-			const attemptForceNewChat = forceNewChat || recreatingOnNewAccount;
-			const attemptFinalPrompt = recreatingOnNewAccount
+			const mustReplayFullContext =
+				recreatingOnNewAccount || threadMissingParent;
+			const attemptForceNewChat = forceNewChat || mustReplayFullContext;
+			const attemptFinalPrompt = mustReplayFullContext
 				? params.fullPrompt
 				: finalPrompt;
 			const result = await tryCreateStreamWithRetry(
@@ -415,6 +429,7 @@ export async function acquireUpstreamStream(
 					finalPrompt: attemptFinalPrompt,
 					isThinkingModel,
 					model,
+					reasoningMode,
 					shouldResetUpstreamThread,
 					allFiles,
 					sessionId,
@@ -422,12 +437,12 @@ export async function acquireUpstreamStream(
 					updateLogicalThread,
 					forceNewChat: attemptForceNewChat,
 					existingThread:
-						!recreatingOnNewAccount &&
+						!mustReplayFullContext &&
 						existingThread &&
 						existingThread.accountId === accountId
 							? existingThread
 							: null,
-					messageCount: recreatingOnNewAccount
+					messageCount: mustReplayFullContext
 						? (params.fullMessageCount ?? params.messageCount)
 						: params.messageCount,
 					fullMessageCount: params.fullMessageCount,
@@ -436,7 +451,7 @@ export async function acquireUpstreamStream(
 						params.requestPersonalizationInstruction,
 					contextModelId: params.contextModelId,
 					fullPrompt: params.fullPrompt,
-					contextMode: recreatingOnNewAccount
+					contextMode: mustReplayFullContext
 						? "replay"
 						: params.contextMode,
 					requestSignal: params.requestSignal,
@@ -638,6 +653,7 @@ async function tryCreateStreamWithRetry(
 		fullPrompt: string;
 		isThinkingModel: boolean;
 		model: string;
+		reasoningMode?: "auto" | "thinking" | "fast";
 		shouldResetUpstreamThread: boolean;
 		allFiles: QwenFileEntry[];
 		sessionId: string | null;
@@ -741,6 +757,12 @@ async function tryCreateStreamWithRetry(
 				timeoutMs: config.concurrency.busyWaitMs,
 				signal: params.requestSignal,
 			});
+			// Client may have disconnected while waiting for the lease. Bail before
+			// spending time on personalization sync / captcha solve.
+			if (params.requestSignal?.aborted) {
+				accountLease.release();
+				return { success: false, error: new Error("client aborted before stream creation") };
+			}
 			const hasRequestPersonalization =
 				params.requestPersonalizationInstruction !== null &&
 				params.requestPersonalizationInstruction !== undefined;
@@ -802,7 +824,7 @@ async function tryCreateStreamWithRetry(
 					{ accountId: currentAccountId },
 				);
 				result = await createQwenStream(
-							promptForUpstream,
+						promptForUpstream,
 						params.isThinkingModel,
 						params.model,
 						threadParentId,
@@ -814,8 +836,9 @@ async function tryCreateStreamWithRetry(
 										? null
 										: (params.existingThread?.chatSessionId ?? null),
 									forceNewChat: false,
+									reasoningMode: params.reasoningMode,
 								}
-							: undefined,
+							: params.reasoningMode ? { reasoningMode: params.reasoningMode } : undefined,
 					);
 
 				const contextMeter = buildContextMeterSnapshot({
@@ -1022,6 +1045,13 @@ async function tryCreateStreamWithRetry(
 		const policy = classifyRetryAction(err, {
 			requestAborted: params.requestSignal?.aborted === true,
 		});
+
+		// Corrupted history means the stored parent chain is unusable. Purge the
+		// parent immediately so a failed recovery cannot leave the tainted thread
+		// bound for the next turn.
+		if (policy.reason === "corrupted_chat_history") {
+			invalidateLogicalThreadParent(params.sessionId);
+		}
 
 		// A generic invalid_input is often a stale/corrupted upstream chat rather
 		// than an account failure. Rebuild it once on the same account first. If the

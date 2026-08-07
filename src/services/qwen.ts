@@ -520,6 +520,29 @@ export function updateSessionParent(
   });
 }
 
+/**
+ * Invalidate the stored parent for a logical thread without forgetting the
+ * upstream chat binding. The next request will see a missing parent and must
+ * rebuild the upstream chat with full context instead of appending to a
+ * possibly corrupted parent chain.
+ */
+export function invalidateLogicalThreadParent(
+  logicalSessionId: string | null | undefined,
+): void {
+  if (!logicalSessionId) return;
+
+  const existing = getLogicalThreadState(logicalSessionId);
+  if (!existing) return;
+
+  updateSessionParent(existing.chatSessionId, null, existing.accountId);
+  updateLogicalThreadState(logicalSessionId, {
+    accountId: existing.accountId,
+    chatSessionId: existing.chatSessionId,
+    parentId: null,
+    instructionsSent: existing.instructionsSent,
+  });
+}
+
 export function clearAllSessionsForAccount(accountId: string): void {
   let removed = 0;
 
@@ -1585,6 +1608,18 @@ export async function syncQwenRequestPersonalization(
     rememberActivePersonalization(cacheKey, instruction, metadata, "memory");
     // Personalization unchanged - no log needed
     return true;
+  }
+
+  // Diagnostic: log when the in-memory hash exists but differs, so we can
+  // trace what is destabilising the personalization hash between requests.
+  if (!bypassCache && syncHash && cachedHash && cachedHash !== syncHash) {
+    logger.debug("[Qwen] personalization cache miss (hash changed)", {
+      accountId: cacheKey,
+      cachedHash,
+      newHash: syncHash,
+      model: metadata.model || null,
+      tools: metadata.toolsCount ?? 0,
+    });
   }
 
   // 2. Check DB cache (survives restarts) (skipped on forceSync)
@@ -2758,6 +2793,7 @@ export async function createQwenStream(
   options?: {
     chatSessionId?: string | null;
     forceNewChat?: boolean;
+    reasoningMode?: "auto" | "thinking" | "fast";
   },
 ): Promise<{
   stream: ReadableStream;
@@ -2805,6 +2841,7 @@ async function createQwenStreamInternal(
   options: {
     chatSessionId?: string | null;
     forceNewChat?: boolean;
+    reasoningMode?: "auto" | "thinking" | "fast";
   } | undefined,
   releaseStreamLock: () => void,
 ): Promise<{
@@ -2983,15 +3020,26 @@ async function createQwenStreamInternal(
         models: [model],
         model: "",
         chat_type: "t2t",
-        feature_config: {
-          thinking_enabled: enableThinking,
-          output_schema: "phase",
-          research_mode: "normal",
-          auto_thinking: false,
-          thinking_mode: enableThinking ? "Thinking" : "Fast",
-          ...(enableThinking ? { thinking_format: "summary" } : {}),
-          auto_search: true,
-        },
+        feature_config: (() => {
+          // Determine reasoning mode: explicit option takes precedence, otherwise derive from enableThinking
+          // - reasoningMode="auto": Qwen decides (auto_thinking=true, thinking_mode="Auto")
+          // - reasoningMode="thinking": force thinking ON (thinking_mode="Thinking")
+          // - reasoningMode="fast": force thinking OFF (thinking_mode="Fast")
+          // - No reasoningMode + enableThinking=false: legacy "fast" mode
+          // - No reasoningMode + enableThinking=true: legacy "thinking" mode
+          const mode = options?.reasoningMode ?? (enableThinking ? "thinking" : "fast");
+          const thinkingMode = mode === "thinking" ? "Thinking" : mode === "fast" ? "Fast" : "Auto";
+          const thinkingEnabled = mode !== "fast";
+          return {
+            thinking_enabled: thinkingEnabled,
+            output_schema: "phase",
+            research_mode: "normal",
+            auto_thinking: mode === "auto",
+            thinking_mode: thinkingMode,
+            ...(thinkingEnabled ? { thinking_format: "summary" } : {}),
+            auto_search: true,
+          };
+        })(),
         extra: {
           meta: {
             subChatType: "t2t",

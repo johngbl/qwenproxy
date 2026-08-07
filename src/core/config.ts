@@ -69,7 +69,7 @@ const envSchema = z
     ACCOUNT_BUSY_WAIT_MS: z.string().default("30000"),
     ACCOUNT_INIT_FAILURE_COOLDOWN_MS: z.string().default("300000"),
     CHAT_IN_PROGRESS_RETRY_DELAY_MS: z.string().default("2000"),
-    CHAT_IN_PROGRESS_BUSY_MS: z.string().default("5000"),
+    CHAT_IN_PROGRESS_BUSY_MS: z.string().default("8000"),
     MID_STREAM_FAILOVER_THRESHOLD: z.string().default("2"),
     MID_STREAM_FAILOVER_BUSY_MS: z.string().default("60000"),
 

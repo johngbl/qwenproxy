@@ -734,15 +734,22 @@ function inspectIncrementalJsonToolObject(
 }
 
 /**
- * Repair one narrow typo observed in Qwen tool-call output:
- * `"arguments>{...}` should be `"arguments": {...}`. Do not apply broad JSON
- * mutation here because tool arguments can legitimately contain arbitrary text.
+ * Repair narrow typos observed in Qwen tool-call output:
+ * - `"arguments>{...}` should be `"arguments": {...}`
+ * - `,arguments":{...}` should be `,"arguments":{...}` (missing opening quote)
+ * Do not apply broad JSON mutation here because tool arguments can legitimately
+ * contain arbitrary text.
  */
 function repairCommonMalformedToolJson(content: string): string {
-  return content.replace(
-    /([,{]\s*)"arguments\s*>\s*(?=\{|\[|")/g,
-    '$1"arguments": ',
-  );
+  return content
+    .replace(
+      /([,{]\s*)"arguments\s*>\s*(?=\{|\[|")/g,
+      '$1"arguments": ',
+    )
+    .replace(
+      /([,{]\s*)arguments"\s*:/g,
+      '$1"arguments":',
+    );
 }
 
 // ─── StreamingToolParser ───────────────────────────────────────────────────────
