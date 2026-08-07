@@ -4,7 +4,7 @@
 
 # QwenBridge
 
-API compatível com OpenAI/Anthropic que conecta clientes ao **Qwen (`chat.qwen.ai`)** com suporte a múltiplas contas, tool calling robusto, thread-native, uploads multimodais, **Responses API completa com memória persistente** e sessões persistentes. Inclui Playwright com stealth, retries para erros transitórios, variantes públicas base/`-fast`, cache comprimido, registro de capabilities por modelo e observabilidade.
+API compatível com OpenAI/Anthropic que conecta clientes ao **Qwen (`chat.qwen.ai`)** com suporte a múltiplas contas, tool calling robusto, thread-native, uploads multimodais, **Responses API completa com memória persistente** e sessões persistentes. Inclui Playwright com stealth, retries para erros transitórios, variantes públicas base/`-fast`/`-thinking`, cache comprimido, registro de capabilities por modelo e observabilidade.
 
 [![CI](https://github.com/johngbl/QwenBridge/actions/workflows/ci.yml/badge.svg)](https://github.com/johngbl/QwenBridge/actions/workflows/ci.yml)
 [![TypeScript](https://img.shields.io/badge/TypeScript-7.0-blue)](https://www.typescriptlang.org/)
@@ -27,7 +27,7 @@ API compatível com OpenAI/Anthropic que conecta clientes ao **Qwen (`chat.qwen.
 - **Personalization sync** — system + tools completos são sincronizados em `/settings/personalization` via `POST /api/v2/users/user/settings/update`; o cache por conteúdo evita updates repetidos e instruções acima do limite seguem inline; aplica settings seguras (`largeTextAsFile=false`, memory off, tools internas off).
 - **Senhas criptografadas at-rest** no SQLite.
 - **Uploads multimodais** — imagens, vídeo, áudio e documentos via OSS do Qwen.
-- **Modelos atuais** — catálogo live da família `qwen3.x` (incluindo `qwen3.8-max`) + variante sintética `-fast` para todos os modelos + registro de capabilities (vision, thinking, modalities)
+- **Modelos atuais** — catálogo live da família `qwen3.x` (incluindo `qwen3.8-max`) + variantes sintéticas `-fast`/`-thinking` para todos os modelos + registro de capabilities (vision, thinking, modalities)
 - **Thinking nativo** — raciocínio chega via `phase: thinking_summary` do upstream, sem sanitização de tags; o modelo é instruído a nunca emitir `<think>` no conteúdo visível
 - **Observabilidade** — `/health`, `/metrics` (Prometheus), watchdog e logs com emojis.
 - **Deploy simples** — `npm`, Docker e graceful shutdown.
@@ -136,10 +136,11 @@ interface ModelCapabilities {
 
 ### Variantes sintéticas
 
-- modelo base — Thinking por padrão, ex.: `qwen3.7-plus`
+- modelo base — modo **Auto** (o Qwen decide se raciocina), ex.: `qwen3.7-plus`
 - `-fast` — Fast com thinking desativado, ex.: `qwen3.7-plus-fast`
+- `-thinking` — Thinking forçado, ex.: `qwen3.7-plus-thinking`
 
-A variante `-fast` usa a mesma janela de contexto e o mesmo modelo upstream do modelo base. IDs antigos `-no-thinking`/`-thinking` não são publicados; são apenas normalizados internamente para compatibilidade legada.
+As variantes usam a mesma janela de contexto e o mesmo modelo upstream do modelo base; o modo de raciocínio é selecionado pelo `feature_config` do Qwen (Auto/Fast/Thinking). O ID antigo `-no-thinking` não é publicado; é apenas normalizado internamente para `-fast` por compatibilidade legada.
 
 ---
 
@@ -254,6 +255,8 @@ HOST=127.0.0.1
 npm start
 ```
 
+> **Nota:** o servidor não inicia sem pelo menos uma conta configurada (via `.env`/`QWEN_ACCOUNTS`, `npm run login` ou banco de contas).
+
 ### Startup multi-conta
 
 1. Prepara as contas em sequência, reutilizando o profile persistente quando ele já está autenticado.
@@ -354,6 +357,8 @@ Fingerprint estável por conta (UA, locale, viewport, hardware/WebGL) é aplicad
 | `RETRY_MAX_ATTEMPTS` | `3` | Tentativas por request (create-stream + mid-stream) |
 | `RETRY_MAX_ACCOUNT_SWITCHES` | `2` | Máximo de trocas de conta por request |
 | `RETRY_ON_UNKNOWN_UPSTREAM` | `true` | Retry/troca automática em erros upstream desconhecidos (denylist só para erros locais terminais) |
+| `RETRY_AUTO_MALFORMED_TOOLS` | `true` | Auto-retry quando todos os tool calls da resposta vêm malformados |
+| `RETRY_AUTO_MALFORMED_TOOLS_MAX` | `2` | Máximo de retries de tool calls malformados por resposta |
 
 
 
@@ -408,6 +413,8 @@ O proxy tenta recuperar erros transitórios sem quebrar thread-native/tools:
 | Quota / rate limit | Cooldown categorizado (`RateLimited`, `RateLimitTemporary`, …) |
 | `invalid_input` (“entrada ou anexo inválido”) | Retry forçando **novo chat** + contexto completo |
 | Chat not exist / session stale | Força novo chat na sessão lógica |
+| Tool calls malformados (todos inválidos) | Reparo local do JSON; se não resolver, auto-retry na mesma conta com novo chat e correção enviada ao modelo (até `RETRY_AUTO_MALFORMED_TOOLS_MAX`) |
+| `INVALID_FIRST_MSG` / histórico corrompido | Novo chat + contexto completo na **mesma conta** (a corrupção é da cadeia de parent, não da conta); o thread lógico contaminado é invalidado |
 
 Settings seguras aplicadas no sync de personalization (sem reescrever tudo da conta):
 
@@ -585,6 +592,7 @@ O parser suporta:
 - stream fragmentado / tool call sem open tag
 - **fuzzy match** seguro de nomes (`readFile` → `read_file`) quando há match único
 - tool names não declarados: podem ser preservados como texto literal (evita quebrar exemplos)
+- **auto-retry**: se todos os tool calls vierem malformados, o proxy tenta reparo local e, se necessário, repete a geração em novo chat informando o erro ao modelo (até `RETRY_AUTO_MALFORMED_TOOLS_MAX`)
 
 Tools internas da conta Qwen (web_search, code interpreter, etc.) ficam desligadas; o proxy usa as tools do cliente.
 
@@ -687,6 +695,24 @@ QwenBridge/
 | `npm run test:live` | Testes live/stress |
 | `npm run typecheck` | Verificar tipos |
 | `npm run benchmark:proxy` | Benchmark de latência |
+
+---
+
+## Scripts de instalação, início e atualização
+
+A pasta `scripts/` contém atalhos para instalar, iniciar e atualizar o projeto sem digitar os comandos manualmente.
+
+| Script | Windows | Linux/macOS | O que faz |
+|---|---|---|---|
+| Instalador | `scripts\install.bat` | `./scripts/install.sh` | Verifica Node 24+, roda `npm install`, cria `.env` a partir de `.env.example` se não existir |
+| Iniciador | `scripts\start.bat` | `./scripts/start.sh` | Verifica dependências e `.env`, inicia o servidor com `npm start` |
+| Atualizador | `scripts\update.bat` | `./scripts/update.sh` | `git pull` (se for repositório), `npm install` e `npx playwright install chromium` |
+
+No Linux/macOS, dê permissão de execução na primeira vez:
+
+```bash
+chmod +x scripts/*.sh
+```
 
 ---
 
