@@ -18,6 +18,7 @@ import { responsesApp } from "../routes/responses/index.js";
 import { sendOpenAIError } from "./error-helpers.js";
 import { AuthError, NotFoundError } from "../core/errors.js";
 import type { QwenAccount } from "../core/accounts.js";
+import { isAuthMockEnabled } from "../services/auth-playwright.js";
 
 // Module-level state (initialized in startServer)
 let cache: MemoryCache | undefined;
@@ -476,6 +477,12 @@ export async function startServer(options?: {
       await import("../core/accounts.ts");
     const accounts = loadAccounts();
 
+    if (accounts.length === 0 && !isAuthMockEnabled()) {
+      throw new Error(
+        "❌ [Server] No Qwen accounts configured. Configure an account with `npm run login`, the QWEN_ACCOUNTS environment variable, or the accounts database before starting the server.",
+      );
+    }
+
     // Restore persisted cooldowns (e.g. daily quota windows) from the database
     // instead of wiping them on restart — retrying a still-rate-limited account
     // wastes a request and immediately re-trips the same limit. Expired
@@ -604,10 +611,6 @@ export async function startServer(options?: {
           );
         });
       }
-    } else {
-      console.warn(
-        `⚠️  [Server] No Qwen accounts configured. Add accounts with npm run login before sending requests.`,
-      );
     }
 
     watchdog = new Watchdog();

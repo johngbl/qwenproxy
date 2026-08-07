@@ -16,24 +16,82 @@ function isPortAvailable(port: number): Promise<boolean> {
   });
 }
 
-test("server lifecycle starts and stops without accounts or HTTP fallback", async (t) => {
+function snapshotAccounts(): any[] {
+  return getDatabase()
+    .prepare(
+      "SELECT id, email, password, cooldown_until, cooldown_reason FROM accounts",
+    )
+    .all() as any[];
+}
+
+function restoreAccounts(rows: any[]): void {
+  const db = getDatabase();
+  db.prepare("DELETE FROM accounts").run();
+  const insert = db.prepare(
+    "INSERT INTO accounts (id, email, password, cooldown_until, cooldown_reason) VALUES (?, ?, ?, ?, ?)",
+  );
+  for (const row of rows) {
+    insert.run(
+      row.id,
+      row.email,
+      row.password,
+      row.cooldown_until ?? 0,
+      row.cooldown_reason ?? null,
+    );
+  }
+  invalidateAccountsCache();
+}
+
+test("server startup fails without configured accounts outside mock mode", async () => {
+  const originalMockAuth = process.env.TEST_MOCK_QWEN_AUTH;
+  const originalQwenAccounts = process.env.QWEN_ACCOUNTS;
+  const existing = snapshotAccounts();
+
+  delete process.env.TEST_MOCK_QWEN_AUTH;
+  delete process.env.QWEN_ACCOUNTS;
+
+  try {
+    getDatabase().prepare("DELETE FROM accounts").run();
+    invalidateAccountsCache();
+
+    await assert.rejects(
+      () => startServer({ installSignalHandlers: false }),
+      /No Qwen accounts configured/,
+    );
+  } finally {
+    await stopServer();
+    restoreAccounts(existing);
+
+    if (originalMockAuth === undefined) {
+      delete process.env.TEST_MOCK_QWEN_AUTH;
+    } else {
+      process.env.TEST_MOCK_QWEN_AUTH = originalMockAuth;
+    }
+
+    if (originalQwenAccounts === undefined) {
+      delete process.env.QWEN_ACCOUNTS;
+    } else {
+      process.env.QWEN_ACCOUNTS = originalQwenAccounts;
+    }
+  }
+});
+
+test("server lifecycle starts and stops in mock mode without real accounts", async (t) => {
   const port = 3000;
   if (!(await isPortAvailable(port))) {
     t.skip(`port ${port} is not available`);
     return;
   }
 
-  const db = getDatabase();
-  const existing = db
-    .prepare(
-      "SELECT id, email, password, cooldown_until, cooldown_reason FROM accounts",
-    )
-    .all() as any[];
+  const originalMockAuth = process.env.TEST_MOCK_QWEN_AUTH;
   const originalQwenAccounts = process.env.QWEN_ACCOUNTS;
+  const existing = snapshotAccounts();
+
+  process.env.TEST_MOCK_QWEN_AUTH = "true";
+  delete process.env.QWEN_ACCOUNTS;
 
   try {
-    delete process.env.QWEN_ACCOUNTS;
-    db.prepare("DELETE FROM accounts").run();
+    getDatabase().prepare("DELETE FROM accounts").run();
     invalidateAccountsCache();
 
     const started = await startServer({ installSignalHandlers: false });
@@ -44,22 +102,18 @@ test("server lifecycle starts and stops without accounts or HTTP fallback", asyn
     await stopServer();
   } finally {
     await stopServer();
-    const restoreDb = getDatabase();
-    restoreDb.prepare("DELETE FROM accounts").run();
-    const insert = restoreDb.prepare(
-      "INSERT INTO accounts (id, email, password, cooldown_until, cooldown_reason) VALUES (?, ?, ?, ?, ?)",
-    );
-    for (const row of existing) {
-      insert.run(
-        row.id,
-        row.email,
-        row.password,
-        row.cooldown_until ?? 0,
-        row.cooldown_reason ?? null,
-      );
+    restoreAccounts(existing);
+
+    if (originalMockAuth === undefined) {
+      delete process.env.TEST_MOCK_QWEN_AUTH;
+    } else {
+      process.env.TEST_MOCK_QWEN_AUTH = originalMockAuth;
     }
-    invalidateAccountsCache();
-    if (originalQwenAccounts === undefined) delete process.env.QWEN_ACCOUNTS;
-    else process.env.QWEN_ACCOUNTS = originalQwenAccounts;
+
+    if (originalQwenAccounts === undefined) {
+      delete process.env.QWEN_ACCOUNTS;
+    } else {
+      process.env.QWEN_ACCOUNTS = originalQwenAccounts;
+    }
   }
 });
