@@ -69,6 +69,7 @@ const envSchema = z
     QWEN_REPEATED_TOOL_CALL_WARN: z.string().default("2"),
     ACCOUNT_MAX_CONCURRENT_STREAMS: z.string().default("1"),
     ACCOUNT_BUSY_WAIT_MS: z.string().default("30000"),
+    ACCOUNT_LEASE_MAX_DURATION_MS: z.string().default("600000"),
     ACCOUNT_INIT_FAILURE_COOLDOWN_MS: z.string().default("300000"),
     STREAM_DISCONNECT_GRACE_MS: z
       .string()
@@ -210,6 +211,11 @@ export const config = {
       Number.isFinite(parseInt(env.ACCOUNT_BUSY_WAIT_MS as string))
         ? parseInt(env.ACCOUNT_BUSY_WAIT_MS as string)
         : 30_000,
+    ),
+    /** Safety net: force-release leases held longer than this (default 10 min). */
+    leaseMaxDurationMs: Math.max(
+      0,
+      parseInt(env.ACCOUNT_LEASE_MAX_DURATION_MS),
     ),
     initFailureCooldownMs: Math.max(
       30_000,

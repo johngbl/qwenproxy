@@ -622,6 +622,10 @@ export async function startServer(options?: {
       await import("../services/session-keeper.ts");
     startSessionKeeper();
 
+    const { startLeaseSweepTimer } =
+      await import("../core/account-concurrency.ts");
+    startLeaseSweepTimer();
+
     server = serve({
       fetch: app.fetch,
       port: config.server.port,

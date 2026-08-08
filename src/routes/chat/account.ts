@@ -801,6 +801,7 @@ async function tryCreateStreamWithRetry(
 					? null
 					: config.concurrency.busyWaitMs,
 				signal: params.requestSignal,
+				label: params.sessionId ?? currentAccountEmail,
 			});
 			// Client may have disconnected while waiting for the lease. Bail before
 			// spending time on personalization sync / captcha solve.
