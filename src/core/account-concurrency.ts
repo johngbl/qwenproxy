@@ -1,7 +1,4 @@
 /**
- * Copyright (c) 2025 johngbl
- * QwenBridge - OpenAI-compatible proxy for Qwen
- *
  * Per-account concurrency guard. Limits the number of simultaneous upstream
  * streams per account and queues excess requests with FIFO ordering, timeout,
  * and abort support.

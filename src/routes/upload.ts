@@ -1,8 +1,3 @@
-/**
- * Copyright (c) 2025 johngbl
- * QwenBridge - OpenAI-compatible proxy for Qwen
- */
-
 import { Context } from "hono";
 import { Readable } from "stream";
 import {

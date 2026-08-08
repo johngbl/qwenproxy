@@ -1,12 +1,12 @@
 <p align="center">
-  <img src="docs/banner.webp" alt="QwenBridge" width="100%">
+  <img src="docs/banner.webp" alt="QwenProxy" width="100%">
 </p>
 
-# QwenBridge
+# QwenProxy
 
 API compatível com OpenAI/Anthropic que conecta clientes ao **Qwen (`chat.qwen.ai`)** com suporte a múltiplas contas, tool calling robusto, thread-native, uploads multimodais, **Responses API completa com memória persistente** e sessões persistentes. Inclui Playwright com stealth, retries para erros transitórios, variantes públicas base/`-fast`/`-thinking`, cache comprimido, registro de capabilities por modelo e observabilidade.
 
-[![CI](https://github.com/johngbl/QwenBridge/actions/workflows/ci.yml/badge.svg)](https://github.com/johngbl/QwenBridge/actions/workflows/ci.yml)
+[![CI](https://github.com/johngbl/QwenProxy/actions/workflows/ci.yml/badge.svg)](https://github.com/johngbl/QwenProxy/actions/workflows/ci.yml)
 [![TypeScript](https://img.shields.io/badge/TypeScript-7.0-blue)](https://www.typescriptlang.org/)
 [![Hono](https://img.shields.io/badge/Hono-4.12-green)](https://hono.dev/)
 [![License: ISC](https://img.shields.io/badge/License-ISC-yellow.svg)](LICENSE)
@@ -38,7 +38,7 @@ API compatível com OpenAI/Anthropic que conecta clientes ao **Qwen (`chat.qwen.
 
 ```mermaid
 flowchart TD
-    Client["Cliente OpenAI/Anthropic/Codex/Grok"] -->|HTTP| Proxy["QwenBridge - Hono"]
+    Client["Cliente OpenAI/Anthropic/Codex/Grok"] -->|HTTP| Proxy["QwenProxy - Hono"]
     Proxy --> Chat["/v1/chat/completions"]
     Proxy --> Responses["/v1/responses"]
     Proxy --> Models["/v1/models"]
@@ -68,7 +68,7 @@ Se `API_KEY` estiver definido, as rotas `/v1/*` (e `/metrics`) exigem uma das fo
 - `Authorization: Bearer <API_KEY>` (OpenAI / Responses)
 - `x-api-key: <API_KEY>` (Anthropic e clientes mistos)
 
-QwenBridge usa **Playwright por padrão**. Cada conta abre uma sessão real de browser para capturar cookies e headers anti-bot.
+QwenProxy usa **Playwright por padrão**. Cada conta abre uma sessão real de browser para capturar cookies e headers anti-bot.
 
 ```env
 PLAYWRIGHT_HEADLESS=true
@@ -93,7 +93,7 @@ A resposta de completion é consumida com `ReadableStream.getReader()` e encamin
 
 ## Modelos e contexto
 
-Modelos e janelas de contexto são sincronizados em tempo real pelo catálogo `/api/models` do Qwen, separadamente para cada conta. O QwenBridge não mantém uma tabela de nomes/capabilities: modelos novos aparecem automaticamente em `/v1/models`, e o objeto `info.meta` recebido do upstream é preservado.
+Modelos e janelas de contexto são sincronizados em tempo real pelo catálogo `/api/models` do Qwen, separadamente para cada conta. O QwenProxy não mantém uma tabela de nomes/capabilities: modelos novos aparecem automaticamente em `/v1/models`, e o objeto `info.meta` recebido do upstream é preservado.
 
 Exemplos do catálogo atual (podem mudar sem release do proxy):
 
@@ -220,8 +220,8 @@ curl http://localhost:3000/v1/responses \
 ### Via npm
 
 ```bash
-git clone https://github.com/johngbl/QwenBridge.git
-cd QwenBridge
+git clone https://github.com/johngbl/QwenProxy.git
+cd QwenProxy
 npm install
 npx playwright install chromium
 ```
@@ -656,7 +656,7 @@ O container ajusta permissões de `data/db` e `data/qwen_profiles` no startup.
 ## Estrutura do projeto
 
 ```
-QwenBridge/
+QwenProxy/
 ├── src/
 │   ├── api/                 # Server Hono, models, errors
 │   ├── benchmarks/          # Baseline de latência do proxy

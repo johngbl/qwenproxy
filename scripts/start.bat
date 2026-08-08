@@ -6,7 +6,7 @@ REM Move para a raiz do projeto (pasta pai de scripts\)
 cd /d "%~dp0.."
 
 REM Título da janela do console
-title QwenBridge
+title QwenProxy
 
 REM --- Verifica Node.js ---
 where node >nul 2>nul

@@ -1,8 +1,3 @@
-/**
- * Copyright (c) 2025 johngbl
- * QwenBridge - OpenAI-compatible proxy for Qwen
- */
-
 import { logger } from "./logger.js";
 
 export class Mutex {

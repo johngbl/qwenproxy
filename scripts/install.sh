@@ -5,7 +5,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 echo "============================================"
-echo "  📦 QwenBridge - Instalação"
+echo "  📦 QwenProxy - Instalação"
 echo "============================================"
 echo ""
 

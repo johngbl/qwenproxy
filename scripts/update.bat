@@ -6,10 +6,10 @@ REM Move para a raiz do projeto (pasta pai de scripts\)
 cd /d "%~dp0.."
 
 REM Título da janela do console
-title QwenBridge - Atualizacao
+title QwenProxy - Atualizacao
 
 echo ============================================
-echo   🔄 QwenBridge - Atualizacao
+echo   🔄 QwenProxy - Atualizacao
 echo ============================================
 echo.
 

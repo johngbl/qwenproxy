@@ -5,7 +5,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 # Título do terminal (quando suportado)
-printf '\033]0;QwenBridge\007' 2>/dev/null || true
+printf '\033]0;QwenProxy\007' 2>/dev/null || true
 
 # --- Verifica Node.js ---
 if ! command -v node >/dev/null 2>&1; then
