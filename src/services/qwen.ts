@@ -178,6 +178,7 @@ function addIdleTimeoutToStream(
 ): ReadableStream<Uint8Array> {
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let wrapperController: ReadableStreamDefaultController<Uint8Array> | undefined;
 
   const clearIdleTimer = () => {
     if (idleTimer) {
@@ -193,8 +194,21 @@ function addIdleTimeoutToStream(
       clearIdleTimer();
       controller.abort();
       onTimeout?.();
+      // Best-effort cleanup of the upstream source.
       try {
         void stream.cancel(message).catch(() => {});
+      } catch {}
+      // Error the WRAPPED stream so the bridge's pending read() rejects
+      // immediately. Without this, a page/fetch that ignores abort keeps the
+      // read pending forever: the stream slot stays held, later requests queue
+      // with timeout=unbounded, and no further timeout can ever fire (the
+      // timer is one-shot per pull).
+      try {
+        wrapperController?.error(new Error(message));
+      } catch {}
+      // Belt-and-braces: settle a pending read on the wrapper's own reader.
+      try {
+        void reader?.cancel(message).catch(() => {});
       } catch {}
     }, idleTimeoutMs);
   };
@@ -205,6 +219,7 @@ function addIdleTimeoutToStream(
       resetIdleTimer();
     },
     async pull(streamController) {
+      wrapperController = streamController;
       try {
         if (!reader) throw new Error("Stream reader was not initialized");
         const { done, value } = await reader.read();
