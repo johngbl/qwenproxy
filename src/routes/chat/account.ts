@@ -23,6 +23,7 @@ import {
 import { Mutex } from "../../core/mutex.ts";
 import { registerStream, removeStream } from "../../core/stream-registry.ts";
 import {
+	abortLeaseByLabel,
 	acquireAccountLease,
 	isAccountBusy,
 	isAccountTemporarilyBusy,
@@ -796,16 +797,33 @@ async function tryCreateStreamWithRetry(
 				hasFreeAlternateAccount(accounts, currentAccountId, triedAccounts);
 			const waitQueueForever =
 				params.queueSlotUntilFree === true || hasFreeAlt === false;
+
+			// Latest-wins: if the client retried the same session, abort the old
+			// generation and free the slot immediately instead of queueing behind it.
+			const sessionLabel = params.sessionId ?? currentAccountEmail;
+			if (params.sessionId) {
+				abortLeaseByLabel(currentAccountId, sessionLabel);
+			}
+
+			// Create an AbortController for this lease so a future same-session
+			// retry can abort it via abortLeaseByLabel().
+			const leaseAbort = new AbortController();
+			const combinedSignal = params.requestSignal
+				? AbortSignal.any([params.requestSignal, leaseAbort.signal])
+				: leaseAbort.signal;
+
 			accountLease = await acquireAccountLease(currentAccountId, {
 				timeoutMs: waitQueueForever
 					? null
 					: config.concurrency.busyWaitMs,
-				signal: params.requestSignal,
-				label: params.sessionId ?? currentAccountEmail,
+				signal: combinedSignal,
+				label: sessionLabel,
+				leaseAbortController: leaseAbort,
 			});
-			// Client may have disconnected while waiting for the lease. Bail before
-			// spending time on personalization sync / captcha solve.
-			if (params.requestSignal?.aborted) {
+			// Client may have disconnected (or a same-session retry superseded us)
+			// while waiting for the lease. Bail before spending time on
+			// personalization sync / captcha solve.
+			if (combinedSignal.aborted) {
 				accountLease.release();
 				return { success: false, error: new Error("client aborted before stream creation") };
 			}
@@ -885,7 +903,7 @@ async function tryCreateStreamWithRetry(
 									reasoningMode: params.reasoningMode,
 								}
 							: params.reasoningMode ? { reasoningMode: params.reasoningMode } : undefined,
-					params.requestSignal,
+					combinedSignal,
 				);
 
 				const contextMeter = buildContextMeterSnapshot({
@@ -931,9 +949,10 @@ async function tryCreateStreamWithRetry(
 				releasePersonalization?.();
 			}
 
-			// Client cancelled during the (potentially slow) personalization sync.
-			// Bail before createQwenStream spends time on header capture / captcha.
-			if (params.requestSignal?.aborted) {
+			// Client cancelled (or a same-session retry superseded us) during the
+			// (potentially slow) personalization sync. Bail before createQwenStream
+			// spends time on header capture / captcha.
+			if (combinedSignal.aborted) {
 				accountLease?.release();
 				return {
 					success: false,

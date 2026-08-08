@@ -28,12 +28,16 @@ export interface AcquireAccountLeaseOptions {
   timeoutMs?: number | null;
   /** Human-readable label for diagnostics (e.g. reqId or chat session). */
   label?: string;
+  /** AbortController registered with the lease; aborted on session-level replacement. */
+  leaseAbortController?: AbortController;
 }
 
 interface ActiveLeaseInfo {
   leaseId: string;
   acquiredAt: number;
   label: string;
+  /** Aborted when a same-session retry supersedes this lease. */
+  abortController?: AbortController;
 }
 
 interface QueueEntry {
@@ -75,10 +79,14 @@ function formatHolders(slot: AccountSlot): string {
     .join(", ");
 }
 
-function createLease(accountId: string, label: string): AccountLease {
+function createLease(
+  accountId: string,
+  label: string,
+  abortController?: AbortController,
+): AccountLease {
   const leaseId = generateLeaseId();
   const slot = getSlot(accountId);
-  const info: ActiveLeaseInfo = { leaseId, acquiredAt: Date.now(), label };
+  const info: ActiveLeaseInfo = { leaseId, acquiredAt: Date.now(), label, abortController };
   slot.activeLeases.push(info);
 
   let released = false;
@@ -206,7 +214,7 @@ export function acquireAccountLease(
 
   // Fast path: capacity available
   if (slot.activeLeases.length < config.concurrency.maxStreamsPerAccount) {
-    return Promise.resolve(createLease(accountId, label));
+    return Promise.resolve(createLease(accountId, label, options?.leaseAbortController));
   }
 
   const hasExplicitTimeout =
@@ -279,6 +287,43 @@ export function acquireAccountLease(
       timeoutMs,
     });
   });
+}
+
+/**
+ * Abort and remove the active lease matching the given label (session id).
+ * Used when a client retries the same session: the old generation is no longer
+ * needed, so we abort it and free the slot for the new request.
+ * Returns true if a lease was aborted, false if no matching lease was found.
+ */
+export function abortLeaseByLabel(accountId: string, label: string): boolean {
+  const slot = slots.get(accountId);
+  if (!slot) return false;
+
+  const idx = slot.activeLeases.findIndex((l) => l.label === label);
+  if (idx === -1) return false;
+
+  const lease = slot.activeLeases[idx];
+  const heldMs = Date.now() - lease.acquiredAt;
+  slot.activeLeases.splice(idx, 1);
+
+  console.log(
+    `🔄 [Server] Session retry supersedes active lease | account=${accountId} | label=${label} | held ${Math.round(heldMs / 1000)}s | leaseId=${lease.leaseId}`,
+  );
+  logger.info("[concurrency] session retry superseded active lease", {
+    accountId,
+    label,
+    heldMs,
+    leaseId: lease.leaseId,
+  });
+
+  // Abort the stream associated with the old lease
+  if (lease.abortController) {
+    lease.abortController.abort();
+  }
+
+  // Free the slot for the next waiter
+  releaseSlot(accountId);
+  return true;
 }
 
 /**
