@@ -1,11 +1,11 @@
 {
-  "name": "qwenbridge",
+  "name": "QwenProxy",
   "version": "1.0.0",
   "description": "API compatível com OpenAI que conecta clientes ao Qwen via Playwright, com suporte a múltiplas contas, tool calling e sessões persistentes.",
   "main": "index.js",
   "scripts": {
     "postinstall": "playwright install chromium",
-    "start": "npx tsx src/index.ts",
+    "start": "tsx src/index.ts",
     "login": "npx tsx src/login.ts",
     "delete-chats": "npx tsx src/delete-chats.ts",
     "test": "npm run test:mock && npm run test:live",
