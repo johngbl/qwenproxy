@@ -359,6 +359,7 @@ Fingerprint estável por conta (UA, locale, viewport, hardware/WebGL) é aplicad
 | `RETRY_ON_UNKNOWN_UPSTREAM` | `true` | Retry/troca automática em erros upstream desconhecidos (denylist só para erros locais terminais) |
 | `RETRY_AUTO_MALFORMED_TOOLS` | `true` | Auto-retry quando todos os tool calls da resposta vêm malformados |
 | `RETRY_AUTO_MALFORMED_TOOLS_MAX` | `2` | Máximo de retries de tool calls malformados por resposta |
+| `MAX_TOOL_CALLS_PER_TURN` | `8` | Teto de tool calls por turno (0 desativa); calls duplicadas idênticas também são descartadas |
 
 
 

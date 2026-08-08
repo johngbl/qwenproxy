@@ -273,7 +273,9 @@ export async function processNonStreamingResponse(
     let pendingParentId: string | null = null;
     let currentUiSessionId = uiSessionId;
     const toolParser = shouldParseToolCalls
-      ? new StreamingToolParser(declaredTools)
+      ? new StreamingToolParser(declaredTools, {
+          maxToolCallsPerTurn: config.retry.maxToolCallsPerTurn,
+        })
       : null;
     const toolCallsOut: any[] = [];
     let buffer = "";
@@ -1116,6 +1118,7 @@ export async function processStreamingResponse(
       let toolParser = shouldParseToolCalls
         ? new StreamingToolParser(declaredTools, {
             incrementalToolCalls: true,
+            maxToolCallsPerTurn: config.retry.maxToolCallsPerTurn,
           })
         : null;
 
@@ -1417,6 +1420,7 @@ export async function processStreamingResponse(
         toolParser = shouldParseToolCalls
           ? new StreamingToolParser(declaredTools, {
               incrementalToolCalls: true,
+              maxToolCallsPerTurn: config.retry.maxToolCallsPerTurn,
             })
           : null;
         recoverySeedPending = true;
@@ -1943,7 +1947,10 @@ export async function processStreamingResponse(
           // getIncrementalDelta drops the already-emitted prefix instead of
           // re-printing it to the client.
           toolParser = shouldParseToolCalls
-            ? new StreamingToolParser(declaredTools, { incrementalToolCalls: true })
+            ? new StreamingToolParser(declaredTools, {
+                incrementalToolCalls: true,
+                maxToolCallsPerTurn: config.retry.maxToolCallsPerTurn,
+              })
             : null;
           targetResponseId = null;
           pendingParentId = null;

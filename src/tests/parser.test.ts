@@ -564,3 +564,153 @@ test("StreamingToolParser: parses JSON-stringified nested argument fields", () =
   );
   assert.deepStrictEqual(result.toolCalls[0].arguments.edits, edits);
 });
+
+test("StreamingToolParser: recovers double-encoded JSON string payload (escaped quotes)", () => {
+  const parser = new StreamingToolParser(EDIT_FILE_TOOLS);
+
+  const doubleEncoded = JSON.stringify({
+    name: "edit_file",
+    arguments: { path: "src/browser/worker.js", edits: [{ old_text: "a", new_text: "b" }] },
+  });
+  const result = parser.feed(`<tool_call>"${doubleEncoded}"</tool_call>`);
+
+  assert.strictEqual(result.text, "");
+  assert.strictEqual(result.toolCalls.length, 1);
+  assert.strictEqual(result.toolCalls[0].name, "edit_file");
+  assert.deepStrictEqual(result.toolCalls[0].arguments.edits, [
+    { old_text: "a", new_text: "b" },
+  ]);
+});
+
+test("StreamingToolParser: recovers tool JSON wrapped in junk text", () => {
+  const parser = new StreamingToolParser(EDIT_FILE_TOOLS);
+
+  const payload = `<tool_call>block. The client executes it and sends the result back.\\",\\n\\t\\"3. NEVER describe the tool JSON without the tags. ${JSON.stringify({
+    name: "edit_file",
+    arguments: { path: "src/browser/worker.js", edits: [{ old_text: "a", new_text: "b" }] },
+  })}</tool_call>`;
+  const result = parser.feed(payload);
+
+  assert.strictEqual(result.text, "");
+  assert.strictEqual(result.toolCalls.length, 1);
+  assert.strictEqual(result.toolCalls[0].name, "edit_file");
+  assert.deepStrictEqual(result.toolCalls[0].arguments.edits, [
+    { old_text: "a", new_text: "b" },
+  ]);
+});
+
+test("StreamingToolParser: recovers truncated tool JSON via brace balancing", () => {
+  const parser = new StreamingToolParser(EDIT_FILE_TOOLS);
+
+  const truncated = `{"name":"edit_file","arguments":{"path":"src/browser/worker.js","edits":[{"old_text":"start`;
+  const result = parser.feed(`<tool_call>${truncated}</tool_call>`);
+
+  assert.strictEqual(result.text, "");
+  assert.strictEqual(result.toolCalls.length, 1);
+  assert.strictEqual(result.toolCalls[0].name, "edit_file");
+  assert.strictEqual(result.toolCalls[0].arguments.path, "src/browser/worker.js");
+});
+
+test("StreamingToolParser: flush recovers unclosed truncated tool JSON", () => {
+  const parser = new StreamingToolParser(EDIT_FILE_TOOLS);
+
+  const truncated = `{"name":"edit_file","arguments":{"path":"src/browser/worker.js","edits":[{"old_text":"start`;
+  parser.feed(`<tool_call>${truncated}`);
+  const flushed = parser.flush();
+
+  assert.strictEqual(flushed.toolCalls.length, 1);
+  assert.strictEqual(flushed.toolCalls[0].name, "edit_file");
+  assert.strictEqual(
+    flushed.toolCalls[0].arguments.path,
+    "src/browser/worker.js",
+  );
+});
+
+test("StreamingToolParser: drops duplicate tool calls within the same turn", () => {
+  const parser = new StreamingToolParser(TOOLS);
+
+  const block = '<tool_call>{"name":"read_file","arguments":{"path":"a.txt"}}</tool_call>';
+  const result = parser.feed(`${block}${block}`);
+
+  assert.strictEqual(result.text, "");
+  assert.strictEqual(result.toolCalls.length, 1);
+  assert.strictEqual(result.toolCalls[0].name, "read_file");
+});
+
+test("StreamingToolParser: keeps distinct tool calls with same name but different args", () => {
+  const parser = new StreamingToolParser(TOOLS);
+
+  const result = parser.feed(
+    '<tool_call>{"name":"read_file","arguments":{"path":"a.txt"}}</tool_call>' +
+      '<tool_call>{"name":"read_file","arguments":{"path":"b.txt"}}</tool_call>',
+  );
+
+  assert.strictEqual(result.text, "");
+  assert.strictEqual(result.toolCalls.length, 2);
+  assert.deepStrictEqual(
+    result.toolCalls.map((toolCall) => toolCall.arguments),
+    [{ path: "a.txt" }, { path: "b.txt" }],
+  );
+});
+
+test("StreamingToolParser: enforces per-turn tool call cap", () => {
+  const parser = new StreamingToolParser(TOOLS, { maxToolCallsPerTurn: 2 });
+
+  const result = parser.feed(
+    '<tool_call>{"name":"read_file","arguments":{"path":"a.txt"}}</tool_call>' +
+      '<tool_call>{"name":"read_file","arguments":{"path":"b.txt"}}</tool_call>' +
+      '<tool_call>{"name":"read_file","arguments":{"path":"c.txt"}}</tool_call>',
+  );
+
+  assert.strictEqual(result.text, "");
+  assert.strictEqual(result.toolCalls.length, 2);
+  assert.deepStrictEqual(
+    result.toolCalls.map((toolCall) => toolCall.arguments),
+    [{ path: "a.txt" }, { path: "b.txt" }],
+  );
+});
+
+test("StreamingToolParser: incremental deltas use resolved name (no duplicate chunk)", () => {
+  const parser = new StreamingToolParser(TOOLS, { incrementalToolCalls: true });
+
+  const input = '<tool_call>{"name":"readFile","arguments":{"path":"a.txt"}}</tool_call>';
+  const deltas: any[] = [];
+  const fullCalls: any[] = [];
+  for (let index = 0; index < input.length; index += 4) {
+    const result = parser.feed(input.slice(index, index + 4));
+    deltas.push(...result.toolCallDeltas);
+    fullCalls.push(...result.toolCalls);
+  }
+  const flushed = parser.flush();
+  deltas.push(...flushed.toolCallDeltas);
+  fullCalls.push(...flushed.toolCalls);
+
+  assert.strictEqual(fullCalls.length, 0, "no complete chunk after streamed deltas");
+  const nameDeltas = deltas.filter((delta) => delta.function?.name);
+  assert.strictEqual(nameDeltas.length, 1);
+  assert.strictEqual(nameDeltas[0].function.name, "read_file");
+  const args = deltas.map((delta) => delta.function?.arguments || "").join("");
+  assert.strictEqual(args, '{"path":"a.txt"}');
+});
+
+test("StreamingToolParser: drops duplicate incremental tool calls before emitting", () => {
+  const parser = new StreamingToolParser(TOOLS, { incrementalToolCalls: true });
+
+  const input =
+    '<tool_call>{"name":"read_file","arguments":{"path":"a.txt"}}</tool_call>' +
+    '<tool_call>{"name":"read_file","arguments":{"path":"a.txt"}}</tool_call>';
+  const deltas: any[] = [];
+  const fullCalls: any[] = [];
+  for (let index = 0; index < input.length; index += 4) {
+    const result = parser.feed(input.slice(index, index + 4));
+    deltas.push(...result.toolCallDeltas);
+    fullCalls.push(...result.toolCalls);
+  }
+  const flushed = parser.flush();
+  deltas.push(...flushed.toolCallDeltas);
+  fullCalls.push(...flushed.toolCalls);
+
+  assert.strictEqual(fullCalls.length, 0);
+  const nameDeltas = deltas.filter((delta) => delta.function?.name);
+  assert.strictEqual(nameDeltas.length, 1, "duplicate call deltas must not be emitted");
+});

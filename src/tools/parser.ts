@@ -22,6 +22,8 @@ export interface ParserResult {
 
 export interface StreamingToolParserOptions {
   incrementalToolCalls?: boolean;
+  /** Max tool calls per turn; 0 disables the cap. */
+  maxToolCallsPerTurn?: number;
 }
 
 interface IncrementalJsonToolSnapshot {
@@ -810,6 +812,9 @@ export class StreamingToolParser {
   private markdownCodeDelimiterLength = 0;
   private incrementalToolCalls = false;
   private activeIncrementalToolCall: ActiveIncrementalToolCall | null = null;
+  private maxToolCallsPerTurn = 0;
+  private emittedCallKeys = new Set<string>();
+  private pendingToolCallDeltas: ToolCallDelta[] = [];
   private malformedToolCalls: Array<{
     contentPreview: string;
     contentLength: number;
@@ -827,6 +832,7 @@ export class StreamingToolParser {
   ) {
     this.setTools(tools);
     this.incrementalToolCalls = options.incrementalToolCalls ?? false;
+    this.maxToolCallsPerTurn = Math.max(0, options.maxToolCallsPerTurn ?? 0);
     if (isToolcallDebugEnabled()) {
       logger.debug("[parser] StreamingToolParser initialized", {
         toolsCount: tools.length,
@@ -965,6 +971,25 @@ export class StreamingToolParser {
     return coerced;
   }
 
+  private toolCallDedupeKey(tc: ParsedToolCall): string {
+    let canonicalArgs = "";
+    try {
+      canonicalArgs = JSON.stringify(tc.arguments);
+    } catch {}
+    return `${tc.name}::${canonicalArgs}`;
+  }
+
+  private flushPendingToolCallDeltas(result: ParserResult): void {
+    if (this.pendingToolCallDeltas.length > 0) {
+      result.toolCallDeltas.push(...this.pendingToolCallDeltas);
+      this.pendingToolCallDeltas = [];
+    }
+  }
+
+  private discardPendingToolCallDeltas(): void {
+    this.pendingToolCallDeltas = [];
+  }
+
   private finalizeSuccessfulToolCall(
     tc: ParsedToolCall,
     result: ParserResult,
@@ -976,6 +1001,42 @@ export class StreamingToolParser {
       });
     }
 
+    const key = this.toolCallDedupeKey(tc);
+
+    // Qwen sometimes hallucinates the same tool call twice (or more) in one
+    // turn, e.g. repeating edit_file with identical edits. The client would
+    // execute the duplicates and burn quota/tokens; collapse them here.
+    if (this.emittedCallKeys.has(key)) {
+      logger.warn("[parser] Dropping duplicate tool call (already emitted this turn)", {
+        toolName: tc.name,
+        argumentsHash: key,
+      });
+      this.discardPendingToolCallDeltas();
+      this.pendingLeadIn = "";
+      this.emittedToolCallCount++;
+      return;
+    }
+
+    // Hard cap against runaway tool-call hallucination: the model is told to
+    // emit only 1-4 blocks, but sometimes keeps generating calls without
+    // stopping for tool results. Beyond the cap, extra calls are dropped so
+    // the turn ends and the client can respond with the tool results.
+    if (
+      this.maxToolCallsPerTurn > 0 &&
+      this.emittedToolCallCount >= this.maxToolCallsPerTurn
+    ) {
+      logger.warn("[parser] Dropping tool call: per-turn cap reached", {
+        toolName: tc.name,
+        maxToolCallsPerTurn: this.maxToolCallsPerTurn,
+      });
+      this.discardPendingToolCallDeltas();
+      this.pendingLeadIn = "";
+      this.emittedToolCallCount++;
+      return;
+    }
+
+    this.emittedCallKeys.add(key);
+
     const incremental = this.activeIncrementalToolCall;
     const matchesIncrementalCall =
       incremental?.name === tc.name && incremental.startEmitted;
@@ -985,6 +1046,10 @@ export class StreamingToolParser {
     }
 
     if (matchesIncrementalCall) {
+      // The incremental deltas already carry this call's name/arguments; the
+      // client merges them by index. Do NOT emit a complete call chunk again
+      // or the arguments would be appended twice and corrupted.
+      this.flushPendingToolCallDeltas(result);
       this.emittedToolCallCount++;
       this.pendingLeadIn = "";
       incremental.startEmitted = false;
@@ -992,6 +1057,7 @@ export class StreamingToolParser {
       return;
     }
 
+    this.flushPendingToolCallDeltas(result);
     result.toolCalls.push(tc);
     this.emittedToolCallCount++;
     this.pendingLeadIn = "";
@@ -1054,7 +1120,14 @@ export class StreamingToolParser {
         incremental.disabled = true;
         return;
       }
-      incremental.name = snapshot.name;
+      // Store the RESOLVED name (fuzzy matching already verified the raw
+      // name maps to a declared tool). Comparing the raw spelling against the
+      // resolved name in finalizeSuccessfulToolCall would mismatch (e.g.
+      // emitted `editFile` vs declared `edit_file`) and re-emit a complete
+      // tool-call chunk on top of the streamed deltas — the duplicate the
+      // client sees.
+      incremental.name =
+        this.resolveDeclaredToolName(snapshot.name) ?? snapshot.name;
     }
 
     if (
@@ -1080,7 +1153,7 @@ export class StreamingToolParser {
           );
 
     if (!incremental.startEmitted) {
-      result.toolCallDeltas.push({
+      this.pendingToolCallDeltas.push({
         index: incremental.index,
         id: incremental.id,
         type: "function",
@@ -1095,7 +1168,7 @@ export class StreamingToolParser {
     }
 
     if (nextArgumentsChunk) {
-      result.toolCallDeltas.push({
+      this.pendingToolCallDeltas.push({
         index: incremental.index,
         function: {
           arguments: nextArgumentsChunk,
@@ -1381,7 +1454,8 @@ export class StreamingToolParser {
         this.emitIncrementalToolCallDeltas(this.buffer, result);
         const recovered =
           this.tryRecoverToolCall(trimmed) ||
-          this.tryRecoverIncrementalToolCall(trimmed);
+          this.tryRecoverIncrementalToolCall(trimmed) ||
+          this.lastChanceRecoverToolCall(trimmed);
         if (recovered) {
           if (isToolcallDebugEnabled()) {
             logger.debug("[parser] flush: recovery successful", {
@@ -1397,6 +1471,7 @@ export class StreamingToolParser {
           // The malformed call is still tracked so the stream auto-retry can
           // send a [SYSTEM CORRECTION] to Qwen in the upstream prompt.
           const toolName = this.extractToolNameFromTruncated(trimmed);
+          this.discardPendingToolCallDeltas();
           this.recordMalformedToolCall(trimmed, {
             category: "truncated",
             undeclaredNames:
@@ -1424,6 +1499,7 @@ export class StreamingToolParser {
             "[parser] flush: empty tool call block, restoring lead-in",
           );
         }
+        this.discardPendingToolCallDeltas();
         if (
           this.emittedToolCallCount === 0 &&
           this.pendingLeadIn.trim().length > 0
@@ -1478,6 +1554,7 @@ export class StreamingToolParser {
     if (!t) {
       // Empty tool call - malformed. Restore lead-in if possible.
       logger.warn("[parser] Dropping empty tool call block");
+      this.discardPendingToolCallDeltas();
       if (
         this.emittedToolCallCount === 0 &&
         this.pendingLeadIn.trim().length > 0
@@ -1696,7 +1773,31 @@ export class StreamingToolParser {
       return;
     }
 
-    // 4) Tool call is malformed and unrecoverable.
+    // 4) Last-chance recovery before giving up. Handles the payloads that
+    // slip past the paths above:
+    // - JSON with escaped quotes (`\"`) so the `"name"` probes miss it, e.g.
+    //   the model emitting a double-encoded string
+    //   `"{\"name\":\"edit_file\",...}"` or raw text wrapping a tool payload.
+    // - JSON truncated by an early `</tool_call>` inside a string value (the
+    //   unbalanced-quote fallback close). robustParseJSON truncates to the
+    //   balanced prefix / closes missing braces; brace-matching extracts the
+    //   first balanced object from surrounding junk.
+    const lastChance = this.lastChanceRecoverToolCall(t);
+    if (lastChance) {
+      if (isToolcallDebugEnabled()) {
+        logger.debug(
+          "[parser] processToolContent: last-chance recovery succeeded",
+          {
+            name: lastChance.name,
+            arguments: lastChance.arguments,
+          },
+        );
+      }
+      this.finalizeSuccessfulToolCall(lastChance, result);
+      return;
+    }
+
+    // 5) Tool call is malformed and unrecoverable.
     // Never leak internal XML to user-visible content.
     // Restore lead-in text if no tools were emitted.
     this.recordMalformedToolCall(t, {
@@ -1907,6 +2008,40 @@ export class StreamingToolParser {
           // Try next candidate
         }
       }
+    }
+
+    return null;
+  }
+
+  /**
+   * Try to recover tool calls from payloads that escaped the normal paths:
+   * double-escaped JSON (`\"` inside the block) and JSON truncated by a
+   * premature closing tag inside a string value. Both robustParseJSON (which
+   * starts at the first `{` and balances braces) and balanced-brace
+   * extraction are attempted, on the raw and unescaped variants.
+   */
+  private lastChanceRecoverToolCall(block: string): ParsedToolCall | null {
+    const variants = [block];
+    if (block.includes('\\"')) {
+      variants.push(block.replace(/\\"/g, '"'));
+    }
+
+    for (const variant of variants) {
+      try {
+        const parsed = robustParseJSON(variant);
+        if (parsed && typeof parsed === "object") {
+          const tc = this.parseToolCall(parsed);
+          if (tc && this.isDeclaredToolName(tc.name)) return tc;
+        }
+      } catch {}
+
+      try {
+        const extracted = this.extractJsonToolCallByBraceMatching(variant);
+        if (extracted) {
+          const tc = this.parseToolCall(extracted);
+          if (tc && this.isDeclaredToolName(tc.name)) return tc;
+        }
+      } catch {}
     }
 
     return null;

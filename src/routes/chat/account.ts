@@ -53,6 +53,7 @@ import {
 } from "../../services/context-meter.ts";
 import type { QwenFileEntry } from "../upload.ts";
 import type { Message } from "../../utils/types.ts";
+import { buildRepeatedToolCallReminder } from "../../utils/tool-call-guard.ts";
 import {
 	classifyRetryAction,
 	isAntiBotError as isAntiBotPolicyError,
@@ -762,7 +763,13 @@ async function tryCreateStreamWithRetry(
 					},
 				);
 			}
-			const effectivePrompt = truncation.prompt;
+			const loopReminder = buildRepeatedToolCallReminder(
+				params.messages,
+				config.retry.repeatedToolCallWarnThreshold,
+			);
+			const effectivePrompt = loopReminder
+				? `${truncation.prompt}\n\n${loopReminder}`
+				: truncation.prompt;
 
 			assertPromptWithinLimits(
 				effectivePrompt,

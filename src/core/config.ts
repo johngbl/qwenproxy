@@ -65,6 +65,8 @@ const envSchema = z
     RETRY_ON_UNKNOWN_UPSTREAM: z.string().default("true"),
     RETRY_AUTO_MALFORMED_TOOLS: z.string().default("true"),
     RETRY_AUTO_MALFORMED_TOOLS_MAX: z.string().default("2"),
+    MAX_TOOL_CALLS_PER_TURN: z.string().default("8"),
+    QWEN_REPEATED_TOOL_CALL_WARN: z.string().default("2"),
     ACCOUNT_MAX_CONCURRENT_STREAMS: z.string().default("1"),
     ACCOUNT_BUSY_WAIT_MS: z.string().default("30000"),
     ACCOUNT_INIT_FAILURE_COOLDOWN_MS: z.string().default("300000"),
@@ -195,6 +197,11 @@ export const config = {
     ),
     autoRetryMalformedTools: env.RETRY_AUTO_MALFORMED_TOOLS !== "false",
     autoRetryMalformedToolsMax: Math.max(1, parseInt(env.RETRY_AUTO_MALFORMED_TOOLS_MAX)),
+    maxToolCallsPerTurn: Math.max(0, parseInt(env.MAX_TOOL_CALLS_PER_TURN)),
+    repeatedToolCallWarnThreshold: Math.max(
+      1,
+      parseInt(env.QWEN_REPEATED_TOOL_CALL_WARN),
+    ),
   },
   concurrency: {
     maxStreamsPerAccount: Math.max(1, parseInt(env.ACCOUNT_MAX_CONCURRENT_STREAMS)),

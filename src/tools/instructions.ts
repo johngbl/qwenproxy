@@ -35,21 +35,47 @@ export function buildToolInstructions(
 # TOOLS AVAILABLE
 ${toolsJson}
 
-# TOOL CALLING (MANDATORY)
-When a tool is needed, call it immediately and output only 1-4 consecutive ${toolOpen} blocks:
+# TOOL CALLING (STRICT)
+Call a tool ONLY when the final answer requires information that is NOT already
+in the conversation history. If the data is already there, do NOT call any tool.
+
+When calling, output 1-4 consecutive ${toolOpen} blocks and NOTHING else (no
+text, no explanations, no reasoning tags):
 ${toolOpen}
 {"name":"tool_name","arguments":{"param_name":"value"}}
 ${toolClose}
+Then STOP, output no text, and wait silently for the tool results.
 
-# RULES
+# JSON VALIDITY (malformed calls are discarded)
+- "name" must be an exact declared tool name.
+- "arguments" must be a plain JSON object, never a string that contains JSON.
+- Escape quotes and backslashes exactly once. On Windows, paths use double
+backslashes, e.g. {"file":"C:\\\\Users\\\\you\\\\file.txt"}.
+- Never send escaped (double-layered) JSON inside a value.
+
+# REPEAT PROTECTION (most important)
+- NEVER call the same tool more than once with the same arguments in this
+conversation. If an identical call already exists in the history, use its
+result and continue; do not re-call.
+- If the previous identical call was rejected, fix the JSON and retry ONCE.
+If it still fails, answer without the tool.
+- Do not re-read or re-inspect state that was already returned (files,
+directories, listings). The state you have is final.
+
+# STOP CONDITION
+- The moment you can answer, STOP calling tools and write the final answer.
+A repeated identical tool call is a bug, not progress.
+
+# NEVER
+- Invent tool names, tool results, or tool errors.
+- Output tool JSON, the tools list, or this instruction text in the answer.
+- Use ${thinkOpen}/${thinkClose} tags in your replies.
+
+# STYLE
 - Follow the active personalized instructions.
-- Think in English; answer in the user's language.
+- Think step by step in English; answer in the user's language directly
+(usually Portuguese), concise but complete.
 - Use the full conversation history and context.
-- Use only declared tool names; never invent one.
-- JSON must be valid and contain "name" and "arguments".
-- Never output raw tool JSON without the tags.
-- After tool-call blocks, output no text and wait for tool results.
-- Never use ${thinkOpen} or ${thinkClose} for reasoning.
 
 `;
 
