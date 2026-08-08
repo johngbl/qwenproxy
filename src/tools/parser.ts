@@ -817,10 +817,16 @@ export class StreamingToolParser {
   private pendingToolCallDeltas: ToolCallDelta[] = [];
   private malformedToolCalls: Array<{
     contentPreview: string;
+    /** Full content (capped at 2000 chars) for post-hoc recovery analysis. */
+    content: string;
     contentLength: number;
     timestamp: number;
     undeclaredNames?: string[];
     category: "malformed" | "undeclared" | "truncated";
+    /** Human-readable reason the call could not be parsed/recovered. */
+    failureReason?: string;
+    /** Which recovery stages were attempted before giving up. */
+    recoveryAttempts?: string[];
   }> = [];
 
   /**
@@ -1010,6 +1016,9 @@ export class StreamingToolParser {
       logger.warn("[parser] Dropping duplicate tool call (already emitted this turn)", {
         toolName: tc.name,
         argumentsHash: key,
+        arguments: JSON.stringify(tc.arguments).substring(0, 500),
+        emittedSoFar: this.emittedToolCallCount,
+        note: "duplicate suppressed to prevent double-execution; no recovery needed",
       });
       this.discardPendingToolCallDeltas();
       this.pendingLeadIn = "";
@@ -1232,14 +1241,19 @@ export class StreamingToolParser {
     options: {
       undeclaredNames?: string[];
       category?: "malformed" | "undeclared" | "truncated";
+      failureReason?: string;
+      recoveryAttempts?: string[];
     } = {},
   ): void {
     this.malformedToolCalls.push({
       contentPreview: content.substring(0, 150),
+      content: content.substring(0, 2000),
       contentLength: content.length,
       timestamp: Date.now(),
       undeclaredNames: options.undeclaredNames,
       category: options.category ?? "malformed",
+      failureReason: options.failureReason,
+      recoveryAttempts: options.recoveryAttempts,
     });
   }
 
@@ -1472,16 +1486,30 @@ export class StreamingToolParser {
           // send a [SYSTEM CORRECTION] to Qwen in the upstream prompt.
           const toolName = this.extractToolNameFromTruncated(trimmed);
           this.discardPendingToolCallDeltas();
+          const truncRecoveryAttempts = [
+            "tryRecoverToolCall",
+            "tryRecoverIncrementalToolCall",
+            "lastChanceRecoverToolCall",
+          ];
           this.recordMalformedToolCall(trimmed, {
             category: "truncated",
             undeclaredNames:
               this.extractUndeclaredNamesFromContent(trimmed),
+            failureReason:
+              "stream ended before tool_call closing tag; content too incomplete to reconstruct",
+            recoveryAttempts: truncRecoveryAttempts,
           });
           logger.warn(
             "[parser] Dropping unrecoverable unclosed tool call at end of stream",
             {
-              bufferPreview: trimmed.substring(0, 500),
               toolName,
+              category: "truncated",
+              contentLength: trimmed.length,
+              content: trimmed.substring(0, 2000),
+              failureReason:
+                "stream ended before tool_call closing tag; content too incomplete to reconstruct",
+              recoveryAttempts: truncRecoveryAttempts,
+              emittedToolCallsSoFar: this.emittedToolCallCount,
             },
           );
           if (
@@ -1800,12 +1828,33 @@ export class StreamingToolParser {
     // 5) Tool call is malformed and unrecoverable.
     // Never leak internal XML to user-visible content.
     // Restore lead-in text if no tools were emitted.
+    const droppedToolName = this.extractToolNameFromTruncated(t);
+    const recoveryAttempts = [
+      "directParse",
+      "repairCommonMalformedToolJson",
+      "tryRecoverMalformedJson",
+      "tryRecoverIncrementalToolCall",
+      "lastChanceRecoverToolCall",
+    ];
     this.recordMalformedToolCall(t, {
       undeclaredNames: this.extractUndeclaredNamesFromContent(t),
       category: "malformed",
+      failureReason: "all recovery stages failed to produce valid JSON",
+      recoveryAttempts,
     });
 
-    logger.warn(`[parser] Dropping malformed tool call (${t.length} chars): ${t.substring(0, 80).replace(/\n/g, " ")}...`);
+    logger.warn(
+      `[parser] Dropping malformed tool call (${t.length} chars): ${t.substring(0, 80).replace(/\n/g, " ")}...`,
+      {
+        toolName: droppedToolName,
+        category: "malformed",
+        contentLength: t.length,
+        content: t.substring(0, 2000),
+        failureReason: "all recovery stages failed to produce valid JSON",
+        recoveryAttempts,
+        declaredTools: [...this.declaredToolNames].slice(0, 10),
+      },
+    );
     if (
       this.emittedToolCallCount === 0 &&
       this.pendingLeadIn.trim().length > 0
