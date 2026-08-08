@@ -47,6 +47,10 @@ interface QueueEntry {
   onAbort: (() => void) | null;
   signal: AbortSignal | null;
   enqueuedAt: number;
+  /** Preserved so the lease granted from the queue keeps the session label. */
+  label: string;
+  /** Preserved so latest-wins can abort queued-then-granted leases. */
+  leaseAbortController?: AbortController;
 }
 
 interface AccountSlot {
@@ -115,7 +119,7 @@ function releaseSlot(accountId: string): void {
     console.log(
       `🚦 [Server] Stream slot granted | account=${accountId} | waited ${Date.now() - entry.enqueuedAt}ms | ${slot.queue.length} still queued`,
     );
-    entry.resolve(createLease(accountId, "queued-request"));
+    entry.resolve(createLease(accountId, entry.label, entry.leaseAbortController));
     return; // one at a time to preserve ordering
   }
 
@@ -232,6 +236,8 @@ export function acquireAccountLease(
       onAbort: null,
       signal,
       enqueuedAt: Date.now(),
+      label,
+      leaseAbortController: options?.leaseAbortController,
     };
 
     const removeSelf = () => {
