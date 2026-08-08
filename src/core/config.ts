@@ -68,6 +68,10 @@ const envSchema = z
     ACCOUNT_MAX_CONCURRENT_STREAMS: z.string().default("1"),
     ACCOUNT_BUSY_WAIT_MS: z.string().default("30000"),
     ACCOUNT_INIT_FAILURE_COOLDOWN_MS: z.string().default("300000"),
+    STREAM_DISCONNECT_GRACE_MS: z
+      .string()
+      .regex(/^\d+$/, "STREAM_DISCONNECT_GRACE_MS must be a number")
+      .default("4000"),
     CHAT_IN_PROGRESS_RETRY_DELAY_MS: z.string().default("2000"),
     CHAT_IN_PROGRESS_BUSY_MS: z.string().default("8000"),
     MID_STREAM_FAILOVER_THRESHOLD: z.string().default("2"),
@@ -203,6 +207,12 @@ export const config = {
     initFailureCooldownMs: Math.max(
       30_000,
       parseInt(env.ACCOUNT_INIT_FAILURE_COOLDOWN_MS),
+    ),
+  },
+  stream: {
+    disconnectGraceMs: Math.max(
+      0,
+      parseInt(env.STREAM_DISCONNECT_GRACE_MS),
     ),
   },
 

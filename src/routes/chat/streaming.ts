@@ -864,6 +864,9 @@ export async function processStreamingResponse(
   return honoStream(c, async (streamWriter: any) => {
     let heartbeatTimeout: NodeJS.Timeout | undefined;
     let clientDisconnected = false;
+    let gracePending = false;
+    let graceTimer: NodeJS.Timeout | null = null;
+    let teardownDone = false;
     let currentUiSessionId = retryContext.uiSessionId;
     let currentAccountId = retryContext.activeAccountId;
     let currentAccountLabel = retryContext.activeAccountLabel;
@@ -871,9 +874,16 @@ export async function processStreamingResponse(
     let invalidInputSameAccountRetries = 0;
     let chatInProgressSameAccountRetries = 0;
 
-    const abortHandler = () => {
-      if (clientDisconnected) return;
-      clientDisconnected = true;
+    // The client socket went away. When config.stream.disconnectGraceMs > 0 we
+    // do NOT tear down Qwen/stop/release the lease immediately: a transient
+    // network blip (2-4s) would otherwise kill the in-flight generation, mark
+    // the account temporarily busy and splinter the thread. Within the window
+    // the upstream keeps generating; if it finishes naturally, the parent is
+    // still committed and the reconnecting client continues the thread
+    // cleanly. A still-running generation gets the teardown after the window.
+    const runDisconnectTeardown = () => {
+      if (teardownDone) return;
+      teardownDone = true;
 
       console.log(
         `🔌 [Chat] Client disconnected | ${completionId} | stopping Qwen generation`,
@@ -963,6 +973,27 @@ export async function processStreamingResponse(
       }
     };
 
+    const abortHandler = () => {
+      if (clientDisconnected) return;
+      clientDisconnected = true;
+
+      const graceMs = config.stream.disconnectGraceMs;
+      if (graceMs > 0) {
+        gracePending = true;
+        console.log(
+          `🔌 [Chat] Client disconnected | ${completionId} | grace ${graceMs}ms - keeping Qwen generation alive`,
+        );
+        graceTimer = setTimeout(() => {
+          gracePending = false;
+          graceTimer = null;
+          runDisconnectTeardown();
+        }, graceMs);
+        return;
+      }
+
+      runDisconnectTeardown();
+    };
+
     c.req.raw.signal.addEventListener("abort", abortHandler);
 
     // Micro-buffer: coalesce many tiny SSE writes into fewer socket writes to cut
@@ -974,6 +1005,11 @@ export async function processStreamingResponse(
     const WRITE_FLUSH_MS = 3;
 
     const flushWrites = () => {
+      if (clientDisconnected) {
+        writeBuffer = '';
+        writeTimer = null;
+        return;
+      }
       if (writeTimer) { clearTimeout(writeTimer); writeTimer = null; }
       if (writeBuffer) {
         const data = writeBuffer;
@@ -1004,6 +1040,7 @@ export async function processStreamingResponse(
       const createdTimestamp = Math.floor(Date.now() / 1000);
 
       const bufferedWrite = (data: string) => {
+        if (clientDisconnected) return;
         writeBuffer += data;
         if (writeBuffer.length >= WRITE_FLUSH_BYTES) {
           flushWrites();
@@ -1234,7 +1271,7 @@ export async function processStreamingResponse(
 
         if (
           !normalizedError ||
-          clientDisconnected ||
+          (clientDisconnected && !gracePending) ||
           c.req.raw.signal.aborted ||
           retryContext.retriesLeft <= 0 ||
           !midStreamRetry ||
@@ -1354,12 +1391,10 @@ export async function processStreamingResponse(
         currentTokenEstimationContext =
           newStreamResult.tokenEstimationContext;
         targetResponseId = null;
-        lastThinkingSummary = "";
-        lastThinkingSummaryLength = 0;
-        lastThinkingSummarySuffix = "";
-        lastRawContent = "";
-        lastRawContentLength = 0;
-        lastRawContentSuffix = "";
+        // Keep the text dedup state (lastRawContent/lastThinkingSummary):
+        // the recovery chat re-answers the same question from scratch, so
+        // getIncrementalDelta's common-prefix logic drops the already-emitted
+        // prefix instead of re-printing the first sentence to the client.
         toolParser = shouldParseToolCalls
           ? new StreamingToolParser(declaredTools, {
               incrementalToolCalls: true,
@@ -1389,7 +1424,7 @@ export async function processStreamingResponse(
 
       // Main SSE reader loop
       while (true) {
-        if (clientDisconnected) {
+        if (clientDisconnected && !gracePending) {
           if (isToolcallDebugEnabled()) {
             logger.debug("[chat] stream: breaking loop - client disconnected");
           }
@@ -1594,7 +1629,7 @@ export async function processStreamingResponse(
             // gone away. A stop/abort can race the upstream error and otherwise
             // keep creating requests on the same sticky account in the
             // background.
-            if (clientDisconnected || c.req.raw.signal.aborted) {
+            if ((clientDisconnected && !gracePending) || c.req.raw.signal.aborted) {
               return;
             }
 
@@ -1874,19 +1909,14 @@ export async function processStreamingResponse(
             });
           }
 
-          // Reset to a fresh parser + dedup state so this attempt's stream is
-          // parsed exactly like the main stream: cumulative deltas are deduped
-          // via getIncrementalDelta, tool calls are re-emitted, and malformed
-          // detection is re-evaluated on the retry output.
+          // Reset to a fresh tool-call parser so malformed detection re-evaluates
+          // on the retry output. Keep the TEXT dedup state (lastRawContent/
+          // lastThinkingSummary): the retry re-answers the earlier text, and
+          // getIncrementalDelta drops the already-emitted prefix instead of
+          // re-printing it to the client.
           toolParser = shouldParseToolCalls
             ? new StreamingToolParser(declaredTools, { incrementalToolCalls: true })
             : null;
-          lastRawContent = "";
-          lastRawContentLength = 0;
-          lastRawContentSuffix = "";
-          lastThinkingSummary = "";
-          lastThinkingSummaryLength = 0;
-          lastThinkingSummarySuffix = "";
           targetResponseId = null;
           pendingParentId = null;
           upstreamDone = false;
@@ -2293,6 +2323,10 @@ export async function processStreamingResponse(
       c.req.raw.signal.removeEventListener("abort", abortHandler);
       if (heartbeatTimeout) {
         clearTimeout(heartbeatTimeout);
+      }
+      if (graceTimer) {
+        clearTimeout(graceTimer);
+        graceTimer = null;
       }
       removeStream(completionId);
 
