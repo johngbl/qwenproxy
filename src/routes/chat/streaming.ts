@@ -867,6 +867,7 @@ export async function processStreamingResponse(
     let gracePending = false;
     let graceTimer: NodeJS.Timeout | null = null;
     let teardownDone = false;
+    let recoverySeedPending = false;
     let currentUiSessionId = retryContext.uiSessionId;
     let currentAccountId = retryContext.activeAccountId;
     let currentAccountLabel = retryContext.activeAccountLabel;
@@ -1250,6 +1251,24 @@ export async function processStreamingResponse(
         }
       };
 
+      // After a failover/retry the tool-call parser is fresh but the text
+      // dedup (against the previous attempt's content) may strip the shared
+      // prefix from the first chunk, cutting a tool block mid-way (e.g. the
+      // `<tool_call>{"name":...` header). Feed that deduped-away prefix into
+      // the parser as non-emitted context so the reassembled block completes.
+      const seedParserWithDedupedPrefix = (
+        cumulativeContent: string,
+        emittedDelta: string,
+      ): void => {
+        if (!toolParser || !cumulativeContent) return;
+        const newLen = cumulativeContent.length;
+        const emittedLen = emittedDelta.length;
+        if (newLen <= emittedLen) return;
+        const prefix = cumulativeContent.slice(0, newLen - emittedLen);
+        if (!prefix) return;
+        toolParser.feed(prefix);
+      };
+
 
 
       const recoverFromStreamError = async (rawError: unknown): Promise<boolean> => {
@@ -1400,6 +1419,7 @@ export async function processStreamingResponse(
               incrementalToolCalls: true,
             })
           : null;
+        recoverySeedPending = true;
         Object.assign(usageAccumulator, createUsageAccumulator(0));
         buffer = "";
         pendingParentId = null;
@@ -1499,6 +1519,10 @@ export async function processStreamingResponse(
                 lastRawContentSuffix,
               );
               const vStr = result.delta;
+              if (recoverySeedPending && unescaped) {
+                seedParserWithDedupedPrefix(unescaped, vStr || "");
+                recoverySeedPending = false;
+              }
               if (vStr && vStr !== "FINISHED") {
                 lastRawContent = result.matchedContent;
                 lastRawContentLength = result.contentLength;
@@ -1603,6 +1627,10 @@ export async function processStreamingResponse(
                     lastRawContentSuffix,
                   );
                   vStr = result.delta;
+                  if (recoverySeedPending && newContent) {
+                    seedParserWithDedupedPrefix(newContent, vStr || "");
+                    recoverySeedPending = false;
+                  }
                   if (vStr) {
                     lastRawContent = result.matchedContent;
                     lastRawContentLength = result.contentLength;
@@ -1921,6 +1949,7 @@ export async function processStreamingResponse(
           pendingParentId = null;
           upstreamDone = false;
           let retryErrorPayload: unknown = null;
+          let retrySeedPending = true;
 
           const retryReader = newStreamResult.stream.getReader();
           activeReader = retryReader;
@@ -2044,6 +2073,10 @@ export async function processStreamingResponse(
                   lastRawContentSuffix,
                 );
                 vStr = result.delta;
+                if (retrySeedPending && newContent) {
+                  seedParserWithDedupedPrefix(newContent, vStr || "");
+                  retrySeedPending = false;
+                }
                 if (vStr) {
                   lastRawContent = result.matchedContent;
                   lastRawContentLength = result.contentLength;
