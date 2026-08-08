@@ -29,6 +29,7 @@ interface QueueEntry {
   timer: ReturnType<typeof setTimeout> | null;
   onAbort: (() => void) | null;
   signal: AbortSignal | null;
+  enqueuedAt: number;
 }
 
 interface AccountSlot {
@@ -72,7 +73,7 @@ function releaseSlot(accountId: string): void {
     cleanupEntry(entry);
     slot.active++;
     console.log(
-      `🚦 [Server] Stream slot granted | account=${accountId} | ${slot.queue.length} still queued`,
+      `🚦 [Server] Stream slot granted | account=${accountId} | waited ${Date.now() - entry.enqueuedAt}ms | ${slot.queue.length} still queued`,
     );
     entry.resolve(createLease(accountId));
     return; // one at a time to preserve ordering
@@ -145,6 +146,7 @@ export function acquireAccountLease(
       timer: null,
       onAbort: null,
       signal,
+      enqueuedAt: Date.now(),
     };
 
     const removeSelf = () => {
@@ -162,6 +164,9 @@ export function acquireAccountLease(
     if (typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs > 0) {
       entry.timer = setTimeout(() => {
         removeSelf();
+        console.log(
+          `🚦 [Server] Stream wait timeout | account=${accountId} | waited ${timeoutMs}ms | ${slot.queue.length} still queued`,
+        );
         const busyError = new Error(
           `Account ${accountId} busy: timed out after ${timeoutMs}ms waiting for a free slot`,
         ) as Error & { code?: string };
@@ -174,6 +179,9 @@ export function acquireAccountLease(
     if (signal) {
       entry.onAbort = () => {
         removeSelf();
+        console.log(
+          `🚦 [Server] Stream waiter aborted | account=${accountId} | waited ${Date.now() - entry.enqueuedAt}ms | ${slot.queue.length} still queued`,
+        );
         reject(new Error("Aborted while waiting for account lease"));
       };
       signal.addEventListener("abort", entry.onAbort, { once: true });

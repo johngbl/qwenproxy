@@ -76,6 +76,13 @@ export async function chatCompletions(c: Context) {
       ? (body as any).tools
       : [];
 
+    // Correlate arrival and dispatch: logged again on the 📤 line once the
+    // upstream stream (and its queue wait) is resolved.
+    const reqId = crypto.randomUUID().substring(0, 8);
+    console.log(
+      `📥 [Chat] Incoming | req=${reqId} | ${body.model} | ${messages.length} msg(s) | stream=${isStream}${declaredTools.length ? ` | ${declaredTools.length} tool(s)` : ""}${allFiles.length ? ` | ${allFiles.length} file(s)` : ""}`,
+    );
+
     // Intercept image/video generation models: they bypass the text chat flow
     // and are handled by the native media pipeline (qwen-image-*, wan2.*).
     const rawModel = typeof body.model === "string" ? body.model.trim() : "";
@@ -220,7 +227,7 @@ export async function chatCompletions(c: Context) {
     }
 
     console.log(
-      `📤 [Chat] Request | ${streamResult.activeAccountLabel} | ${body.model} | ${msgCount} msg(s) | ${finalPrompt.length} chars | chat=${streamResult.uiSessionId.substring(0, 12)}${declaredTools.length ? ` | ${declaredTools.length} tool(s)` : ""}${files.length ? ` | ${files.length} file(s)` : ""}`,
+      `📤 [Chat] Request | req=${reqId} | ${streamResult.activeAccountLabel} | ${body.model} | ${msgCount} msg(s) | ${finalPrompt.length} chars | chat=${streamResult.uiSessionId.substring(0, 12)}${declaredTools.length ? ` | ${declaredTools.length} tool(s)` : ""}${files.length ? ` | ${files.length} file(s)` : ""}`,
     );
 
     const onAssistantComplete: ((event: AssistantCompleteEvent) => Promise<void> | void) | undefined = undefined;
