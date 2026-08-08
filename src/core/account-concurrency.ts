@@ -74,6 +74,9 @@ function releaseSlot(accountId: string): void {
     if (!entry) break;
     cleanupEntry(entry);
     slot.active++;
+    console.log(
+      `🚦 [Server] Stream slot granted | account=${accountId} | ${slot.queue.length} still queued`,
+    );
     entry.resolve(createLease(accountId));
     return; // one at a time to preserve ordering
   }
@@ -180,6 +183,10 @@ export function acquireAccountLease(
     }
 
     slot.queue.push(entry);
+
+    console.log(
+      `🚦 [Server] Stream slot busy | account=${accountId} | queued at position ${slot.queue.length} | timeout=${typeof timeoutMs === "number" && Number.isFinite(timeoutMs) ? `${timeoutMs}ms` : "unbounded"}`,
+    );
 
     logger.debug("[concurrency] queued for account lease", {
       accountId,
