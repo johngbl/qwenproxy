@@ -1,7 +1,13 @@
 import { logger } from "./logger.js";
 
-/** Maximum time a mutex can be held before it's considered leaked and force-released. */
-const MAX_HOLD_MS = 120_000; // 2 minutes
+/**
+ * Maximum time a mutex can be held before it's considered leaked and
+ * force-released. Overridable via MUTEX_MAX_HOLD_MS for tests.
+ */
+const MAX_HOLD_MS = (() => {
+  const parsed = parseInt(process.env.MUTEX_MAX_HOLD_MS ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 120_000;
+})();
 
 export class Mutex {
   private queue: Array<{ waiter: () => void; enqueuedAt: number; key: string }> = [];
