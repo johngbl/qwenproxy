@@ -744,6 +744,7 @@ async function tryCreateStreamWithRetry(
 	let quotaRetried = false;
 	let accountSwitches = 0;
 	let chatInProgressCount = 0;
+	let chatInProgressEscalated = false;
 	let lastAttemptError: any = null;
 	let invalidInputSameAccountRetried = false;
 	const accounts = loadAccounts();
@@ -1375,39 +1376,56 @@ async function tryCreateStreamWithRetry(
 			);
 
 			if (chatInProgressCount >= 4) {
-				const nextAccount =
-					!isSingleAccount && accountSwitches < maxAccountSwitches
-						? getNextAvailableAccount(triedAccounts)
-						: null;
-				if (nextAccount && nextAccount.id !== currentAccountId) {
-					console.warn(
-						`🔄 [Chat] chat_in_progress escalation (${chatInProgressCount}) | switching ${currentAccountEmail} -> ${maskEmail(nextAccount.email)}`,
-					);
-					triedAccounts.add(currentAccountId);
-					currentAccountId = nextAccount.id;
-					currentAccountEmail = maskEmail(nextAccount.email);
-					accountSwitches++;
-				} else {
-					console.warn(
-						`🔄 [Chat] chat_in_progress escalation (${chatInProgressCount}) | forcing a new chat on ${currentAccountEmail}`,
-					);
-				}
+				if (!chatInProgressEscalated) {
+					chatInProgressEscalated = true;
+					const nextAccount =
+						!isSingleAccount && accountSwitches < maxAccountSwitches
+							? getNextAvailableAccount(triedAccounts)
+							: null;
+					if (nextAccount && nextAccount.id !== currentAccountId) {
+						console.warn(
+							`🔄 [Chat] chat_in_progress escalation (${chatInProgressCount}) | switching ${currentAccountEmail} -> ${maskEmail(nextAccount.email)}`,
+						);
+						triedAccounts.add(currentAccountId);
+						currentAccountId = nextAccount.id;
+						currentAccountEmail = maskEmail(nextAccount.email);
+						accountSwitches++;
+					} else {
+						console.warn(
+							`🔄 [Chat] chat_in_progress escalation (${chatInProgressCount}) | forcing a new chat on ${currentAccountEmail}`,
+						);
+					}
 
-				if (params.useThreadNative) {
-					params.existingThread = null;
-					params.finalPrompt = params.fullPrompt;
-					params.messageCount = params.fullMessageCount ?? params.messageCount;
-					params.forceNewChat = true;
-				}
-			}
+					if (params.useThreadNative) {
+						params.existingThread = null;
+						params.finalPrompt = params.fullPrompt;
+						params.messageCount = params.fullMessageCount ?? params.messageCount;
+						params.forceNewChat = true;
+					}
 
-			// Same-chat waits grow with the failure count so a slow settle is
-			// absorbed before the (expensive) escalation: the 2nd retry waits the
-			// busy window, the 3rd waits double.
-			if (chatInProgressCount >= 3) {
-				policy.retryAfterMs = config.retry.chatInProgressBusyMs * 2;
-			} else if (chatInProgressCount >= 2) {
-				policy.retryAfterMs = config.retry.chatInProgressBusyMs;
+					// The escalation attempt gets its own budget and no settle wait —
+					// it targets a fresh chat/account, not the busy one. If it ALSO
+					// fails with chat_in_progress the budget stays exhausted and the
+					// outer rotation (acquireUpstreamStream) takes over.
+					attemptsLeft = Math.max(attemptsLeft, 1);
+					policy.retryAfterMs = 0;
+				}
+			} else {
+				// The same-chat settle window has its own budget, independent of the
+				// global RETRY_MAX_ATTEMPTS: with maxAttempts=3 the counter above
+				// would hit 0 on the 3rd failure and the 3rd same-chat retry (the
+				// 2x-busyMs wait) would never run — escalating ~8s early into a
+				// full-context replay on a cold account.
+				attemptsLeft = Math.max(attemptsLeft, 1);
+
+				// Same-chat waits grow with the failure count so a slow settle is
+				// absorbed before the (expensive) escalation: the 2nd retry waits the
+				// busy window, the 3rd waits double.
+				if (chatInProgressCount >= 3) {
+					policy.retryAfterMs = config.retry.chatInProgressBusyMs * 2;
+				} else if (chatInProgressCount >= 2) {
+					policy.retryAfterMs = config.retry.chatInProgressBusyMs;
+				}
 			}
 		}
 

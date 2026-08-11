@@ -142,11 +142,52 @@ test("chat_in_progress three times then success: the 3rd same-chat retry also av
 
     // Exactly 4 completion calls: 3 transient chat_in_progress (settle >6s was
     // observed after huge turns) + 1 success. Escalating earlier would replay
-    // the full context on another account instead.
+    // the full context on another account instead. The settle window has its
+    // own budget inside tryCreateStreamWithRetry (independent of the global
+    // RETRY_MAX_ATTEMPTS=3), so all 4 calls happen in the same retry loop.
     assert.strictEqual(
       mock.completionCalls(),
       4,
       "expected 3 chat_in_progress failures + 1 success",
+    );
+  } finally {
+    mock.restore();
+  }
+});
+
+test("chat_in_progress four times: the settle window is exhausted and the escalation attempt succeeds", async () => {
+  const mock = installMockFetch(4);
+  try {
+    const res = await app.fetch(
+      new Request("http://localhost/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "qwen3.6-plus",
+          session_id: "chat-progress-settle-test-4",
+          messages: [{ role: "user", content: "hi" }],
+          stream: true,
+        }),
+      }),
+    );
+
+    assert.strictEqual(
+      res.status,
+      200,
+      "request must survive an exhausted settle window",
+    );
+    const text = await res.text();
+    assert.ok(text.includes("settled"), "escalation attempt should stream normally");
+    assert.ok(text.includes("data: [DONE]"), "stream must terminate");
+
+    // 5 completion calls: 4 chat_in_progress failures (3 same-chat retries +
+    // the 4th triggers the escalation) and the escalation attempt itself
+    // succeeds — it gets its own budget instead of dying with the exhausted
+    // settle window.
+    assert.strictEqual(
+      mock.completionCalls(),
+      5,
+      "expected 4 chat_in_progress failures + 1 escalation success",
     );
   } finally {
     mock.restore();
