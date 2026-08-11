@@ -8,6 +8,10 @@ import assert from "node:assert/strict";
 
 process.env.TOOLCALL_DEBUG = "errors";
 process.env.UPSTREAM_DEBUG = "true";
+// Isolate from a project .env that sets LOG_LEVEL (e.g. LOG_LEVEL=warn):
+// dotenv does not override already-defined vars, and an empty value makes the
+// logger fall back to its default (info) — the behavior this test asserts.
+process.env.LOG_LEVEL = "";
 
 const {
   logger,
@@ -28,9 +32,10 @@ test("UPSTREAM_DEBUG=true enables the upstream debug flag", () => {
   assert.equal(upstreamDebugEnabled, true);
 });
 
-test("logger stays at info level (no LOG_LEVEL set) and methods do not throw", () => {
+test("logger defaults to warn level (no LOG_LEVEL set) and methods do not throw", () => {
   assert.equal(isDebugEnabled(), false);
-  assert.equal(logger.isLevelEnabled("info"), true);
+  assert.equal(logger.isLevelEnabled("info"), false);
+  assert.equal(logger.isLevelEnabled("warn"), true);
   logger.debug("suppressed");
   logger.info("i");
   logger.warn("w");

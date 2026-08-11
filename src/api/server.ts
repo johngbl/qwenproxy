@@ -15,6 +15,7 @@ import { imagesGenerations } from "../routes/images.js";
 import { videosGenerations, videoTaskStatus } from "../routes/videos.js";
 import { anthropicApp } from "../routes/anthropic/index.js";
 import { responsesApp } from "../routes/responses/index.js";
+import { completionsLegacy } from "../routes/completions.js";
 import { sendOpenAIError } from "./error-helpers.js";
 import { AuthError, NotFoundError } from "../core/errors.js";
 import type { QwenAccount } from "../core/accounts.js";
@@ -35,19 +36,70 @@ function formatAccountId(accountId: string): string {
   return normalized.length > 12 ? `${normalized.slice(0, 12)}…` : normalized;
 }
 
-// Module-level accessor for cross-module cache access
-export function getCache(): MemoryCache | undefined {
-  return cache;
-}
-
 export function setCacheForTesting(nextCache: MemoryCache | undefined): void {
   cache = nextCache;
 }
 
 // Middleware must be registered BEFORE routes
+
+// CORS: browser-based clients (OpenWebUI, web frontends on another origin)
+// preflight before the Authorization header is sent, so OPTIONS short-circuits
+// BEFORE the /v1/* auth middleware. Default is permissive (doc checklist item
+// 2); set CORS_ORIGIN to lock it down.
+const corsOrigin = process.env.CORS_ORIGIN || "*";
+app.use("*", async (c, next) => {
+  c.header("Access-Control-Allow-Origin", corsOrigin);
+  c.header(
+    "Access-Control-Allow-Methods",
+    "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+  );
+  c.header(
+    "Access-Control-Allow-Headers",
+    "Authorization, Content-Type, X-Request-Id, x-api-key, OpenAI-Organization, OpenAI-Project, X-Client-Request-Id",
+  );
+  c.header(
+    "Access-Control-Expose-Headers",
+    "X-Request-Id, X-Response-Time, openai-version, openai-processing-ms, x-ratelimit-limit-requests, x-ratelimit-remaining-requests, x-ratelimit-reset-requests, x-ratelimit-limit-tokens, x-ratelimit-remaining-tokens, x-ratelimit-reset-tokens",
+  );
+  if (c.req.method === "OPTIONS") {
+    // Hono does not merge c.header() values into a manually constructed
+    // Response, so the preflight carries its CORS headers explicitly.
+    return new Response(null, {
+      status: 204,
+      headers: {
+        "Access-Control-Allow-Origin": corsOrigin,
+        "Access-Control-Allow-Methods":
+          "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+        "Access-Control-Allow-Headers":
+          "Authorization, Content-Type, X-Request-Id, x-api-key, OpenAI-Organization, OpenAI-Project, X-Client-Request-Id",
+        "Access-Control-Expose-Headers":
+          "X-Request-Id, X-Response-Time, openai-version, openai-processing-ms, x-ratelimit-limit-requests, x-ratelimit-remaining-requests, x-ratelimit-reset-requests, x-ratelimit-limit-tokens, x-ratelimit-remaining-tokens, x-ratelimit-reset-tokens",
+      },
+    });
+  }
+  await next();
+});
+
 app.use("*", async (c, next) => {
   const requestId = c.req.header("X-Request-Id") || uuidv4();
   c.header("X-Request-Id", requestId);
+
+  // OpenAI-shaped response headers (doc §5.2): API version, processing time,
+  // and static rate-limit windows so tools that parse x-ratelimit-* don't choke.
+  c.header("openai-version", "2020-10-01");
+  const ratelimit = config.server.rateLimit;
+  c.header("x-ratelimit-limit-requests", String(ratelimit.requests));
+  c.header(
+    "x-ratelimit-remaining-requests",
+    String(Math.max(0, ratelimit.requests - 1)),
+  );
+  c.header("x-ratelimit-reset-requests", "0");
+  c.header("x-ratelimit-limit-tokens", String(ratelimit.tokens));
+  c.header(
+    "x-ratelimit-remaining-tokens",
+    String(Math.max(0, ratelimit.tokens - 1)),
+  );
+  c.header("x-ratelimit-reset-tokens", "0");
 
   metrics.increment("requests.total");
   const start = Date.now();
@@ -55,6 +107,7 @@ app.use("*", async (c, next) => {
   const duration = Date.now() - start;
   metrics.histogram("latency.request", duration);
   c.header("X-Response-Time", `${duration}ms`);
+  c.header("openai-processing-ms", String(duration));
 });
 
 function constantTimeStringEqual(provided: string, expected: string): boolean {
@@ -114,6 +167,7 @@ app.use("/v1/*", async (c, next) => {
 app.route("", modelsApp);
 app.post("/v1/chat/completions", chatCompletions);
 app.post("/v1/chat/completions/stop", chatCompletionsStop);
+app.post("/v1/completions", completionsLegacy);
 app.post("/v1/upload", uploadFile);
 app.post("/v1/images/generations", imagesGenerations);
 app.post("/v1/videos/generations", videosGenerations);
@@ -124,6 +178,19 @@ app.route("", anthropicApp);
 
 // OpenAI Responses API compatible routes
 app.route("", responsesApp);
+
+// Accept paths without the /v1 prefix via a 308 redirect (method + body are
+// preserved on redirect). Most clients append /v1 themselves; the redirect
+// covers the rest without duplicating handlers.
+const LEGACY_REDIRECTS: Array<[string, string]> = [
+  ["/chat/completions", "/v1/chat/completions"],
+  ["/completions", "/v1/completions"],
+  ["/responses", "/v1/responses"],
+  ["/models", "/v1/models"],
+];
+for (const [from, to] of LEGACY_REDIRECTS) {
+  app.all(from, (c) => c.redirect(to, 308));
+}
 
 app.get("/health", async (c) => {
   const status = await watchdog?.getStatus();
@@ -397,12 +464,12 @@ async function cleanupServerResources(): Promise<void> {
   const { closeAllPlaywright } = await import("../services/playwright.ts");
   await closeAllPlaywright();
 
-  const { closeDatabase } = await import("../core/database.ts");
-  closeDatabase();
-
   const activeServer = server;
   server = undefined;
   if (activeServer?.close) {
+    // Drain in-flight requests BEFORE flushing: a request finishing during the
+    // drain can still call updateLogicalThreadState, and its debounced write
+    // must land in SQLite while the DB is still open.
     await new Promise<void>((resolve) => {
       try {
         if (activeServer.close.length > 0) {
@@ -416,6 +483,17 @@ async function cleanupServerResources(): Promise<void> {
       }
     });
   }
+
+  const { flushLogicalThreadState } = await import("../services/qwen.ts");
+  try {
+    // Debounced logical-thread upserts must land before the DB closes.
+    flushLogicalThreadState();
+  } catch {
+    // Persistence is best-effort; the in-memory cache already served this run.
+  }
+
+  const { closeDatabase } = await import("../core/database.ts");
+  closeDatabase();
 }
 
 async function handleSignal(signal: string): Promise<never> {

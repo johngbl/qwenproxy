@@ -77,18 +77,6 @@ export function normalizeReasoningEffort(
 }
 
 /**
- * Whether this effort enables Qwen thinking.
- * medium/high → on; low → off.
- */
-export function effortEnablesThinking(
-  effort: NormalizedEffort | undefined,
-  defaultWhenUnset = true,
-): boolean {
-  if (!effort) return defaultWhenUnset;
-  return effort !== "low";
-}
-
-/**
  * Optionally rewrite the model id based on effort.
  * low/Fast → *-fast
  * medium/high/Max → the base model (Thinking)

@@ -1,5 +1,3 @@
-import type { AnthropicRequest } from "./types.ts";
-
 export interface ValidationResult {
   valid: boolean;
   error?: string;

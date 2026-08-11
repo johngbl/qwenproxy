@@ -1,4 +1,4 @@
-import { Context } from "hono";
+import type { Context } from "hono";
 import { Readable } from "stream";
 import {
   getBasicHeaders,
@@ -500,7 +500,6 @@ export async function uploadFile(c: Context) {
     // Determine media category for size limits
     const isVideo = fileType.startsWith("video/");
     const isAudio = fileType.startsWith("audio/");
-    const isImage = fileType.startsWith("image/");
     const maxSize = getMaxUploadSize(fileType);
     if (file.size > maxSize) {
       const sizeLabel = isVideo

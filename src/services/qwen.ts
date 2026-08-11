@@ -6,8 +6,13 @@ import {
   isTokenExpiringSoon,
 } from "./auth-playwright.ts";
 import { v4 as uuidv4 } from "uuid";
-import { UpstreamRateLimit, UpstreamError, AuthError } from "../core/errors.ts";
-import { buildQwenRequestHeaders, QWEN_WEB_VERSION } from "./qwen-headers.ts";
+import {
+  UpstreamRateLimit,
+  UpstreamError,
+  AuthError,
+  ClientAbortedError,
+} from "../core/errors.ts";
+import { buildQwenRequestHeaders } from "./qwen-headers.ts";
 import { qwenOrigin, qwenUrl } from "./qwen-url.ts";
 import { config } from "../core/config.ts";
 import { logger, isToolcallDebugEnabled } from "../core/logger.ts";
@@ -121,23 +126,6 @@ function browserStreamError(message: string, errorName?: string): Error {
   return new QwenNetworkError(normalizedMessage);
 }
 
-function withBrowserTimeout<T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-  message: string,
-): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  return Promise.race([
-    promise.finally(() => {
-      if (timer) clearTimeout(timer);
-    }),
-    new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new Error(message)), timeoutMs);
-      timer.unref?.();
-    }),
-  ]);
-}
-
 async function waitForBrowserStreamMetadata(
   requestId: string,
   timeoutMs: number,
@@ -175,10 +163,19 @@ function addIdleTimeoutToStream(
   label: string,
   onTimeout?: () => void,
   onDone?: () => void,
+  /**
+   * Stricter deadline for the FIRST chunk only (thinking models idle at
+   * REASONING_MODEL_TIMEOUT = 600s by default; a stream that produced NOTHING
+   * in that window is almost certainly dead, and holding the account slot for
+   * 10 minutes stalls the whole session). After the first chunk the normal
+   * idleTimeoutMs governs gaps. Aborts here are retryable (etimedout marker).
+   */
+  firstChunkDeadlineMs?: number,
 ): ReadableStream<Uint8Array> {
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   let wrapperController: ReadableStreamDefaultController<Uint8Array> | undefined;
+  let firstChunkSeen = false;
 
   const clearIdleTimer = () => {
     if (idleTimer) {
@@ -187,10 +184,19 @@ function addIdleTimeoutToStream(
     }
   };
 
+  const currentIdleMs = () =>
+    firstChunkSeen || firstChunkDeadlineMs === undefined
+      ? idleTimeoutMs
+      : firstChunkDeadlineMs;
+
   const resetIdleTimer = () => {
     clearIdleTimer();
+    const timeoutMs = currentIdleMs();
     idleTimer = setTimeout(() => {
-      const message = `${label} idle timeout after ${idleTimeoutMs}ms without upstream data`;
+      // The `etimedout` marker lets retry-policy (isNetworkLikeError) treat a
+      // stalled upstream as a retryable network failure instead of a terminal
+      // 500, so the bridge auto-rotates to another account mid-stream.
+      const message = `${label} etimedout (${firstChunkSeen ? "idle" : "first-chunk"} timeout after ${timeoutMs}ms without upstream data)`;
       clearIdleTimer();
       controller.abort();
       onTimeout?.();
@@ -210,7 +216,7 @@ function addIdleTimeoutToStream(
       try {
         void reader?.cancel(message).catch(() => {});
       } catch {}
-    }, idleTimeoutMs);
+    }, timeoutMs);
   };
 
   return new ReadableStream<Uint8Array>({
@@ -229,6 +235,7 @@ function addIdleTimeoutToStream(
           streamController.close();
           return;
         }
+        firstChunkSeen = true;
         resetIdleTimer();
         streamController.enqueue(value);
       } catch (error) {
@@ -243,6 +250,24 @@ function addIdleTimeoutToStream(
       return reader ? reader.cancel(reason) : stream.cancel(reason);
     },
   });
+}
+
+/**
+ * Messages from the completion fetch that indicate a transient network or
+ * first-byte stall. These must be treated as retryable so tryCreateStreamWithRetry
+ * rotates to another account instead of failing with a terminal 500 that the
+ * client has to retry manually (which looks like an infinite hang).
+ */
+export function isRetryableFetchErrorMessage(message: string): boolean {
+  return (
+    message.includes("fetch failed") ||
+    message.includes("ECONNREFUSED") ||
+    message.includes("ETIMEDOUT") ||
+    message.includes("etimedout") ||
+    message.includes("ENOTFOUND") ||
+    message.includes("network") ||
+    message.includes("timed out waiting for response headers")
+  );
 }
 
 export class RetryableQwenStreamError extends UpstreamRateLimit {
@@ -360,6 +385,109 @@ const logicalThreadStates: Map<string, LogicalThreadEntry> =
 
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * Debounce window before dirty logical thread states are upserted to SQLite in
+ * a single transaction. The tool-call loop calls updateLogicalThreadState on
+ * every turn (~30+ synchronous writes per conversation otherwise). The
+ * in-memory cache stays the authoritative source within the process, so reads
+ * never observe the delay; flushLogicalThreadState() runs on shutdown.
+ */
+const LOGICAL_THREAD_FLUSH_DELAY_MS = 300;
+
+const logicalThreadDirty: Set<string> =
+  (globalThis as any)._logicalThreadDirty || new Set();
+(globalThis as any)._logicalThreadDirty = logicalThreadDirty;
+
+let logicalThreadFlushTimer: NodeJS.Timeout | null = null;
+
+function scheduleLogicalThreadFlush(): void {
+  if (logicalThreadFlushTimer) return;
+  logicalThreadFlushTimer = setTimeout(() => {
+    logicalThreadFlushTimer = null;
+    flushLogicalThreadState();
+  }, LOGICAL_THREAD_FLUSH_DELAY_MS);
+  logicalThreadFlushTimer.unref?.();
+}
+
+/**
+ * Persist every dirty logical thread state to SQLite in one transaction.
+ * Exported so the shutdown path can flush before closeDatabase().
+ */
+export function flushLogicalThreadState(): void {
+  if (logicalThreadFlushTimer) {
+    clearTimeout(logicalThreadFlushTimer);
+    logicalThreadFlushTimer = null;
+  }
+  if (isAuthMockEnabled()) return;
+  if (logicalThreadDirty.size === 0) return;
+
+  try {
+    const db = getDatabase();
+    const upsert = db.prepare(
+      `INSERT INTO logical_thread_states (session_id, account_id, chat_session_id, parent_id, instructions_sent, updated_at)
+       VALUES (?, ?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(session_id) DO UPDATE SET
+         account_id = excluded.account_id,
+         chat_session_id = excluded.chat_session_id,
+         parent_id = excluded.parent_id,
+         instructions_sent = excluded.instructions_sent,
+         updated_at = datetime('now')`,
+    );
+    const flush = db.transaction(
+      (entries: Array<{
+        sessionId: string;
+        accountId: string;
+        chatSessionId: string;
+        parentId: string | null;
+        instructionsSent: number;
+      }>) => {
+        for (const e of entries) {
+          upsert.run(
+            e.sessionId,
+            e.accountId,
+            e.chatSessionId,
+            e.parentId,
+            e.instructionsSent,
+          );
+        }
+      },
+    );
+
+    const entries: Array<{
+      sessionId: string;
+      accountId: string;
+      chatSessionId: string;
+      parentId: string | null;
+      instructionsSent: number;
+    }> = [];
+    for (const sessionId of logicalThreadDirty) {
+      const entry = logicalThreadStates.get(sessionId);
+      // Entries evicted from the cache (clearAllSessionsForAccount / TTL) must
+      // NOT be resurrected — the deletion already happened in the cache.
+      if (!entry || !entry.chatSessionId) continue;
+      entries.push({
+        sessionId,
+        accountId: entry.accountId,
+        chatSessionId: entry.chatSessionId,
+        parentId: entry.parentId ?? null,
+        instructionsSent: entry.instructionsSent ? 1 : 0,
+      });
+    }
+
+    if (entries.length > 0) flush(entries);
+    logicalThreadDirty.clear();
+  } catch (err) {
+    logger.warn(
+      "[Qwen] Failed to batch-persist logical thread states to SQLite",
+      {
+        count: logicalThreadDirty.size,
+        error: err instanceof Error ? err.message : String(err),
+      },
+    );
+    logicalThreadDirty.clear();
+  }
+}
+
 function cleanupStaleSessions() {
   const now = Date.now();
   for (const [key, entry] of sessionStates.entries()) {
@@ -380,6 +508,7 @@ function cleanupStaleSessions() {
   for (const [key, entry] of logicalThreadStates.entries()) {
     if (now - entry.timestamp > SESSION_TTL_MS) {
       logicalThreadStates.delete(key);
+      logicalThreadDirty.delete(key);
     }
   }
 }
@@ -474,31 +603,12 @@ export function updateLogicalThreadState(
 
   if (isAuthMockEnabled()) return;
 
-  // Persist to SQLite
-  try {
-    const db = getDatabase();
-    db.prepare(
-      `INSERT INTO logical_thread_states (session_id, account_id, chat_session_id, parent_id, instructions_sent, updated_at)
-       VALUES (?, ?, ?, ?, ?, datetime('now'))
-       ON CONFLICT(session_id) DO UPDATE SET
-         account_id = excluded.account_id,
-         chat_session_id = excluded.chat_session_id,
-         parent_id = excluded.parent_id,
-         instructions_sent = excluded.instructions_sent,
-         updated_at = datetime('now')`,
-    ).run(
-      logicalSessionId,
-      entry.accountId,
-      entry.chatSessionId,
-      entry.parentId ?? null,
-      merged.instructionsSent ? 1 : 0,
-    );
-  } catch (err) {
-    logger.warn("[Qwen] Failed to persist logical thread to SQLite", {
-      sessionId: logicalSessionId,
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
+  // Persist to SQLite with a short debounce: turns in the tool-call loop
+  // update this on every stream creation, and coalescing them into one
+  // transaction removes ~30+ synchronous writes per conversation. Reads stay
+  // cache-first, so runtime behavior is unchanged; the flush runs on shutdown.
+  logicalThreadDirty.add(logicalSessionId);
+  scheduleLogicalThreadFlush();
 }
 
 export function updateLogicalThreadParent(
@@ -571,6 +681,9 @@ export function clearAllSessionsForAccount(accountId: string): void {
   for (const [key, entry] of logicalThreadStates.entries()) {
     if (entry.accountId === accountId) {
       logicalThreadStates.delete(key);
+      // Drop pending writes too, so a later debounce flush cannot resurrect
+      // the just-deleted row.
+      logicalThreadDirty.delete(key);
       removed++;
     }
   }
@@ -1284,11 +1397,14 @@ async function createQwenBrowserResponse(
   const payloadMbForMetadata = Math.ceil(
     Buffer.byteLength(body, "utf8") / (1024 * 1024),
   );
+  // First-byte deadline for the completion fetch: honor TIME_TO_FIRST_BYTE
+  // (default 60s) with a 15s floor. A stall past this window is a dead
+  // connection / WAF swallow — classified retryable by the caller.
   const metadataTimeoutMs = Math.max(
     5_000,
     Math.min(
       pageOperationTimeoutMs,
-      Math.max(60_000, config.timeouts.timeToFirstByte) +
+      Math.max(15_000, config.timeouts.timeToFirstByte) +
         payloadMbForMetadata * METADATA_TIMEOUT_PER_PAYLOAD_MB_MS,
     ),
   );
@@ -2123,33 +2239,6 @@ export async function deleteQwenChat(
   return true;
 }
 
-export async function fetchQwenChatHistory(
-  chatId: string,
-  accountId?: string,
-): Promise<any> {
-  if (!chatId) return null;
-  const { headers } = await getQwenHeaders(false, accountId);
-  const response = await requestQwenTextInBrowser(
-    accountId,
-    "GET",
-    `/api/v2/chats/${encodeURIComponent(chatId)}`,
-    buildCapturedQwenHeaders(headers, {
-      chatSessionId: chatId,
-      referer: qwenUrl(`/c/${encodeURIComponent(chatId)}`),
-    }),
-    undefined,
-    { referrer: qwenUrl(`/c/${encodeURIComponent(chatId)}`) },
-  );
-
-  const { raw, json } = await readJsonTextResponse(response, { strict: true });
-  if (!response.ok) {
-    throw new Error(
-      `Failed to fetch Qwen chat ${chatId}: ${response.status} ${raw.substring(0, 200)}`,
-    );
-  }
-  return json;
-}
-
 export async function fetchQwenModels(
   accountId?: string,
 ): Promise<PublicQwenModel[]> {
@@ -2297,14 +2386,7 @@ async function createQwenChatSession(
     buildCapturedQwenHeaders(headers, {
       referer: qwenUrl("/"),
     }),
-    JSON.stringify({
-      title: "Nova Conversa",
-      models: [model],
-      chat_mode: "normal",
-      chat_type: "t2t",
-      timestamp: Date.now(),
-      project_id: "",
-    }),
+    JSON.stringify(buildChatNewBody(model)),
     { referrer: qwenUrl("/") },
   );
 
@@ -2338,8 +2420,38 @@ async function createQwenChatSession(
 }
 
 /**
+ * Body for POST /api/v2/chats/new, matching the real web client exactly
+ * (verified in HAR): chatId:"" instead of a title. The API then defaults the
+ * list title to "New chat", which isReusableUnusedChatTitle accepts so the
+ * warm pool can still find and recycle the chat.
+ */
+export function buildChatNewBody(model: string): Record<string, unknown> {
+  return {
+    chatId: "",
+    models: [model],
+    project_id: "",
+    timestamp: Date.now(),
+    chat_type: "t2t",
+    chat_mode: "normal",
+  };
+}
+
+/**
+ * True when a chat is an API-default-titled, never-messaged chat that the
+ * warm pool may recycle. Both defaults exist in practice: chats created by
+ * this project (title:"Nova Conversa") and chats created by the web client
+ * without a title (API default "New chat").
+ */
+export function isReusableUnusedChatTitle(
+  title: unknown,
+): title is string {
+  return title === "Nova Conversa" || title === "New chat";
+}
+
+/**
  * Fetch existing unused chats from the Qwen API.
- * Unused chats have title "Nova Conversa" and created_at === updated_at.
+ * Unused chats keep their API-default title ("Nova Conversa" or "New chat")
+ * and created_at === updated_at.
  */
 async function fetchUnusedChats(
   headers: Record<string, string>,
@@ -2369,7 +2481,7 @@ async function fetchUnusedChats(
     const unused: string[] = [];
     for (const chat of json.data) {
       if (
-        chat.title === "Nova Conversa" &&
+        isReusableUnusedChatTitle(chat.title) &&
         chat.created_at === chat.updated_at
       ) {
         unused.push(chat.id);
@@ -2809,6 +2921,8 @@ export async function createQwenStream(
     chatSessionId?: string | null;
     forceNewChat?: boolean;
     reasoningMode?: "auto" | "thinking" | "fast";
+    /** Auxiliary stream (title on its own chat): short idle cap. */
+    parallelEscape?: boolean;
   },
   signal?: AbortSignal,
 ): Promise<{
@@ -2825,13 +2939,29 @@ export async function createQwenStream(
   }
   // Serialize streams per account: one active stream at a time per browser context
   const streamLockKey = accountId || "global";
+  const startedAt = Date.now();
   const releaseStreamLock = await acquireAccountStreamLock(streamLockKey);
+  if (logger.isLevelEnabled("info")) {
+    console.log(
+      `${new Date().toISOString()} ⏱️ [Qwen] Create: stream-lock | account=${accountId ?? "global"} | +${Date.now() - startedAt}ms`,
+    );
+  }
   let streamLockReleased = false;
   const releaseStreamLockOnce = () => {
     if (streamLockReleased) return;
     streamLockReleased = true;
     releaseStreamLock();
   };
+
+  // A signal can fire while this attempt waited in the stream-lock queue
+  // (client disconnect, same-session supersede, or the acquire deadline
+  // aborting the race loser). Re-check AFTER the lock: a race-lost orphan must
+  // not proceed to make a full upstream request while unobserved (it would hold
+  // the lock for minutes and burn a Qwen request).
+  if (signal?.aborted) {
+    releaseStreamLockOnce();
+    throw new Error("client aborted before stream creation");
+  }
 
   try {
     return await createQwenStreamInternal(
@@ -2844,6 +2974,7 @@ export async function createQwenStream(
       options,
       signal,
       releaseStreamLockOnce,
+      startedAt,
     );
   } catch (error) {
     releaseStreamLockOnce();
@@ -2862,9 +2993,13 @@ async function createQwenStreamInternal(
     chatSessionId?: string | null;
     forceNewChat?: boolean;
     reasoningMode?: "auto" | "thinking" | "fast";
+    /** Auxiliary stream (title on its own chat): short idle cap. */
+    parallelEscape?: boolean;
   } | undefined,
   signal: AbortSignal | undefined,
   releaseStreamLock: () => void,
+  /** Wall-clock start of the acquire (used for per-phase +Xms telemetry). */
+  startedAt: number,
 ): Promise<{
   stream: ReadableStream;
   headers: Record<string, string>;
@@ -2876,7 +3011,19 @@ async function createQwenStreamInternal(
 }> {
   const ensureNotAborted = () => {
     if (signal?.aborted) {
-      throw new Error("client aborted before completion request");
+      // Aborted by the client OR by a same-session supersede (latest-wins).
+      // Typed as ClientAbortedError so the retry policy treats it as a silent
+      // client abort instead of a retryable stream_aborted — a superseded
+      // request must not resend full context on another account.
+      throw new ClientAbortedError("client aborted before completion request");
+    }
+  };
+
+  const phase = (name: string) => {
+    if (logger.isLevelEnabled("info")) {
+      console.log(
+        `${new Date().toISOString()} ⏱️ [Qwen] Create: ${name} | account=${accountId ?? "global"} | +${Date.now() - startedAt}ms`,
+      );
     }
   };
 
@@ -2888,6 +3035,7 @@ async function createQwenStreamInternal(
     accountId,
   );
   ensureNotAborted();
+  phase("headers");
   const { headers, parentMessageId } = captured;
   let activeHeaders = headers;
   // The upstream always receives the real base model ID. Reasoning mode is
@@ -2924,6 +3072,7 @@ async function createQwenStreamInternal(
   }
 
   ensureNotAborted();
+  phase("chat");
 
   let warmChatReleased = false;
   const releaseLeasedWarmChat = () => {
@@ -2978,7 +3127,13 @@ async function createQwenStreamInternal(
       ? config.timeouts.reasoningModelTimeout
       : config.timeouts.idleStreamTimeout;
     const payloadMB = payloadSize / (1024 * 1024);
-    const dynamicIdleTimeoutMs = baseTimeoutMs + Math.ceil(payloadMB * 30_000);
+    // Auxiliary (parallel-escape) streams serve a small request (e.g. a chat
+    // title) that generates in seconds. The upstream sometimes never sends the
+    // SSE terminal event for these; a SHORT idle cap frees the account slot in
+    // ~15s instead of holding it for minutes (observed: 183s → block).
+    const dynamicIdleTimeoutMs = options?.parallelEscape
+      ? Math.min(15_000, baseTimeoutMs + Math.ceil(payloadMB * 30_000))
+      : baseTimeoutMs + Math.ceil(payloadMB * 30_000);
 
     logger.debug("[Qwen] dynamic idle timeout", {
       chatId: chatSessionId || "new",
@@ -2989,6 +3144,16 @@ async function createQwenStreamInternal(
       dynamicTimeout: dynamicIdleTimeoutMs,
     });
 
+    // Thinking models idle at 600s — fine for gaps AFTER data flows, but a
+    // stream that produced NOTHING in the first-chunk window is dead. Fail
+    // fast (retryable) so the account slot is not held for 10 minutes.
+    const firstChunkDeadlineMs = enableThinking
+      ? Math.max(
+          config.timeouts.firstChunkTimeout,
+          config.timeouts.timeToFirstByte,
+        )
+      : undefined;
+
     return addIdleTimeoutToStream(
       stream,
       controller,
@@ -2996,6 +3161,7 @@ async function createQwenStreamInternal(
       `Qwen stream ${chatSessionId || "unknown"}`,
       releaseStreamResources,
       releaseStreamResources,
+      firstChunkDeadlineMs,
     );
   };
 
@@ -3140,6 +3306,12 @@ async function createQwenStreamInternal(
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), dynamicTimeoutMs);
+  // Propagate client/supersede aborts to the upstream fetch IMMEDIATELY: the
+  // internal controller is otherwise only aborted by the dynamic timeout, so a
+  // superseded generation would keep running — and keep holding the chat lock
+  // — until the idle timeout (180s+) instead of dying instantly.
+  const onExternalAbort = () => controller.abort();
+  signal?.addEventListener("abort", onExternalAbort, { once: true });
 
   try {
     const fetchCompletion = (requestHeaders: Record<string, string>) =>
@@ -3193,15 +3365,10 @@ async function createQwenStreamInternal(
     let captchaMetadataRetryAttempted = false;
     const throwFetchCompletionError = (error: unknown): never => {
       const errorMsg = error instanceof Error ? error.message : String(error);
-      // Treat network errors (fetch failed, timeout, DNS, etc.) as retryable
-      if (
-        errorMsg.includes("fetch failed") ||
-        errorMsg.includes("ECONNREFUSED") ||
-        errorMsg.includes("ETIMEDOUT") ||
-        errorMsg.includes("ENOTFOUND") ||
-        errorMsg.includes("network") ||
-        error instanceof TypeError
-      ) {
+      // Treat network errors (fetch failed, timeout, DNS, first-byte stall,
+      // etc.) as retryable so account rotation kicks in instead of a terminal
+      // 500 that forces the client to retry in a loop ("request hangs").
+      if (isRetryableFetchErrorMessage(errorMsg) || error instanceof TypeError) {
         throw withCreatedChatMetadata(new QwenNetworkError(errorMsg));
       }
       throw withCreatedChatMetadata(
@@ -3211,6 +3378,7 @@ async function createQwenStreamInternal(
 
     try {
       ensureNotAborted();
+      phase("fetch");
       response = await fetchCompletion(activeHeaders);
     } catch (error) {
       // The challenge was solved while waiting for headers, but the original
@@ -3395,6 +3563,8 @@ async function createQwenStreamInternal(
       break;
     }
 
+    phase("metadata");
+
     if (!response.ok || !response.body) {
       const contentType = response.headers.get("content-type") || "";
       const errText = contentType.includes("application/json")
@@ -3488,6 +3658,7 @@ async function createQwenStreamInternal(
     releaseStreamResources();
     throw error;
   } finally {
+    signal?.removeEventListener("abort", onExternalAbort);
     clearTimeout(timeoutId);
   }
 }

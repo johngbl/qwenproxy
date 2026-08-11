@@ -46,6 +46,7 @@ interface ChatRequest {
   max_tokens?: number;
   max_completion_tokens?: number;
   parallel_tool_calls?: boolean;
+  response_format?: Record<string, unknown>;
 }
 
 interface ChatChoice {
@@ -279,6 +280,30 @@ export function responsesToChatCompletions(
     chatReq.max_completion_tokens = req.max_output_tokens;
   if (req.parallel_tool_calls !== undefined)
     chatReq.parallel_tool_calls = req.parallel_tool_calls;
+
+  // Structured outputs (Responses `text.format` → chat `response_format`): the
+  // chat pipeline enforces it at the prompt level (see
+  // buildResponseFormatInstruction in chat/validation.ts).
+  const textFormat = req.text?.format;
+  if (textFormat && textFormat.type !== "text") {
+    if (textFormat.type === "json_schema") {
+      chatReq.response_format = {
+        type: "json_schema",
+        json_schema: {
+          ...(textFormat.name ? { name: textFormat.name } : {}),
+          ...(textFormat.description
+            ? { description: textFormat.description }
+            : {}),
+          ...(textFormat.schema ? { schema: textFormat.schema } : {}),
+          ...(textFormat.strict !== undefined
+            ? { strict: textFormat.strict }
+            : {}),
+        },
+      };
+    } else {
+      chatReq.response_format = { type: "json_object" };
+    }
+  }
 
   return chatReq;
 }

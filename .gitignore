@@ -22,6 +22,9 @@ accounts.json.bak
 *.log
 log*.txt
 
+# Network captures
+network/
+
 # Coverage & cache
 coverage/
 .cache/
@@ -31,8 +34,4 @@ coverage/
 Thumbs.db
 
 # IDE / Editor
-.kilo
-.roo
-
-# Session/diagnostic dumps
-completions.txt
+AGENTS.md

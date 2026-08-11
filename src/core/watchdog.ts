@@ -4,17 +4,26 @@ import { metrics } from "./metrics.js";
 import {
   classifyRamUsage,
   getHeapUsageSnapshot,
+  getRssUsageSnapshot,
   type HeapUsageSnapshot,
+  type RssUsageSnapshot,
 } from "./memory-usage.js";
 
-export type { HeapUsageSnapshot };
-export { getHeapUsageSnapshot, classifyRamUsage };
+export type { HeapUsageSnapshot, RssUsageSnapshot };
+export {
+  getHeapUsageSnapshot,
+  getRssUsageSnapshot,
+  getMemoryUsagePct,
+  classifyRamUsage,
+} from "./memory-usage.js";
 
 export interface HealthStatus {
   ram: "ok" | "warning" | "critical";
   streams: "ok" | "congested" | "blocked";
   overall: "healthy" | "degraded" | "unhealthy";
   heap?: HeapUsageSnapshot;
+  /** RSS vs total system memory — the RAM pressure signal used for `ram`. */
+  rss?: RssUsageSnapshot;
 }
 
 export class Watchdog extends EventEmitter {
@@ -38,15 +47,20 @@ export class Watchdog extends EventEmitter {
 
   private async performHealthCheck(): Promise<void> {
     const heap = getHeapUsageSnapshot();
+    const rss = getRssUsageSnapshot();
     const status: HealthStatus = {
+      // RAM pressure is measured from RSS vs total system memory (not the V8
+      // heap): Playwright browser processes consume memory outside the heap,
+      // so heap-vs-limit misreads real pressure on a VPS.
       ram: classifyRamUsage(
-        heap.usagePercent,
+        rss.usagePercent,
         config.watchdog.ram.warningThreshold,
         config.watchdog.ram.criticalThreshold,
       ),
       streams: this.checkStreams(),
       overall: "healthy",
       heap,
+      rss,
     };
 
     status.overall = this.calculateOverall(status);
@@ -76,6 +90,7 @@ export class Watchdog extends EventEmitter {
     metrics.gauge("memory.heap.limit", heap.heapSizeLimit);
     metrics.gauge("memory.heap.usage_percent", heap.usagePercent);
     metrics.gauge("memory.rss", heap.rss);
+    metrics.gauge("memory.rss.usage_percent", rss.usagePercent);
   }
 
   private checkStreams(): "ok" | "congested" | "blocked" {
@@ -128,6 +143,24 @@ export class Watchdog extends EventEmitter {
     if (global.gc) global.gc();
     await new Promise((resolve) => setTimeout(resolve, 100));
     this.emit("recovery:ram:freed");
+    // RAM pressure is now measured from RSS, which Playwright browser processes
+    // dominate — GC alone cannot relieve it. Close genuinely parked contexts
+    // (idle mutex, no active stream, preserves the max-active-context minimum)
+    // so the next health check sees the freed RSS.
+    try {
+      const { closeIdlePlaywrightAccounts } = await import(
+        "../services/playwright.js"
+      );
+      const closed = await closeIdlePlaywrightAccounts(
+        config.sessionKeeper.idleMs,
+      );
+      if (closed > 0) {
+        this.emit("recovery:ram:contexts-closed", closed);
+      }
+    } catch {
+      // Playwright may not be initialized (mock mode / pre-start); RSS relief
+      // is best-effort and GC already ran.
+    }
   }
 
   private async recoverStreams(): Promise<void> {
@@ -144,15 +177,17 @@ export class Watchdog extends EventEmitter {
 
   getStatus(): Promise<HealthStatus> {
     const heap = getHeapUsageSnapshot();
+    const rss = getRssUsageSnapshot();
     const status: HealthStatus = {
       ram: classifyRamUsage(
-        heap.usagePercent,
+        rss.usagePercent,
         config.watchdog.ram.warningThreshold,
         config.watchdog.ram.criticalThreshold,
       ),
       streams: this.checkStreams(),
       overall: "healthy",
       heap,
+      rss,
     };
     status.overall = this.calculateOverall(status);
     return Promise.resolve(status);

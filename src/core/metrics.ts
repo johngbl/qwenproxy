@@ -1,6 +1,6 @@
 import { EventEmitter } from "events";
 import { config } from "./config.js";
-import { getHeapUsageSnapshot } from "./memory-usage.js";
+import { getHeapUsageSnapshot, getRssUsageSnapshot } from "./memory-usage.js";
 
 interface MetricPoint {
   value: number;
@@ -58,6 +58,11 @@ export class Metrics extends EventEmitter {
         "Heap used percent vs heap_size_limit",
       ],
       ["memory.rss", "gauge", "Resident set size (bytes)"],
+      [
+        "memory.rss.usage_percent",
+        "gauge",
+        "RSS as percent of total system memory (RAM pressure signal)",
+      ],
 
       // Cache metrics
       ["cache.set", "counter", "Cache set operations"],
@@ -209,11 +214,13 @@ export class Metrics extends EventEmitter {
 
   private collectSystemMetrics(): void {
     const heap = getHeapUsageSnapshot();
+    const rss = getRssUsageSnapshot();
     this.gauge("memory.heap.used", heap.heapUsed);
     this.gauge("memory.heap.total", heap.heapTotal);
     this.gauge("memory.heap.limit", heap.heapSizeLimit);
     this.gauge("memory.heap.usage_percent", heap.usagePercent);
     this.gauge("memory.rss", heap.rss);
+    this.gauge("memory.rss.usage_percent", rss.usagePercent);
   }
 
   get(name: string, labels?: Record<string, string>): MetricPoint | null {
@@ -229,7 +236,7 @@ export class Metrics extends EventEmitter {
       output += `# HELP ${metric.name} ${metric.help}\n`;
       output += `# TYPE ${metric.name} ${metric.type}\n`;
 
-      for (const [key, point] of metric.values) {
+      for (const point of metric.values.values()) {
         const labelsStr = point.labels
           ? `{${Object.entries(point.labels)
               .map(([k, v]) => `${k}="${v}"`)

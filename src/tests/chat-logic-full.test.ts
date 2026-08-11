@@ -216,15 +216,19 @@ test("parseSseErrorFromBuffer skips malformed, empty and DONE data lines", () =>
 
 test("same-account retry helpers gate by reason and prior attempt", () => {
   assert.strictEqual(
-    shouldRetryChatInProgressOnSameAccount("chat_in_progress", false),
+    shouldRetryChatInProgressOnSameAccount("chat_in_progress", 0),
     true,
   );
   assert.strictEqual(
-    shouldRetryChatInProgressOnSameAccount("chat_in_progress", true),
+    shouldRetryChatInProgressOnSameAccount("chat_in_progress", 1),
+    true,
+  );
+  assert.strictEqual(
+    shouldRetryChatInProgressOnSameAccount("chat_in_progress", 2),
     false,
   );
   assert.strictEqual(
-    shouldRetryChatInProgressOnSameAccount("chat_not_exist", false),
+    shouldRetryChatInProgressOnSameAccount("chat_not_exist", 0),
     false,
   );
   assert.strictEqual(

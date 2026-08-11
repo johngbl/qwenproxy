@@ -105,10 +105,12 @@ test("StreamingToolParser: recovers double-escaped JSON tool calls", () => {
   const escaped =
     '{\\"name\\":\\"read_file\\",\\"arguments\\":{\\"path\\":\\"a.txt\\"}}';
   const result = parser.feed(`<tool_call>${escaped}</tool_call>`);
+  const flushed = parser.flush();
 
-  assert.strictEqual(result.toolCalls.length, 1);
-  assert.strictEqual(result.toolCalls[0].name, "read_file");
-  assert.deepStrictEqual(result.toolCalls[0].arguments, { path: "a.txt" });
+  const calls = [...result.toolCalls, ...flushed.toolCalls];
+  assert.strictEqual(calls.length, 1);
+  assert.strictEqual(calls[0].name, "read_file");
+  assert.deepStrictEqual(calls[0].arguments, { path: "a.txt" });
 });
 
 test("StreamingToolParser: drops residual environment details after tool calls", () => {
@@ -176,12 +178,18 @@ test("StreamingToolParser: flush partial content", () => {
   parser.feed("Unfinished tag <tool_");
   assert.strictEqual(parser.flush().text, "<tool_");
 
-  // Incomplete JSON in tool call - flush should recover it
+  // Incomplete JSON in tool call - flush should NOT robust-recover it:
+  // robustParseJSON would balance the unclosed string and stream a
+  // fabricated call while skipping the malformed auto-retry. It must be
+  // tracked as truncated instead.
   const parser2 = new StreamingToolParser();
   parser2.feed('Broken tool <tool_call>{"name": "healable"');
   const flushed = parser2.flush();
-  assert.strictEqual(flushed.toolCalls.length, 1);
-  assert.strictEqual(flushed.toolCalls[0].name, "healable");
+  assert.strictEqual(flushed.toolCalls.length, 0);
+  assert.ok(
+    parser2.getMalformedToolCalls().length > 0,
+    "truncated payload must be tracked so the auto-retry can correct Qwen",
+  );
 
   // Invalid JSON in tool call - flush drops it (tracked internally for
   // auto-retry) and restores lead-in, without user-facing bridge text
@@ -200,15 +208,20 @@ test("StreamingToolParser: flush partial content", () => {
   );
 });
 
-test("StreamingToolParser: robust parsing of malformed JSON", () => {
+test("StreamingToolParser: truncated JSON is dropped + tracked (no fabricated recovery)", () => {
   const parser = new StreamingToolParser();
 
-  const res = parser.feed(
+  const result = parser.feed(
     '<tool_call>{"name": "broken", "arguments": {"a": 1</tool_call>',
   );
-  assert.strictEqual(res.toolCalls.length, 1);
-  assert.strictEqual(res.toolCalls[0].name, "broken");
-  assert.deepStrictEqual(res.toolCalls[0].arguments, { a: 1 });
+  const flushed = parser.flush();
+
+  const calls = [...result.toolCalls, ...flushed.toolCalls];
+  assert.strictEqual(calls.length, 0);
+  assert.ok(
+    parser.getMalformedToolCalls().length > 0,
+    "truncated payload must be tracked so the auto-retry can correct Qwen",
+  );
 });
 
 test("StreamingToolParser: repairs Qwen arguments greater-than typo", () => {
@@ -280,15 +293,17 @@ test("StreamingToolParser: truncated flattened write_file is preserved not dropp
   const parser = new StreamingToolParser(writeTools);
 
   // Emulate a truncated/flattened tool call that would previously be dropped.
-  const res = parser.feed(
+  const result = parser.feed(
     `<tool_call>{"name":"write_file","content":"import sqlite3
 from datetime import",
 "path":"a.py"}</tool_call>`,
   );
+  const flushed = parser.flush();
 
-  assert.ok(res.toolCalls.length >= 1);
-  assert.strictEqual(res.toolCalls[0].name, "write_file");
-  assert.ok(res.toolCalls[0].arguments.path);
+  const calls = [...result.toolCalls, ...flushed.toolCalls];
+  assert.ok(calls.length >= 1);
+  assert.strictEqual(calls[0].name, "write_file");
+  assert.ok(calls[0].arguments.path);
 });
 
 test("StreamingToolParser: recovers missing opening tag and flattens nested arguments", () => {
@@ -527,11 +542,13 @@ test("StreamingToolParser: parses plural Hermes/XML tool calls", () => {
   const result = parser.feed(
     '<tool_calls name="read_file"><parameter name="path">a.txt</parameter></tool_calls>',
   );
+  const flushed = parser.flush();
 
-  assert.strictEqual(result.text, "");
-  assert.strictEqual(result.toolCalls.length, 1);
-  assert.strictEqual(result.toolCalls[0].name, "read_file");
-  assert.deepStrictEqual(result.toolCalls[0].arguments, { path: "a.txt" });
+  const calls = [...result.toolCalls, ...flushed.toolCalls];
+  assert.strictEqual(result.text + flushed.text, "");
+  assert.strictEqual(calls.length, 1);
+  assert.strictEqual(calls[0].name, "read_file");
+  assert.deepStrictEqual(calls[0].arguments, { path: "a.txt" });
 });
 
 test("StreamingToolParser: parses JSON-stringified nested argument fields", () => {
@@ -573,11 +590,13 @@ test("StreamingToolParser: recovers double-encoded JSON string payload (escaped 
     arguments: { path: "src/browser/worker.js", edits: [{ old_text: "a", new_text: "b" }] },
   });
   const result = parser.feed(`<tool_call>"${doubleEncoded}"</tool_call>`);
+  const flushed = parser.flush();
 
-  assert.strictEqual(result.text, "");
-  assert.strictEqual(result.toolCalls.length, 1);
-  assert.strictEqual(result.toolCalls[0].name, "edit_file");
-  assert.deepStrictEqual(result.toolCalls[0].arguments.edits, [
+  const calls = [...result.toolCalls, ...flushed.toolCalls];
+  assert.strictEqual(result.text + flushed.text, "");
+  assert.strictEqual(calls.length, 1);
+  assert.strictEqual(calls[0].name, "edit_file");
+  assert.deepStrictEqual(calls[0].arguments.edits, [
     { old_text: "a", new_text: "b" },
   ]);
 });
@@ -590,39 +609,46 @@ test("StreamingToolParser: recovers tool JSON wrapped in junk text", () => {
     arguments: { path: "src/browser/worker.js", edits: [{ old_text: "a", new_text: "b" }] },
   })}</tool_call>`;
   const result = parser.feed(payload);
+  const flushed = parser.flush();
 
-  assert.strictEqual(result.text, "");
-  assert.strictEqual(result.toolCalls.length, 1);
-  assert.strictEqual(result.toolCalls[0].name, "edit_file");
-  assert.deepStrictEqual(result.toolCalls[0].arguments.edits, [
+  const calls = [...result.toolCalls, ...flushed.toolCalls];
+  assert.strictEqual(result.text + flushed.text, "");
+  assert.strictEqual(calls.length, 1);
+  assert.strictEqual(calls[0].name, "edit_file");
+  assert.deepStrictEqual(calls[0].arguments.edits, [
     { old_text: "a", new_text: "b" },
   ]);
 });
 
-test("StreamingToolParser: recovers truncated tool JSON via brace balancing", () => {
+test("StreamingToolParser: truncated edit_file is dropped + tracked (no brace-balancing fabrication)", () => {
   const parser = new StreamingToolParser(EDIT_FILE_TOOLS);
 
+  // Cut mid-string (`"old_text":"start` never closes) — brace-balancing
+  // recovery would fabricate a closing quote and stream a broken call while
+  // skipping the malformed auto-retry (logs1 2829-char write drop).
   const truncated = `{"name":"edit_file","arguments":{"path":"src/browser/worker.js","edits":[{"old_text":"start`;
   const result = parser.feed(`<tool_call>${truncated}</tool_call>`);
+  const flushed = parser.flush();
 
-  assert.strictEqual(result.text, "");
-  assert.strictEqual(result.toolCalls.length, 1);
-  assert.strictEqual(result.toolCalls[0].name, "edit_file");
-  assert.strictEqual(result.toolCalls[0].arguments.path, "src/browser/worker.js");
+  const calls = [...result.toolCalls, ...flushed.toolCalls];
+  assert.strictEqual(calls.length, 0);
+  assert.ok(
+    parser.getMalformedToolCalls().length > 0,
+    "truncated payload must be tracked so the auto-retry can correct Qwen",
+  );
 });
 
-test("StreamingToolParser: flush recovers unclosed truncated tool JSON", () => {
+test("StreamingToolParser: flush drops truncated edit_file + tracks malformed", () => {
   const parser = new StreamingToolParser(EDIT_FILE_TOOLS);
 
   const truncated = `{"name":"edit_file","arguments":{"path":"src/browser/worker.js","edits":[{"old_text":"start`;
   parser.feed(`<tool_call>${truncated}`);
   const flushed = parser.flush();
 
-  assert.strictEqual(flushed.toolCalls.length, 1);
-  assert.strictEqual(flushed.toolCalls[0].name, "edit_file");
-  assert.strictEqual(
-    flushed.toolCalls[0].arguments.path,
-    "src/browser/worker.js",
+  assert.strictEqual(flushed.toolCalls.length, 0);
+  assert.ok(
+    parser.getMalformedToolCalls().length > 0,
+    "truncated payload must be tracked so the auto-retry can correct Qwen",
   );
 });
 

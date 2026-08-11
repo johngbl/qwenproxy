@@ -3,8 +3,6 @@ import type {
   AnthropicRequest,
   AnthropicResponse,
   AnthropicResponseContentBlock,
-  AnthropicMessage,
-  AnthropicContentBlock,
   OpenAIRequest,
   OpenAIMessage,
   OpenAITool,
@@ -21,13 +19,6 @@ import { mapClientModelToQwen } from "../../core/model-alias.ts";
  */
 export function mapAnthropicModel(model: string): string {
   return mapClientModelToQwen(model);
-}
-
-/**
- * Pass through model name as-is
- */
-export function mapQwenToAnthropicModel(model: string): string {
-  return model;
 }
 
 /**

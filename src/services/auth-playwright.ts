@@ -69,7 +69,7 @@ export async function getBasicHeaders(accountId?: string): Promise<{
     return {
       cookie: "token=mock",
       userAgent: "mock",
-      bxV: "2.5.36",
+      bxV: "2.5.37",
       bxUa: "mock-bx-ua",
       bxUmidtoken: "mock-bx-umidtoken",
     };

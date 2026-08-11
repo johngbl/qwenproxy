@@ -180,7 +180,6 @@ app.post("/v1/responses", async (c) => {
                     const events = processChatChunk(
                       chunk,
                       streamState,
-                      inProgressResponse,
                     );
                     for (const event of events) {
                       enqueue(event.type, event);

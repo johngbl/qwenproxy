@@ -126,10 +126,6 @@ app.post("/v1/messages", async (c) => {
     const openaiRequest = translateAnthropicToOpenAI(body);
     openaiRequest.stream = false; // We handle streaming ourselves
 
-    // Import and use the existing chat completion logic
-    const { chatCompletions: processChatCompletion } =
-      await import("../../routes/chat.js");
-
     if (isStream) {
       // Streaming mode
       c.header("Content-Type", "text/event-stream");

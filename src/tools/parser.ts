@@ -63,17 +63,58 @@ interface ToolEndMatch {
  */
 function findToolEndOutsideJsonString(buffer: string): ToolEndMatch | null {
   const lower = buffer.toLowerCase();
-  let inString = false;
-  let escaped = false;
+  const main = scanCloseTagOutsideStringsAndFences(lower);
 
-  for (let i = 0; i < buffer.length; i++) {
-    const ch = buffer[i];
+  if (main && closeTagContentIsParseable(buffer, main.index)) return main;
+
+  // The escape-aware scan can exit a string early when the quote count is
+  // unbalanced (logs2 02:21:02 grep payload had 11 quotes), exposing a
+  // literal `</tool_call>` quoted in an argument value as a "real" close
+  // (logs 02:06:35 edit_file old_text contained such an example). The real
+  // close tag is terminal, so prefer the LAST parseable occurrence: a literal
+  // marker is always followed by more content, so its prefix never validates.
+  // Iterate from the end so a stray extra close tag (e.g. a duplicated
+  // `</tool_call>` after the last payload) does not shadow earlier valid
+  // payload boundaries — each candidate's prefix is checked for a parseable
+  // tool payload, and the first hit from the end wins (multiple consecutive
+  // missing-open payloads, each with their own close tag, are recovered one at
+  // a time by the caller's loop).
+  const occurrences = findCloseTagOccurrences(lower);
+  for (let i = occurrences.length - 1; i >= 0; i--) {
+    if (closeTagContentIsParseable(buffer, occurrences[i].index)) {
+      return occurrences[i];
+    }
+  }
+
+  // No candidate holds a plausible payload: do NOT close here. Closing on an
+  // unparseable marker mid-stream truncates the payload at the literal tag
+  // (the 342-char log drop). Deferring lets the stream continue — when the
+  // real close tag arrives the scan succeeds, and at flush the unclosed-tool
+  // recovery chain (robustParseJSON, brace matching) handles the remainder.
+  return null;
+}
+
+/**
+ * First pass: escape-aware scan for a closing marker outside JSON strings and
+ * code-fence spans. In JSON a backslash always consumes the next character
+ * (\" -> quote, \\ -> backslash, \\\" -> backslash+quote), so the escaped
+ * char is skipped unconditionally. This keeps the scanner inside a string
+ * across valid escapes; it only goes wrong on UNBALANCED quote counts, which
+ * the two-tier selection in findToolEndOutsideJsonString covers.
+ */
+function scanCloseTagOutsideStringsAndFences(lower: string): ToolEndMatch | null {
+  let inString = false;
+  // Track inline code fences (backticks) as literal text, not real close
+  let codeFenceLength = 0;
+
+  for (let i = 0; i < lower.length; i++) {
+    const ch = lower[i];
     if (inString) {
-      if (escaped) {
-        escaped = false;
-      } else if (ch === "\\") {
-        escaped = true;
-      } else if (ch === '"') {
+      if (ch === "\\") {
+        i++;
+        continue;
+      }
+      if (ch === '"') {
         inString = false;
       }
       continue;
@@ -84,28 +125,91 @@ function findToolEndOutsideJsonString(buffer: string): ToolEndMatch | null {
       continue;
     }
 
+    if (ch === "`") {
+      let runLength = 1;
+      while (i + runLength < lower.length && lower[i + runLength] === "`") {
+        runLength++;
+      }
+      if (codeFenceLength === 0) {
+        codeFenceLength = runLength;
+      } else if (runLength >= codeFenceLength) {
+        codeFenceLength = 0;
+      }
+      i += runLength - 1;
+      continue;
+    }
+
+    if (codeFenceLength > 0) continue;
+
     const tag = TOOL_END_ALIASES.find((candidate) =>
       lower.startsWith(candidate, i),
     );
     if (tag) return { index: i, tag };
   }
 
-  // Malformed/recovered tool payloads can have an unbalanced quote count.
-  // Preserve the historical recovery path in that case; valid JSON above has
-  // already protected literal markers inside quoted argument values.
-  let fallback: ToolEndMatch | null = null;
+  return null;
+}
+
+/** All occurrences of either closing marker, in ascending index order. */
+function findCloseTagOccurrences(lower: string): ToolEndMatch[] {
+  const occurrences: ToolEndMatch[] = [];
   for (const tag of TOOL_END_ALIASES) {
-    const index = lower.indexOf(tag);
-    if (
-      index !== -1 &&
-      (!fallback ||
-        index < fallback.index ||
-        (index === fallback.index && tag.length > fallback.tag.length))
-    ) {
-      fallback = { index, tag };
+    let from = 0;
+    for (;;) {
+      const index = lower.indexOf(tag, from);
+      if (index === -1) break;
+      occurrences.push({ index, tag });
+      from = index + tag.length;
     }
   }
-  return fallback;
+  return occurrences.sort((a, b) => a.index - b.index);
+}
+
+/**
+ * Strict, deterministic check that the content before a candidate close tag
+ * is (or is trivially repairable to) a valid JSON tool-call payload. Used to
+ * decide whether a close-tag candidate is the REAL closing tag instead of a
+ * literal marker that unbalanced quotes exposed to the string scanner.
+ *
+ * robustParseJSON is deliberately NOT used here: it over-recovers (balances
+ * unclosed strings) and can throw on some inputs, so it would accept
+ * truncated content as a valid close position and re-introduce the early
+ * truncation bug.
+ */
+function closeTagContentIsParseable(buffer: string, endIdx: number): boolean {
+  const content = buffer.substring(0, endIdx).trim();
+  if (!content) return true;
+  return tryParseJsonToolPayload(content);
+}
+
+/**
+ * Plain-JSON.parse based candidate checks, in increasing tolerance order:
+ * raw payload -> narrow typo repairs -> doubled trailing brace/bracket ->
+ * missing opening brace/quote. Truncated payloads (unclosed strings) never
+ * pass, so a mid-string literal marker is not mistaken for a real close tag.
+ */
+function tryParseJsonToolPayload(content: string): boolean {
+  const tryParse = (s: string): boolean => {
+    try {
+      const parsed = JSON.parse(s);
+      return typeof parsed === "object" && parsed !== null;
+    } catch {
+      return false;
+    }
+  };
+
+  if (tryParse(content)) return true;
+
+  const repaired = repairCommonMalformedToolJson(content);
+  const stripped = content.replace(/\}+$/, "").replace(/\]+$/, "");
+  const strippedRepaired = repaired.replace(/\}+$/, "").replace(/\]+$/, "");
+
+  const candidates = [repaired, stripped];
+  if (repaired !== content) candidates.push(strippedRepaired);
+  candidates.push(`{\"${content}`, `{${content}`);
+  if (repaired !== content) candidates.push(`{\"${repaired}`, `{${repaired}`);
+
+  return candidates.some((candidate) => tryParse(candidate));
 }
 
 function normalizeToolNameForMatch(name: string): string {
@@ -195,7 +299,7 @@ function findNextToolOpenTagOutsideMarkdownCode(
       const match = buffer
         .substring(i)
         .match(/^<tool_call(?:s)?\b[^>]*>/i);
-      if (match) {
+      if (match && !isPrecededByBacktick(buffer, i)) {
         return { index: i, openTag: match[0] };
       }
     }
@@ -321,6 +425,20 @@ function isInsideMarkdownCodeAtIndex(
   );
 }
 
+/**
+ * True when the character immediately before `index` (ignoring whitespace) is
+ * a backtick. Model prose frequently quotes tool-call syntax inline, e.g.
+ * ``Chunks arrive with `{"name": "write_file"...``` — the global markdown
+ * fence counter can drift on such text (odd runs of inline backticks), so we
+ * also reject candidates/local markers that are directly prefixed by a backtick
+ * as literal quoted text instead of a real tool-call boundary.
+ */
+function isPrecededByBacktick(buffer: string, index: number): boolean {
+  let i = index - 1;
+  while (i >= 0 && /\s/.test(buffer[i])) i--;
+  return i >= 0 && buffer[i] === "`";
+}
+
 function findPartialMissingOpenToolCallIndex(
   buffer: string,
   initialDelimiterLength = 0,
@@ -330,6 +448,7 @@ function findPartialMissingOpenToolCallIndex(
   const candidateStarts = findCandidateStarts(buffer);
   for (const candidateStart of candidateStarts) {
     if (
+      isPrecededByBacktick(buffer, candidateStart) ||
       isInsideMarkdownCodeAtIndex(
         buffer,
         candidateStart,
@@ -341,6 +460,21 @@ function findPartialMissingOpenToolCallIndex(
 
     const candidate = buffer.substring(candidateStart);
     if (looksLikePartialToolCallPayload(candidate)) return candidateStart;
+  }
+
+  // The buffer starts with an object/array but is too short to show a key
+  // yet (e.g. chunk boundary cut `{"na`). Hold it so later chunks can
+  // complete the missing-open payload — once tool calls were emitted,
+  // dropping it here would silently lose the call (user's multi-call pattern
+  // with `arguments"` unquoted keys). If it never completes, flush restores
+  // it as visible text (or discards it, identical to today's behavior when
+  // tool calls were already emitted).
+  const firstNonWs = buffer.search(/\S/);
+  if (
+    firstNonWs !== -1 &&
+    (buffer[firstNonWs] === "{" || buffer[firstNonWs] === "[")
+  ) {
+    return firstNonWs;
   }
 
   return -1;
@@ -364,6 +498,7 @@ function findRecoverableMissingOpenToolCall(
 
   for (const candidateStart of candidateStarts) {
     if (
+      isPrecededByBacktick(beforeEnd, candidateStart) ||
       isInsideMarkdownCodeAtIndex(
         beforeEnd,
         candidateStart,
@@ -739,13 +874,15 @@ function inspectIncrementalJsonToolObject(
  * Repair narrow typos observed in Qwen tool-call output:
  * - `"arguments>{...}` should be `"arguments": {...}`
  * - `,arguments":{...}` should be `,"arguments":{...}` (missing opening quote)
+ * - a string value whose OPENING quote was dropped: `"key":  value..."`
+ * - an array whose closing `]` was dropped: `[elem, "key": ...`
  * Do not apply broad JSON mutation here because tool arguments can legitimately
  * contain arbitrary text.
  */
 function repairCommonMalformedToolJson(content: string): string {
-  return content
+  const repaired = content
     .replace(
-      /([,{]\s*)"arguments\s*>\s*(?=\{|\[|")/g,
+      /([,{]\s*)"arguments\s*>\s*(?={|\[|")/g,
       '$1"arguments": ',
     )
     .replace(
@@ -753,13 +890,197 @@ function repairCommonMalformedToolJson(content: string): string {
       '$1"arguments":',
     )
     .replace(
-      /([,{]\s*)arguments\s*:\s*(?=\{|\[|")/g,
+      /([,{]\s*)arguments\s*:\s*(?={|\[|")/g,
       '$1"arguments":',
     )
     .replace(
-      /([,{]\s*)arguments\s*>\s*(?=\{|\[|")/g,
+      /([,{]\s*)arguments\s*>\s*(?={|\[|")/g,
       '$1"arguments":',
+    )
+    .replace(
+      /([,{]\s*)"arguments"\s*:\s*([A-Za-z_][A-Za-z0-9_]*)"\s*:/g,
+      '$1"arguments":{"$2":',
+    )
+    .replace(
+      // Missing OPENING quote of a string value: `"key":  word...` — the model
+      // dropped the opening quote but kept the closing one. Valid JSON never has
+      // a bare-word value, so inserting the quote is safe (true/false/null and
+      // numbers are excluded). The trailing `\"` escapes are preserved, so the
+      // model's closing quote still terminates the string.
+      /([,{]\s*"[a-zA-Z_][a-zA-Z0-9_]*"\s*:\s*)(?=(?!true|false|null)[A-Za-z_])/g,
+      '$1"',
     );
+  return repairMissingArrayClose(repaired);
+}
+
+/**
+ * Close an array whose closing `]` was dropped: `[elem, "key": value` — the
+ * model wrote the next key as a sibling of the last array element. A
+ * string-key (`"key":`) inside an array is never valid JSON, so when the
+ * bracket stack is inside an unclosed `[` and a string closes directly into
+ * `:`, the array is closed before that key. String content (with escapes) is
+ * never treated as structure.
+ */
+/**
+ * Raw structural scan: true when the content ends INSIDE a string or with
+ * unclosed brackets.
+ */
+function scanJsonStructureIncomplete(content: string): boolean {
+  let inString = false;
+  let escaped = false;
+  let depth = 0;
+  for (let i = 0; i < content.length; i++) {
+    const ch = content[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (ch === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === "{" || ch === "[") depth++;
+    else if (ch === "}" || ch === "]") depth = Math.max(0, depth - 1);
+  }
+  return inString || depth > 0;
+}
+
+/**
+ * True when a JSON payload ends structurally INCOMPLETE — inside a string or
+ * with unclosed brackets. Such payloads are TRUNCATED (stream cut, premature
+ * close) and must be dropped + auto-retried rather than "recovered": the
+ * recovery parsers (robustParseJSON) balance unclosed strings, which would
+ * silently accept the truncation and stream a broken tool call to the client
+ * while skipping the malformed auto-retry (logs1 2829-char write drop).
+ *
+ * The raw scan misreads REPAIRABLE payloads as truncated, so it is retried on
+ * alternatives before declaring truncation:
+ * - missing opening `{`/quote changes the quote parity (`name": ...}}`)
+ * - escaped quotes in surrounding junk text misalign string state
+ * - double-encoded JSON (`\"` on every quote)
+ */
+function isJsonPayloadTruncated(content: string): boolean {
+  if (!scanJsonStructureIncomplete(content)) return false;
+  // A genuinely truncated payload ends MID-VALUE: the model was cut while
+  // emitting a string or before a closing bracket, so the last non-space
+  // character is text, a quote, or a comma — NOT a closing bracket. The
+  // prefix-candidates below only exist for typo-repairable payloads (missing
+  // leading `{`/quote like `name": ...}}`, unbalanced quotes, double
+  // encoding) whose STRUCTURE is complete: they end with a visible closing
+  // bracket. Without this gate, the `"`-prefix candidate flips quote parity
+  // and makes a mid-string cut (e.g. `..."old_text":"start`) scan as
+  // balanced, so robustParseJSON silently balances the string and streams a
+  // fabricated call (logs1 2829-char write drop).
+  const trimmed = content.trimEnd();
+  if (!/[}\]]$/.test(trimmed)) return true;
+  const alt: string[] = [];
+  if (content.includes('"name"') || content.includes('name":')) {
+    alt.push(`{"${content}`, `{${content}`, `"${content}`);
+  }
+  if (content.includes('\\"')) {
+    alt.push(content.replace(/\\"/g, '"'));
+  }
+  for (const candidate of alt) {
+    if (!scanJsonStructureIncomplete(candidate)) return false;
+  }
+  return true;
+}
+
+/**
+ * Strict JSON parse with ONLY the narrow repair chain — never robustParseJSON
+ * (it balances unclosed strings and would accept a TRUNCATED arguments value
+ * as valid). repairCommonMalformedToolJson only fixes missing-quote /
+ * missing-array-close typos, which do not touch truncated strings.
+ */
+function parseToolArgumentsStrict(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    // fall through to the narrow repairs
+  }
+  try {
+    return JSON.parse(repairCommonMalformedToolJson(raw));
+  } catch {
+    return null;
+  }
+}
+
+function repairMissingArrayClose(input: string): string {
+  const stack: Array<"{" | "["> = [];
+  let out = "";
+  let inString = false;
+  let pendingStart: number | null = null;
+  let i = 0;
+  while (i < input.length) {
+    const ch = input[i];
+    if (inString) {
+      out += ch;
+      if (ch === "\\") {
+        out += input[i + 1] ?? "";
+        i += 2;
+        continue;
+      }
+      if (ch === '"') {
+        inString = false;
+        if (pendingStart !== null) {
+          let j = i + 1;
+          while (j < input.length && /\s/.test(input[j])) j++;
+          if (input[j] === ":") {
+            // This string is a KEY inside an array → close the array. Move the
+            // separating comma after the inserted `]`:  }, "key":  →  }], "key":
+            const before = out.slice(0, pendingStart);
+            const commaIdx = before.lastIndexOf(",");
+            if (commaIdx !== -1) {
+              out =
+                before.slice(0, commaIdx) +
+                "]" +
+                before.slice(commaIdx) +
+                out.slice(pendingStart);
+            } else {
+              out = before + "]" + out.slice(pendingStart);
+            }
+            stack.pop();
+          }
+          pendingStart = null;
+        }
+      }
+      i++;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      pendingStart = stack[stack.length - 1] === "[" ? out.length : null;
+      out += ch;
+      i++;
+      continue;
+    }
+    if (ch === "{" || ch === "[") {
+      stack.push(ch);
+      out += ch;
+      i++;
+      continue;
+    }
+    if (ch === "}" || ch === "]") {
+      const top = stack[stack.length - 1];
+      if ((top === "{" && ch === "}") || (top === "[" && ch === "]")) {
+        stack.pop();
+      }
+      out += ch;
+      i++;
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  return out;
 }
 
 // ─── StreamingToolParser ───────────────────────────────────────────────────────
@@ -828,6 +1149,8 @@ export class StreamingToolParser {
     /** Which recovery stages were attempted before giving up. */
     recoveryAttempts?: string[];
   }> = [];
+  /** Valid tool calls dropped because the per-turn cap was reached. */
+  private cappedToolCalls: Array<{ toolName: string; timestamp: number }> = [];
 
   /**
    * @param tools - Optional array of tool definitions for name inference
@@ -856,10 +1179,20 @@ export class StreamingToolParser {
   }
 
   /**
+   * Valid tool calls dropped because the per-turn cap was reached. These are
+   * intentionally NOT retried: the turn already emitted calls up to the cap,
+   * and a [SYSTEM CORRECTION] retry would amplify runaway generation.
+   */
+  getCappedToolCalls() {
+    return this.cappedToolCalls;
+  }
+
+  /**
    * Clear malformed tool calls tracking.
    */
   clearMalformedToolCalls() {
     this.malformedToolCalls = [];
+    this.cappedToolCalls = [];
   }
 
   /**
@@ -1034,9 +1367,16 @@ export class StreamingToolParser {
       this.maxToolCallsPerTurn > 0 &&
       this.emittedToolCallCount >= this.maxToolCallsPerTurn
     ) {
+      // Track the drop explicitly (distinct from malformed calls): cap-drops
+      // are VALID calls that were intentionally not emitted, so they must
+      // never trigger a [SYSTEM CORRECTION] auto-retry (the turn already has
+      // emitted calls). The stream summary surfaces them so runaway-tool
+      // patterns are visible in the logs.
+      this.cappedToolCalls.push({ toolName: tc.name, timestamp: Date.now() });
       logger.warn("[parser] Dropping tool call: per-turn cap reached", {
         toolName: tc.name,
         maxToolCallsPerTurn: this.maxToolCallsPerTurn,
+        cappedCount: this.cappedToolCalls.length,
       });
       this.discardPendingToolCallDeltas();
       this.pendingLeadIn = "";
@@ -1092,7 +1432,11 @@ export class StreamingToolParser {
     if (!rawArgs) return null;
 
     try {
-      const parsedArgs = robustParseJSON(rawArgs);
+      // Strict parse + narrow repairs only — never robustParseJSON, which
+      // balances unclosed strings and would accept a TRUNCATED arguments
+      // value as a complete call (silently streaming a broken call and
+      // skipping the malformed auto-retry).
+      const parsedArgs = parseToolArgumentsStrict(rawArgs);
       if (
         parsedArgs &&
         typeof parsedArgs === "object" &&
@@ -1112,10 +1456,7 @@ export class StreamingToolParser {
     return null;
   }
 
-  private emitIncrementalToolCallDeltas(
-    content: string,
-    result: ParserResult,
-  ): void {
+  private emitIncrementalToolCallDeltas(content: string): void {
     if (!this.incrementalToolCalls || !this.activeIncrementalToolCall) return;
 
     const incremental = this.activeIncrementalToolCall;
@@ -1270,6 +1611,27 @@ export class StreamingToolParser {
     );
   }
 
+  /**
+   * True when a captured tool-call body reads like natural-language prose
+   * (multiple words, no JSON/XML payload shape) rather than a malformed tool
+   * payload. Model replies that explain the tool-call syntax frequently quote
+   * `<tool_call>`, `</tool_call>` or a JSON example — when those get captured,
+   * dropping them hides a legitimate answer, and treating them as malformed
+   * triggers a spurious [SYSTEM CORRECTION] auto-retry.
+   */
+  private looksLikeProseContent(content: string): boolean {
+    const t = content.trim();
+    if (!t) return false;
+    // Real (even malformed) tool payloads start with JSON or XML shape.
+    if (t.startsWith("{") || t.startsWith("[") || t.startsWith("<parameter") || t.startsWith("<name>")) {
+      return false;
+    }
+    // Prose: multiple whitespace-separated words, longer than a short tag
+    // fragment like "NOT_JSON" (which must stay tracked as malformed).
+    const words = t.split(/\s+/).filter(Boolean);
+    return words.length >= 3 && t.length > 20;
+  }
+
   feed(chunk: string): ParserResult {
     if (isToolcallDebugEnabled()) {
       logger.debug("[parser] feed() called", {
@@ -1394,7 +1756,7 @@ export class StreamingToolParser {
                 this.buffer.length - endIdx - endMatch.tag.length,
             });
           }
-          this.emitIncrementalToolCallDeltas(content, result);
+          this.emitIncrementalToolCallDeltas(content);
           this.buffer = this.buffer.substring(endIdx + endMatch.tag.length);
           this.currentCloseTag = endMatch.tag;
           this.processToolContent(content, result);
@@ -1403,7 +1765,7 @@ export class StreamingToolParser {
           this.currentCloseTag = TOOL_END;
           this.clearIncrementalToolCall();
         } else {
-          this.emitIncrementalToolCallDeltas(this.buffer, result);
+          this.emitIncrementalToolCallDeltas(this.buffer);
           if (isToolcallDebugEnabled()) {
             logger.debug("[parser] waiting for more data inside tool_call", {
               bufferLength: this.buffer.length,
@@ -1454,7 +1816,14 @@ export class StreamingToolParser {
 
     if (this.insideTool) {
       // Stream ended with unclosed <tool_call>. Try to recover.
-      const trimmed = this.buffer.trim();
+      const rawTrimmed = this.buffer.trim();
+      // When findToolEndOutsideJsonString defers on an unparseable close
+      // marker, the tag stays in the buffer (it was never consumed). Strip a
+      // trailing close tag before recovery so it cannot pollute recovered
+      // argument values (e.g. `{"a": "1</tool_call>"}`). Genuine unclosed
+      // streams (cut mid-payload) have no trailing tag, so this is a no-op
+      // for them.
+      const trimmed = rawTrimmed.replace(/<\/tool_calls?>$/i, "");
       if (trimmed.length > 0) {
         if (isToolcallDebugEnabled()) {
           logger.debug(
@@ -1465,8 +1834,14 @@ export class StreamingToolParser {
             },
           );
         }
-        this.emitIncrementalToolCallDeltas(this.buffer, result);
+        this.emitIncrementalToolCallDeltas(this.buffer);
+        // The repair chain (missing value quotes / array closes) also applies
+        // here: when the close-tag scan defers on an unparseable candidate, the
+        // buffer reaches flush and tryRecoverToolCall would otherwise skip the
+        // narrow typo repairs that processToolContent runs.
+        const repairedTrimmed = repairCommonMalformedToolJson(trimmed);
         const recovered =
+          this.tryRecoverToolCall(repairedTrimmed) ||
           this.tryRecoverToolCall(trimmed) ||
           this.tryRecoverIncrementalToolCall(trimmed) ||
           this.lastChanceRecoverToolCall(trimmed);
@@ -1484,7 +1859,29 @@ export class StreamingToolParser {
           // bridge must never inject its own text into the user-facing reply.
           // The malformed call is still tracked so the stream auto-retry can
           // send a [SYSTEM CORRECTION] to Qwen in the upstream prompt.
-          const toolName = this.extractToolNameFromTruncated(trimmed);
+          //
+          // Prose guard (same rationale as processToolContent): if the
+          // unclosed body reads like natural-language prose, it is a
+          // legitimate (possibly truncated) reply, not a tool call. Emit it as
+          // visible text instead of tracking it as malformed.
+          if (this.looksLikeProseContent(trimmed)) {
+            if (isToolcallDebugEnabled()) {
+              logger.debug(
+                "[parser] flush: prose captured as unclosed tool call; preserving as text",
+                {
+                  contentLength: trimmed.length,
+                  contentPreview: trimmed.substring(0, 200),
+                },
+              );
+            }
+            this.discardPendingToolCallDeltas();
+            if (this.emittedToolCallCount === 0) {
+              result.text += this.pendingLeadIn;
+              result.text += this.buffer;
+            }
+            this.pendingLeadIn = "";
+          } else {
+            const toolName = this.extractToolNameFromTruncated(trimmed);
           this.discardPendingToolCallDeltas();
           const truncRecoveryAttempts = [
             "tryRecoverToolCall",
@@ -1519,6 +1916,7 @@ export class StreamingToolParser {
             result.text += this.pendingLeadIn;
           }
           this.pendingLeadIn = "";
+          }
         }
       } else {
         // Empty tool call block - restore lead-in
@@ -1828,6 +2226,31 @@ export class StreamingToolParser {
     // 5) Tool call is malformed and unrecoverable.
     // Never leak internal XML to user-visible content.
     // Restore lead-in text if no tools were emitted.
+    //
+    // Prose guard: when the captured body reads like natural-language prose
+    // (model explaining the tool-call syntax, quoting markers/JSON), it is not
+    // a malformed tool call — it is a legitimate reply that must reach the
+    // client. Emit it as visible text and skip the malformed tracking so the
+    // stream does not fire a spurious [SYSTEM CORRECTION] auto-retry.
+    if (this.looksLikeProseContent(t)) {
+      if (isToolcallDebugEnabled()) {
+        logger.debug(
+          "[parser] processToolContent: prose captured as tool call; preserving as text",
+          {
+            contentLength: t.length,
+            contentPreview: t.substring(0, 200),
+          },
+        );
+      }
+      this.discardPendingToolCallDeltas();
+      if (this.emittedToolCallCount === 0) {
+        result.text += this.pendingLeadIn;
+        result.text += content;
+      }
+      this.pendingLeadIn = "";
+      return;
+    }
+
     const droppedToolName = this.extractToolNameFromTruncated(t);
     const recoveryAttempts = [
       "directParse",
@@ -1998,6 +2421,7 @@ export class StreamingToolParser {
    * Example: `name": "read", "arguments": {"backend/package.json"}}`
    */
   private tryRecoverMalformedJson(str: string): ParsedToolCall | null {
+    if (isJsonPayloadTruncated(str)) return null;
     // Try adding {" at the beginning if it looks like a truncated JSON
     if (str.includes('"name"') || str.includes('name":')) {
       const candidates = [
@@ -2070,6 +2494,10 @@ export class StreamingToolParser {
    * extraction are attempted, on the raw and unescaped variants.
    */
   private lastChanceRecoverToolCall(block: string): ParsedToolCall | null {
+    // A structurally truncated payload must NOT be robust-recovered: it would
+    // stream a cut call to the client and skip the auto-retry. Drop it so the
+    // malformed tracking fires and the model re-emits cleanly.
+    if (isJsonPayloadTruncated(block)) return null;
     const variants = [block];
     if (block.includes('\\"')) {
       variants.push(block.replace(/\\"/g, '"'));
@@ -2116,32 +2544,38 @@ export class StreamingToolParser {
       jsonCandidates.push(str.replace(/\\"/g, '"'));
     }
 
-    for (const candidate of jsonCandidates) {
-      try {
-        const parsed = robustParseJSON(candidate);
-        if (parsed && typeof parsed === "object") {
-          const tc = this.parseToolCall(parsed);
-          if (tc) {
-            if (isToolcallDebugEnabled()) {
-              logger.debug(
-                "[parser] parseToolContent: single JSON parse succeeded",
-                {
-                  name: tc.name,
-                  arguments: tc.arguments,
-                  unescapedCandidate: candidate !== str,
-                },
-              );
+    // Never robust-recover a structurally TRUNCATED payload: robustParseJSON
+    // balances unclosed strings and would accept the cut as valid, silently
+    // streaming a broken call to the client while skipping the malformed
+    // auto-retry. Truncated payloads fall through to malformed tracking.
+    if (!isJsonPayloadTruncated(str)) {
+      for (const candidate of jsonCandidates) {
+        try {
+          const parsed = robustParseJSON(candidate);
+          if (parsed && typeof parsed === "object") {
+            const tc = this.parseToolCall(parsed);
+            if (tc) {
+              if (isToolcallDebugEnabled()) {
+                logger.debug(
+                  "[parser] parseToolContent: single JSON parse succeeded",
+                  {
+                    name: tc.name,
+                    arguments: tc.arguments,
+                    unescapedCandidate: candidate !== str,
+                  },
+                );
+              }
+              calls.push(tc);
+              break;
             }
-            calls.push(tc);
-            break;
           }
-        }
-      } catch (e) {
-        if (isToolcallDebugEnabled()) {
-          logger.debug("[parser] parseToolContent: single JSON parse failed", {
-            error: e instanceof Error ? e.message : String(e),
-            unescapedCandidate: candidate !== str,
-          });
+        } catch (e) {
+          if (isToolcallDebugEnabled()) {
+            logger.debug("[parser] parseToolContent: single JSON parse failed", {
+              error: e instanceof Error ? e.message : String(e),
+              unescapedCandidate: candidate !== str,
+            });
+          }
         }
       }
     }
@@ -2199,8 +2633,11 @@ export class StreamingToolParser {
       }
     }
 
-    // Fallback: extract JSON tool call via balanced-brace search for large payloads
-    if (calls.length === 0 && str.includes('"name"')) {
+    // Fallback: extract JSON tool call via balanced-brace search for large
+    // payloads. Same truncation gate as the single-JSON parse: a structurally
+    // truncated payload must not be robust-recovered (it would stream a cut
+    // call and skip the malformed auto-retry).
+    if (calls.length === 0 && str.includes('"name"') && !isJsonPayloadTruncated(str)) {
       const extracted = this.extractJsonToolCallByBraceMatching(str);
       if (extracted) {
         const tc = this.parseToolCall(extracted);

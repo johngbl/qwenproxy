@@ -1,6 +1,5 @@
 import crypto from "crypto";
 import type {
-  ResponsesResponse,
   ResponsesOutputMessage,
   ResponsesOutputFunctionCall,
   ResponsesOutputReasoning,
@@ -94,7 +93,6 @@ export function createStreamState(
 export function processChatChunk(
   chunk: any,
   state: ResponsesStreamState,
-  response: ResponsesResponse,
 ): ResponsesStreamEvent[] {
   const events: ResponsesStreamEvent[] = [];
 
@@ -369,7 +367,7 @@ function closeCurrentFunctionCall(
   if (state.currentBlockType !== "function_call") return events;
 
   // Close all accumulated tool calls
-  for (const [index, fc] of state.accumulatedToolCalls) {
+  for (const [_, fc] of state.accumulatedToolCalls) {
     // Emit function_call_arguments.done
     events.push({
       type: "response.function_call_arguments.done",

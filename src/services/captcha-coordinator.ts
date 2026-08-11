@@ -22,11 +22,6 @@ const CHALLENGE_PATH_MARKER = "_____tmd_____";
 const FAILED_RECOVERY_BACKOFF_MS = 30_000;
 const lastFailedRecoveryAt = new Map<string, number>();
 
-/** Exported for tests: forget the per-account failed-recovery backoff. */
-export function resetCaptchaRecoveryState(): void {
-  lastFailedRecoveryAt.clear();
-}
-
 async function gotoBestEffort(page: Page, url: string): Promise<void> {
   // A WAF-blocked navigation can time out while still having rendered the
   // challenge, so a failure here must not abort the solve attempt.

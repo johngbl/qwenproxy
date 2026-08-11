@@ -9,6 +9,7 @@
 
 import { config } from "./config.ts";
 import { logger } from "./logger.ts";
+import { getStream } from "./stream-registry.ts";
 
 export interface AccountLease {
   accountId: string;
@@ -38,6 +39,10 @@ interface ActiveLeaseInfo {
   label: string;
   /** Aborted when a same-session retry supersedes this lease. */
   abortController?: AbortController;
+  /** Set once the stream is acquired; used by the emit-aware supersede. */
+  completionId?: string;
+  /** Parallel-escape lease (own chat): excluded from the unemitted check. */
+  parallelEscape?: boolean;
 }
 
 interface QueueEntry {
@@ -87,11 +92,25 @@ function createLease(
   accountId: string,
   label: string,
   abortController?: AbortController,
+  parallelEscape?: boolean,
 ): AccountLease {
   const leaseId = generateLeaseId();
   const slot = getSlot(accountId);
-  const info: ActiveLeaseInfo = { leaseId, acquiredAt: Date.now(), label, abortController };
+  const info: ActiveLeaseInfo = {
+    leaseId,
+    acquiredAt: Date.now(),
+    label,
+    abortController,
+    parallelEscape,
+  };
   slot.activeLeases.push(info);
+  logger.debug("[concurrency] lease acquired", {
+    accountId,
+    leaseId,
+    label,
+    parallelEscape: !!parallelEscape,
+    activeLeases: slot.activeLeases.length,
+  });
 
   let released = false;
   return {
@@ -102,6 +121,11 @@ function createLease(
       released = true;
       const idx = slot.activeLeases.findIndex((l) => l.leaseId === leaseId);
       if (idx !== -1) slot.activeLeases.splice(idx, 1);
+      logger.debug("[concurrency] lease released", {
+        accountId,
+        leaseId,
+        label,
+      });
       releaseSlot(accountId);
     },
   };
@@ -116,9 +140,11 @@ function releaseSlot(accountId: string): void {
     const entry = slot.queue.shift();
     if (!entry) break;
     cleanupEntry(entry);
-    console.log(
-      `🚦 [Server] Stream slot granted | account=${accountId} | waited ${Date.now() - entry.enqueuedAt}ms | ${slot.queue.length} still queued`,
-    );
+    if (logger.isLevelEnabled("info")) {
+      console.log(
+        `🚦 [Server] Stream slot granted | account=${accountId} | waited ${Date.now() - entry.enqueuedAt}ms | ${slot.queue.length} still queued`,
+      );
+    }
     entry.resolve(createLease(accountId, entry.label, entry.leaseAbortController));
     return; // one at a time to preserve ordering
   }
@@ -185,11 +211,21 @@ function sweepStaleLeases(accountId: string): number {
  * Try to acquire a lease without waiting. Returns null if the account is at
  * capacity.
  */
-export function tryAcquireAccountLease(accountId: string, label?: string): AccountLease | null {
+export function tryAcquireAccountLease(
+  accountId: string,
+  label?: string,
+  leaseAbortController?: AbortController,
+  parallelEscape?: boolean,
+): AccountLease | null {
   const slot = getSlot(accountId);
   sweepStaleLeases(accountId);
   if (slot.activeLeases.length < config.concurrency.maxStreamsPerAccount) {
-    return createLease(accountId, label ?? "try-acquire");
+    return createLease(
+      accountId,
+      label ?? "try-acquire",
+      leaseAbortController,
+      parallelEscape,
+    );
   }
   return null;
 }
@@ -215,6 +251,27 @@ export function acquireAccountLease(
   // Sweep stale leases before checking capacity — a leaked lease should not
   // block new requests indefinitely.
   sweepStaleLeases(accountId);
+
+  // A NORMAL request never queues behind an auxiliary (parallel-escape) lease:
+  // the disposable title must yield its slot immediately. Belt-and-suspenders
+  // on top of the emit-aware supersede (which kills parallel leases even before
+  // they emit) — covers the case where the supersede could not find the lease.
+  if (
+    slot.activeLeases.length > 0 &&
+    slot.activeLeases.every((l) => l.parallelEscape)
+  ) {
+    for (const lease of [...slot.activeLeases]) {
+      logger.debug("[concurrency] preempting parallel-escape lease", {
+        accountId,
+        leaseId: lease.leaseId,
+        label: lease.label,
+      });
+      lease.abortController?.abort();
+      const i = slot.activeLeases.indexOf(lease);
+      if (i !== -1) slot.activeLeases.splice(i, 1);
+    }
+    releaseSlot(accountId); // deliver to the earliest waiter, if any
+  }
 
   // Fast path: capacity available
   if (slot.activeLeases.length < config.concurrency.maxStreamsPerAccount) {
@@ -270,9 +327,11 @@ export function acquireAccountLease(
     if (signal) {
       entry.onAbort = () => {
         removeSelf();
-        console.log(
-          `🚦 [Server] Stream waiter aborted | account=${accountId} | waited ${Date.now() - entry.enqueuedAt}ms | ${slot.queue.length} still queued`,
-        );
+        if (logger.isLevelEnabled("info")) {
+          console.log(
+            `🚦 [Server] Stream waiter aborted | account=${accountId} | waited ${Date.now() - entry.enqueuedAt}ms | ${slot.queue.length} still queued`,
+          );
+        }
         reject(new Error("Aborted while waiting for account lease"));
       };
       signal.addEventListener("abort", entry.onAbort, { once: true });
@@ -281,9 +340,11 @@ export function acquireAccountLease(
     slot.queue.push(entry);
 
     const holders = formatHolders(slot);
-    console.log(
-      `🚦 [Server] Stream slot busy | account=${accountId} | held by: ${holders} | queued at position ${slot.queue.length} | timeout=${typeof timeoutMs === "number" && Number.isFinite(timeoutMs) ? `${timeoutMs}ms` : "unbounded"}`,
-    );
+    if (logger.isLevelEnabled("info")) {
+      console.log(
+        `🚦 [Server] Stream slot busy | account=${accountId} | held by: ${holders} | queued at position ${slot.queue.length} | timeout=${typeof timeoutMs === "number" && Number.isFinite(timeoutMs) ? `${timeoutMs}ms` : "unbounded"}`,
+      );
+    }
 
     logger.debug("[concurrency] queued for account lease", {
       accountId,
@@ -299,9 +360,19 @@ export function acquireAccountLease(
  * Abort and remove the active lease matching the given label (session id).
  * Used when a client retries the same session: the old generation is no longer
  * needed, so we abort it and free the slot for the new request.
- * Returns true if a lease was aborted, false if no matching lease was found.
+ *
+ * With `onlyIfEmitted`, a lease whose stream has NOT yet emitted a chunk to the
+ * client is PROTECTED: killing it would waste a generation the client has not
+ * consumed (a parallel title request racing the main stream, or a stream still
+ * mid-creation). Leases without a completionId (stream not acquired yet) are
+ * protected too. Once the stream emits, latest-wins applies (tool loop).
+ * Returns true if a lease was aborted, false otherwise.
  */
-export function abortLeaseByLabel(accountId: string, label: string): boolean {
+export function abortLeaseByLabel(
+  accountId: string,
+  label: string,
+  opts?: { onlyIfEmitted?: boolean },
+): boolean {
   const slot = slots.get(accountId);
   if (!slot) return false;
 
@@ -309,12 +380,34 @@ export function abortLeaseByLabel(accountId: string, label: string): boolean {
   if (idx === -1) return false;
 
   const lease = slot.activeLeases[idx];
+  if (opts?.onlyIfEmitted) {
+    // A parallel-escape lease (auxiliary title on its own chat) is DISPOSABLE:
+    // any normal request of the same session may preempt it, even before it
+    // emits — the main conversation must never block on the title's slot.
+    if (!lease.parallelEscape) {
+      const stream = lease.completionId
+        ? getStream(lease.completionId)
+        : undefined;
+      if (!stream?.emittedChunk) {
+        // Unemitted (still thinking / mid-creation): protect the generation.
+        if (logger.isLevelEnabled("info")) {
+          console.log(
+            `🛡️ [Server] Supersede skipped (protected unemitted) | account=${accountId} | label=${label} | leaseId=${lease.leaseId} | completionId=${lease.completionId ?? "none"} | emitted=${stream?.emittedChunk ?? false}`,
+          );
+        }
+        return false;
+      }
+    }
+  }
+
   const heldMs = Date.now() - lease.acquiredAt;
   slot.activeLeases.splice(idx, 1);
 
-  console.log(
-    `🔄 [Server] Session retry supersedes active lease | account=${accountId} | label=${label} | held ${Math.round(heldMs / 1000)}s | leaseId=${lease.leaseId}`,
-  );
+  if (logger.isLevelEnabled("info")) {
+    console.log(
+      `🔄 [Server] Session retry supersedes active lease | account=${accountId} | label=${label} | held ${Math.round(heldMs / 1000)}s | leaseId=${lease.leaseId}`,
+    );
+  }
   logger.info("[concurrency] session retry superseded active lease", {
     accountId,
     label,
@@ -330,6 +423,70 @@ export function abortLeaseByLabel(accountId: string, label: string): boolean {
   // Free the slot for the next waiter
   releaseSlot(accountId);
   return true;
+}
+
+/**
+ * Abort any active lease matching the given session label ACROSS ALL accounts.
+ * Used BEFORE the per-chat lock: the client can fire the next turn while the
+ * previous stream is still open (streaming tool calls). Killing the stale
+ * generation first lets the new request take the chat lock immediately instead
+ * of waiting for the stale-lease sweep (600s) when the old upstream stalled.
+ * Returns true if at least one lease was aborted.
+ */
+export function abortLeaseBySessionLabel(
+  label: string,
+  opts?: { onlyIfEmitted?: boolean },
+): boolean {
+  let aborted = false;
+  for (const accountId of slots.keys()) {
+    if (abortLeaseByLabel(accountId, label, opts)) aborted = true;
+  }
+  return aborted;
+}
+
+/**
+ * True when the session has an ACTIVE lease whose stream has not emitted a
+ * chunk yet (still thinking / mid-creation). A parallel request (title) must
+ * not kill it, and must run on its own chat instead of waiting.
+ */
+export function hasUnemittedSessionStream(label: string): boolean {
+  for (const slot of slots.values()) {
+    for (const lease of slot.activeLeases) {
+      if (lease.label !== label) continue;
+      // A parallel-escape lease runs on its OWN chat — it must not poison the
+      // check and cascade every following turn into a new chat too.
+      if (lease.parallelEscape) continue;
+      const stream = lease.completionId
+        ? getStream(lease.completionId)
+        : undefined;
+      if (!stream?.emittedChunk) {
+        logger.debug("[concurrency] unemitted session stream found", {
+          label,
+          leaseId: lease.leaseId,
+          completionId: lease.completionId ?? null,
+        });
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Attach the acquired stream's completion id to a lease so the emit-aware
+ * supersede can check whether the stream reached the client. Called by the
+ * stream owner right after createQwenStream succeeds.
+ */
+export function markLeaseCompletion(
+  accountId: string,
+  leaseId: string,
+  completionId: string,
+): void {
+  const slot = slots.get(accountId);
+  const lease = slot?.activeLeases.find((l) => l.leaseId === leaseId);
+  if (lease) {
+    lease.completionId = completionId;
+  }
 }
 
 /**

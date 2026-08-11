@@ -10,7 +10,7 @@ import {
 import { markAccountSuccessful, markAccountFailed } from "../../core/account-priority.ts";
 import { loadAccounts } from "../../core/accounts.ts";
 import { config } from "../../core/config.ts";
-import { UpstreamRateLimit } from "../../core/errors.ts";
+import { ClientAbortedError, UpstreamRateLimit } from "../../core/errors.ts";
 import {
   assertPromptWithinLimits,
   truncatePromptToIntelligentLimit,
@@ -28,6 +28,8 @@ import {
 	isAccountBusy,
 	isAccountTemporarilyBusy,
 	markAccountTemporarilyBusy,
+	markLeaseCompletion,
+	tryAcquireAccountLease,
 	type AccountLease,
 } from "../../core/account-concurrency.ts";
 import { isAuthMockEnabled } from "../../services/auth-playwright.ts";
@@ -35,7 +37,6 @@ import { refreshHeaders } from "../../services/playwright.ts";
 import {
 	clearAllSessionsForAccount,
 	createQwenStream,
-	deleteQwenChat,
 	fetchQwenModels,
 	getQwenErrorCode,
 	getLogicalThreadState,
@@ -67,6 +68,21 @@ import {
 
 /** How many alternate accounts a single request may try after a WAF challenge. */
 const MAX_ANTI_BOT_ROTATIONS = 1;
+
+/**
+ * Hard deadline for the whole personalization sync. A normal sync takes ~2s;
+ * a stuck account page (closed context / WAF) can otherwise hold each browser
+ * op for 60s and keep the personalization mutex blocked for minutes.
+ */
+const PERSONALIZATION_SYNC_DEADLINE_MS = 30_000;
+
+/**
+ * Hard deadline for a single stream-acquire attempt (models sync + truncation
+ * + personalization + header capture + completion fetch metadata + internal
+ * retries). A silent hang past this (observed: 180s with zero logs) fails the
+ * attempt with a visible retryable error so the outer loop switches account.
+ * Configurable via ACQUIRE_DEADLINE_MS (default 120000).
+ */
 
 // Per-chat lock: serializes requests to the same Qwen chat session
 const chatLocks = new Map<string, Mutex>();
@@ -117,6 +133,10 @@ export interface StreamCreationResult {
 	uiSessionId: string;
 	activeAccountId: string;
 	activeAccountLabel: string;
+	/** True when the request resent the FULL prompt on a new upstream chat
+	 * (account switch / missing thread parent). The 📤 log line uses this to
+	 * show the real payload instead of the thread-native delta. */
+	replayedFullContext: boolean;
 	completionId: string;
 	logicalSessionId: string | null;
 	createdNewChat: boolean;
@@ -167,6 +187,11 @@ export interface AcquireParams {
 	  contextMode?: ContextMeterMode;
 	  /** Allow this request to retry the account it just marked temporarily busy. */
 	  allowTemporarilyBusyAccountId?: string;
+	  /**
+	   * True when this request races a same-session stream that has NOT emitted
+	   * yet: run on its OWN chat and hop accounts fast instead of waiting.
+	   */
+	  parallelEscape?: boolean;
 	}
 
 /** Exported for unit tests — selects the first account for a request. */
@@ -348,10 +373,16 @@ export async function acquireUpstreamStream(
 		}
 		triedAccountIds.add(accountId);
 
-		// Skip accounts that recently returned chat_in_progress (temporary busy).
+		// Skip accounts that recently returned chat_in_progress (temporary busy) —
+		// except the sticky thread owner: hopping the owner splinters the
+		// conversation and replays the full context on a cold account (~12s
+		// reopen + captcha) when the upstream chat is merely settling (2-4s,
+		// covered by the same-chat settle retries). Mirrors the saturated-account
+		// exception below.
 		if (
 			isAccountTemporarilyBusy(accountId) &&
-			params.allowTemporarilyBusyAccountId !== accountId
+			params.allowTemporarilyBusyAccountId !== accountId &&
+			accountId !== stickyThreadAccountId
 		) {
 			console.log(
 				`⏭️  [Chat] Skipping account ${accountEmail} (${accountId}) temporarily busy (chat in progress)`,
@@ -474,6 +505,8 @@ export async function acquireUpstreamStream(
 					requestSignal: params.requestSignal,
 					queueSlotUntilFree: waitForSlot,
 					messages: params.messages,
+					completionId,
+					parallelEscape: params.parallelEscape,
 				},
 				accountId,
 				accountEmail,
@@ -492,7 +525,8 @@ export async function acquireUpstreamStream(
 					stream: result.stream,
 					uiSessionId: result.uiSessionId,
 					activeAccountId: result.accountId,
-					activeAccountLabel: accountEmail,
+					activeAccountLabel: result.accountEmail,
+					replayedFullContext: mustReplayFullContext,
 					completionId,
 					logicalSessionId:
 						useThreadNative && updateLogicalThread ? sessionId : null,
@@ -653,6 +687,9 @@ interface CreateStreamSuccess {
 	stream: ReadableStream;
 	uiSessionId: string;
 	accountId: string;
+	/** Account email that actually served the request (inner rotation may
+	 * switch accounts — parallel escape / chat_in_progress escalation). */
+	accountEmail: string;
 	controller: AbortController;
 	headers: Record<string, string>;
 	createdNewChat: boolean;
@@ -688,6 +725,14 @@ async function tryCreateStreamWithRetry(
 		requestSignal?: AbortSignal;
 		queueSlotUntilFree?: boolean;
 		messages?: Message[];
+		/** Stream registry key; the emit-aware supersede links the lease to it. */
+		completionId: string;
+		/**
+		 * True when this request races a same-session stream that has NOT
+		 * emitted yet (title/parallel request): run on its OWN chat instead of
+		 * waiting on the main chat's lock, and hop accounts fast (tryAcquire).
+		 */
+		parallelEscape?: boolean;
 	},
 	accountId: string,
 	accountEmail: string,
@@ -717,6 +762,7 @@ async function tryCreateStreamWithRetry(
 		}
 		let attemptError: any = null;
 		let accountLease: AccountLease | null = null;
+		const acquireStartedAt = Date.now();
 
 		try {
 			// The client may have cancelled between account selection and this
@@ -725,7 +771,9 @@ async function tryCreateStreamWithRetry(
 			if (params.requestSignal?.aborted) {
 				return {
 					success: false,
-					error: new Error("client aborted before stream creation"),
+					error: new ClientAbortedError(
+						"client aborted before stream creation",
+					),
 				};
 			}
 
@@ -779,7 +827,7 @@ async function tryCreateStreamWithRetry(
 			);
 
 			const threadParentId = params.useThreadNative
-				? params.forceNewChat
+				? params.forceNewChat || params.parallelEscape
 					? null
 					: (params.existingThread?.parentId ?? null)
 				: params.shouldResetUpstreamThread
@@ -800,32 +848,81 @@ async function tryCreateStreamWithRetry(
 
 			// Latest-wins: if the client retried the same session, abort the old
 			// generation and free the slot immediately instead of queueing behind it.
+			// onlyIfEmitted: a stream that has NOT reached the client yet is
+			// protected — killing it would waste a generation the client has not
+			// consumed. A PARALLEL request (parallelEscape) never kills at all: it
+			// runs on its own chat and must not abort the main generation even
+			// after the main emits its first chunk.
 			const sessionLabel = params.sessionId ?? currentAccountEmail;
-			if (params.sessionId) {
-				abortLeaseByLabel(currentAccountId, sessionLabel);
+			if (params.sessionId && !params.parallelEscape) {
+				abortLeaseByLabel(currentAccountId, sessionLabel, {
+					onlyIfEmitted: true,
+				});
 			}
 
 			// Create an AbortController for this lease so a future same-session
 			// retry can abort it via abortLeaseByLabel().
 			const leaseAbort = new AbortController();
+			// Second per-attempt controller: the acquire deadline aborts it so a
+			// race-lost createQwenStream (still queued on the account stream
+			// lock) dies instead of winning the lock later and burning an
+			// upstream request while unobserved.
+			const acquireAbort = new AbortController();
 			const combinedSignal = params.requestSignal
-				? AbortSignal.any([params.requestSignal, leaseAbort.signal])
-				: leaseAbort.signal;
+				? AbortSignal.any([
+						params.requestSignal,
+						leaseAbort.signal,
+						acquireAbort.signal,
+					])
+				: AbortSignal.any([leaseAbort.signal, acquireAbort.signal]);
 
-			accountLease = await acquireAccountLease(currentAccountId, {
-				timeoutMs: waitQueueForever
-					? null
-					: config.concurrency.busyWaitMs,
-				signal: combinedSignal,
-				label: sessionLabel,
-				leaseAbortController: leaseAbort,
-			});
+			if (params.parallelEscape) {
+				// Parallel request racing an unemitted stream: do NOT queue on this
+				// account's slot (the main may hold it for minutes while thinking).
+				// Fail fast with account_busy so the attempt loop hops to a free
+				// account; on a free account the request proceeds on its own chat.
+				const quick = tryAcquireAccountLease(
+					currentAccountId,
+					sessionLabel,
+					leaseAbort,
+					true,
+				);
+				if (!quick) {
+					const busyError = new Error(
+						`Account ${currentAccountId} busy: parallel request (session stream unemitted)`,
+					) as Error & { code?: string; parallelEscape?: boolean };
+					busyError.code = "account_busy";
+					// Expected hop, not an error: suppress the "Request failed" warn.
+					busyError.parallelEscape = true;
+					throw busyError;
+				}
+				accountLease = quick;
+			} else {
+				accountLease = await acquireAccountLease(currentAccountId, {
+					timeoutMs: waitQueueForever
+						? config.concurrency.queueWaitForeverCapMs
+						: config.concurrency.busyWaitMs,
+					signal: combinedSignal,
+					label: sessionLabel,
+					leaseAbortController: leaseAbort,
+				});
+			}
 			// Client may have disconnected (or a same-session retry superseded us)
 			// while waiting for the lease. Bail before spending time on
 			// personalization sync / captcha solve.
 			if (combinedSignal.aborted) {
 				accountLease.release();
-				return { success: false, error: new Error("client aborted before stream creation") };
+				return {
+					success: false,
+					error: new ClientAbortedError(
+						"client aborted before stream creation",
+					),
+				};
+			}
+			if (logger.isLevelEnabled("info")) {
+				console.log(
+					`${new Date().toISOString()} ⏱️ [Chat] Acquire: lease | account=${currentAccountEmail} | +${Date.now() - acquireStartedAt}ms`,
+				);
 			}
 			const hasRequestPersonalization =
 				params.requestPersonalizationInstruction !== null &&
@@ -833,6 +930,20 @@ async function tryCreateStreamWithRetry(
 			const releasePersonalization = hasRequestPersonalization
 				? await acquirePersonalizationLock(currentAccountId)
 				: null;
+			// A same-session retry (or client disconnect) can abort this request
+			// while the personalization sync is still stuck on a hung page op
+			// (closed Playwright context / WAF). The sync never resolves, so the
+			// finally below would not run and the mutex would stay held for
+			// minutes, blocking the retry until its 60s acquire timeout fires.
+			// Release the lock immediately on abort instead.
+			const onPersonalizationAbort = () => releasePersonalization?.();
+			if (combinedSignal.aborted) {
+				onPersonalizationAbort();
+			} else {
+				combinedSignal.addEventListener("abort", onPersonalizationAbort, {
+					once: true,
+				});
+			}
 			let result: Awaited<ReturnType<typeof createQwenStream>>;
 			try {
 				let promptForUpstream = effectivePrompt;
@@ -841,12 +952,22 @@ async function tryCreateStreamWithRetry(
 					// whether to actually POST. A new chat does not imply the account's
 					// global settings were reset — only session refresh or profile reset
 					// should bypass the cache.
-					const instruction = params.requestPersonalizationInstruction ?? "";
+					const instruction =
+						params.requestPersonalizationInstruction ?? "";
 					let personalizationApplied = false;
 					try {
-						personalizationApplied = await syncQwenRequestPersonalization(
+						// Hard deadline for the whole sync (browser ops each have
+						// their own 60s timeout; several sequential stuck ops can
+						// hold the personalization mutex for minutes). A normal
+						// sync takes ~2s; beyond 30s the account page is stuck —
+						// fail fast so the retry loop switches accounts.
+						let syncSettled = false;
+						let personalizationDeadlineTimer: NodeJS.Timeout | undefined;
+						const syncPromise = syncQwenRequestPersonalization(
 							instruction,
-							currentAccountId === "global" ? undefined : currentAccountId,
+							currentAccountId === "global"
+								? undefined
+								: currentAccountId,
 							{
 								model: params.model,
 								toolsCount: params.toolsCount ?? 0,
@@ -854,7 +975,38 @@ async function tryCreateStreamWithRetry(
 								promptChars: effectivePrompt.length,
 								forceSync: false,
 							},
+						).then(
+							(value) => {
+								syncSettled = true;
+								return value;
+							},
+							() => {
+								syncSettled = true;
+								return false;
+							},
 						);
+						personalizationApplied = await Promise.race([
+							syncPromise,
+							new Promise<boolean>((resolve) => {
+								personalizationDeadlineTimer = setTimeout(() => {
+									if (!syncSettled) {
+										logger.warn(
+											"[Chat] Personalization sync timed out; sending instructions inline",
+											{
+												accountId: currentAccountId,
+											},
+										);
+									}
+									resolve(false);
+								}, PERSONALIZATION_SYNC_DEADLINE_MS);
+							}),
+						]);
+						// The sync won the race: stop the deadline so it cannot keep the
+						// event loop alive for the full 30s window (it used to leak one
+						// 30s timer per request → ~30s of test-suite drain per file).
+						if (personalizationDeadlineTimer) {
+							clearTimeout(personalizationDeadlineTimer);
+						}
 					} catch (error) {
 						logger.warn(
 							"[Chat] Personalization sync failed; sending instructions inline",
@@ -881,30 +1033,70 @@ async function tryCreateStreamWithRetry(
 						promptForUpstream = `${instruction}\n${promptForUpstream}`;
 					}
 					}
+					if (logger.isLevelEnabled("info")) {
+						console.log(
+							`${new Date().toISOString()} ⏱️ [Chat] Acquire: sync | account=${currentAccountEmail} | +${Date.now() - acquireStartedAt}ms`,
+						);
+					}
 
-				assertPromptWithinLimits(
+					assertPromptWithinLimits(
 					promptForUpstream,
 					params.contextModelId ?? params.model,
 					{ accountId: currentAccountId },
 				);
-				result = await createQwenStream(
+				// Bound the whole acquire with a hard deadline: a silent hang in any
+				// phase (mutex wait, header capture, fetch metadata, internal retries)
+				// fails fast and retryable instead of blocking the request for minutes
+				// with zero log output.
+				const acquireDeadlineMs = config.concurrency.acquireDeadlineMs;
+				let acquireDeadlineTimer: NodeJS.Timeout | undefined;
+				const acquireDeadline = new Promise<never>((_, reject) => {
+					acquireDeadlineTimer = setTimeout(() => {
+						// Abort the losing createQwenStream (it is still queued on the
+						// stream lock or mid-create); the post-lock signal re-check in
+						// createQwenStream then throws instead of letting the orphan
+						// win the lock later and waste an upstream request.
+						acquireAbort.abort();
+						const err = new Error(
+							`Acquire deadline (${acquireDeadlineMs}ms) exceeded creating stream on ${currentAccountEmail}`,
+						) as Error & { code?: string };
+						err.code = "acquire_deadline";
+						reject(err);
+					}, acquireDeadlineMs);
+					acquireDeadlineTimer.unref?.();
+				});
+				result = await Promise.race([
+					createQwenStream(
 						promptForUpstream,
 						params.isThinkingModel,
 						params.model,
 						threadParentId,
 						currentAccountId === "global" ? undefined : currentAccountId,
 						params.allFiles.length > 0 ? params.allFiles : undefined,
-						params.forceNewChat || params.useThreadNative
+						params.forceNewChat || params.useThreadNative || params.parallelEscape
 							? {
-									chatSessionId: params.forceNewChat
-										? null
-										: (params.existingThread?.chatSessionId ?? null),
+									chatSessionId:
+										params.forceNewChat || params.parallelEscape
+											? null
+											: (params.existingThread?.chatSessionId ?? null),
 									forceNewChat: false,
 									reasoningMode: params.reasoningMode,
+									parallelEscape: params.parallelEscape,
 								}
 							: params.reasoningMode ? { reasoningMode: params.reasoningMode } : undefined,
-					combinedSignal,
-				);
+						combinedSignal,
+					),
+					acquireDeadline,
+				]);
+				// The acquire won: stop the deadline so it cannot fire later and
+				// abort a signal nobody observes anymore.
+				if (acquireDeadlineTimer) clearTimeout(acquireDeadlineTimer);
+
+				if (logger.isLevelEnabled("info")) {
+					console.log(
+						`${new Date().toISOString()} ⏱️ [Chat] Acquire done | completion=${params.completionId.substring(0, 8)} | account=${currentAccountEmail} | +${Date.now() - acquireStartedAt}ms`,
+					);
+				}
 
 				const contextMeter = buildContextMeterSnapshot({
 					modelId: params.contextModelId ?? params.model,
@@ -946,6 +1138,10 @@ async function tryCreateStreamWithRetry(
 					};
 				}
 			} finally {
+				combinedSignal.removeEventListener(
+					"abort",
+					onPersonalizationAbort,
+				);
 				releasePersonalization?.();
 			}
 
@@ -953,16 +1149,26 @@ async function tryCreateStreamWithRetry(
 			// (potentially slow) personalization sync. Bail before createQwenStream
 			// spends time on header capture / captcha.
 			if (combinedSignal.aborted) {
+				// Never drop a created stream without cancelling it: the wrapped
+				// stream's cancel() releases the per-account stream lock. Dropping it
+				// silently LEAKS that lock and the next acquire on this account blocks
+				// until the acquire deadline (observed symptom: 150s phantom wait).
+				void result.stream
+					.cancel("client aborted after stream creation")
+					.catch(() => {});
 				accountLease?.release();
 				return {
 					success: false,
-					error: new Error("client aborted during stream creation"),
+					error: new ClientAbortedError(
+						"client aborted during stream creation",
+					),
 				};
 			}
 
 			if (
 				params.useThreadNative &&
 				params.updateLogicalThread &&
+				!params.parallelEscape &&
 				params.sessionId &&
 				result.uiSessionId
 			) {
@@ -1003,9 +1209,17 @@ async function tryCreateStreamWithRetry(
 			}
 
 			markAccountSuccessful(currentAccountId);
+			if (accountLease) {
+				markLeaseCompletion(
+					currentAccountId,
+					accountLease.leaseId,
+					params.completionId,
+				);
+			}
 			return {
 				success: true,
 				...result,
+				accountEmail: currentAccountEmail,
 				releaseAccountLease: accountLease.release,
 			};
 		} catch (err: any) {
@@ -1027,7 +1241,11 @@ async function tryCreateStreamWithRetry(
 
 		// Log the error details for debugging (skip quota errors — logged separately below)
 			const errMsg = err instanceof Error ? err.message : String(err || "");
-			if (err && !isAccountUnavailableError(err)) {
+			if (
+				err &&
+				!isAccountUnavailableError(err) &&
+				!(err as any)?.parallelEscape
+			) {
 				const errCode = getQwenErrorCode(err) || "unknown";
 				console.warn(
 						`❌ [Chat] Request failed | ${currentAccountEmail} | ${errCode} | ${errMsg.substring(0, 200)}`,
@@ -1143,9 +1361,12 @@ async function tryCreateStreamWithRetry(
 		const shouldSwitchAccount =
 			policy.switchAccount && !retryInvalidInputOnSameAccount;
 
-		// chat_in_progress means the previous Qwen generation has not stopped yet;
-		// it is not a quota error. Retry the same chat once, then rotate while an
-		// attempt remains so the alternate account can actually be used.
+		// chat_in_progress means the previous Qwen generation has not stopped
+		// yet (the tool loop fires the next turn the instant the previous one
+		// completes; the upstream chat stays "in progress" for 2-4s after the
+		// terminal event). Retry the SAME chat twice — a single ~1.2s retry
+		// often loses that settle race — then rotate: an escalation replays the
+		// full context on a cold account (~12s context reopen + captcha).
 		if (policy.reason === "chat_in_progress") {
 			chatInProgressCount++;
 			markAccountTemporarilyBusy(
@@ -1153,7 +1374,7 @@ async function tryCreateStreamWithRetry(
 				config.retry.chatInProgressBusyMs,
 			);
 
-			if (chatInProgressCount >= 2) {
+			if (chatInProgressCount >= 3) {
 				const nextAccount =
 					!isSingleAccount && accountSwitches < maxAccountSwitches
 						? getNextAvailableAccount(triedAccounts)
@@ -1178,6 +1399,12 @@ async function tryCreateStreamWithRetry(
 					params.messageCount = params.fullMessageCount ?? params.messageCount;
 					params.forceNewChat = true;
 				}
+			}
+
+			// The 2nd retry on the same chat waits the full busy window so the
+			// upstream chat can settle before the (expensive) escalation.
+			if (chatInProgressCount >= 2) {
+				policy.retryAfterMs = config.retry.chatInProgressBusyMs;
 			}
 		}
 

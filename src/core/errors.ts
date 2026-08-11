@@ -7,6 +7,7 @@ export type QwenBridgeStatusCode =
   | 403
   | 404
   | 429
+  | 499
   | 500
   | 502
   | 503
@@ -95,6 +96,19 @@ export class InternalError extends QwenBridgeError {
   readonly statusCode = 500;
   readonly type = "internal_error";
   readonly code = "internal_server_error";
+}
+
+/**
+ * The client disconnected (or a same-session retry superseded the request)
+ * before the upstream stream could be created. There is no listener left to
+ * receive an error body, so this must NOT be surfaced as a 500: it is neither
+ * a server fault nor an upstream failure. HTTP 499 (Client Closed Request)
+ * keeps the semantics without polluting error metrics.
+ */
+export class ClientAbortedError extends QwenBridgeError {
+  readonly statusCode = 499 as QwenBridgeStatusCode;
+  readonly type = "request_aborted";
+  readonly code = "client_aborted";
 }
 
 export class ServiceUnavailable extends QwenBridgeError {

@@ -26,6 +26,13 @@ export interface ResponsesRequest {
   } | null;
   reasoning_effort?: string;
   text?: {
+    format?: {
+      type?: "text" | "json_schema" | "json_object";
+      name?: string;
+      description?: string;
+      schema?: Record<string, unknown>;
+      strict?: boolean;
+    };
     verbosity?: "low" | "medium" | "high";
   } | null;
   truncation?: "auto" | "disabled";

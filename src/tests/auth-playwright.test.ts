@@ -51,7 +51,7 @@ test("auth-playwright: mock mode returns complete headers", async () => {
   const basic = await getBasicHeaders();
   assert.equal(basic.cookie, "token=mock");
   assert.equal(basic.userAgent, "mock");
-  assert.equal(basic.bxV, "2.5.36");
+  assert.equal(basic.bxV, "2.5.37");
   assert.equal(basic.bxUa, "mock-bx-ua");
   assert.equal(basic.bxUmidtoken, "mock-bx-umidtoken");
 
@@ -99,13 +99,18 @@ test("playwright header capture rejects empty headers and timeouts", async () =>
 
   assert.equal(hasRequiredQwenHeaders({}), false);
   assert.equal(
-    hasRequiredQwenHeaders({ "bx-ua": "present", "bx-umidtoken": " " }),
+    hasRequiredQwenHeaders({
+      cookie: "token=x",
+      "user-agent": "ua",
+      "bx-v": " ",
+    }),
     false,
   );
   assert.equal(
     hasRequiredQwenHeaders({
-      "bx-ua": "present",
-      "bx-umidtoken": "present",
+      cookie: "token=x",
+      "user-agent": "ua",
+      "bx-v": "2.5.37",
     }),
     true,
   );
@@ -232,11 +237,17 @@ function makeRetriggerPage(headerSets: Record<string, string>[]) {
 test("playwright header capture re-triggers the send after incomplete headers", async () => {
   const { captureQwenHeaders } = await import("../services/playwright.ts");
 
-  // First interception is missing bx-umidtoken (the bx SDK had not computed it
-  // yet); the re-triggered send carries both headers.
+  // First interception lacks the required cookie/UA/bx-v trio (the SDK had
+  // not attached them yet); the re-triggered send carries the complete set.
   const { page, state } = makeRetriggerPage([
     { "bx-ua": "present" },
-    { "bx-ua": "present", "bx-umidtoken": "present", cookie: "token=x" },
+    {
+      cookie: "token=x",
+      "user-agent": "ua",
+      "bx-v": "2.5.37",
+      "bx-ua": "present",
+      "bx-umidtoken": "present",
+    },
   ]);
 
   // 30s budget: the two hard-coded 2s sleeps in the trigger sequence plus the

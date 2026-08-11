@@ -24,6 +24,7 @@ import {
   ValidationError,
   AuthError,
   ContextLengthExceededError,
+  ClientAbortedError,
 } from "../core/errors.ts";
 import { parseQwenErrorPayload } from "../routes/chat/errors.ts";
 
@@ -136,17 +137,21 @@ test("invalid_input retries a clean chat once before account rotation", () => {
   );
 });
 
-test("chat_in_progress rotates after one same-account retry", () => {
+test("chat_in_progress allows two same-account retries before rotating", () => {
   assert.equal(
-    shouldRetryChatInProgressOnSameAccount("chat_in_progress", false),
+    shouldRetryChatInProgressOnSameAccount("chat_in_progress", 0),
     true,
   );
   assert.equal(
-    shouldRetryChatInProgressOnSameAccount("chat_in_progress", true),
+    shouldRetryChatInProgressOnSameAccount("chat_in_progress", 1),
+    true,
+  );
+  assert.equal(
+    shouldRetryChatInProgressOnSameAccount("chat_in_progress", 2),
     false,
   );
   assert.equal(
-    shouldRetryChatInProgressOnSameAccount("quota_or_rate_limit", false),
+    shouldRetryChatInProgressOnSameAccount("quota_or_rate_limit", 0),
     false,
   );
 });
@@ -257,6 +262,40 @@ test("classifyRetryAction: network / abort / upstream error classes retry with s
   assert.equal(abortAction.switchAccount, true);
   assert.equal(abortAction.forceNewChat, true);
   assert.equal(abortAction.reason, "stream_aborted");
+});
+
+test("classifyRetryAction: superseded request (client aborted) is silent, not retried", () => {
+  // A same-session retry superseded this request's stream DURING creation.
+  // createQwenStreamInternal throws "client aborted before completion request"
+  // as a plain Error — the supersede aborted the lease signal, NOT the client's
+  // own request signal. This must NOT spin a full-context retry on another
+  // account (that produced the 597s stall): the newer request owns the session.
+  const superseded = new Error("client aborted before completion request");
+  const action = classifyRetryAction(superseded);
+  assert.equal(action.retryable, false);
+  assert.equal(action.switchAccount, false);
+  assert.equal(action.forceNewChat, false);
+  assert.equal(action.reason, "client_abort");
+
+  // The ClientAbortedError variants thrown by tryCreateStreamWithRetry must
+  // classify identically even without the requestAborted flag.
+  const variant = classifyRetryAction(
+    new ClientAbortedError("client aborted during stream creation"),
+  );
+  assert.equal(variant.retryable, false);
+  assert.equal(variant.switchAccount, false);
+  assert.equal(variant.reason, "client_abort");
+});
+
+test("classifyRetryAction: bare AbortError (idle/upstream) stays retryable", () => {
+  // Regression guard: only OUR "client aborted" markers are silent. A bare
+  // AbortError mid-stream is an idle/upstream timeout and must keep retrying.
+  const abort = Object.assign(new Error("This operation was aborted"), {
+    name: "AbortError",
+  });
+  const action = classifyRetryAction(abort);
+  assert.equal(action.retryable, true);
+  assert.equal(action.reason, "stream_aborted");
 });
 
 test("error classification keeps network and chat state out of rate limits", () => {

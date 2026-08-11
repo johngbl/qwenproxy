@@ -123,6 +123,15 @@ const ResponsesRequestSchema = z.object({
   reasoning_effort: z.string().optional(),
   text: z
     .object({
+      format: z
+        .object({
+          type: z.enum(["text", "json_schema", "json_object"]),
+          name: z.string().optional(),
+          description: z.string().optional(),
+          schema: z.record(z.string(), z.any()).optional(),
+          strict: z.boolean().optional(),
+        })
+        .optional(),
       verbosity: z.enum(["low", "medium", "high"]).optional(),
     })
     .nullable()

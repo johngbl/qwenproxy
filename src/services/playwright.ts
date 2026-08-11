@@ -18,6 +18,7 @@ import { hasActiveAccountLease } from "../core/account-concurrency.ts";
 import { config } from "../core/config.ts";
 import { maskEmail } from "../core/logger.ts";
 import { Mutex } from "../core/mutex.ts";
+import { getAccountsByPriority } from "../core/account-priority.ts";
 import {
   clearFingerprintCache,
   getFingerprintProfile,
@@ -216,6 +217,13 @@ const ACCOUNT_PAGE_OPERATION_TIMEOUT_MS = config.timeouts.page;
 const SESSION_PROBE_NAVIGATION_TIMEOUT_MS = 15_000;
 /** Grace period for the intercepted completion request after the send is triggered. */
 const HEADER_CAPTURE_TRIGGER_GRACE_MS = 15_000;
+/**
+ * First-send grace is short: the page is cold and the bx SDK has not computed
+ * its tokens yet, so a cold page almost never produces a request from the first
+ * send. Fail it fast and let the retry loop reload + re-send against the warm
+ * SDK instead of stalling the boot for the full 15s.
+ */
+const FIRST_TRIGGER_GRACE_MS = 3_000;
 /**
  * Sends (the initial one plus re-triggers) header capture may spend on getting a
  * completion request that actually carries the bx headers. The in-page SDK can
@@ -706,19 +714,23 @@ function getHeaderCache(accountId: string): AccountHeaderCache {
   return cache;
 }
 
+/**
+ * Headers the capture must produce before a request may reach Qwen. With
+ * QWEN_SEND_BX_UA=false (default, matching the real client) only the
+ * cookie/UA/bx-v trio is required; bx-ua/bx-umidtoken are captured but never
+ * injected, so their absence must not gate the pipeline.
+ */
+function requiredAntiBotHeaderKeys(): string[] {
+  return config.qwen.sendBxUa
+    ? ["cookie", "user-agent", "bx-ua", "bx-umidtoken", "bx-v"]
+    : ["cookie", "user-agent", "bx-v"];
+}
+
 export function hasRequiredQwenHeaders(
   headers: Record<string, string>,
 ): boolean {
-  return Boolean(headers["bx-ua"]?.trim() && headers["bx-umidtoken"]?.trim());
+  return requiredAntiBotHeaderKeys().every((key) => Boolean(headers[key]?.trim()));
 }
-
-const REQUIRED_ANTI_BOT_HEADERS = [
-  "cookie",
-  "user-agent",
-  "bx-ua",
-  "bx-umidtoken",
-  "bx-v",
-];
 
 /**
  * Validate that all required anti-bot headers are present before making a
@@ -729,7 +741,9 @@ export function assertAntiBotHeaders(
   headers: Record<string, string>,
   label: string,
 ): void {
-  const missing = REQUIRED_ANTI_BOT_HEADERS.filter((key) => !headers[key]?.trim());
+  const missing = requiredAntiBotHeaderKeys().filter(
+    (key) => !headers[key]?.trim(),
+  );
   if (missing.length > 0) {
     throw new Error(
       `${label} missing required browser anti-bot headers: ${missing.join(", ")}`,
@@ -835,7 +849,7 @@ export async function getBasicHeaders(accountId: string): Promise<{
       await tryLightweightCookieRefresh(accountId, cache);
       const bxUa = cache.headers["bx-ua"];
       const bxUmidtoken = cache.headers["bx-umidtoken"];
-      const bxV = cache.headers["bx-v"] || "2.5.36";
+      const bxV = cache.headers["bx-v"] || "2.5.37";
       const cookie = await getCookies(accountId);
       return { cookie, userAgent, bxV, bxUa, bxUmidtoken };
     }
@@ -860,7 +874,7 @@ export async function getBasicHeaders(accountId: string): Promise<{
         cookieCaches.set(accountId, { cookie, timestamp: Date.now() });
         const bxUa = cache.headers["bx-ua"];
         const bxUmidtoken = cache.headers["bx-umidtoken"];
-        const bxV = cache.headers["bx-v"] || "2.5.36";
+        const bxV = cache.headers["bx-v"] || "2.5.37";
         // Update lastRefresh to extend the cache
         cache.lastRefresh = Date.now();
         console.log(
@@ -901,7 +915,7 @@ export async function getBasicHeaders(accountId: string): Promise<{
 
     if (!hasRequiredQwenHeaders(cache.headers)) {
       console.log(
-        `🔄 [Playwright] Missing bx-ua/bx-umidtoken for ${accountId}, triggering header interception...`,
+        `🔄 [Playwright] Missing required anti-bot headers for ${accountId}, triggering header interception...`,
       );
       try {
         await refreshHeadersInternal(accountId);
@@ -1025,10 +1039,8 @@ export async function initPlaywrightForAccount(
           c.name.toLowerCase().includes("session"),
       );
 
-      let didLogin = false;
       if (!hasAuthCookie && account.email && account.password) {
         await loginToQwen(account.id, account.email, account.password);
-        didLogin = true;
       }
 
       // Navigate to the stable chat page to validate the session and populate cookies.
@@ -1048,7 +1060,6 @@ export async function initPlaywrightForAccount(
                 `⚠️  [Playwright] Session expired for ${maskEmail(account.email)}, re-authenticating...`,
               );
               await loginToQwen(account.id, account.email, account.password);
-              didLogin = true;
             } else {
               console.warn(
                 `[Playwright] Session expired for account ${account.id} but no credentials available.`,
@@ -1443,6 +1454,7 @@ export async function captureQwenHeaders(
     let headersCaptured = false;
     let retriggerRequested = false;
     let lastAttemptGraceTimedOut = false;
+    let graceTimeoutCount = 0;
     let wakeTriggerLoop: (() => void) | undefined;
     const deadline = Date.now() + timeoutMs;
     const remainingBudgetMs = () => deadline - Date.now();
@@ -1468,6 +1480,21 @@ export async function captureQwenHeaders(
       // A trigger loop parked between attempts has to be released, otherwise it
       // stays pending forever behind an already-settled capture.
       wakeTrigger();
+      // When a trigger grace period expired (page fired no completion request),
+      // log the OUTCOME so the operator can see whether the retry loop
+      // recovered or the account is being rotated into cooldown — the bare
+      // per-attempt warning leaves that dangling.
+      if (graceTimeoutCount > 0) {
+        if (headersCaptured) {
+          console.log(
+            `✅ [Playwright] Header capture recovered for ${accountId} after ${graceTimeoutCount} silent send(s)`,
+          );
+        } else {
+          console.warn(
+            `❌ [Playwright] Header capture failed for ${accountId} after ${graceTimeoutCount} silent send(s): ${error?.message ?? "no completion request"}`,
+          );
+        }
+      }
       if (error) reject(error);
       else resolve();
     };
@@ -1504,15 +1531,22 @@ export async function captureQwenHeaders(
     // or the UI is blocked and never will. Waiting out the whole header budget
     // past this point only stalls the caller and, during account init, buys a
     // five-minute cooldown for nothing.
-    const armTriggerGrace = () => {
+    const armTriggerGrace = (attempt: number) => {
       // A capture that already landed is only waiting out its settle delay, so
       // the send that produced it must not arm a deadline against it.
       if (settled || headersCaptured) return;
       if (timeout) clearTimeout(timeout);
+      // The FIRST send types into a page whose bx SDK may not have computed its
+      // tokens yet — a cold page almost never produces a request from the first
+      // send, so waiting out the full 15s grace is pure stall. Fail it fast and
+      // let the retry loop reload + re-send (warm SDK) instead. Never exceed the
+      // caller-provided grace (tests inject tiny windows and expect them held).
+      const firstSendGraceMs = Math.min(FIRST_TRIGGER_GRACE_MS, triggerGraceMs);
       timeout = setTimeout(
         () => {
+          graceTimeoutCount++;
           console.warn(
-            `⏱️  [Playwright] Header capture produced no completion request for ${accountId}`,
+            `⏱️  [Playwright] Header capture produced no completion request for ${accountId} (attempt ${graceTimeoutCount})`,
           );
           // The page is likely blocked by WAF/captcha or in a broken state.
           // Instead of settling immediately, trigger a retry with a page
@@ -1521,7 +1555,13 @@ export async function captureQwenHeaders(
           retriggerRequested = true;
           wakeTrigger();
         },
-        Math.max(1, Math.min(remainingBudgetMs(), triggerGraceMs)),
+        Math.max(
+          1,
+          Math.min(
+            remainingBudgetMs(),
+            attempt === 1 ? firstSendGraceMs : triggerGraceMs,
+          ),
+        ),
       );
     };
 
@@ -1596,7 +1636,7 @@ export async function captureQwenHeaders(
     };
 
     /** Type the probe message and send it, then wait out the grace window. */
-    const triggerSend = async () => {
+    const triggerSend = async (attempt: number) => {
       if (settled) return;
       await clearVisibleChallenge(page);
       if (settled) return;
@@ -1645,7 +1685,7 @@ export async function captureQwenHeaders(
         await page.keyboard.press("Enter");
       }
 
-      armTriggerGrace();
+      armTriggerGrace(attempt);
     };
 
     /** Park until the interception asks for another send, or the capture ends. */
@@ -1678,7 +1718,7 @@ export async function captureQwenHeaders(
             await openChatPage();
           }
           if (settled) return;
-          await triggerSend();
+          await triggerSend(attempt);
         } catch (error) {
           console.warn(
             `❌ [Playwright] Error triggering header capture for ${accountId}: ${getErrorMessage(error)}`,
@@ -2031,6 +2071,41 @@ export function getIdlePlaywrightAccountIds(idleMs: number): string[] {
   });
 }
 
+/**
+ * Order context-eviction candidates so the MOST valuable contexts survive.
+ * Pure ordering: unranked accounts first, then ranked accounts from LOWEST to
+ * HIGHEST priority, then oldest activity. The priority file is kept in
+ * "most recently successful first" order (markAccountSuccessful moves the
+ * account to the top), so the accounts actually being used stay warm instead
+ * of the last-created ones from the warmup (which previously made the FIRST
+ * used account pay a ~12s context recreation).
+ */
+export function orderContextsForEviction(
+  accountIds: string[],
+  priorityRank: (id: string) => number | undefined,
+  activity: (id: string) => number,
+): string[] {
+  return [...accountIds].sort((a, b) => {
+    const rankA = priorityRank(a) ?? Number.MAX_SAFE_INTEGER;
+    const rankB = priorityRank(b) ?? Number.MAX_SAFE_INTEGER;
+    if (rankA !== rankB) return rankB - rankA; // lowest priority first
+    return (activity(a) ?? 0) - (activity(b) ?? 0); // oldest activity first
+  });
+}
+
+function priorityOrderForEviction(accountIds: string[]): string[] {
+  const ranked = getAccountsByPriority(accountIds.map((id) => ({ id })));
+  const rank = new Map<string, number>();
+  for (const [index, account] of ranked.entries()) {
+    rank.set(account.id, index);
+  }
+  return orderContextsForEviction(
+    accountIds,
+    (id) => rank.get(id),
+    (id) => lastAccountActivity.get(id) ?? 0,
+  );
+}
+
 export async function closeIdlePlaywrightAccounts(
   idleMs: number,
 ): Promise<number> {
@@ -2044,12 +2119,12 @@ export async function closeIdlePlaywrightAccounts(
     return 0;
   }
 
-  const candidates = getIdlePlaywrightAccountIds(idleMs)
-    .map((accountId) => ({
-      accountId,
-      lastActivity: lastAccountActivity.get(accountId) ?? 0,
-    }))
-    .sort((a, b) => a.lastActivity - b.lastActivity);
+  const candidates = priorityOrderForEviction(
+    getIdlePlaywrightAccountIds(idleMs),
+  ).map((accountId) => ({
+    accountId,
+    lastActivity: lastAccountActivity.get(accountId) ?? 0,
+  }));
 
   let closed = 0;
   for (const candidate of candidates) {
@@ -2084,15 +2159,16 @@ export async function evictIdlePlaywrightContextsToLimit(): Promise<number> {
   if (max <= 0) return 0;
   if (accountPages.size <= max) return 0;
 
-  const candidates = Array.from(accountPages.keys())
-    .map((accountId) => ({
-      accountId,
-      mutex: accountMutexes.get(accountId),
-      lastActivity: lastAccountActivity.get(accountId) ?? 0,
-    }))
-    .filter((candidate) => candidate.mutex?.isIdle())
-    .filter((candidate) => !isAccountServingStream(candidate.accountId))
-    .sort((a, b) => a.lastActivity - b.lastActivity);
+  const candidates = priorityOrderForEviction(
+    Array.from(accountPages.keys()).filter((accountId) => {
+      const mutex = accountMutexes.get(accountId);
+      return mutex?.isIdle() && !isAccountServingStream(accountId);
+    }),
+  ).map((accountId) => ({
+    accountId,
+    mutex: accountMutexes.get(accountId),
+    lastActivity: lastAccountActivity.get(accountId) ?? 0,
+  }));
 
   let closed = 0;
   for (const candidate of candidates) {
@@ -2292,21 +2368,6 @@ export function registerPlaywrightAccountForTests(
   getAccountMutex(accountId);
   accountPages.set(accountId, page);
   lastAccountActivity.set(accountId, lastActivityAt);
-}
-
-export function getPlaywrightStatus(): Record<
-  string,
-  { initialized: boolean; hasHeaders: boolean }
-> {
-  const status: Record<string, { initialized: boolean; hasHeaders: boolean }> =
-    {};
-  for (const [accountId, cache] of headerCaches.entries()) {
-    status[accountId] = {
-      initialized: accountPages.has(accountId),
-      hasHeaders: !!cache.headers["bx-ua"],
-    };
-  }
-  return status;
 }
 
 // ─── Token TTL Diagnostics ───────────────────────────────────────────────────

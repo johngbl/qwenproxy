@@ -118,21 +118,6 @@ export function loadAccounts(): QwenAccount[] {
   }));
 }
 
-export function loadConfiguredAccounts(): QwenAccount[] {
-  const envAccounts = parseEnvAccounts();
-  if (envAccounts.length === 0) return [];
-  
-  const allAccounts = getCachedAccounts();
-  const envEmails = new Set(envAccounts.map((a) => a.email));
-  
-  return allAccounts
-    .filter((account) => envEmails.has(account.email))
-    .map((account) => ({
-      ...account,
-      password: "***",
-    }));
-}
-
 export function invalidateAccountsCache(): void {
   accountsCache = null;
   accountsCacheTime = 0;

@@ -46,7 +46,7 @@ function setupFetchMock(
 test("multiturn-thinking-tools: maintains reasoning_content history", async () => {
   let capturedBody = "";
 
-  const restore = setupFetchMock((url, init) => {
+  const restore = setupFetchMock((_, init) => {
     capturedBody = (init?.body as string) || "";
     const stream = new ReadableStream({
       start(c) {
@@ -110,7 +110,7 @@ test("multiturn-thinking-tools: maintains reasoning_content history", async () =
 });
 
 test("streaming-whitespace: preserves exact whitespace", async () => {
-  const restore = setupFetchMock((url) => {
+  const restore = setupFetchMock(() => {
     const stream = new ReadableStream({
       start(c) {
         c.enqueue(
@@ -174,7 +174,7 @@ test("streaming-whitespace: preserves exact whitespace", async () => {
 });
 
 test("caching-streaming and cache-control: returns prompt_tokens_details", async () => {
-  const restore = setupFetchMock((url) => {
+  const restore = setupFetchMock(() => {
     const stream = new ReadableStream({
       start(c) {
         c.enqueue(
@@ -197,6 +197,9 @@ test("caching-streaming and cache-control: returns prompt_tokens_details", async
         model: "qwen3.6-plus",
         messages: [{ role: "user", content: "test" }],
         stream: true,
+        // Usage is only surfaced in the stream when requested (OpenAI spec);
+        // the point of this test is the DETAILS mapping, not the omission.
+        stream_options: { include_usage: true },
       }),
     });
 
@@ -237,9 +240,9 @@ test("caching-streaming and cache-control: returns prompt_tokens_details", async
 });
 
 test("session-parent-tracking: sends only current delta using response message_id as parent", async () => {
-  let capturedPayloads: any[] = [];
+  const capturedPayloads: any[] = [];
 
-  const restore = setupFetchMock((url, init) => {
+  const restore = setupFetchMock((_, init) => {
     const bodyObj = JSON.parse((init?.body as string) || "{}");
     capturedPayloads.push(bodyObj);
 
@@ -331,7 +334,7 @@ test("session-parent-tracking: sends only current delta using response message_i
 test("session-parent-tracking (stream): next turn parent is previous response_id", async () => {
   const capturedPayloads: any[] = [];
 
-  const restore = setupFetchMock((url, init) => {
+  const restore = setupFetchMock((_, init) => {
     const bodyObj = JSON.parse((init?.body as string) || "{}");
     capturedPayloads.push(bodyObj);
 
@@ -415,7 +418,7 @@ test("session-parent-tracking (stream): next turn parent is previous response_id
 test("thread-native: includes system and tools in first message, excludes from continuations", async () => {
   const capturedPayloads: any[] = [];
 
-  const restore = setupFetchMock((url, init) => {
+  const restore = setupFetchMock((_, init) => {
     const bodyObj = JSON.parse((init?.body as string) || "{}");
     capturedPayloads.push(bodyObj);
 
@@ -616,7 +619,7 @@ test("topic-change: same agent conversation keeps the upstream parent chain", as
   setCacheForTesting(cache);
 
   const originalTestSessionId = process.env.TEST_SESSION_ID;
-  const restore = setupFetchMock((url, init) => {
+  const restore = setupFetchMock((_, init) => {
     const bodyObj = JSON.parse((init?.body as string) || "{}");
     capturedPayloads.push(bodyObj);
 
@@ -697,7 +700,7 @@ test("explicit-session-id: without session_id, creates new chat each time", asyn
   const createdChatIds: string[] = [];
   let requestCount = 0;
 
-  const restore = setupFetchMock((url, init) => {
+  const restore = setupFetchMock(() => {
     requestCount++;
     const chatId = `new-chat-${requestCount}`;
     createdChatIds.push(chatId);
@@ -761,7 +764,7 @@ test("explicit-session-id: with session_id, reuses same chat", async () => {
   const capturedPayloads: any[] = [];
   let requestCount = 0;
 
-  const restore = setupFetchMock((url, init) => {
+  const restore = setupFetchMock((_, init) => {
     requestCount++;
     const bodyObj = JSON.parse((init?.body as string) || "{}");
     capturedPayloads.push(bodyObj);

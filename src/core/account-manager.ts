@@ -3,7 +3,7 @@ import {
   loadAccounts,
   updateAccountCooldown,
 } from "./accounts.ts";
-import { getAccountsByPriority, markAccountSuccessful, markAccountFailed } from "./account-priority.ts";
+import { getAccountsByPriority } from "./account-priority.ts";
 
 let currentIndex = 0;
 

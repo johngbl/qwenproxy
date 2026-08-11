@@ -37,7 +37,6 @@ test("Personalization: getQwenHeaders returns valid header structure", async () 
 test("Personalization: getQwenHeaders with forceNew returns fresh headers", async () => {
   const { getQwenHeaders } = await import("../services/auth-playwright.ts");
 
-  const result1 = await getQwenHeaders(false, undefined);
   const result2 = await getQwenHeaders(true, undefined);
 
   assert.ok(result2.headers, "headers should exist after forceNew");
@@ -128,6 +127,19 @@ test("Personalization: buildCapturedQwenHeaders includes all required fields", a
   assert.ok(requestHeaders["bx-v"], "bx-v should be present");
   assert.ok(requestHeaders["Origin"], "Origin should be present");
   assert.ok(requestHeaders["X-Request-Id"], "X-Request-Id should be present");
+  // Aligned with the real client: bx-ua/bx-umidtoken are NOT injected as
+  // headers by default (QWEN_SEND_BX_UA=false) — the WAF carries them as
+  // cookies. Only bx-v travels as a header.
+  assert.equal(
+    "bx-ua" in requestHeaders,
+    false,
+    "bx-ua must not be sent by default (matches the real client)",
+  );
+  assert.equal(
+    "bx-umidtoken" in requestHeaders,
+    false,
+    "bx-umidtoken must not be sent by default (matches the real client)",
+  );
 });
 
 test("Personalization: isAuthMockEnabled returns true in test mode", async () => {

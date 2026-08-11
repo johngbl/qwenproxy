@@ -196,7 +196,7 @@ test("parseRequestBody current prompt starts at first tool result when no tool_c
 test("parseRequestBody uploads current-message files and keeps text", async () => {
   const originalFetch = globalThis.fetch;
   const remoteUrl = "https://example.com/docs/report.pdf";
-  globalThis.fetch = (async (input: any, init?: RequestInit) => {
+  globalThis.fetch = (async (input: any) => {
     const url = typeof input === "string" ? input : input.url;
     if (url === remoteUrl) {
       return new Response(Buffer.from("pdf-bytes"), {

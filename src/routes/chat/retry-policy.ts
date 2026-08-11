@@ -15,6 +15,7 @@ import {
 } from "../../services/qwen.ts";
 import {
   AuthError,
+  ClientAbortedError,
   NotFoundError,
   ValidationError,
 } from "../../core/errors.ts";
@@ -139,7 +140,13 @@ export function isClientAbortError(
   requestAborted = false,
 ): boolean {
   if (clientDisconnected || requestAborted) return true;
-  // Only treat as client abort when explicitly flagged as such by caller.
+  // Our own client-abort markers: the client disconnected OR a same-session
+  // retry superseded this request's lease during stream creation. A superseded
+  // request must die silently — the newer request owns the session, and
+  // retrying the old one resends full context on another account for nothing
+  // (and can queue indefinitely behind the new stream's lease).
+  if (err instanceof ClientAbortedError) return true;
+  if (err instanceof Error && err.message.includes("client aborted")) return true;
   // Bare AbortError mid-stream is usually idle/upstream timeout (retryable).
   return false;
 }
@@ -189,13 +196,17 @@ export function shouldRetryInvalidInputOnSameAccount(
   );
 }
 
-/** Keep one retry on the current account while an upstream generation settles;
- * subsequent chat_in_progress failures must be allowed to rotate accounts. */
+/** Keep TWO retries on the current account while an upstream generation
+ * settles. The tool loop fires the next turn the instant the previous one
+ * completes, and the upstream chat stays "in progress" for 2-4s after the
+ * terminal event — a single ~1.2s retry often loses that settle race, and
+ * escalating replays the FULL context on a cold account (~12s context reopen
+ * + captcha). Rotate only after the second failure. */
 export function shouldRetryChatInProgressOnSameAccount(
   reason: string,
-  alreadyRetried: boolean,
+  alreadyRetriedCount: number,
 ): boolean {
-  return reason === "chat_in_progress" && !alreadyRetried;
+  return reason === "chat_in_progress" && alreadyRetriedCount < 2;
 }
 
 export function isAccountInitializationError(err: unknown): boolean {

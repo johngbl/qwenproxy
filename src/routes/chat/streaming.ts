@@ -7,7 +7,7 @@
  * sanitization, and incremental tool-call parsing.
  */
 
-import { Context } from "hono";
+import type { Context } from "hono";
 import { stream as honoStream } from "hono/streaming";
 import { buildQwenRequestHeaders } from "../../services/qwen-headers.ts";
 import { qwenUrl } from "../../services/qwen-url.ts";
@@ -35,6 +35,7 @@ import type { Message, OpenAIRequest, Usage } from "../../utils/types.ts";
 import { StreamingToolParser } from "../../tools/parser.ts";
 import {
   getStream,
+  markStreamEmitted,
   registerStream,
   removeStream,
   updateStreamSessionId,
@@ -48,11 +49,11 @@ import {
 } from "../../core/logger.js";
 import { sendOpenAIError } from "../../api/error-helpers.js";
 import { classifyError } from "../../api/error-classifier.js";
+import { ClientAbortedError } from "../../core/errors.js";
 import { config } from "../../core/config.js";
 import { parseQwenErrorPayload } from "./errors.ts";
 import {
   isNetworkLikeError,
-  parseSseErrorFromBuffer,
   throwFromSseUpstreamError,
   toRetryableStreamError,
 } from "./retry-policy.ts";
@@ -177,6 +178,8 @@ export type AssistantCompleteHandler = (
 
 export interface StreamProcessingParams {
   c: Context;
+  /** Short request id for log correlation (from the 📥 Incoming line). */
+  reqId?: string;
   completionId: string;
   stream: ReadableStream;
   uiSessionId: string;
@@ -200,6 +203,8 @@ export interface StreamProcessingParams {
     sessionId: string | null;
     useThreadNative: boolean;
     updateLogicalThread: boolean;
+    /** Parallel request (own chat): recovery must not kill or rebind. */
+    parallelEscape?: boolean;
     allowThreadReuse: boolean;
     messageCount: number;
     fullMessageCount: number;
@@ -243,7 +248,6 @@ export async function processNonStreamingResponse(
     stream,
     uiSessionId,
     activeAccountId,
-    activeAccountLabel = activeAccountId,
     logicalSessionId,
     body,
     finalPrompt,
@@ -255,6 +259,8 @@ export async function processNonStreamingResponse(
     onAssistantComplete,
     onStreamComplete,
   } = params;
+  const reqId = params.reqId ?? completionId.substring(0, 8);
+  const streamStartedAt = Date.now();
   let currentTokenEstimationContext = tokenEstimationContext;
 
   try {
@@ -564,9 +570,6 @@ export async function processNonStreamingResponse(
     };
     if (reasoningBuffer) message.reasoning_content = reasoningBuffer;
     if (toolCallsOut.length) {
-      toolCallsOut.forEach((tc, idx) => {
-        tc.index = idx;
-      });
       message.tool_calls = toolCallsOut;
     }
 
@@ -637,6 +640,7 @@ export async function processNonStreamingResponse(
         sessionId: midStreamRetry.sessionId,
         useThreadNative: midStreamRetry.useThreadNative,
         updateLogicalThread: midStreamRetry.updateLogicalThread,
+        parallelEscape: midStreamRetry.parallelEscape,
         allowThreadReuse: midStreamRetry.allowThreadReuse,
         forceNewChat: true,
         preferredAccountId: midStreamRetry.activeAccountId,
@@ -651,6 +655,16 @@ export async function processNonStreamingResponse(
       });
 
       if ("error" in newStreamResult) {
+        // Client abort during retry acquisition is expected, not an error.
+        if (newStreamResult.error instanceof ClientAbortedError) {
+          logger.debug(
+            "[chat] non-stream: auto-retry aborted by client (silent)",
+            {
+              completionId,
+            },
+          );
+          return sendOpenAIError(c, newStreamResult.error);
+        }
         // Retry failed, return original error
         logger.error("[chat] non-stream: auto-retry failed to acquire stream", {
           error: newStreamResult.error?.message,
@@ -701,18 +715,30 @@ export async function processNonStreamingResponse(
     // the user-visible response entirely: the retry path already told Qwen what
     // went wrong in the upstream prompt, and an echoed [WARNING] text block
     // would leak bridge editorializing into the client's UI.
-    if (toolParser && toolParser.getMalformedToolCalls().length > 0) {
+    if (
+      toolParser &&
+      (toolParser.getMalformedToolCalls().length > 0 ||
+        toolParser.getCappedToolCalls().length > 0)
+    ) {
       const malformedCalls = toolParser.getMalformedToolCalls();
       const undeclaredNames = malformedCalls
         .map((mc) => mc.undeclaredNames)
         .flat()
         .filter((n): n is string => !!n);
+      const cappedToolNames = toolParser
+        .getCappedToolCalls()
+        .map((c) => c.toolName);
 
-      logger.warn("[chat] non-stream: malformed tool calls not retried (retries exhausted or unavailable)", {
-        malformedCount: malformedCalls.length,
-        undeclaredNames,
-        completionId,
-      });
+      logger.warn(
+        "[chat] non-stream: tool calls not retried (malformed or over per-turn cap)",
+        {
+          malformedCount: malformedCalls.length,
+          cappedCount: cappedToolNames.length,
+          cappedToolNames,
+          undeclaredNames,
+          completionId,
+        },
+      );
     }
 
     if (isToolcallDebugEnabled()) {
@@ -775,6 +801,11 @@ export async function processNonStreamingResponse(
     if (isToolcallDebugEnabled()) {
       logger.debug("[chat] non-stream: cleanup", { completionId });
     }
+    if (logger.isLevelEnabled("info")) {
+      console.log(
+        `${new Date().toISOString()} ⏱️ [Chat] Done (non-stream) | req=${reqId} | ${Date.now() - streamStartedAt}ms`,
+      );
+    }
     removeStream(completionId);
     if (onStreamComplete) onStreamComplete();
   }
@@ -803,56 +834,19 @@ export async function processStreamingResponse(
     onAssistantComplete,
     onStreamComplete,
   } = params;
+  const reqId = params.reqId ?? completionId.substring(0, 8);
+  const streamStartedAt = Date.now();
+  let firstChunkAt: number | null = null;
   let currentTokenEstimationContext = tokenEstimationContext;
 
-  // Pre-read initial bytes to detect upstream error before committing to SSE
-  const streamReader = stream.getReader();
-  const streamDecoder = new TextDecoder();
-  let initialStreamBuffer = "";
-  let initialProbeBytes = 0;
-
-  while (true) {
-    const { done, value } = await streamReader.read();
-    if (done) {
-      initialStreamBuffer += streamDecoder.decode();
-      break;
-    }
-
-    initialStreamBuffer += streamDecoder.decode(value, { stream: true });
-    if (hasSseProtocolStart(initialStreamBuffer)) {
-      break;
-    }
-    // Count bytes incrementally instead of re-scanning the growing buffer.
-    initialProbeBytes += value.byteLength;
-    if (initialProbeBytes > MAX_INITIAL_PROTOCOL_BYTES) {
-      await streamReader.cancel().catch(() => undefined);
-      throw toRetryableStreamError(
-        "non_sse_response",
-        "Qwen did not start an SSE response before the protocol probe limit.",
-      );
-    }
-  }
-
-  const upstreamError = parseQwenErrorPayload(initialStreamBuffer);
-  if (upstreamError) {
-    await streamReader.cancel().catch(() => undefined);
-    removeStream(completionId);
-    if (onStreamComplete) onStreamComplete();
-    throwParsedUpstreamError(upstreamError);
-  }
-
-    // Detect first-chunk SSE error BEFORE committing to SSE so outer retry loop can run
-    const earlySseError = parseSseErrorFromBuffer(initialStreamBuffer);
-    if (earlySseError) {
-      await streamReader.cancel().catch(() => undefined);
-      removeStream(completionId);
-      if (onStreamComplete) onStreamComplete();
-      throwFromSseUpstreamError(earlySseError.code, earlySseError.details);
-    }
-
-    c.header("Content-Type", "text/event-stream");
-    c.header("Cache-Control", "no-cache");
-    c.header("Connection", "keep-alive");
+  // Send the SSE response headers IMMEDIATELY (before the protocol probe): the
+  // probe below can block for the upstream's first byte (slow thinking), and
+  // without an early response the client sees nothing and times out on its own,
+  // retrying the same session. The honoStream callback emits keep-alive
+  // comments while the first byte is pending.
+  c.header("Content-Type", "text/event-stream");
+  c.header("Cache-Control", "no-cache");
+  c.header("Connection", "keep-alive");
 
   // Store retry context for transparent mid-stream recovery
   const retryContext = {
@@ -872,8 +866,7 @@ export async function processStreamingResponse(
     let recoverySeedPending = false;
     let currentUiSessionId = retryContext.uiSessionId;
     let currentAccountId = retryContext.activeAccountId;
-    let currentAccountLabel = retryContext.activeAccountLabel;
-    let activeReader: ReadableStreamDefaultReader<Uint8Array> | null = streamReader;
+    let activeReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
     let invalidInputSameAccountRetries = 0;
     let chatInProgressSameAccountRetries = 0;
 
@@ -888,9 +881,11 @@ export async function processStreamingResponse(
       if (teardownDone) return;
       teardownDone = true;
 
-      console.log(
-        `🔌 [Chat] Client disconnected | ${completionId} | stopping Qwen generation`,
-      );
+      if (logger.isLevelEnabled("info")) {
+        console.log(
+          `🔌 [Chat] Client disconnected | ${completionId} | stopping Qwen generation`,
+        );
+      }
 
       if (isToolcallDebugEnabled()) {
         logger.debug("[chat] stream: client disconnected", {
@@ -936,9 +931,11 @@ export async function processStreamingResponse(
       removeStream(completionId);
 
       if (stopHeaders && stopSessionId && targetResponseId) {
-        console.log(
-          `🛑 [Chat] Stopping Qwen generation | session=${stopSessionId} | response=${targetResponseId}`,
-        );
+        if (logger.isLevelEnabled("info")) {
+          console.log(
+            `🛑 [Chat] Stopping Qwen generation | session=${stopSessionId} | response=${targetResponseId}`,
+          );
+        }
         void requestQwenTextInBrowser(
           stopAccountId,
           "POST",
@@ -966,9 +963,11 @@ export async function processStreamingResponse(
             console.error(`❌ [Chat] Stop failed | ${err.message}`);
           });
       } else {
-        console.log(
-          `⏭️  [Chat] Skip Qwen stop | ${completionId} | no response_id yet`,
-        );
+        if (logger.isLevelEnabled("info")) {
+          console.log(
+            `⏭️  [Chat] Skip Qwen stop | ${completionId} | no response_id yet`,
+          );
+        }
       }
 
       if (heartbeatTimeout) {
@@ -983,9 +982,11 @@ export async function processStreamingResponse(
       const graceMs = config.stream.disconnectGraceMs;
       if (graceMs > 0) {
         gracePending = true;
-        console.log(
-          `🔌 [Chat] Client disconnected | ${completionId} | grace ${graceMs}ms - keeping Qwen generation alive`,
-        );
+        if (logger.isLevelEnabled("info")) {
+          console.log(
+            `🔌 [Chat] Client disconnected | ${completionId} | grace ${graceMs}ms - keeping Qwen generation alive`,
+          );
+        }
         graceTimer = setTimeout(() => {
           gracePending = false;
           graceTimer = null;
@@ -1023,6 +1024,16 @@ export async function processStreamingResponse(
 
     try {
       await streamWriter.write(": heartbeat\n\n");
+
+      // Protocol probe state. The probe itself runs LATER (after the recovery
+      // machinery is defined) so probe failures route through
+      // recoverFromStreamError (mid-stream retry) — the outer retry loop can no
+      // longer run once the response has started. The response is already open
+      // here, so heartbeats cover the wait for the upstream's first byte.
+      const streamReader = stream.getReader();
+      const streamDecoder = new TextDecoder();
+      let initialStreamBuffer = "";
+      let initialProbeBytes = 0;
 
       const scheduleHeartbeat = () => {
         heartbeatTimeout = setTimeout(async () => {
@@ -1081,6 +1092,17 @@ export async function processStreamingResponse(
       const eventTail = `,"logprobs":null,"finish_reason":null}]}`;
 
       const writeDeltaEvent = (delta: Record<string, unknown>) => {
+        // First model output to reach the client: the emit-aware supersede uses
+        // this to allow latest-wins only AFTER the client consumed something.
+        markStreamEmitted(completionId);
+        if (firstChunkAt === null) {
+          firstChunkAt = Date.now();
+          if (logger.isLevelEnabled("info")) {
+            console.log(
+              `${new Date().toISOString()} ⏱️ [Chat] First chunk | req=${reqId} | +${firstChunkAt - streamStartedAt}ms`,
+            );
+          }
+        }
         const serialized =
           `data: {${eventHead}${JSON.stringify(delta)}${eventTail}\n\n`;
         if (Array.isArray(flushBuffer)) {
@@ -1327,7 +1349,7 @@ export async function processStreamingResponse(
         const retryChatInProgressOnSameAccount =
           shouldRetryChatInProgressOnSameAccount(
             policy.reason,
-            chatInProgressSameAccountRetries > 0,
+            chatInProgressSameAccountRetries,
           );
         if (retryChatInProgressOnSameAccount) {
           chatInProgressSameAccountRetries++;
@@ -1376,6 +1398,7 @@ export async function processStreamingResponse(
           sessionId: midStreamRetry.sessionId,
           useThreadNative: midStreamRetry.useThreadNative,
           updateLogicalThread: midStreamRetry.updateLogicalThread,
+          parallelEscape: midStreamRetry.parallelEscape,
           allowThreadReuse: midStreamRetry.allowThreadReuse,
           forceNewChat: forceRetryNewChat || switchAccount,
           preferredAccountId: switchAccount ? null : currentAccountId,
@@ -1406,7 +1429,6 @@ export async function processStreamingResponse(
 
         const previousUiSessionId = currentUiSessionId;
         currentAccountId = newStreamResult.activeAccountId;
-        currentAccountLabel = newStreamResult.activeAccountLabel;
         currentUiSessionId = newStreamResult.uiSessionId;
         retryContext.releaseAccountLease =
           newStreamResult.releaseAccountLease;
@@ -1445,6 +1467,59 @@ export async function processStreamingResponse(
         activeReader = reader;
         return true;
       };
+
+      // Protocol probe: consume the upstream's first bytes to detect a WAF
+      // HTML / non-SSE / early error payload. Runs here (after
+      // recoverFromStreamError is defined) so probe failures route through the
+      // mid-stream recovery instead of surfacing as an un-retried SSE error.
+      // The response is already open — heartbeats cover the wait for the first
+      // byte (slow thinking).
+      let probeFailed = false;
+      try {
+        while (true) {
+          const { done, value } = await streamReader.read();
+          if (done) {
+            initialStreamBuffer += streamDecoder.decode();
+            break;
+          }
+
+          initialStreamBuffer += streamDecoder.decode(value, {
+            stream: true,
+          });
+          if (hasSseProtocolStart(initialStreamBuffer)) {
+            break;
+          }
+          initialProbeBytes += value.byteLength;
+          if (initialProbeBytes > MAX_INITIAL_PROTOCOL_BYTES) {
+            throw toRetryableStreamError(
+              "non_sse_response",
+              "Qwen did not start an SSE response before the protocol probe limit.",
+            );
+          }
+        }
+
+        // NOTE: early SSE error events (data: {"error":...}) are deliberately
+        // NOT checked here — the read loop detects chunk.error and routes it
+        // through recoverFromStreamError. Checking here would duplicate that
+        // and swallow the retry.
+        const probeUpstreamError = parseQwenErrorPayload(initialStreamBuffer);
+        if (probeUpstreamError) {
+          throwParsedUpstreamError(probeUpstreamError);
+        }
+      } catch (probeError) {
+        probeFailed = true;
+        if (await recoverFromStreamError(probeError)) {
+          // Recovery swapped the reader and reset buffer — proceed to the read
+          // loop with the fresh stream.
+        } else {
+          await streamReader.cancel().catch(() => undefined);
+          throw probeError;
+        }
+      }
+      if (!probeFailed) {
+        buffer = initialStreamBuffer;
+      }
+      activeReader = reader;
 
       // Main SSE reader loop
       while (true) {
@@ -1897,6 +1972,7 @@ export async function processStreamingResponse(
             sessionId: midStreamRetry.sessionId,
             useThreadNative: midStreamRetry.useThreadNative,
             updateLogicalThread: midStreamRetry.updateLogicalThread,
+            parallelEscape: midStreamRetry.parallelEscape,
             allowThreadReuse: midStreamRetry.allowThreadReuse,
             forceNewChat: true,
             preferredAccountId: midStreamRetry.activeAccountId,
@@ -1912,6 +1988,18 @@ export async function processStreamingResponse(
           });
 
           if ("error" in newStreamResult) {
+            // Client abort during the retry acquisition is expected (the client
+            // may have disconnected while the retry stream was being created):
+            // break silently instead of logging an error.
+            if (newStreamResult.error instanceof ClientAbortedError) {
+              logger.debug(
+                "[chat] stream: auto-retry aborted by client (silent)",
+                {
+                  completionId,
+                },
+              );
+              break;
+            }
             logger.error("[chat] stream: auto-retry failed to acquire stream", {
               error: newStreamResult.error?.message,
               completionId,
@@ -1964,7 +2052,6 @@ export async function processStreamingResponse(
           retryContext.releaseAccountLease = newStreamResult.releaseAccountLease;
           currentUiSessionId = newStreamResult.uiSessionId;
           currentAccountId = newStreamResult.activeAccountId;
-          currentAccountLabel = newStreamResult.activeAccountLabel;
           const retryDecoder = new TextDecoder();
           let retryBuf = "";
 
@@ -2209,18 +2296,31 @@ export async function processStreamingResponse(
       // surface a [WARNING] text block to the client: the auto-retry already
       // sent the correction to Qwen in the upstream prompt, and echoing it here
       // would leak a bridge-authored text note into the user-facing UI.
-      if (!clientDisconnected && toolParser && toolParser.getMalformedToolCalls().length > 0) {
+      if (
+        !clientDisconnected &&
+        toolParser &&
+        (toolParser.getMalformedToolCalls().length > 0 ||
+          toolParser.getCappedToolCalls().length > 0)
+      ) {
         const malformedCalls = toolParser.getMalformedToolCalls();
         const undeclaredNames = malformedCalls
           .map((mc) => mc.undeclaredNames)
           .flat()
           .filter((n): n is string => !!n);
+        const cappedToolNames = toolParser
+          .getCappedToolCalls()
+          .map((c) => c.toolName);
 
-        logger.warn("[chat] stream: malformed tool calls not retried (retries exhausted or unavailable)", {
-          malformedCount: malformedCalls.length,
-          undeclaredNames,
-          completionId,
-        });
+        logger.warn(
+          "[chat] stream: tool calls not retried (malformed or over per-turn cap)",
+          {
+            malformedCount: malformedCalls.length,
+            cappedCount: cappedToolNames.length,
+            cappedToolNames,
+            undeclaredNames,
+            completionId,
+          },
+        );
       }
 
       await writeEvent({
@@ -2229,7 +2329,6 @@ export async function processStreamingResponse(
         created: createdTimestamp,
         model: body.model,
         choices: [makeChoice({}, finalFinishReason)],
-        ...(body.stream_options?.include_usage ? {} : { usage }),
       });
 
       if (body.stream_options?.include_usage) {
@@ -2358,7 +2457,23 @@ export async function processStreamingResponse(
         });
       }
 
+      if (logger.isLevelEnabled("info")) {
+        console.log(
+          `${new Date().toISOString()} ⏱️ [Chat] Stream done | req=${reqId} | ${Date.now() - streamStartedAt}ms | firstChunk=${firstChunkAt === null ? "none" : `${firstChunkAt - streamStartedAt}ms`}`,
+        );
+      }
+
       flushWrites();
+
+      // Release the upstream stream lock immediately. The read loop exits on
+      // the SSE terminal event (upstreamDone break) WITHOUT completing the
+      // wrapper's pull(); if the upstream keeps the connection open on
+      // keep-alive after the terminal event, the wrapper never sees done and
+      // the per-account stream lock stays held until the idle timeout (180s for
+      // thinking models) — the next turn on the same account blocks on it until
+      // the acquire deadline fires (the 120s stall). Same pattern as
+      // runDisconnectTeardown.
+      void activeReader?.cancel().catch(() => undefined);
 
       c.req.raw.signal.removeEventListener("abort", abortHandler);
       if (heartbeatTimeout) {
@@ -2444,6 +2559,19 @@ export async function processStreamingResponse(
 
 export function handleChatCompletionsError(c: Context, err: unknown): Response {
   const classified = classifyError(err);
+
+  // Client aborted (or a same-session retry superseded the request) before the
+  // stream could be created. Nobody is listening: do not emit a 500, do not
+  // count it as a request error, and do not log an error line.
+  if (classified instanceof ClientAbortedError) {
+    logger.debug("[chat] client aborted during stream creation (silent)", {
+      message: err instanceof Error ? err.message : String(err),
+    });
+    // 499 (Client Closed Request) is not part of Hono's StatusCode union;
+    // a plain Response (status: number) is valid here.
+    return new Response(null, { status: 499 });
+  }
+
   if (classified.statusCode >= 500) {
     metrics.increment("requests.errors");
   }

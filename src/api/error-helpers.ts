@@ -1,7 +1,7 @@
 import type { Context } from "hono";
+import type { QwenBridgeStatusCode } from "../core/errors.js";
 import {
   QwenBridgeError,
-  QwenBridgeStatusCode,
   ValidationError,
   AuthError,
   ForbiddenError,
@@ -10,12 +10,13 @@ import {
   UpstreamError,
   UpstreamTimeout,
   InternalError,
+  ClientAbortedError,
   ServiceUnavailable,
 } from "../core/errors.js";
 import { classifyError } from "./error-classifier.js";
 
 const VALID_STATUSES: ReadonlySet<number> = new Set([
-  400, 401, 403, 404, 429, 500, 502, 503, 504,
+  400, 401, 403, 404, 429, 499, 500, 502, 503, 504,
 ]);
 
 function isValidStatus(code: number): code is QwenBridgeStatusCode {
@@ -37,6 +38,8 @@ function errorForStatus(
       return new NotFoundError(message);
     case 429:
       return new UpstreamRateLimit(message);
+    case 499:
+      return new ClientAbortedError(message);
     case 500:
       return new InternalError(message);
     case 502:
@@ -88,6 +91,15 @@ export function sendOpenAIError(
       param: inner.param ?? null,
     },
   };
+  // 499 (Client Closed Request) is not part of Hono's ContentfulStatusCode
+  // union. The abort is intercepted before sendOpenAIError in the chat route,
+  // but keep the fallback type-safe by building the Response directly.
+  if (qwenBridgeErr.statusCode === 499) {
+    return new Response(JSON.stringify(body), {
+      status: 499,
+      headers: { "content-type": "application/json" },
+    });
+  }
   return c.json(body, qwenBridgeErr.statusCode);
 }
 

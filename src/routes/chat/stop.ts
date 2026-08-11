@@ -7,7 +7,7 @@
  * forwards the stop request, then aborts the local AbortController.
  */
 
-import { Context } from "hono";
+import type { Context } from "hono";
 import { buildQwenRequestHeaders } from "../../services/qwen-headers.ts";
 import { qwenUrl } from "../../services/qwen-url.ts";
 import {

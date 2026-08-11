@@ -4,9 +4,9 @@ import {
   QwenBridgeError,
   InternalError,
   ValidationError,
-  AuthError,
   UpstreamRateLimit,
   UpstreamError,
+  ClientAbortedError,
 } from "../core/errors.js";
 import {
   QwenNetworkError,
@@ -73,6 +73,13 @@ export function classifyError(err: unknown): QwenBridgeError {
 
   if (err instanceof QwenBridgeError) {
     return err;
+  }
+
+  // Client disconnected before the stream could be created. This is not a
+  // server fault: the request has no listener anymore. Classify it as a silent
+  // abort (499) so callers neither emit a 500 nor count it as an error.
+  if (err instanceof Error && err.message.includes("client aborted")) {
+    return new ClientAbortedError(err.message);
   }
 
   // Capacity saturation on the bridge's own account pool: this is a "try again
