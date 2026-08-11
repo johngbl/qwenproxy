@@ -4,6 +4,7 @@ import net from "node:net";
 import { getDatabase } from "../core/database.ts";
 import { invalidateAccountsCache } from "../core/accounts.ts";
 import { startServer, stopServer } from "../api/server.ts";
+import { config } from "../core/config.ts";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -102,6 +103,59 @@ test("server lifecycle starts and stops in mock mode without real accounts", asy
     await stopServer();
   } finally {
     await stopServer();
+    restoreAccounts(existing);
+
+    if (originalMockAuth === undefined) {
+      delete process.env.TEST_MOCK_QWEN_AUTH;
+    } else {
+      process.env.TEST_MOCK_QWEN_AUTH = originalMockAuth;
+    }
+
+    if (originalQwenAccounts === undefined) {
+      delete process.env.QWEN_ACCOUNTS;
+    } else {
+      process.env.QWEN_ACCOUNTS = originalQwenAccounts;
+    }
+  }
+});
+
+test("server startup fails fast with an explanatory message when the port is already in use", async () => {
+  // Find a free port, occupy it, and point the server config at it so the test
+  // runs regardless of what is listening on the default port.
+  let port = 3210;
+  while (!(await isPortAvailable(port))) port++;
+
+  const blocker = net.createServer();
+  await new Promise<void>((resolve) => {
+    blocker.once("listening", () => resolve());
+    blocker.listen(port, config.server.host);
+  });
+
+  const originalPort = config.server.port;
+  const originalMockAuth = process.env.TEST_MOCK_QWEN_AUTH;
+  const originalQwenAccounts = process.env.QWEN_ACCOUNTS;
+  const existing = snapshotAccounts();
+
+  process.env.TEST_MOCK_QWEN_AUTH = "true";
+  delete process.env.QWEN_ACCOUNTS;
+  config.server.port = port;
+
+  try {
+    getDatabase().prepare("DELETE FROM accounts").run();
+    invalidateAccountsCache();
+
+    await assert.rejects(
+      () => startServer({ installSignalHandlers: false }),
+      (err: Error) => {
+        assert.match(err.message, /already in use/);
+        assert.match(err.message, /PORT=3001 npm start/);
+        return true;
+      },
+    );
+  } finally {
+    config.server.port = originalPort;
+    await stopServer();
+    await new Promise<void>((resolve) => blocker.close(() => resolve()));
     restoreAccounts(existing);
 
     if (originalMockAuth === undefined) {

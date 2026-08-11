@@ -4,7 +4,7 @@
 
 # QwenProxy
 
-API compatível com OpenAI/Anthropic que conecta clientes ao **Qwen (`chat.qwen.ai`)** com suporte a múltiplas contas, tool calling robusto, thread-native, uploads multimodais, **Responses API completa com memória persistente** e sessões persistentes. Inclui Playwright com stealth, retries para erros transitórios, variantes públicas base/`-fast`/`-thinking`, cache comprimido, registro de capabilities por modelo e observabilidade.
+API compatível com **OpenAI** que conecta clientes ao **Qwen (`chat.qwen.ai`)** com suporte a múltiplas contas, tool calling robusto, thread-native, uploads multimodais, **Responses API completa com memória persistente** e sessões persistentes. Inclui Playwright com stealth, retries para erros transitórios, variantes públicas base/`-fast`/`-thinking`, cache comprimido, registro de capabilities por modelo e observabilidade.
 
 [![CI](https://github.com/johngbl/QwenProxy/actions/workflows/ci.yml/badge.svg)](https://github.com/johngbl/QwenProxy/actions/workflows/ci.yml)
 [![TypeScript](https://img.shields.io/badge/TypeScript-7.0-blue)](https://www.typescriptlang.org/)
@@ -15,8 +15,7 @@ API compatível com OpenAI/Anthropic que conecta clientes ao **Qwen (`chat.qwen.
 
 ## Principais funcionalidades
 
-- **Compatibilidade OpenAI** — `/v1/chat/completions`, `/v1/models`, `/v1/chat/completions/stop`, `/v1/upload` e **Responses API** `/v1/responses`.
-- **Compatibilidade Anthropic** — `/v1/messages` e `/v1/messages/count_tokens`.
+- **Compatibilidade OpenAI** — `/v1/chat/completions`, `/v1/completions` (legado), `/v1/models`, `/v1/chat/completions/stop`, `/v1/upload` e **Responses API** `/v1/responses`.
 - **Responses API completa** — SSE com `event:` + `data:` + `sequence_number`, memória persistente via `previous_response_id` (SQLite durável), `last_response_id`, multimodal (`input_image`/`input_file`), reasoning effort normalization, lifecycle events de reasoning e usage real do upstream.
 - **Thread-native** — Reutiliza sessão/pai no Qwen; preservação de contexto entre turns
 - **Playwright + stealth** — Headers reais (`bx-ua`, `bx-umidtoken`, `bx-v`) por conta; fingerprint estável e cleanup de processos.
@@ -38,12 +37,12 @@ API compatível com OpenAI/Anthropic que conecta clientes ao **Qwen (`chat.qwen.
 
 ```mermaid
 flowchart TD
-    Client["Cliente OpenAI/Anthropic/Codex/Grok"] -->|HTTP| Proxy["QwenProxy - Hono"]
+    Client["Cliente OpenAI / Codex / Grok"] -->|HTTP| Proxy["QwenProxy - Hono"]
     Proxy --> Chat["/v1/chat/completions"]
+    Proxy --> Completions["/v1/completions (legado)"]
     Proxy --> Responses["/v1/responses"]
     Proxy --> Models["/v1/models"]
     Proxy --> Upload["/v1/upload"]
-    Proxy --> Anthropic["/v1/messages"]
     Chat --> Context["Thread-native context"]
     Responses --> Chat
     Responses --> Effort["Effort normalization"]
@@ -66,7 +65,7 @@ flowchart TD
 Se `API_KEY` estiver definido, as rotas `/v1/*` (e `/metrics`) exigem uma das formas:
 
 - `Authorization: Bearer <API_KEY>` (OpenAI / Responses)
-- `x-api-key: <API_KEY>` (Anthropic e clientes mistos)
+- `x-api-key: <API_KEY>` (clients bearer-style)
 
 QwenProxy usa **Playwright por padrão**. Cada conta abre uma sessão real de browser para capturar cookies e headers anti-bot.
 
@@ -102,11 +101,11 @@ Exemplos do catálogo atual (podem mudar sem release do proxy):
 | `qwen3.8-max` | 1.000.000 | 131.072 | ✅ | ✅ |
 | `qwen3.7-plus` | 1.000.000 | 65.536 | ✅ | ✅ |
 | `qwen3.7-max` | 1.000.000 | 65.536 | ✅ | ❌ |
-| **Fallback desconhecido** | **131.072** | **8.192** | — | — |
+| **Fallback desconhecido** | **1.048.576** | **65.536** | — | — |
 
 O fallback é usado somente quando a conta ainda não sincronizou o catálogo ou o endpoint upstream está indisponível. Depois da sincronização, contexto, output, thinking, modalidades, `think_skip`, `chat_type`, `mcp`, status ativo e demais metadata vêm do Qwen.
 
-> **Nota:** O endpoint `/v1/models` retorna capabilities dinâmicas (inclusive no formato Anthropic: `max_tokens`, `image_input`, `pdf_input`, `code_execution` e `thinking`).
+> **Nota:** O endpoint `/v1/models` retorna capabilities dinâmicas (formato OpenAI).
 
 ### Capabilities
 
@@ -262,7 +261,7 @@ npm start
 1. Prepara as contas em sequência, reutilizando o profile persistente quando ele já está autenticado.
 2. Se o profile não tiver uma sessão válida, autentica com as credenciais da conta e salva a sessão em `data/qwen_profiles/<accountId>`.
 3. O servidor sobe após a primeira conta ficar pronta e continua preparando as demais em background.
-4. Com `PLAYWRIGHT_MAX_ACTIVE_CONTEXTS=1` (padrão), o contexto anterior é fechado antes de abrir o próximo: apenas uma conta fica ativa e as demais ficam em standby com seus profiles salvos.
+4. Com `PLAYWRIGHT_MAX_ACTIVE_CONTEXTS=1` (padrão), só 1 contexto fica aberto após o warmup; contextos extras (uso simultâneo ou failover) fecham ao ficar idle. O watchdog RSS fecha contextos idle sob pressão de RAM.
 5. Use `PLAYWRIGHT_PREPARE_ALL_ON_STARTUP=false` para voltar ao modo econômico, preparando as contas adicionais somente quando forem necessárias.
 
 Exemplo de log:
@@ -273,7 +272,13 @@ Exemplo de log:
 ✅ [Server] Account ready (2/6): us***@example.com
 ...
 
-🚀✨ [Server] Listening on http://127.0.0.1:3000/v1 ✨🚀
++----------------------------------------------------------+
+|                   QwenBridge                             |
+|             OpenAI-Compatible API                        |
+|  Endpoint    http://127.0.0.1:3000/v1                    |
+|  Accounts    1/6 warm                                    |
+|  Status      ● Online                                    |
++----------------------------------------------------------+
 ```
 
 ---
@@ -318,8 +323,10 @@ npm run typecheck  # tipos
 | `PLAYWRIGHT_HEADLESS` | `true` | Browser sem janela |
 | `PLAYWRIGHT_BROWSER` | `chromium` | `chromium` / `chrome` / `edge` |
 | `PLAYWRIGHT_INIT_BATCH_SIZE` | `1` | Contas em paralelo no background init |
+| `PLAYWRIGHT_PREPARE_ALL_ON_STARTUP` | `true` | Prepara todas as contas no boot (`false` = só quando necessárias) |
+| `PLAYWRIGHT_MAX_ACTIVE_CONTEXTS` | `1` | Contextos idle mantidos quentes (streams ativos nunca são fechados; uso simultâneo abre mais) |
 | `PLAYWRIGHT_CONTEXT_CLOSE_TIMEOUT_MS` | `10000` | Timeout de close antes do kill |
-| `PLAYWRIGHT_IDLE_CONTEXT_TTL_MS` | `300000` | Fecha contextos idle (`0` desativa) |
+| `PLAYWRIGHT_IDLE_CONTEXT_TTL_MS` | `60000` | Fecha contextos idle acima do cap (`0` desativa) |
 | `PLAYWRIGHT_JS_HEAP_MB` | `256` | Cap V8 do Chromium (`--max-old-space-size`) |
 | `PLAYWRIGHT_LOW_MEMORY_FLAGS` | `true` | Flags de baixa RAM (heap cap, cache mínimo, renderer limit) |
 | `OSS_MULTIPART_THRESHOLD_MB` | `5` | Acima disso usa multipart OSS; abaixo `putStream` |
@@ -344,7 +351,8 @@ npm run typecheck  # tipos
 | Variável | Default | Descrição |
 |---|---|---|
 | `USER_AGENT` | Chrome 149 Windows | UA fallback |
-| `QWEN_BX_V` | `2.5.36` | `bx-v` fallback; `bx-ua`/`bx-umidtoken` vêm do browser |
+| `QWEN_BX_V` | `2.5.37` | `bx-v` fallback; `bx-ua`/`bx-umidtoken` **não** são enviados como headers (o cliente real os carrega como cookies WAF) |
+| `QWEN_SEND_BX_UA` | `false` | `true` restaura o comportamento legado de injetar `bx-ua`/`bx-umidtoken` capturados como headers |
 
 Fingerprint estável por conta (UA, locale, viewport, hardware/WebGL) é aplicado automaticamente.
 
@@ -360,6 +368,14 @@ Fingerprint estável por conta (UA, locale, viewport, hardware/WebGL) é aplicad
 | `RETRY_AUTO_MALFORMED_TOOLS` | `true` | Auto-retry quando todos os tool calls da resposta vêm malformados |
 | `RETRY_AUTO_MALFORMED_TOOLS_MAX` | `2` | Máximo de retries de tool calls malformados por resposta |
 | `MAX_TOOL_CALLS_PER_TURN` | `8` | Teto de tool calls por turno (0 desativa); calls duplicadas idênticas também são descartadas |
+| `CHAT_IN_PROGRESS_RETRY_DELAY_MS` | `2000` | Espera antes de repetir no mesmo chat após `chat_in_progress` |
+| `CHAT_IN_PROGRESS_BUSY_MS` | `4000` | Janela busy da conta após `chat_in_progress` (absorve o settle do upstream) |
+| `MID_STREAM_FAILOVER_THRESHOLD` | `2` | Falhas de rede mid-stream nesta janela marcam a conta temporarily busy |
+| `MID_STREAM_FAILOVER_BUSY_MS` | `60000` | Duração do busy após o threshold mid-stream |
+| `ACQUIRE_DEADLINE_MS` | `120000` | Deadline por tentativa de acquire do stream (falha visível → troca de conta) |
+| `ACCOUNT_QUEUE_WAIT_FOREVER_CAP_MS` | `120000` | Cap de espera na fila "sem deadline" de contas |
+| `ACCOUNT_LEASE_MAX_DURATION_MS` | `600000` | Vida máxima de uma lease de conta |
+| `ACCOUNT_INIT_FAILURE_COOLDOWN_MS` | `300000` | Cooldown após falha de init de conta |
 
 
 
@@ -369,13 +385,16 @@ Fingerprint estável por conta (UA, locale, viewport, hardware/WebGL) é aplicad
 |---|---|---|
 | `HTTP_TIMEOUT` | `10000` | HTTP genérico |
 | `CHAT_TIMEOUT` | `120000` | Timeout de chat |
-| `NAVIGATION_TIMEOUT` | `45000` | Navegação Playwright |
+| `NAVIGATION_TIMEOUT` | `60000` | Navegação Playwright |
+| `PAGE_TIMEOUT` | `60000` | Operações de página |
 | `HEADERS_TIMEOUT` | `60000` | Captura de headers |
-| `IDLE_STREAM_TIMEOUT` | `60000` | Stream sem dados |
-| `TOTAL_REQUEST_TIMEOUT` | `300000` | Teto de geração |
-| `REASONING_MODEL_TIMEOUT` | `600000` | Modelos com reasoning |
+| `TIME_TO_FIRST_BYTE` | `60000` | Janela de primeiro byte (teto com piso de 15s no metadata) |
+| `IDLE_STREAM_TIMEOUT` | `60000` | Stream sem dados (modelos não-reasoning) |
+| `TOTAL_REQUEST_TIMEOUT` | `600000` | Teto de geração |
+| `REASONING_MODEL_TIMEOUT` | `180000` | Silêncio mid-stream para modelos reasoning (chunks fluidos resetam; zero bytes por 3min = morto) |
+| `QWEN_FIRST_CHUNK_TIMEOUT` | `180000` | Deadline do PRIMEIRO chunk (thought = 0 bytes por 3min aborta retryável) |
 
-**Nota:** timeouts dinâmicos de payload: **modelos reasoning** usam `REASONING_MODEL_TIMEOUT` (600s default) + 30s por MB; **modelos não-reasoning** usam `IDLE_STREAM_TIMEOUT` (60s default) + 30s por MB.
+**Nota:** timeouts dinâmicos de payload: **modelos reasoning** usam `REASONING_MODEL_TIMEOUT` (180s default) + 30s por MB; **modelos não-reasoning** usam `IDLE_STREAM_TIMEOUT` (60s default) + 30s por MB.
 
 ### Cache e contexto
 
@@ -395,10 +414,13 @@ O medidor de contexto é padrão e não exige nenhuma variável no `.env`. Ele n
 | Variável | Default | Descrição |
 |---|---|---|
 | `CHAT_REQUEST_LOG` | `false` | Logs detalhados de request |
+| `LOG_LEVEL` | `warn` | Nível do logger (`debug`/`info`/`warn`/`error`); `TOOLCALL_DEBUG=1` força debug |
 | `METRICS_INTERVAL` | `10000` | Intervalo de métricas |
 | `WATCHDOG_INTERVAL` | `5000` | Intervalo do watchdog |
-| `RAM_WARNING` | `80` | % heap warning (`heapUsed / heap_size_limit`) |
-| `RAM_CRITICAL` | `95` | % heap critical (`heap_size_limit`, não `heapTotal`) |
+| `RAM_WARNING` | `80` | % RSS warning (RSS / totalmem) |
+| `RAM_CRITICAL` | `95` | % RSS critical (RSS / totalmem) |
+| `RATE_LIMIT_REQUESTS` | `5000` | Header estático `x-ratelimit-limit-requests` (não impõe quota) |
+| `RATE_LIMIT_TOKENS` | `200000` | Header estático `x-ratelimit-limit-tokens` (não impõe quota) |
 
 ---
 
@@ -458,9 +480,9 @@ O solver Baxia/TMD fica ativo por padrão e cobre o slider NC visível em iframe
 
 O README descreve o uso operacional. Para detalhes técnicos da API (schemas, exemplos, headers), veja:
 
-- [`docs/openapi.yaml`](docs/openapi.yaml) — OpenAPI 3.1 spec com todas as rotas (Chat, Responses, Anthropic, Models, Upload, Health)
+- [`docs/openapi.yaml`](docs/openapi.yaml) — OpenAPI 3.1 spec com todas as rotas (Chat, Completions, Responses, Models, Upload, Health)
 
-> **Nota:** A spec OpenAPI é mantida atualizada com as mudanças recentes (aliases GPT/Claude, auth Bearer + x-api-key, health heap detalhado, endpoints Responses/Anthropic).
+> **Nota:** A spec OpenAPI é mantida atualizada com as mudanças recentes (auth Bearer + x-api-key, health heap detalhado).
 
 ---
 
@@ -471,19 +493,13 @@ O README descreve o uso operacional. Para detalhes técnicos da API (schemas, ex
 | Rota | Método | Descrição |
 |---|---|---|
 | `/v1/chat/completions` | POST | Chat completions (stream + non-stream) |
+| `/v1/completions` | POST | Completions legado (adapter sobre o chat) |
 | `/v1/chat/completions/stop` | POST | Abortar geração |
 | `/v1/models` | GET | Listar modelos |
 | `/v1/models/:id` | GET | Modelo específico |
 | `/v1/responses` | POST | OpenAI Responses API |
 | `/v1/responses/:id` | GET | Recuperar response armazenada |
 | `/v1/responses/:id` | DELETE | Deletar response |
-
-### Anthropic Compatible
-
-| Rota | Método | Descrição |
-|---|---|---|
-| `/v1/messages` | POST | Mensagens (formato Anthropic) |
-| `/v1/messages/count_tokens` | POST | Contar tokens |
 
 ### Utilidades
 
@@ -492,6 +508,8 @@ O README descreve o uso operacional. Para detalhes técnicos da API (schemas, ex
 | `/health` | GET | Health check |
 | `/metrics` | GET | Prometheus (protegido por API key se configurada) |
 | `/v1/upload` | POST | Upload multimodal |
+
+> Rotas sem o prefixo `/v1` (ex.: `/chat/completions`) são redirecionadas com 308 preservando método e corpo. Respostas incluem headers OpenAI (`openai-version`, `openai-processing-ms`, `x-ratelimit-*`).
 
 ---
 
@@ -540,25 +558,6 @@ for await (const event of stream) {
 }
 ```
 
-### Anthropic SDK
-
-```typescript
-import Anthropic from "@anthropic-ai/sdk";
-
-const client = new Anthropic({
-  baseURL: "http://localhost:3000",
-  apiKey: "sua-api-key",
-});
-
-const message = await client.messages.create({
-  model: "qwen3.7-plus",
-  max_tokens: 1024,
-  messages: [{ role: "user", content: "Hello!" }],
-});
-
-console.log(message.content[0].text);
-```
-
 ### cURL
 
 ```bash
@@ -599,33 +598,14 @@ Tools internas da conta Qwen (web_search, code interpreter, etc.) ficam desligad
 
 ---
 
-## Model mapping
+## Modelos
 
-### Anthropic (Claude → Qwen)
+O proxy envia o id do modelo ao Qwen **como está**. Apenas os sufixos de raciocínio são normalizados antes de subir (via `stripThinkingSuffix`):
 
-| Claude | Qwen |
-|---|---|
-| `claude-opus-4-*` | `qwen3.8-max` |
-| `claude-sonnet-4-*` | `qwen3.7-plus` |
-| `claude-haiku-4-*` | `qwen3.5-flash` |
-| `claude-3-5-sonnet` | `qwen3.7-plus` |
-| `claude-3-opus` | `qwen3.8-max` |
-| `claude-3-sonnet` | `qwen3.6-plus` |
-| `claude-3-haiku` | `qwen3.5-flash` |
-
-### Responses API (GPT → Qwen)
-
-| GPT | Qwen |
-|---|---|
-| `gpt-5` / `gpt-5.5` | `qwen3.8-max` |
-| `gpt-5-turbo` | `qwen3.7-plus` |
-| `gpt-5-mini` | `qwen3.5-flash` |
-| `gpt-4.1` / `gpt-4o` | `qwen3.7-plus` |
-| `gpt-4.1-mini` / `gpt-4o-mini` | `qwen3.5-flash` |
-| `gpt-4` / `gpt-4-turbo` | `qwen3.6-plus` |
-| `gpt-3.5-turbo` | `qwen3.5-flash` |
-
-> Modelos **não mapeados** (ex.: `gpt-5-mini` se não existir na tabela) passam “as-is” e o Qwen pode responder `Model not found`. Prefira modelos `qwen*` ou amplie o mapping.
+- `qwen3.7-plus` → base (Auto: o Qwen decide)
+- `qwen3.7-plus-fast` → base + thinking OFF
+- `qwen3.7-plus-thinking` → base + thinking ON
+- `qwen3.7-plus-no-thinking` → base + thinking OFF (compat legado)
 
 ---
 
@@ -664,7 +644,6 @@ QwenProxy/
 │   ├── cache/               # Memory cache + Brotli
 │   ├── core/                # Config, accounts, DB, metrics, cooldowns, model-registry
 │   ├── routes/
-│   │   ├── anthropic/       # API Anthropic
 │   │   ├── chat/            # Completions, streaming, account acquire, retry-policy
 │   │   └── responses/       # OpenAI Responses API (effort, state, streaming, adapter)
 │   ├── services/
@@ -721,17 +700,17 @@ chmod +x scripts/*.sh
 
 | Problema | Solução |
 |---|---|
-| Anti-bot / captcha | O WAF é identificado e a requisição é repetida imediatamente na mesma conta; não há solver, cooldown ou rotação específicos |
+| Anti-bot / captcha | Solver Baxia automático por padrão (`CAPTCHA_SOLVER_ENABLED=true`); se falhar, a conta entra em cooldown (`CAPTCHA_ACCOUNT_COOLDOWN_MS`) e a request roda em outra conta |
 | Quota exceeded | Mais contas ou esperar cooldown |
 | `502 Bad Gateway` / `fetch failed` | Normalmente upstream/rede; o proxy faz retry automático |
 | `invalid_input` (anexo inválido) | Retry com chat novo; settings `largeTextAsFile=false` ajudam |
 | `context_length_exceeded` | O proxy bloqueou o prompt localmente antes de qualquer retry; reduza/resuma o histórico ou ajuste `QWEN_MAX_PROMPT_BYTES` |
-| HTML/WAF no lugar do stream | O Bridge identifica o desafio e repete imediatamente na mesma conta; não há solver, cooldown ou rotação específicos. Se persistir, reduza o tamanho/frequência do payload e verifique a sessão |
-| `Model not found` com `gpt-*` | Aliases (`gpt-5-mini`→flash, `gpt-5`→max, etc.) em Chat/Responses/Anthropic; confira mapping |
-| Vários Chromes abertos / RAM alta | `SESSION_KEEP_ALIVE_ENABLED=false`, idle cleanup on, `PLAYWRIGHT_INIT_BATCH_SIZE=1`, `PLAYWRIGHT_JS_HEAP_MB` |
-| Watchdog “RAM critical” falso | Já corrigido: usa `heap_size_limit`; confira `/health.heap.usagePercent` |
+| HTML/WAF no lugar do stream | O Bridge identifica o desafio e aciona o solver; se persistir, reduza o tamanho/frequência do payload e verifique a sessão |
+| `Model not found` | Use um id do catálogo de `/v1/models` (ex.: `qwen3.8-max`) |
+| Vários Chromes abertos / RAM alta | `SESSION_KEEP_ALIVE_ENABLED=false`, idle cleanup on, `PLAYWRIGHT_INIT_BATCH_SIZE=1`, `PLAYWRIGHT_JS_HEAP_MB`, watchdog RSS fecha idle sob pressão |
+| Watchdog “RAM critical” falso | Baseado em RSS (`memory.rss.usage_percent`); confira `/health` |
 | Timeout em requests grandes | Aumente `TOTAL_REQUEST_TIMEOUT` / `REASONING_MODEL_TIMEOUT` |
-| `stream_aborted` em modelo reasoning | Idle timeout: modelos reasoning usam `REASONING_MODEL_TIMEOUT` (600s default); aumente se necessário |
+| `stream_aborted` em modelo reasoning | Idle timeout: zero bytes por `REASONING_MODEL_TIMEOUT` (180s default) fecha o stream retryável; aumente se necessário |
 | `canSkipThinking: false` | O catálogo não informa `think_skip`; a variante pública `-fast` continua disponível e usa o payload Fast do Qwen |
 | Grok CLI `missing field input_tokens_details` | Corrigido: usage sempre inclui `input_tokens_details` e `output_tokens_details` |
 | Responses `previous_response_id` not found | Store SQLite com TTL 7 dias; verifique se `store: false` não foi enviado |

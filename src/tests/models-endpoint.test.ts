@@ -106,45 +106,6 @@ test("models endpoint returns ETag and supports 304", async () => {
   }
 });
 
-test("models endpoint returns Anthropic format with Fast variants when anthropic-version is set", async () => {
-  const originalFetch = installModelsFetchMock();
-  try {
-    const res = await app.fetch(
-      new Request("http://localhost/v1/models", {
-        headers: { "anthropic-version": "2023-06-01" },
-      }),
-    );
-    assert.equal(res.status, 200);
-    const body = (await res.json()) as any;
-    assert.equal(body.has_more, false);
-    assert.ok(body.data.some((m: any) => m.id === "qwen-test-model"));
-    assert.ok(
-      body.data.some((m: any) => m.id === "qwen-test-model-fast"),
-      "Anthropic models list should include the public Fast variant",
-    );
-    assert.ok(
-      body.data.some((m: any) => m.id === "qwen-test-model-thinking"),
-      "Anthropic models list should include the public Thinking variant",
-    );
-    assert.equal(
-      body.data.find((m: any) => m.id === "qwen-test-model").type,
-      "model",
-    );
-    assert.equal(
-      body.data.find((m: any) => m.id === "qwen-test-model").max_input_tokens,
-      4096,
-    );
-    assert.equal(
-      body.data.find((m: any) => m.id === "qwen-text-only-model-fast").capabilities
-        .thinking.types.disabled.supported,
-      true,
-      "Fast must be advertised even when think_skip is absent",
-    );
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
-
 test("models endpoint returns a single model and 404 for missing model", async () => {
   const originalFetch = installModelsFetchMock();
   try {

@@ -1,5 +1,6 @@
 import { Hono, type Context } from "hono";
 import { config } from "../../core/config.ts";
+import { logger } from "../../core/logger.ts";
 import { validateResponsesRequest } from "./validation.ts";
 import {
   responsesToChatCompletions,
@@ -47,9 +48,11 @@ app.post("/v1/responses", async (c) => {
   const isStream = req.stream ?? false;
   const requestModel = req.model;
 
-  console.log(
-    `[Responses] Request | ${requestModel} | ${typeof req.input === "string" ? "string" : `${req.input.length} msg(s)`}${req.tools ? ` | ${req.tools.length} tool(s)` : ""}${isStream ? " | stream" : ""}${req.previous_response_id ? " | stateful" : ""}`,
-  );
+  if (logger.isLevelEnabled("info")) {
+    console.log(
+      `📥 [Responses] Incoming | ${requestModel} | ${typeof req.input === "string" ? "string" : `${req.input.length} msg(s)`}${req.tools ? ` | ${req.tools.length} tool(s)` : ""}${isStream ? " | stream" : ""}${req.previous_response_id ? " | stateful" : ""}`,
+    );
+  }
 
   try {
     // Retrieve history if previous_response_id is provided
@@ -257,9 +260,11 @@ app.post("/v1/responses", async (c) => {
                     ]);
                   }
 
-                  console.log(
-                    `[Responses] Response | ${responseId} | ${finalUsage.input_tokens} input / ${finalUsage.output_tokens} output`,
-                  );
+                  if (logger.isLevelEnabled("info")) {
+                    console.log(
+                      `📤 [Responses] Done | ${responseId} | ${finalUsage.input_tokens} in / ${finalUsage.output_tokens} out | stream`,
+                    );
+                  }
                 }
               } catch (finalError) {
                 console.error(
@@ -333,9 +338,11 @@ app.post("/v1/responses", async (c) => {
       }
 
       const duration = Date.now() - requestStartedAt;
-      console.log(
-        `[Responses] Response | ${responsesResponse.id} | ${responsesResponse.usage?.input_tokens || 0} input / ${responsesResponse.usage?.output_tokens || 0} output | ${duration}ms`,
-      );
+      if (logger.isLevelEnabled("info")) {
+        console.log(
+          `📤 [Responses] Done | ${responsesResponse.id} | ${responsesResponse.usage?.input_tokens || 0} in / ${responsesResponse.usage?.output_tokens || 0} out | ${duration}ms`,
+        );
+      }
 
       return c.json(responsesResponse);
     }

@@ -2943,7 +2943,7 @@ export async function createQwenStream(
   const releaseStreamLock = await acquireAccountStreamLock(streamLockKey);
   if (logger.isLevelEnabled("info")) {
     console.log(
-      `${new Date().toISOString()} ⏱️ [Qwen] Create: stream-lock | account=${accountId ?? "global"} | +${Date.now() - startedAt}ms`,
+      `⏱️ [Qwen] Create: stream-lock | account=${accountId ?? "global"} | +${Date.now() - startedAt}ms`,
     );
   }
   let streamLockReleased = false;
@@ -3022,7 +3022,7 @@ async function createQwenStreamInternal(
   const phase = (name: string) => {
     if (logger.isLevelEnabled("info")) {
       console.log(
-        `${new Date().toISOString()} ⏱️ [Qwen] Create: ${name} | account=${accountId ?? "global"} | +${Date.now() - startedAt}ms`,
+        `⏱️ [Qwen] Create: ${name} | account=${accountId ?? "global"} | +${Date.now() - startedAt}ms`,
       );
     }
   };

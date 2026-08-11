@@ -84,6 +84,15 @@ const LEVEL_RANK: Record<LogLevel, number> = {
 };
 
 /**
+ * Data/hora BR local (sem ms) usado APENAS no campo `until=` das linhas de
+ * cooldown/quota — informação de negócio, não um carimbo de log.
+ */
+export function formatCooldownUntil(date: Date): string {
+  const pad = (n: number): string => String(n).padStart(2, "0");
+  return `${pad(date.getDate())}/${pad(date.getMonth() + 1)}/${date.getFullYear()} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+/**
  * TOOLCALL_DEBUG levels:
  *   "0" or undefined = disabled
  *   "1" = full debug (all toolcall logs)
@@ -121,7 +130,6 @@ export class Logger {
   }
 
   private formatEntry(entry: LogEntry): string {
-    const timestamp = entry.timestamp.toISOString();
     const pad = (str: string): string => str.padStart(5, " ");
     const colorCode =
       entry.level === "error"
@@ -141,7 +149,7 @@ export class Logger {
     const safeMessage = redactLogMessage(entry.message);
     const safeData = entry.data ? redactLogValue(entry.data) : undefined;
 
-    let output = `${timestamp} ${coloredLevel}${contextPart} ${safeMessage}`;
+    let output = `${coloredLevel}${contextPart} ${safeMessage}`;
 
     if (safeData !== undefined) {
       output += "\n" + JSON.stringify(safeData, null, 2);

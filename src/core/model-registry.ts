@@ -1,5 +1,5 @@
 const defaultContextWindow = 1_048_576;
-const defaultMaxOutputTokens = 8192;
+const defaultMaxOutputTokens = 65536;
 const defaultMaxThinkingTokens = 16384;
 export const MAX_PAYLOAD_SIZE = 50 * 1024 * 1024;
 

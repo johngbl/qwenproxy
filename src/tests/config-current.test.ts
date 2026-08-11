@@ -23,10 +23,11 @@ test("config exposes only Playwright/thread-native current auth and context sett
   assert.equal(typeof config.playwright.initBatchSize, "number");
   assert.equal(typeof config.playwright.contextCloseTimeoutMs, "number");
   assert.equal(typeof config.playwright.idleContextTtlMs, "number");
-  // Warm-context lifecycle (round: failover latency): 3 contexts + 5min idle
-  // so account hops in a tool loop do not pay a ~12s context recreation each.
-  assert.equal(config.playwright.maxActiveContexts, 3);
-  assert.equal(config.playwright.idleContextTtlMs, 300_000);
+  // Warm-context lifecycle: 1 warm context by default (browsers close quickly
+  // after capture; concurrent streams keep their own context — the cap only
+  // evicts idle ones) + 60s idle TTL for the overflow contexts.
+  assert.equal(config.playwright.maxActiveContexts, 1);
+  assert.equal(config.playwright.idleContextTtlMs, 60_000);
   assert.equal(typeof config.playwright.jsHeapMb, "number");
   assert.equal(typeof config.playwright.lowMemoryFlags, "boolean");
   assert.equal(typeof config.oss.multipartThresholdBytes, "number");

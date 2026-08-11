@@ -4,22 +4,24 @@ import {
   mapClientModelToQwen,
   stripThinkingSuffix,
 } from "../core/model-alias.ts";
-import { mapResponsesModel } from "../routes/responses/adapter.ts";
 
-test("mapClientModelToQwen maps GPT-5 family including gpt-5-mini", () => {
-  assert.equal(mapClientModelToQwen("gpt-5"), "qwen3.7-max");
-  assert.equal(mapClientModelToQwen("gpt-5-mini"), "qwen3.5-flash");
-  assert.equal(mapClientModelToQwen("gpt-5-nano"), "qwen3.5-flash");
-  assert.equal(mapClientModelToQwen("gpt-5-pro"), "qwen3.7-max");
-  assert.equal(mapClientModelToQwen("gpt-5-codex"), "qwen3-coder-plus");
-  assert.equal(mapClientModelToQwen("gpt-4o-mini"), "qwen3.5-flash");
-});
-
-test("mapClientModelToQwen keeps qwen ids and unknown models", () => {
+test("mapClientModelToQwen keeps qwen ids (stripping reasoning suffix)", () => {
   assert.equal(mapClientModelToQwen("qwen3.7-plus"), "qwen3.7-plus");
   assert.equal(mapClientModelToQwen("qwen3.7-plus-fast"), "qwen3.7-plus");
   assert.equal(mapClientModelToQwen("qwen3.7-plus-thinking"), "qwen3.7-plus");
+  assert.equal(mapClientModelToQwen("qwen3.8-max"), "qwen3.8-max");
+});
+
+test("mapClientModelToQwen passes through non-Qwen ids (no GPT/Claude aliases)", () => {
+  // Codex/Grok custom provider sends the real Qwen id. Any other id must reach
+  // the upstream unchanged so it responds with a clear model-not-found error
+  // instead of silently mapping to an unrelated tier.
+  assert.equal(mapClientModelToQwen("gpt-5"), "gpt-5");
+  assert.equal(mapClientModelToQwen("gpt-5-mini"), "gpt-5-mini");
+  assert.equal(mapClientModelToQwen("gpt-4o-mini"), "gpt-4o-mini");
+  assert.equal(mapClientModelToQwen("claude-sonnet-4-6"), "claude-sonnet-4-6");
   assert.equal(mapClientModelToQwen("totally-custom"), "totally-custom");
+  assert.equal(mapClientModelToQwen(""), "");
 });
 
 test("stripThinkingSuffix maps base and public Fast variants", () => {
@@ -48,9 +50,4 @@ test("stripThinkingSuffix maps base and public Fast variants", () => {
     enableThinking: true,
     reasoningMode: "auto",
   });
-});
-
-test("mapResponsesModel re-exports shared alias mapping", () => {
-  assert.equal(mapResponsesModel("gpt-5-mini"), "qwen3.5-flash");
-  assert.equal(mapResponsesModel("claude-sonnet-4-6"), "qwen3.7-plus");
 });

@@ -803,7 +803,7 @@ export async function processNonStreamingResponse(
     }
     if (logger.isLevelEnabled("info")) {
       console.log(
-        `${new Date().toISOString()} ⏱️ [Chat] Done (non-stream) | req=${reqId} | ${Date.now() - streamStartedAt}ms`,
+        `⏱️ [Chat] Done (non-stream) | req=${reqId} | ${Date.now() - streamStartedAt}ms`,
       );
     }
     removeStream(completionId);
@@ -1099,7 +1099,7 @@ export async function processStreamingResponse(
           firstChunkAt = Date.now();
           if (logger.isLevelEnabled("info")) {
             console.log(
-              `${new Date().toISOString()} ⏱️ [Chat] First chunk | req=${reqId} | +${firstChunkAt - streamStartedAt}ms`,
+              `⏱️ [Chat] First chunk | req=${reqId} | +${firstChunkAt - streamStartedAt}ms`,
             );
           }
         }
@@ -2459,7 +2459,7 @@ export async function processStreamingResponse(
 
       if (logger.isLevelEnabled("info")) {
         console.log(
-          `${new Date().toISOString()} ⏱️ [Chat] Stream done | req=${reqId} | ${Date.now() - streamStartedAt}ms | firstChunk=${firstChunkAt === null ? "none" : `${firstChunkAt - streamStartedAt}ms`}`,
+          `⏱️ [Chat] Stream done | req=${reqId} | ${Date.now() - streamStartedAt}ms | firstChunk=${firstChunkAt === null ? "none" : `${firstChunkAt - streamStartedAt}ms`}`,
         );
       }
 

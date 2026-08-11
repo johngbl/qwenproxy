@@ -85,7 +85,7 @@ export async function chatCompletions(c: Context) {
     const reqId = crypto.randomUUID().substring(0, 8);
     const reqStartedAt = Date.now();
     console.log(
-      `${new Date().toISOString()} 📥 [Chat] Incoming | req=${reqId} | ${body.model} | ${messages.length} msg(s) | stream=${isStream}${declaredTools.length ? ` | ${declaredTools.length} tool(s)` : ""}${allFiles.length ? ` | ${allFiles.length} file(s)` : ""}`,
+      `📥 [Chat] Incoming | req=${reqId} | ${body.model} | ${messages.length} msg(s) | stream=${isStream}${declaredTools.length ? ` | ${declaredTools.length} tool(s)` : ""}${allFiles.length ? ` | ${allFiles.length} file(s)` : ""}`,
     );
 
     // Intercept image/video generation models: they bypass the text chat flow
@@ -193,7 +193,7 @@ export async function chatCompletions(c: Context) {
         !!chatId && !superseded && hasUnemittedSessionStream(ctx.sessionId);
       if (parallelEscape && logger.isLevelEnabled("info")) {
         console.log(
-          `${new Date().toISOString()} 🔀 [Chat] Parallel escape | req=${reqId} | session=${ctx.sessionId} | chat=${chatId?.substring(0, 12)} | own chat`,
+          `🔀 [Chat] Parallel escape | req=${reqId} | session=${ctx.sessionId} | chat=${chatId?.substring(0, 12)} | own chat`,
         );
       }
       if (chatId && !parallelEscape) {
@@ -258,7 +258,7 @@ export async function chatCompletions(c: Context) {
     // so the 📤 line shows what was actually sent upstream.
     const replayed = streamResult.replayedFullContext === true;
     console.log(
-      `${new Date().toISOString()} 📤 [Chat] Request | req=${reqId} | ${streamResult.activeAccountLabel} | ${body.model} | ${replayed ? parsed.messageCount : msgCount} msg(s) | ${replayed ? fullPromptForRequest.length : finalPrompt.length} chars${replayed ? " | full-replay" : ""} | chat=${streamResult.uiSessionId.substring(0, 12)}${declaredTools.length ? ` | ${declaredTools.length} tool(s)` : ""}${files.length ? ` | ${files.length} file(s)` : ""} | +${Date.now() - reqStartedAt}ms`,
+      `📤 [Chat] Request | req=${reqId} | ${streamResult.activeAccountLabel} | ${body.model} | ${replayed ? parsed.messageCount : msgCount} msg(s) | ${replayed ? fullPromptForRequest.length : finalPrompt.length} chars${replayed ? " | full-replay" : ""} | chat=${streamResult.uiSessionId.substring(0, 12)}${declaredTools.length ? ` | ${declaredTools.length} tool(s)` : ""}${files.length ? ` | ${files.length} file(s)` : ""} | +${Date.now() - reqStartedAt}ms`,
     );
 
     const onAssistantComplete: ((event: AssistantCompleteEvent) => Promise<void> | void) | undefined = undefined;
@@ -445,7 +445,7 @@ export async function chatCompletions(c: Context) {
                   hasUnemittedSessionStream(ctx.sessionId));
               if (retryParallelEscape && logger.isLevelEnabled("info")) {
                 console.log(
-                  `${new Date().toISOString()} 🔀 [Chat] Parallel escape (retry) | req=${reqId} | session=${ctx.sessionId} | chat=${chatId?.substring(0, 12)} | own chat`,
+                  `🔀 [Chat] Parallel escape (retry) | req=${reqId} | session=${ctx.sessionId} | chat=${chatId?.substring(0, 12)} | own chat`,
                 );
               }
               if (chatId && !retryParallelEscape) {
@@ -503,7 +503,7 @@ export async function chatCompletions(c: Context) {
             }
 
             console.log(
-              `${new Date().toISOString()} 🔄 [Chat] Request routed | ${newStreamResult.activeAccountLabel} | ${body.model} | ${retryMessageCount} msg(s) | ${retryFinalPrompt.length} chars | chat=${newStreamResult.uiSessionId.substring(0, 12)}${declaredTools.length ? ` | ${declaredTools.length} tool(s)` : ""}${files.length ? ` | ${files.length} file(s)` : ""} | retry | +${Date.now() - reqStartedAt}ms`,
+              `🔄 [Chat] Request routed | ${newStreamResult.activeAccountLabel} | ${body.model} | ${retryMessageCount} msg(s) | ${retryFinalPrompt.length} chars | chat=${newStreamResult.uiSessionId.substring(0, 12)}${declaredTools.length ? ` | ${declaredTools.length} tool(s)` : ""}${files.length ? ` | ${files.length} file(s)` : ""} | retry | +${Date.now() - reqStartedAt}ms`,
             );
 
             currentStreamResult = newStreamResult;

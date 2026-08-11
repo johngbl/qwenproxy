@@ -22,7 +22,6 @@ delete process.env.ENCRYPTION_KEY;
 process.chdir(tmpDir);
 
 const {
-  formatDateTimeBR,
   markAccountRateLimited,
   clearAccountCooldown,
   getAccountCooldownInfo,
@@ -31,6 +30,7 @@ const {
   getNextAvailableAccount,
   getCooldownStatus,
 } = await import("../core/account-manager.ts");
+const { formatCooldownUntil } = await import("../core/logger.ts");
 const { closeDatabase } = await import("../core/database.ts");
 
 after(() => {
@@ -38,9 +38,10 @@ after(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
-test("account-manager: formatDateTimeBR formats DD/MM/YYYY HH:mm:ss", () => {
-  const stamp = new Date(2026, 0, 5, 7, 8, 9).getTime();
-  assert.strictEqual(formatDateTimeBR(stamp), "05/01/2026 07:08:09");
+test("account-manager: cooldown until uses BR format without ms", () => {
+  // The "Cooldown set" line shows a plain BR timestamp (no ms, no log stamp).
+  const stamp = new Date(2026, 0, 5, 7, 8, 9, 123);
+  assert.strictEqual(formatCooldownUntil(stamp), "05/01/2026 07:08:09");
 });
 
 test("account-manager: empty database yields no next account", () => {

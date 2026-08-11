@@ -28,16 +28,17 @@ const envSchema = z
       .default("chromium"),
     PLAYWRIGHT_INIT_BATCH_SIZE: z.string().default("1"),
     PLAYWRIGHT_CONTEXT_CLOSE_TIMEOUT_MS: z.string().default("10000"),
-    PLAYWRIGHT_IDLE_CONTEXT_TTL_MS: z.string().default("300000"),
+    PLAYWRIGHT_IDLE_CONTEXT_TTL_MS: z.string().default("60000"),
     PLAYWRIGHT_JS_HEAP_MB: z.string().default("256"),
     PLAYWRIGHT_LOW_MEMORY_FLAGS: z.string().default("true"),
-    // Keep 3 contexts warm by default (was 1): with maxActive=1 the warmup and
-    // every failover hop evict the previous context, and the next use of that
-    // account pays a ~12s context recreation (observed: ~74s/session on a 6-account
-    // tool loop). 3 contexts cover the working set (owner + 1-2 failover hops); the
-    // RSS-based watchdog still closes idle contexts under RAM pressure, and the
-    // SessionKeeper idle sweep runs on PLAYWRIGHT_IDLE_CONTEXT_TTL_MS.
-    PLAYWRIGHT_MAX_ACTIVE_CONTEXTS: z.string().default("3"),
+    // Keep only 1 warm context by default (user preference over failover speed):
+    // after warmup exactly one browser stays open for immediate use; any extra
+    // context (simultaneous use / failover hop) is closed once idle. The cap
+    // only evicts IDLE contexts — busy mutexes and active streams are never
+    // touched, so concurrent accounts each keep their own context while serving.
+    // Tradeoff: an account whose context was evicted pays a context recreation
+    // on its next use (set higher, e.g. 3, to keep failover hops warm).
+    PLAYWRIGHT_MAX_ACTIVE_CONTEXTS: z.string().default("1"),
     PLAYWRIGHT_PREPARE_ALL_ON_STARTUP: z.string().default("true"),
     CAPTCHA_SOLVER_ENABLED: z.string().default("true"),
     CAPTCHA_SOLVER_MAX_ATTEMPTS: z.string().default("3"),

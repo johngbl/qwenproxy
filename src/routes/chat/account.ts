@@ -1,7 +1,5 @@
 import { v4 as uuidv4 } from "uuid";
 import {
-
-	formatDateTimeBR,
 	getAccountCooldownInfo,
 	getNextAccount,
 	getNextAvailableAccount,
@@ -16,6 +14,7 @@ import {
   truncatePromptToIntelligentLimit,
 } from "../../core/prompt-limits.ts";
 import {
+	formatCooldownUntil,
 	isToolcallDebugEnabled,
 	logger,
 	maskEmail,
@@ -921,7 +920,7 @@ async function tryCreateStreamWithRetry(
 			}
 			if (logger.isLevelEnabled("info")) {
 				console.log(
-					`${new Date().toISOString()} ⏱️ [Chat] Acquire: lease | account=${currentAccountEmail} | +${Date.now() - acquireStartedAt}ms`,
+					`⏱️ [Chat] Acquire: lease | account=${currentAccountEmail} | +${Date.now() - acquireStartedAt}ms`,
 				);
 			}
 			const hasRequestPersonalization =
@@ -1035,7 +1034,7 @@ async function tryCreateStreamWithRetry(
 					}
 					if (logger.isLevelEnabled("info")) {
 						console.log(
-							`${new Date().toISOString()} ⏱️ [Chat] Acquire: sync | account=${currentAccountEmail} | +${Date.now() - acquireStartedAt}ms`,
+							`⏱️ [Chat] Acquire: sync | account=${currentAccountEmail} | +${Date.now() - acquireStartedAt}ms`,
 						);
 					}
 
@@ -1094,7 +1093,7 @@ async function tryCreateStreamWithRetry(
 
 				if (logger.isLevelEnabled("info")) {
 					console.log(
-						`${new Date().toISOString()} ⏱️ [Chat] Acquire done | completion=${params.completionId.substring(0, 8)} | account=${currentAccountEmail} | +${Date.now() - acquireStartedAt}ms`,
+						`⏱️ [Chat] Acquire done | completion=${params.completionId.substring(0, 8)} | account=${currentAccountEmail} | +${Date.now() - acquireStartedAt}ms`,
 					);
 				}
 
@@ -1312,7 +1311,7 @@ async function tryCreateStreamWithRetry(
 					? new Date(Date.now() + policy.accountCooldownMs)
 					: null;
 				const untilStr = cooldownUntil
-					? ` | until=${formatDateTimeBR(cooldownUntil.getTime())}`
+					? ` | until=${formatCooldownUntil(cooldownUntil)}`
 					: "";
 
 				try {

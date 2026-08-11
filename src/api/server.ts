@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import net from "node:net";
 import { v4 as uuidv4 } from "uuid";
 import { Hono, type Context } from "hono";
 import { serve } from "@hono/node-server";
@@ -13,7 +14,6 @@ import { chatCompletions, chatCompletionsStop } from "../routes/chat.js";
 import { uploadFile } from "../routes/upload.js";
 import { imagesGenerations } from "../routes/images.js";
 import { videosGenerations, videoTaskStatus } from "../routes/videos.js";
-import { anthropicApp } from "../routes/anthropic/index.js";
 import { responsesApp } from "../routes/responses/index.js";
 import { completionsLegacy } from "../routes/completions.js";
 import { sendOpenAIError } from "./error-helpers.js";
@@ -34,6 +34,36 @@ const app = new Hono();
 function formatAccountId(accountId: string): string {
   const normalized = accountId.trim();
   return normalized.length > 12 ? `${normalized.slice(0, 12)}…` : normalized;
+}
+
+function buildPortInUseMessage(port: number, host: string): string {
+  return (
+    `❌ [Server] Port ${port} is already in use (${host}:${port}).` +
+    `\n   Another QwenBridge instance (or another program) is listening on this port.` +
+    `\n   Stop the other instance first, or start on another port: PORT=3001 npm start`
+  );
+}
+
+/**
+ * Pre-flight port check run BEFORE the slow account warmup so a conflicting
+ * listener fails in <1s with an explanatory message instead of crashing the
+ * process minutes later after the warmup completes.
+ */
+async function assertPortAvailable(): Promise<void> {
+  const { port, host } = config.server;
+  await new Promise<void>((resolve, reject) => {
+    const probe = net.createServer();
+    probe.once("error", (err: Error) => {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "EADDRINUSE") {
+        reject(new Error(buildPortInUseMessage(port, host)));
+      } else {
+        reject(err);
+      }
+    });
+    probe.once("listening", () => probe.close(() => resolve()));
+    probe.listen(port, host);
+  });
 }
 
 export function setCacheForTesting(nextCache: MemoryCache | undefined): void {
@@ -123,7 +153,7 @@ function constantTimeStringEqual(provided: string, expected: string): boolean {
 }
 
 /**
- * Accept OpenAI-style Bearer and Anthropic-style x-api-key.
+ * Accept OpenAI-style Bearer and x-api-key.
  * Either may authenticate when API_KEY is configured.
  */
 function extractProvidedApiKeys(c: Context): string[] {
@@ -172,9 +202,6 @@ app.post("/v1/upload", uploadFile);
 app.post("/v1/images/generations", imagesGenerations);
 app.post("/v1/videos/generations", videosGenerations);
 app.get("/v1/tasks/status/:taskId", videoTaskStatus);
-
-// Anthropic API compatible routes
-app.route("", anthropicApp);
 
 // OpenAI Responses API compatible routes
 app.route("", responsesApp);
@@ -497,7 +524,9 @@ async function cleanupServerResources(): Promise<void> {
 }
 
 async function handleSignal(signal: string): Promise<never> {
-  console.log(`🛑 [Server] Shutdown | ${signal}`);
+  console.log(
+    `🛑 [Server] Shutdown | ${signal}`,
+  );
   await stopServer();
   process.exit(0);
 }
@@ -561,6 +590,11 @@ export async function startServer(options?: {
       );
     }
 
+    // Fail fast on a taken port (the most common startup crash) BEFORE the
+    // slow account warmup — the previous behavior bound only after warmup and
+    // then crashed with a raw Node stack trace minutes into startup.
+    await assertPortAvailable();
+
     // Restore persisted cooldowns (e.g. daily quota windows) from the database
     // instead of wiping them on restart — retrying a still-rate-limited account
     // wastes a request and immediately re-trips the same limit. Expired
@@ -599,7 +633,9 @@ export async function startServer(options?: {
           warmQwenChatPool,
         );
         if (ok) {
-          console.log(`✅ [Server] Account ready (${i + 1}/${totalAccounts}): ${maskEmail(warmOrder[i].email)}`);
+          console.log(
+            `✅ [Server] Account ready (${i + 1}/${totalAccounts}): ${maskEmail(warmOrder[i].email)}`,
+          );
           readyAccountId = warmOrder[i].id;
           break;
         }
@@ -704,11 +740,28 @@ export async function startServer(options?: {
       await import("../core/account-concurrency.ts");
     startLeaseSweepTimer();
 
-    server = serve({
+    const serverInstance = serve({
       fetch: app.fetch,
       port: config.server.port,
       hostname: config.server.host,
     });
+    // Node's http.Server emits 'error' (EADDRINUSE and friends) asynchronously,
+    // AFTER serve() returns — with no listener the process crashes with a raw
+    // stack trace. The pre-flight check above catches the common case before
+    // warmup; this listener is the safety net for the rare race where the port
+    // is taken between the check and the bind.
+    serverInstance.on("error", (err: Error) => {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "EADDRINUSE") {
+        console.error(
+          buildPortInUseMessage(config.server.port, config.server.host),
+        );
+      } else {
+        console.error(`❌ [Server] Listen failed: ${err.message}`);
+      }
+      process.exit(1);
+    });
+    server = serverInstance;
 
     if (options?.installSignalHandlers !== false) {
       installSignalHandlers();

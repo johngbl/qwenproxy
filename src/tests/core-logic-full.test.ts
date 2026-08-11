@@ -217,7 +217,7 @@ test("model-registry: getModelMetadata returns registered metadata or undefined"
   assert.strictEqual(meta.id, "reg-m1"); // base id
   assert.strictEqual(meta.contextWindow, 32_000);
   assert.strictEqual(meta.raw.id, "reg-m1");
-  assert.strictEqual(meta.capabilities.maxOutputTokens, 8192); // defaults
+  assert.strictEqual(meta.capabilities.maxOutputTokens, 65536); // defaults
 
   assert.strictEqual(
     registry.getModelMetadata("reg-never-registered", "reg-acc-A"),
@@ -315,8 +315,8 @@ test("prompt-limits: getPromptLimitStats computes bytes/tokens/usable budget", (
   assert.strictEqual(stats.bytes, 5);
   assert.ok(stats.estimatedTokens > 0);
   assert.strictEqual(stats.modelContextWindow, 1_048_576);
-  // Default reservation: max(4096, 8192, 16384) = 16384.
-  assert.strictEqual(stats.usableInputTokens, 1_048_576 - 16_384);
+  // Default reservation: max(4096, 65536, 16384) = 65536.
+  assert.strictEqual(stats.usableInputTokens, 1_048_576 - 65_536);
 });
 
 test("prompt-limits: assertPromptWithinLimits rejects oversized byte input", () => {
@@ -371,6 +371,11 @@ test("prompt-limits: truncation is a no-op within limits", () => {
 test("prompt-limits: char-based truncation when no messages are provided", () => {
   // usable = 20000 - 16384 = 3616 tokens → maxChars = 14464.
   registry.setModelContextWindow("pl-trunc", 20_000, "pl-trunc-acc");
+  registry.setModelCapabilities(
+    "pl-trunc",
+    { maxOutputTokens: 16_384, maxThinkingTokens: 0 },
+    "pl-trunc-acc",
+  );
   const prompt = "a".repeat(20_000); // ≈ 5000 tokens > 3616
 
   const result = truncatePromptToIntelligentLimit(
@@ -390,6 +395,11 @@ test("prompt-limits: char-based truncation when no messages are provided", () =>
 test("prompt-limits: message truncation keeps recent messages when they fit", () => {
   // usable = 20000 - 16384 = 3616 tokens.
   registry.setModelContextWindow("pl-trunc2", 20_000, "pl-trunc-acc2");
+  registry.setModelCapabilities(
+    "pl-trunc2",
+    { maxOutputTokens: 16_384, maxThinkingTokens: 0 },
+    "pl-trunc-acc2",
+  );
   const messages: Array<{ role: string; content: string | null }> = Array.from({ length: 24 }, (_, i) => ({
     role: i % 2 === 0 ? "user" : "assistant",
     content: "a".repeat(1000), // ≈ 250 tokens each
@@ -413,6 +423,11 @@ test("prompt-limits: message truncation keeps recent messages when they fit", ()
 test("prompt-limits: message truncation falls back to hard char limit", () => {
   // usable = 17000 - 16384 = 616 tokens — even one message overflows.
   registry.setModelContextWindow("pl-trunc3", 17_000, "pl-trunc-acc3");
+  registry.setModelCapabilities(
+    "pl-trunc3",
+    { maxOutputTokens: 16_384, maxThinkingTokens: 0 },
+    "pl-trunc-acc3",
+  );
   const messages = Array.from({ length: 24 }, () => ({
     role: "user",
     content: "a".repeat(5000), // ≈ 1250 tokens each

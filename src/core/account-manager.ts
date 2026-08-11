@@ -4,6 +4,7 @@ import {
   updateAccountCooldown,
 } from "./accounts.ts";
 import { getAccountsByPriority } from "./account-priority.ts";
+import { formatCooldownUntil } from "./logger.ts";
 
 let currentIndex = 0;
 
@@ -15,17 +16,6 @@ interface CooldownEntry {
 const cooldowns = new Map<string, CooldownEntry>();
 
 const DEFAULT_COOLDOWN_MS = 24 * 60 * 60 * 1000; // 24 hours
-
-export function formatDateTimeBR(timestamp: number): string {
-	const date = new Date(timestamp);
-	const day = String(date.getDate()).padStart(2, "0");
-	const month = String(date.getMonth() + 1).padStart(2, "0");
-	const year = date.getFullYear();
-	const hours = String(date.getHours()).padStart(2, "0");
-	const minutes = String(date.getMinutes()).padStart(2, "0");
-	const seconds = String(date.getSeconds()).padStart(2, "0");
-	return `${day}/${month}/${year} ${hours}:${minutes}:${seconds}`;
-}
 
 export function markAccountRateLimited(
   accountId: string,
@@ -56,7 +46,7 @@ export function markAccountRateLimited(
 
   if (!options.silent) {
     console.log(
-      `⏱️  [AccountManager] Cooldown set | ${accountId} | reason=${cooldownReason} | ${Math.round(duration / 1000)}s | until=${formatDateTimeBR(until)}`,
+      `⏱️  [AccountManager] Cooldown set | ${accountId} | reason=${cooldownReason} | ${Math.round(duration / 1000)}s | until=${formatCooldownUntil(new Date(until))}`,
     );
   }
 }

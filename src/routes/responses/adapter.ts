@@ -83,16 +83,6 @@ export function generateCallId(): string {
   return `call_${crypto.randomBytes(12).toString("hex")}`;
 }
 
-// ============ Model mapping ============
-
-/**
- * Map GPT/OpenAI model names to Qwen equivalents.
- * Qwen models pass through as-is.
- */
-export function mapResponsesModel(model: string): string {
-  return mapClientModelToQwen(model);
-}
-
 // ============ Request conversion ============
 
 /**
@@ -260,7 +250,7 @@ export function responsesToChatCompletions(
   }
 
   const chatReq: ChatRequest = {
-    model: mapResponsesModel(req.model),
+    model: mapClientModelToQwen(req.model),
     messages,
     stream: req.stream ?? false,
   };

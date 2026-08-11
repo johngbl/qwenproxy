@@ -154,9 +154,7 @@ paths:
       operationId: listModels
       summary: Lists the currently available models
       description: |
-        OpenAI list format by default. When `anthropic-version` is present,
-        returns Anthropic-compatible model objects (same underlying catalog,
-        including the synthetic `-fast` variant for every model).
+        OpenAI list format with the synthetic `-fast` variant for every model.
       tags:
         - Models
       parameters:
@@ -164,12 +162,7 @@ paths:
           in: header
           schema:
             type: string
-          description: ETag value for conditional GET (OpenAI format only). Returns 304 if unchanged.
-        - name: anthropic-version
-          in: header
-          schema:
-            type: string
-          description: When set, response uses Anthropic model list shape.
+          description: ETag value for conditional GET. Returns 304 if unchanged.
       responses:
         "200":
           description: List of models
@@ -204,11 +197,6 @@ paths:
           schema:
             type: string
           description: The ID of the model to retrieve
-        - name: anthropic-version
-          in: header
-          schema:
-            type: string
-          description: When set, response uses Anthropic model object shape.
       responses:
         "200":
           description: The model object
@@ -258,52 +246,6 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
 
-  /v1/messages:
-    post:
-      operationId: createAnthropicMessage
-      summary: Anthropic Messages API compatible endpoint
-      tags:
-        - Anthropic
-      parameters:
-        - name: anthropic-version
-          in: header
-          required: true
-          schema:
-            type: string
-          description: Anthropic API version header (required)
-        - name: x-api-key
-          in: header
-          schema:
-            type: string
-          description: Anthropic-style API key (alternative to Bearer)
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [model, max_tokens, messages]
-              properties:
-                model:
-                  type: string
-                  example: claude-sonnet-4-6
-                max_tokens:
-                  type: integer
-                  example: 1024
-                messages:
-                  type: array
-                  items:
-                    type: object
-                stream:
-                  type: boolean
-      responses:
-        "200":
-          description: Anthropic message object or SSE stream
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-
   /health:
     get:
       operationId: healthCheck
@@ -348,7 +290,7 @@ components:
       type: apiKey
       in: header
       name: x-api-key
-      description: "Anthropic-style API key header (same secret as `API_KEY`)"
+      description: "Bearer-style API key header (same secret as `API_KEY`)"
 
   schemas:
     CreateChatCompletionRequest:
@@ -910,10 +852,8 @@ tags:
     description: Chat completion operations (OpenAI-compatible)
   - name: Responses
     description: OpenAI Responses API compatibility layer
-  - name: Anthropic
-    description: Anthropic Messages API compatibility layer
   - name: Models
-    description: Model listing and retrieval (OpenAI or Anthropic shape)
+    description: Model listing and retrieval (OpenAI shape)
   - name: Files
     description: Multimodal file upload (OSS putStream / multipart)
   - name: Operations

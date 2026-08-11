@@ -6,11 +6,7 @@ import { getAccountCooldownInfo } from "../core/account-manager.ts";
 import { getAccountsByPriority } from "../core/account-priority.ts";
 import { NotFoundError } from "../core/errors.js";
 import { sendOpenAIError } from "./error-helpers.js";
-import {
-  getModelCapabilities,
-  getModelContextWindow,
-  syncModelMetadata,
-} from "../core/model-registry.ts";
+import { syncModelMetadata } from "../core/model-registry.ts";
 import { listMediaGenerationModels } from "../services/media-generation.ts";
 import { isPlaywrightInitialized } from "../services/playwright.ts";
 
@@ -117,55 +113,6 @@ export function expandModelVariants(
   return [...variants.values()];
 }
 
-function toAnthropicModel(model: PublicModel, accountId?: string) {
-  const capabilities = getModelCapabilities(model.id, accountId);
-  const isFastVariant = model.id.endsWith("-fast");
-  const contextWindow =
-    model.context_window ?? getModelContextWindow(model.id, accountId);
-
-  return {
-    id: model.id,
-    display_name:
-      typeof model.name === "string" && model.name ? model.name : model.id,
-    created_at: new Date(
-      typeof model.created === "number" ? model.created * 1000 : Date.now(),
-    ).toISOString(),
-    max_input_tokens: contextWindow,
-    max_tokens: capabilities.maxOutputTokens,
-    type: "model" as const,
-    capabilities: {
-      // Qwen does not expose a batch endpoint in the web catalog.
-      batch: { supported: false },
-      citations: { supported: capabilities.supportsCitations },
-      code_execution: { supported: capabilities.supportsCodeExecution },
-      image_input: { supported: capabilities.supportsVision },
-      pdf_input: { supported: capabilities.supportsDocument },
-      structured_outputs: {
-        supported: capabilities.supportsStructuredOutputs,
-      },
-      thinking: {
-        supported: capabilities.supportsThinking,
-        types: {
-          enabled: { supported: capabilities.supportsThinking },
-          disabled: {
-            // Every public `-fast` alias is intentionally backed by the
-            // upstream Fast payload, even if older metadata omitted think_skip.
-            supported: isFastVariant || capabilities.canSkipThinking,
-          },
-        },
-      },
-      audio_input: { supported: capabilities.supportsAudio },
-      video_input: { supported: capabilities.supportsVideo },
-    },
-  };
-}
-
-function wantsAnthropicModelsFormat(
-  anthropicVersion: string | undefined | null,
-): boolean {
-  return !!anthropicVersion;
-}
-
 async function loadModelsWithVariants(): Promise<{
   models: PublicModel[];
   accountId?: string;
@@ -224,15 +171,7 @@ function findModel(
 
 app.get("/v1/models", async (c) => {
   try {
-    const { models: allModels, accountId } = await loadModelsWithVariants();
-    const anthropic = wantsAnthropicModelsFormat(c.req.header("anthropic-version"));
-
-    if (anthropic) {
-      return c.json({
-        data: allModels.map((model) => toAnthropicModel(model, accountId)),
-        has_more: false,
-      });
-    }
+    const { models: allModels } = await loadModelsWithVariants();
 
     const etag = `"${createHash("md5").update(JSON.stringify(allModels)).digest("hex")}"`;
 
@@ -256,31 +195,11 @@ app.get("/v1/models", async (c) => {
 app.get("/v1/models/:model", async (c) => {
   try {
     const modelId = c.req.param("model");
-    const { models: allModels, accountId } = await loadModelsWithVariants();
+    const { models: allModels } = await loadModelsWithVariants();
     const model = findModel(allModels, modelId);
 
-    const anthropic = wantsAnthropicModelsFormat(
-      c.req.header("anthropic-version"),
-    );
-
     if (!model) {
-      if (anthropic) {
-        return c.json(
-          {
-            type: "error",
-            error: {
-              type: "not_found_error",
-              message: `Model '${modelId}' not found`,
-            },
-          },
-          404,
-        );
-      }
       return sendOpenAIError(c, new NotFoundError("Model not found"));
-    }
-
-    if (anthropic) {
-      return c.json(toAnthropicModel(model, accountId));
     }
 
     return c.json(model);

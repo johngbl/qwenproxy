@@ -71,7 +71,7 @@ export async function parseRequestBody(c: Context): Promise<ParsedRequest> {
   const prompt = promptParts.join("");
   const currentPrompt = currentPromptParts.join("");
 
-  // Thinking suffixes + GPT/Claude aliases → Qwen ids (shared with Responses/Anthropic)
+  // Thinking suffixes → base model + reasoning mode
   const { baseModel, enableThinking, reasoningMode } = stripThinkingSuffix(body.model);
   const modelId = mapClientModelToQwen(baseModel);
 

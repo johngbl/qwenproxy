@@ -664,7 +664,7 @@ test("API Key protection", async () => {
         "Should return 200 OK with correct API Key",
       );
 
-      // 4. Anthropic-style x-api-key also authenticates
+      // 4. x-api-key (bearer-style) also authenticates
       const req4 = new Request("http://localhost/v1/models", {
         headers: { "x-api-key": "test-api-key" },
       });

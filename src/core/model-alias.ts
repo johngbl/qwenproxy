@@ -1,78 +1,19 @@
 /**
- * Client model aliases (OpenAI GPT / Claude / o-series) → Qwen IDs.
- * Used by Chat Completions, Responses API and Anthropic adapter paths.
- */
-
-const CLIENT_MODEL_ALIASES: Record<string, string> = {
-  // GPT-5.x
-  "gpt-5.5": "qwen3.7-max",
-  "gpt-5.5-turbo": "qwen3.7-max",
-  "gpt-5": "qwen3.7-max",
-  "gpt-5-pro": "qwen3.7-max",
-  "gpt-5-turbo": "qwen3.7-plus",
-  "gpt-5-mini": "qwen3.5-flash",
-  "gpt-5-nano": "qwen3.5-flash",
-  "gpt-5-codex": "qwen3-coder-plus",
-  // GPT-4.1
-  "gpt-4.1": "qwen3.7-plus",
-  "gpt-4.1-mini": "qwen3.5-flash",
-  "gpt-4.1-nano": "qwen3.5-flash",
-  // GPT-4o
-  "gpt-4o": "qwen3.7-plus",
-  "gpt-4o-mini": "qwen3.5-flash",
-  "gpt-4o-2024-11-20": "qwen3.7-plus",
-  "gpt-4o-2024-08-06": "qwen3.7-plus",
-  // GPT-4
-  "gpt-4": "qwen3.6-plus",
-  "gpt-4-turbo": "qwen3.6-plus",
-  "gpt-4-turbo-preview": "qwen3.6-plus",
-  // GPT-3.5
-  "gpt-3.5-turbo": "qwen3.5-flash",
-  // o-series
-  o3: "qwen3.7-max",
-  "o3-mini": "qwen3.7-plus",
-  "o4-mini": "qwen3.7-plus",
-  o1: "qwen3.7-max",
-  "o1-mini": "qwen3.7-plus",
-  // Claude (also used by Anthropic adapter)
-  "claude-opus-4-8": "qwen3.7-max",
-  "claude-opus-4-7": "qwen3.7-max",
-  "claude-opus-4-6": "qwen3.7-max",
-  "claude-opus-4-5": "qwen3.7-max",
-  "claude-sonnet-4-6": "qwen3.7-plus",
-  "claude-sonnet-4-5": "qwen3.7-plus",
-  "claude-haiku-4-5": "qwen3.5-flash",
-  "claude-opus-4-8-20250918": "qwen3.7-max",
-  "claude-sonnet-4-6-20250514": "qwen3.7-plus",
-  "claude-haiku-4-5-20251001": "qwen3.5-flash",
-  "claude-3-5-sonnet-20241022": "qwen3.7-plus",
-  "claude-3-5-sonnet": "qwen3.7-plus",
-  "claude-3-5-haiku-20241022": "qwen3.5-flash",
-  "claude-3-5-haiku": "qwen3.5-flash",
-  "claude-3-opus-20240229": "qwen3.7-max",
-  "claude-3-opus": "qwen3.7-max",
-  "claude-3-sonnet-20240229": "qwen3.6-plus",
-  "claude-3-sonnet": "qwen3.6-plus",
-  "claude-3-haiku-20240307": "qwen3.5-flash",
-  "claude-3-haiku": "qwen3.5-flash",
-};
-
-/**
- * Reasoning mode for Qwen models.
- * - "auto": Qwen decides whether to use thinking (default)
- * - "thinking": Force thinking mode ON
- * - "fast": Force thinking mode OFF
+ * Modo de raciocínio para modelos Qwen:
+ * - "auto": Qwen decide se usa thinking (padrão)
+ * - "thinking": força thinking ON
+ * - "fast": força thinking OFF
  */
 export type ReasoningMode = "auto" | "thinking" | "fast";
 
 /**
- * Resolve the public Qwen reasoning variants.
+ * Resolução de variantes de raciocínio dos modelos Qwen públicos.
  *
- * The public contract is deliberately small: the base model means Auto
- * (Qwen decides), `-fast` means Fast (no thinking), and `-thinking` means
- * Thinking (forced). The old suffixes are accepted only as an internal
- * compatibility shim so existing clients do not send those IDs upstream;
- * they are never published by `/v1/models`.
+ * O contrato público é deliberadamente pequeno: o modelo base significa Auto
+ * (o Qwen decide), `-fast` significa Fast (sem thinking) e `-thinking`
+ * significa Thinking (forçado). Os sufixos antigos são aceitos apenas como
+ * shim de compatibilidade interna para clientes existentes não enviarem
+ * esses IDs ao upstream; nunca são publicados por `/v1/models`.
  */
 export function stripThinkingSuffix(model: string): {
   baseModel: string;
@@ -110,22 +51,14 @@ export function stripThinkingSuffix(model: string): {
 }
 
 /**
- * Map a client-facing model id to the Qwen model used upstream.
- * Qwen ids pass through; known GPT/Claude aliases are rewritten.
- * Unknown models pass through (upstream/not-found handles the rest).
+ * Mapeia o id de modelo para o Qwen upstream.
+ * Ids `qwen*` passam direto (após remover o sufixo de raciocínio); ids de
+ * outros provedores (gpt-*, grok-*, etc.) também passam “as-is” — o Codex/Custom
+ * provider envia o id Qwen correto, e qualquer id desconhecido deve chegar ao
+ * upstream para que este responda um erro claro de modelo, em vez de ser
+ * silenciosamente roteado para um tier qualquer.
  */
 export function mapClientModelToQwen(model: string): string {
   if (!model) return model;
-
-  const { baseModel } = stripThinkingSuffix(model.trim());
-  if (baseModel.startsWith("qwen")) {
-    return baseModel;
-  }
-
-  return CLIENT_MODEL_ALIASES[baseModel] || baseModel;
-}
-
-/** @deprecated Prefer mapClientModelToQwen — kept for Responses adapter callers */
-export function mapResponsesModel(model: string): string {
-  return mapClientModelToQwen(model);
+  return stripThinkingSuffix(model.trim()).baseModel;
 }
