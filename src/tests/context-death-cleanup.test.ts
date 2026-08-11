@@ -18,9 +18,13 @@ const {
  */
 function makeFakeContextAndPage() {
   const handlers: Record<string, Array<() => void>> = {};
+  const register = (key: string, cb: () => void): void => {
+    if (!handlers[key]) handlers[key] = [];
+    handlers[key].push(cb);
+  };
   const context: any = {
     on: (event: string, cb: () => void) => {
-      (handlers[`context:${event}`] ||= []).push(cb);
+      register(`context:${event}`, cb);
     },
     browser: () => ({ process: () => null }),
     pages: () => [],
@@ -28,7 +32,7 @@ function makeFakeContextAndPage() {
   };
   const page: any = {
     on: (event: string, cb: () => void) => {
-      (handlers[`page:${event}`] ||= []).push(cb);
+      register(`page:${event}`, cb);
     },
     isClosed: () => false,
     url: () => "https://chat.qwen.ai/",
