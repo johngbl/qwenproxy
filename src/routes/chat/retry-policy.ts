@@ -206,7 +206,10 @@ export function shouldRetryChatInProgressOnSameAccount(
   reason: string,
   alreadyRetriedCount: number,
 ): boolean {
-  return reason === "chat_in_progress" && alreadyRetriedCount < 2;
+  // Three same-chat retries: settle is usually 2-4s but was measured >6s after
+  // huge turns, and the escalation alternative (full-context replay on a cold
+  // account) is far more expensive than one more bounded wait.
+  return reason === "chat_in_progress" && alreadyRetriedCount < 3;
 }
 
 export function isAccountInitializationError(err: unknown): boolean {

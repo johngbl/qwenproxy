@@ -10,13 +10,13 @@ import { app } from "../api/server.js";
  * End-to-end guard for the chat_in_progress settle path: the tool loop fires
  * the next turn the instant the previous one completes, and the upstream chat
  * stays "in progress" for a few seconds. The attempt loop must retry the same
- * chat (up to two retries) before any escalation, and a request that hits the
- * transient error twice must still succeed on the 3rd attempt.
+ * chat (up to three retries) before any escalation, and a request that hits
+ * the transient error repeatedly must still succeed on the next attempt.
  *
- * The mock upstream returns the upstream JSON error for the first TWO
- * completion calls and a normal stream on the 3rd.
+ * The mock upstream returns the upstream JSON error for the first N completion
+ * calls and a normal stream afterwards.
  */
-function installMockFetch() {
+function installMockFetch(failures = 2) {
   const originalFetch = globalThis.fetch;
   let completionCalls = 0;
   const calls: string[] = [];
@@ -39,7 +39,7 @@ function installMockFetch() {
     if (url.includes("/api/v2/chat/completions")) {
       completionCalls++;
       calls.push(url);
-      if (completionCalls <= 2) {
+      if (completionCalls <= failures) {
         // Upstream chat-state error (Qwen keeps the chat "in progress" for a
         // moment after a completed turn). parseQwenJsonError normalizes the
         // message to chat_in_progress.
@@ -113,6 +113,40 @@ test("chat_in_progress twice then success: same-chat retries before escalation",
       mock.completionCalls(),
       3,
       "expected 2 chat_in_progress failures + 1 success",
+    );
+  } finally {
+    mock.restore();
+  }
+});
+
+test("chat_in_progress three times then success: the 3rd same-chat retry also avoids escalation", async () => {
+  const mock = installMockFetch(3);
+  try {
+    const res = await app.fetch(
+      new Request("http://localhost/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "qwen3.6-plus",
+          session_id: "chat-progress-settle-test-3",
+          messages: [{ role: "user", content: "hi" }],
+          stream: true,
+        }),
+      }),
+    );
+
+    assert.strictEqual(res.status, 200, "request must survive a slow settle");
+    const text = await res.text();
+    assert.ok(text.includes("settled"), "final attempt should stream normally");
+    assert.ok(text.includes("data: [DONE]"), "stream must terminate");
+
+    // Exactly 4 completion calls: 3 transient chat_in_progress (settle >6s was
+    // observed after huge turns) + 1 success. Escalating earlier would replay
+    // the full context on another account instead.
+    assert.strictEqual(
+      mock.completionCalls(),
+      4,
+      "expected 3 chat_in_progress failures + 1 success",
     );
   } finally {
     mock.restore();

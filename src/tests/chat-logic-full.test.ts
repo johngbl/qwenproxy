@@ -225,6 +225,10 @@ test("same-account retry helpers gate by reason and prior attempt", () => {
   );
   assert.strictEqual(
     shouldRetryChatInProgressOnSameAccount("chat_in_progress", 2),
+    true,
+  );
+  assert.strictEqual(
+    shouldRetryChatInProgressOnSameAccount("chat_in_progress", 3),
     false,
   );
   assert.strictEqual(

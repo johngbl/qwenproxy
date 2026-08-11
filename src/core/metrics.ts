@@ -237,11 +237,36 @@ export class Metrics extends EventEmitter {
       output += `# TYPE ${metric.name} ${metric.type}\n`;
 
       for (const point of metric.values.values()) {
-        const labelsStr = point.labels
-          ? `{${Object.entries(point.labels)
-              .map(([k, v]) => `${k}="${v}"`)
-              .join(",")}}`
-          : "";
+        const labelPairs = point.labels
+          ? Object.entries(point.labels).map(([k, v]) => `${k}="${v}"`)
+          : [];
+        const labelsStr = labelPairs.length ? `{${labelPairs.join(",")}}` : "";
+
+        if (
+          metric.type === "histogram" &&
+          typeof point.value === "object" &&
+          point.value !== null
+        ) {
+          // Histogram points store a {count, sum, buckets} aggregate; emitting
+          // it raw produced "[object Object]" (invalid Prometheus exposition).
+          const data = point.value as {
+            count: number;
+            sum: number;
+            buckets: Map<number, number>;
+          };
+          const bucketPrefix = labelPairs.length
+            ? `${labelPairs.join(",")},`
+            : "";
+          const sortedBuckets = [...data.buckets.keys()].sort((a, b) => a - b);
+          for (const bucket of sortedBuckets) {
+            output += `${metric.name}_bucket{${bucketPrefix}le="${bucket}"} ${data.buckets.get(bucket)} ${point.timestamp}\n`;
+          }
+          output += `${metric.name}_bucket{${bucketPrefix}le="+Inf"} ${data.count} ${point.timestamp}\n`;
+          output += `${metric.name}_sum${labelsStr} ${data.sum} ${point.timestamp}\n`;
+          output += `${metric.name}_count${labelsStr} ${data.count} ${point.timestamp}\n`;
+          continue;
+        }
+
         output += `${metric.name}${labelsStr} ${point.value} ${point.timestamp}\n`;
       }
     }

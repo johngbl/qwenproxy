@@ -1362,10 +1362,11 @@ async function tryCreateStreamWithRetry(
 
 		// chat_in_progress means the previous Qwen generation has not stopped
 		// yet (the tool loop fires the next turn the instant the previous one
-		// completes; the upstream chat stays "in progress" for 2-4s after the
-		// terminal event). Retry the SAME chat twice — a single ~1.2s retry
-		// often loses that settle race — then rotate: an escalation replays the
-		// full context on a cold account (~12s context reopen + captcha).
+		// completes; the upstream chat stays "in progress" for a few seconds
+		// after the terminal event — usually 2-4s, measured >6s after a 491KB
+		// turn). Retry the SAME chat three times with escalating waits, then
+		// rotate: an escalation replays the full context on a cold account
+		// (~12s context reopen + captcha; observed 45s + a 495KB replay).
 		if (policy.reason === "chat_in_progress") {
 			chatInProgressCount++;
 			markAccountTemporarilyBusy(
@@ -1373,7 +1374,7 @@ async function tryCreateStreamWithRetry(
 				config.retry.chatInProgressBusyMs,
 			);
 
-			if (chatInProgressCount >= 3) {
+			if (chatInProgressCount >= 4) {
 				const nextAccount =
 					!isSingleAccount && accountSwitches < maxAccountSwitches
 						? getNextAvailableAccount(triedAccounts)
@@ -1400,9 +1401,12 @@ async function tryCreateStreamWithRetry(
 				}
 			}
 
-			// The 2nd retry on the same chat waits the full busy window so the
-			// upstream chat can settle before the (expensive) escalation.
-			if (chatInProgressCount >= 2) {
+			// Same-chat waits grow with the failure count so a slow settle is
+			// absorbed before the (expensive) escalation: the 2nd retry waits the
+			// busy window, the 3rd waits double.
+			if (chatInProgressCount >= 3) {
+				policy.retryAfterMs = config.retry.chatInProgressBusyMs * 2;
+			} else if (chatInProgressCount >= 2) {
 				policy.retryAfterMs = config.retry.chatInProgressBusyMs;
 			}
 		}
