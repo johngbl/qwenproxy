@@ -1029,6 +1029,7 @@ export async function initPlaywrightForAccount(
       acctPage.setDefaultNavigationTimeout(config.timeouts.navigation);
       accountContexts.set(account.id, acctContext);
       accountPages.set(account.id, acctPage);
+      installContextDeathHandlers(account.id, acctContext, acctPage);
       touchAccountActivity(account.id);
 
       // Check if already logged in
@@ -2236,6 +2237,26 @@ export async function keepAlivePlaywrightAccount(
 }
 
 // ─── Cleanup ──────────────────────────────────────────────────────────────────
+
+/**
+ * A renderer crash ("page.evaluate: Target crashed") or browser death leaves
+ * a zombie account entry: page.isClosed() can stay false while every page
+ * operation fails, so the account would keep failing until something else
+ * clears the maps. Forget the state (and best-effort close) on death so the
+ * next use re-initializes cleanly — the same proven path as an evicted context.
+ */
+export function installContextDeathHandlers(
+  accountId: string,
+  context: BrowserContext,
+  page: Page,
+): void {
+  const onDeath = (): void => {
+    cleanupPlaywrightAccountState(accountId);
+    void closePlaywrightContextBestEffort(accountId, context).catch(() => {});
+  };
+  context.on("close", onDeath);
+  page.on("crash", onDeath);
+}
 
 function cleanupPlaywrightAccountState(accountId: string): void {
   accountContexts.delete(accountId);
