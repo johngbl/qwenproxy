@@ -869,6 +869,10 @@ export async function processStreamingResponse(
     let activeReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
     let invalidInputSameAccountRetries = 0;
     let chatInProgressSameAccountRetries = 0;
+    // Set when the terminal [DONE] reached the client. The `| recovered`
+    // suffix on Stream done must only appear for attempts that COMPLETED after
+    // a mid-stream retry, not for failed attempts that consumed retries.
+    let streamCompletedOk = false;
 
     // The client socket went away. When config.stream.disconnectGraceMs > 0 we
     // do NOT tear down Qwen/stop/release the lease immediately: a transient
@@ -1328,6 +1332,15 @@ export async function processStreamingResponse(
           requestAborted: c.req.raw.signal.aborted,
         });
         if (!policy.retryable) return false;
+
+        // Full recovery decision — same rationale as the create-path policy
+        // log: the failure line shows the error, this line shows WHY the
+        // chosen action (retry same / switch / new chat / cooldown) was taken.
+        if (logger.isLevelEnabled("info")) {
+          console.log(
+            `🧭 [Chat] Stream recovery policy | account=${currentAccountId} | reason=${policy.reason} | retryable=${policy.retryable} | switch=${policy.switchAccount} | newChat=${policy.forceNewChat} | fullPrompt=${policy.retryWithFullPrompt} | retryAfter=${policy.retryAfterMs}ms`,
+          );
+        }
 
         if (policy.reason === "corrupted_chat_history") {
           invalidateLogicalThreadParent(midStreamRetry.sessionId);
@@ -2366,6 +2379,7 @@ export async function processStreamingResponse(
         flushWrites();
         await streamWriter.write(payload);
         flushBuffer = null;
+        streamCompletedOk = true;
 
         scheduleAssistantComplete(onAssistantComplete, {
           sessionId: logicalSessionId,
@@ -2458,8 +2472,14 @@ export async function processStreamingResponse(
       }
 
       if (logger.isLevelEnabled("info")) {
+        const initialRetries = Math.max(0, config.retry.maxAttempts - 1);
+        // Only mark as recovered when the stream actually completed (the SSE
+        // terminal event was processed) after a mid-stream retry. A FAILED
+        // attempt that used retries then threw should not say "recovered".
+        const recovered =
+          streamCompletedOk && retryContext.retriesLeft < initialRetries;
         console.log(
-          `⏱️ [Chat] Stream done | req=${reqId} | ${Date.now() - streamStartedAt}ms | firstChunk=${firstChunkAt === null ? "none" : `${firstChunkAt - streamStartedAt}ms`}`,
+          `⏱️ [Chat] Stream done | req=${reqId} | ${Date.now() - streamStartedAt}ms | firstChunk=${firstChunkAt === null ? "none" : `${firstChunkAt - streamStartedAt}ms`}${recovered ? ` | recovered` : ""}`,
         );
       }
 
@@ -2580,6 +2600,40 @@ export function handleChatCompletionsError(c: Context, err: unknown): Response {
   const code = classified.code || "unknown";
   const status = classified.statusCode;
   console.error(`❌ [Chat] Error | ${status} ${code} | ${message}`);
+
+  // The one-line error omits WHERE the failure originated (account/chat/reason)
+  // and the stack — both needed to reproduce. Emit the structured detail once;
+  // the classification line stays for the compact terminal.
+  if (logger.isLevelEnabled("info")) {
+    const detail: Record<string, unknown> = {
+      status,
+      code,
+      type: classified.type ?? undefined,
+      message,
+    };
+    if (err instanceof Error) {
+      detail.stack = err.stack;
+    }
+    const quota = (err as any)?.quotaInfo;
+    if (quota) {
+      detail.quota = {
+        email: quota.email,
+        cooldownSeconds: quota.cooldownSeconds,
+        until: quota.untilStr,
+        message: quota.message,
+      };
+    }
+    const createdChat = (err as any)?.createdNewChat;
+    if (createdChat) {
+      detail.createdNewChat = true;
+      const rawChatId = (err as any)?.chatSessionId;
+      detail.chatId = rawChatId ? String(rawChatId).substring(0, 12) : undefined;
+      detail.accountId = (err as any)?.accountId;
+    }
+    console.log(
+      `🧾 [Chat] Error details | ${JSON.stringify(detail)}`,
+    );
+  }
 
   return sendOpenAIError(c, err);
 }

@@ -91,14 +91,28 @@ const chatLocks = new Map<string, Mutex>();
 const personalizationLocks = new Map<string, Mutex>();
 
 export async function acquireChatLock(chatId: string): Promise<() => void> {
+	const acquireStartedAt = Date.now();
 	let mutex = chatLocks.get(chatId);
 	if (!mutex) {
 		mutex = new Mutex(`chat:${chatId.substring(0, 8)}`);
 		chatLocks.set(chatId, mutex);
 	}
 	const release = await mutex.acquire(60_000, `chat:${chatId.substring(0, 12)}`);
+	// Held time must exclude the wait: capture right after the acquire settles,
+	// not at function entry (the wait is already visible as `waited Xms` above).
+	const heldStartedAt = Date.now();
+	if (logger.isLevelEnabled("info")) {
+		console.log(
+			`🔐 [Chat] Chat lock acquired | chat=${chatId.substring(0, 12)} | waited ${heldStartedAt - acquireStartedAt}ms`,
+		);
+	}
 	return () => {
 		release();
+		if (logger.isLevelEnabled("info")) {
+			console.log(
+				`🔓 [Chat] Chat lock released | chat=${chatId.substring(0, 12)} | held ${Date.now() - heldStartedAt}ms`,
+			);
+		}
 		if (mutex!.isIdle()) {
 			chatLocks.delete(chatId);
 		}
@@ -356,6 +370,28 @@ export async function acquireUpstreamStream(
 	}
 
 	const resolved = resolveInitialAccount(resolvedPreferred, excludeSet);
+
+	if (logger.isLevelEnabled("info")) {
+		// Why THIS account? The operator needs the decision, not just the
+		// result — the previous rounds' "stale label" / "switching" confusion
+		// came from logs that showed only the outcome.
+		const poolSize = resolved.configuredAccounts.length;
+		const cooldownCount = resolved.configuredAccounts.filter((a) =>
+			getAccountCooldownInfo(a.id),
+		).length;
+		const why =
+			resolved.account.id === stickyThreadAccountId
+				? "sticky"
+				: typeof resolvedPreferred === "string" &&
+					resolved.account.id === resolvedPreferred
+					? "preferred"
+					: resolvedPreferred === null
+						? "failover-rotate"
+						: "round-robin";
+		console.log(
+			`🎯 [Chat] Account selected | ${maskEmail(resolved.account.email)} (${resolved.account.id}) | reason=${why} | pool=${poolSize}${cooldownCount ? ` | cooldown=${cooldownCount}` : ""}${stickyThreadAccountId ? ` | sticky=${stickyThreadAccountId === resolved.account.id}` : ""}`,
+		);
+	}
 
 	let account: SelectedAccount | null = resolved.account;
 	const configuredAccounts = resolved.configuredAccounts;
@@ -1389,6 +1425,15 @@ async function tryCreateStreamWithRetry(
 		const policy = classifyRetryAction(err, {
 			requestAborted: params.requestSignal?.aborted === true,
 		});
+
+		// The full retry decision — the `❌ Request failed` line shows the error
+		// but not WHY this action was chosen. Surface every field so the next
+		// escalation/switch/cooldown is explainable from the log alone.
+		if (logger.isLevelEnabled("info")) {
+			console.log(
+				`🧭 [Chat] Retry policy | account=${currentAccountEmail} | reason=${policy.reason} | retryable=${policy.retryable} | switch=${policy.switchAccount} | newChat=${policy.forceNewChat} | fullPrompt=${policy.retryWithFullPrompt}${policy.dropFiles ? ` | dropFiles` : ""} | retryAfter=${policy.retryAfterMs}ms${policy.accountCooldownMs ? ` | cooldown=${Math.round(policy.accountCooldownMs / 1000)}s (${policy.accountCooldownReason ?? ""})` : ""}`,
+			);
+		}
 
 		// Corrupted history means the stored parent chain is unusable. Purge the
 		// parent immediately so a failed recovery cannot leave the tainted thread

@@ -145,11 +145,18 @@ function createLease(
       released = true;
       const idx = slot.activeLeases.findIndex((l) => l.leaseId === leaseId);
       if (idx !== -1) slot.activeLeases.splice(idx, 1);
+      const heldMs = Date.now() - info.acquiredAt;
       logger.debug("[concurrency] lease released", {
         accountId,
         leaseId,
         label,
+        heldMs,
       });
+      if (logger.isLevelEnabled("info")) {
+        console.log(
+          `🚦 [Server] Stream slot released | account=${accountId} | held ${heldMs}ms | label=${label} | leaseId=${leaseId.substring(0, 8)}`,
+        );
+      }
       releaseSlot(accountId);
     },
   };

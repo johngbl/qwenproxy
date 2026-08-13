@@ -3565,6 +3565,15 @@ async function createQwenStreamInternal(
 
     phase("metadata");
 
+    if (logger.isLevelEnabled("info")) {
+      // What the upstream actually received: new vs reused chat, warm-pool
+      // lease, payload weight, parent chain. The 📤 line shows the client view;
+      // this is the upstream-facing counterpart.
+      console.log(
+        `⏱️ [Qwen] Create: ready | account=${accountId ?? "global"} | chat=${(chatSessionId ?? "new").substring(0, 12)} | ${createdNewChat ? "new-chat" : "reuse"}${leasedWarmChat ? " | warm-pool" : ""} | payload=${payloadSize}B | parent=${actualParentId ? actualParentId.substring(0, 8) : "none"} | +${Date.now() - startedAt}ms`,
+      );
+    }
+
     if (!response.ok || !response.body) {
       const contentType = response.headers.get("content-type") || "";
       const errText = contentType.includes("application/json")

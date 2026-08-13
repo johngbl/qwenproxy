@@ -331,6 +331,15 @@ export async function chatCompletions(c: Context) {
               requestAborted: c.req.raw.signal.aborted,
             });
 
+            // Full decision context for the outer retry loop (same rationale as
+            // the create-path policy log): the error line shows WHAT failed, this
+            // shows WHY the retry action was chosen.
+            if (logger.isLevelEnabled("info")) {
+              console.log(
+                `🧭 [Chat] Stream retry policy | req=${reqId} | reason=${policy.reason} | retryable=${policy.retryable} | switch=${policy.switchAccount} | newChat=${policy.forceNewChat} | retryAfter=${policy.retryAfterMs}ms`,
+              );
+            }
+
             if (policy.reason === "corrupted_chat_history") {
               invalidateLogicalThreadParent(ctx.sessionId);
             }
@@ -343,6 +352,15 @@ export async function chatCompletions(c: Context) {
                 config.retry.onUnknownUpstream !== false);
 
             if (!canRetry) {
+              // Terminal (or retry budget exhausted): say WHY instead of just
+              // letting the error bubble to handleChatCompletionsError — the
+              // operator must distinguish "upstream refused" from "our retry
+              // budget ran out".
+              if (logger.isLevelEnabled("info")) {
+                console.log(
+                  `⛔ [Chat] Stream retry exhausted | req=${reqId} | reason=${policy.reason} | retriesLeft=${streamProcessingRetries} | retryable=${policy.retryable} | error=${streamErr?.message?.substring(0, 150)}`,
+                );
+              }
               throw streamErr;
             }
 
