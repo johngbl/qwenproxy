@@ -118,6 +118,7 @@ test("playwright header capture rejects empty headers and timeouts", async () =>
   let timeoutUnroutes = 0;
   const timeoutPage = {
     isClosed: () => false,
+    url: () => "https://chat.qwen.ai/",
     route: async () => {},
     unroute: async () => {
       timeoutUnroutes++;
@@ -133,6 +134,7 @@ test("playwright header capture rejects empty headers and timeouts", async () =>
   let incompleteUnroutes = 0;
   const incompletePage = {
     isClosed: () => false,
+    url: () => "https://chat.qwen.ai/",
     route: async (_pattern: string, handler: any) => {
       await handler(
         { abort: async () => {} },
@@ -161,6 +163,7 @@ test("playwright header capture gives up shortly after a send that fires no requ
   };
   const silentPage = {
     isClosed: () => false,
+    url: () => "https://chat.qwen.ai/",
     route: async () => {},
     unroute: async () => {},
     goto: async () => {},
@@ -186,6 +189,49 @@ test("playwright header capture gives up shortly after a send that fires no requ
   );
 });
 
+test("playwright header capture fails fast when the page sits on the login screen without credentials", async () => {
+  const { captureQwenHeaders } = await import("../services/playwright.ts");
+
+  // The account has no stored credentials: the triggerSend must detect the
+  // auth URL and fail with a clear diagnosis instead of burning the 3 trigger
+  // attempts typing into a nonexistent chat input.
+  const authPage = {
+    isClosed: () => false,
+    url: () => "https://chat.qwen.ai/auth",
+    route: async () => {},
+    unroute: async () => {},
+    goto: async () => {},
+    locator: () => ({
+      first: () => ({
+        isVisible: async () => false,
+        waitFor: async () => undefined,
+      }),
+      isVisible: async () => false,
+      waitFor: async () => undefined,
+    }),
+    frameLocator: () => ({ locator: () => ({
+      first: () => ({
+        isVisible: async () => false,
+        waitFor: async () => undefined,
+      }),
+      isVisible: async () => false,
+      waitFor: async () => undefined,
+    }) }),
+    focus: async () => {
+      throw new Error("must not focus the chat input on the login screen");
+    },
+    fill: async () => {},
+    type: async () => {},
+    $: async () => null,
+    keyboard: { press: async () => {} },
+  };
+
+  await assert.rejects(
+    () => captureQwenHeaders("test-header-auth", authPage as any, 5_000, 50),
+    /session expired and no credentials available for re-login/,
+  );
+});
+
 /**
  * Fake page whose send produces one completion request per attempt, with the
  * headers taken from `headerSets` in order (the last entry repeats).
@@ -202,6 +248,7 @@ function makeRetriggerPage(headerSets: Record<string, string>[]) {
 
   const page = {
     isClosed: () => false,
+    url: () => "https://chat.qwen.ai/",
     route: async (_pattern: string, routeHandler: any) => {
       handler = routeHandler;
     },
