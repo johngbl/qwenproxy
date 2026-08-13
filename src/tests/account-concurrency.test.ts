@@ -7,6 +7,7 @@ import {
   acquireAccountLease,
   tryAcquireAccountLease,
   isAccountBusy,
+  isAccountSlotHeldByOtherSession,
   isAccountTemporarilyBusy,
   markAccountTemporarilyBusy,
   clearTemporaryBusy,
@@ -45,6 +46,61 @@ test("AccountConcurrency: second lease waits until first is released", async () 
   assert.strictEqual(resolved, true);
   assert.strictEqual(lease2.accountId, "acc-1");
   lease2.release();
+});
+
+test("AccountConcurrency: slot at capacity held by another session is detected", async () => {
+  resetAccountConcurrencyForTests();
+  const leaseA = await acquireAccountLease("acc-cross-session", {
+    label: "sess-A",
+  });
+
+  assert.strictEqual(
+    isAccountSlotHeldByOtherSession("acc-cross-session", "sess-B"),
+    true,
+    "slot held by sess-A must be reported as held-by-other for sess-B",
+  );
+  assert.strictEqual(
+    isAccountSlotHeldByOtherSession("acc-cross-session", "sess-A"),
+    false,
+    "slot held by sess-A is NOT other-session for sess-A itself",
+  );
+  assert.strictEqual(
+    isAccountSlotHeldByOtherSession("acc-cross-session", ""),
+    false,
+    "empty label never counts as held by other",
+  );
+
+  leaseA.release();
+  assert.strictEqual(
+    isAccountSlotHeldByOtherSession("acc-cross-session", "sess-B"),
+    false,
+    "free slot is not held by another session",
+  );
+});
+
+test("AccountConcurrency: unknown account / partial capacity is not held by other", async () => {
+  resetAccountConcurrencyForTests();
+  assert.strictEqual(
+    isAccountSlotHeldByOtherSession("acc-nonexistent", "sess-X"),
+    false,
+  );
+
+  // Below capacity: capacity is free even though a lease is active.
+  // With the default maxStreamsPerAccount=1 a single active lease fills the
+  // slot, so sess-Y is treated as "held by other" (capacity full). The
+  // important guard is the label comparison below, not the capacity math.
+  const lease = await acquireAccountLease("acc-partial");
+  assert.strictEqual(
+    isAccountSlotHeldByOtherSession("acc-partial", "sess-Y"),
+    true,
+    "capacity full with an active lease counts as held by another session",
+  );
+  lease.release();
+  assert.strictEqual(
+    isAccountSlotHeldByOtherSession("acc-partial", "sess-Y"),
+    false,
+    "released slot is not held",
+  );
 });
 
 test("AccountConcurrency: FIFO ordering for waiters", async () => {

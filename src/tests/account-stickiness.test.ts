@@ -20,7 +20,7 @@ import {
 } from "../core/account-manager.ts";
 import { invalidateAccountsCache } from "../core/accounts.ts";
 import { getDatabase } from "../core/database.ts";
-import { resolveInitialAccount } from "../routes/chat/account.ts";
+import { resolveInitialAccount, shouldWaitQueueForever } from "../routes/chat/account.ts";
 import { buildFinalContext } from "../routes/chat/context.ts";
 import {
 	getLogicalThreadState,
@@ -76,6 +76,28 @@ function withTempAccounts(
 		}
 	};
 }
+
+test("shouldWaitQueueForever: thread owner on its own slot waits; other session rotates when an alternate exists", () => {
+  // Own session holds the slot + a free alternate exists → long wait OK
+  // (same-session latest-wins / tool loop must not be cut).
+  assert.equal(shouldWaitQueueForever(true, false, true), true);
+  // Own session holds the slot, no alternate → long wait (last usable).
+  assert.equal(shouldWaitQueueForever(true, false, false), true);
+  // ANOTHER session holds the slot + alternate exists → short wait so the
+  // attempt loop rotates (this is the cross-session stall fix: no more 120s
+  // on another session's stream when a free account is available).
+  assert.equal(shouldWaitQueueForever(true, true, true), false);
+  // Another session holds the slot, NO alternate: keep waiting long — there
+  // is nowhere to rotate to; a short wait would only bounce back into the
+  // same account and burn the retry budget pointlessly.
+  assert.equal(shouldWaitQueueForever(true, true, false), true);
+  // Not the thread owner at all.
+  assert.equal(shouldWaitQueueForever(false, false, true), false);
+  assert.equal(shouldWaitQueueForever(false, true, true), false);
+  // Last usable account always waits regardless of the holder.
+  assert.equal(shouldWaitQueueForever(false, false, false), true);
+  assert.equal(shouldWaitQueueForever(false, true, false), true);
+});
 
 test(
 	"resolveInitialAccount: prefers sticky account and does not rotate by default",

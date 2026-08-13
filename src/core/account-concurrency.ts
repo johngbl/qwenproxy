@@ -88,6 +88,30 @@ function formatHolders(slot: AccountSlot): string {
     .join(", ");
 }
 
+/**
+ * True when the account slot is at capacity AND every active lease belongs to
+ * a session other than `label`.
+ *
+ * Used to decide how long a request may wait for the slot: when ANOTHER
+ * session is generating on this account (not our own thread), waiting long is
+ * wasted latency — the other session may hold the slot for minutes. The
+ * request should fail fast with `account_busy` (short wait) and rotate to a
+ * different account instead of queueing for the full `queueWaitForeverCapMs`.
+ */
+export function isAccountSlotHeldByOtherSession(
+  accountId: string,
+  label: string | null | undefined,
+): boolean {
+  if (!label) return false;
+  const slot = slots.get(accountId);
+  if (!slot) return false;
+  if (slot.activeLeases.length === 0) return false;
+  if (slot.activeLeases.length < config.concurrency.maxStreamsPerAccount) {
+    return false;
+  }
+  return slot.activeLeases.every((l) => l.label !== label);
+}
+
 function createLease(
   accountId: string,
   label: string,

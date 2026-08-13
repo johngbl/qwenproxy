@@ -25,6 +25,7 @@ import {
 	abortLeaseByLabel,
 	acquireAccountLease,
 	isAccountBusy,
+	isAccountSlotHeldByOtherSession,
 	isAccountTemporarilyBusy,
 	markAccountTemporarilyBusy,
 	markLeaseCompletion,
@@ -701,6 +702,27 @@ interface CreateStreamFailure {
 	error: any;
 }
 
+/**
+ * Decision helper for the per-account lease queue deadline.
+ *
+ * `true` means the request may wait up to `queueWaitForeverCapMs` for the
+ * slot (thread owner waiting on its OWN session, or the last usable account).
+ * `false` means it waits at most `busyWaitMs` and then fails with
+ * `account_busy` so the attempt loop can rotate accounts.
+ *
+ * The thread-owner preference is NOT enough on its own: when another session
+ * holds the slot, waiting long is pure latency (the other session may keep
+ * generating for minutes). Only the same-session holder justifies the long
+ * wait (same-session latest-wins / tool loop).
+ */
+export function shouldWaitQueueForever(
+	isThreadOwnerWaiting: boolean,
+	heldByOtherSession: boolean,
+	hasFreeAlternate: boolean,
+): boolean {
+	return (isThreadOwnerWaiting && !heldByOtherSession) || !hasFreeAlternate;
+}
+
 async function tryCreateStreamWithRetry(
 	params: {
 		finalPrompt: string;
@@ -843,8 +865,23 @@ async function tryCreateStreamWithRetry(
 			const hasFreeAlt =
 				!isSingleAccount &&
 				hasFreeAlternateAccount(accounts, currentAccountId, triedAccounts);
-			const waitQueueForever =
-				params.queueSlotUntilFree === true || hasFreeAlt === false;
+			const sessionLabel = params.sessionId ?? currentAccountEmail;
+			// The thread owner (or the last usable account) may wait for the slot
+			// without a short deadline — but ONLY when the slot is busy with OUR
+			// session (same-session latest-wins / tool loop). If ANOTHER session is
+			// generating on this account, waiting 120s is pure latency: the other
+			// session may hold the slot for minutes. Fail fast with account_busy so
+			// the attempt loop rotates to a different account instead (or retries
+			// quickly when no alternative exists).
+			const heldByOtherSession = isAccountSlotHeldByOtherSession(
+				currentAccountId,
+				sessionLabel,
+			);
+			const waitQueueForever = shouldWaitQueueForever(
+				params.queueSlotUntilFree === true,
+				heldByOtherSession,
+				hasFreeAlt,
+			);
 
 			// Latest-wins: if the client retried the same session, abort the old
 			// generation and free the slot immediately instead of queueing behind it.
@@ -853,7 +890,6 @@ async function tryCreateStreamWithRetry(
 			// consumed. A PARALLEL request (parallelEscape) never kills at all: it
 			// runs on its own chat and must not abort the main generation even
 			// after the main emits its first chunk.
-			const sessionLabel = params.sessionId ?? currentAccountEmail;
 			if (params.sessionId && !params.parallelEscape) {
 				abortLeaseByLabel(currentAccountId, sessionLabel, {
 					onlyIfEmitted: true,
