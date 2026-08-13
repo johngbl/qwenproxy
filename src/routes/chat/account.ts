@@ -767,6 +767,13 @@ async function tryCreateStreamWithRetry(
 	let accountSwitches = 0;
 	let chatInProgressCount = 0;
 	let chatInProgressEscalated = false;
+	// Account that accumulated the chat_in_progress failures (the one whose
+	// upstream chat is actually stuck "in progress"). The escalation branch
+	// switches currentAccountId to a FRESH account, and the loop-exit session
+	// clear must drop the binding to the stuck chat — NOT clear the sessions of
+	// an account that never served this session (cross-session damage).
+	let chatInProgressOriginAccountId: string | null = null;
+	let chatInProgressOriginAccountEmail: string | null = null;
 	let lastAttemptError: any = null;
 	let invalidInputSameAccountRetried = false;
 	const accounts = loadAccounts();
@@ -1268,6 +1275,13 @@ async function tryCreateStreamWithRetry(
 
 		attemptsLeft--;
 		const err = attemptError;
+		// The account that actually failed THIS attempt — captured before any
+		// branch below can switch currentAccountId/Email (chat_in_progress
+		// escalation moves to a fresh account). The generic retry log must name
+		// the account that failed, not the newly-selected one that was never
+		// attempted (observed: "Qwen request failed for 280wu" when 280wu had
+		// never been tried and ldyjl had failed 4x with chat_in_progress).
+		const failedAccountEmail = currentAccountEmail;
 
 		// Once the client request is aborted, do not rotate accounts or retry. The
 		// old request can otherwise keep acquiring leases after the client is gone.
@@ -1405,6 +1419,12 @@ async function tryCreateStreamWithRetry(
 		// rotate: an escalation replays the full context on a cold account
 		// (~12s context reopen + captcha; observed 45s + a 495KB replay).
 		if (policy.reason === "chat_in_progress") {
+			if (chatInProgressOriginAccountId === null) {
+				// First chat_in_progress of this request: remember the account
+				// whose chat is stuck BEFORE any escalation switch happens.
+				chatInProgressOriginAccountId = currentAccountId;
+				chatInProgressOriginAccountEmail = currentAccountEmail;
+			}
 			chatInProgressCount++;
 			markAccountTemporarilyBusy(
 				currentAccountId,
@@ -1567,10 +1587,17 @@ async function tryCreateStreamWithRetry(
 				err instanceof RetryableQwenStreamError ||
 				isChatInProgressError(err)
 			) {
+				// After an escalation, currentAccountId points at the FRESH account
+				// that never served this session — clearing ITS sessions would wipe
+				// other sessions' bindings on an innocent account. Clear the ORIGIN
+				// account instead (the one whose chat is genuinely stuck).
+				const clearTargetId = chatInProgressOriginAccountId ?? currentAccountId;
+				const clearTargetEmail =
+					chatInProgressOriginAccountEmail ?? currentAccountEmail;
 				console.warn(
-					`🧹 [Chat] Clearing session state for ${currentAccountEmail} (${currentAccountId}) after exhausted retries`,
+					`🧹 [Chat] Clearing session state for ${clearTargetEmail} (${clearTargetId}) after exhausted retries`,
 				);
-				clearAllSessionsForAccount(currentAccountId);
+				clearAllSessionsForAccount(clearTargetId);
 			}
 
 			return { success: false, error: err };
@@ -1582,7 +1609,7 @@ async function tryCreateStreamWithRetry(
 		);
 
 		console.warn(
-			`🔄 [Chat] Qwen request failed for ${currentAccountEmail}, retrying in ${useDelay}ms... (${attemptsLeft} left). reason=${policy.reason} error=${errMsg.slice(0, 200)}`,
+			`🔄 [Chat] Qwen request failed for ${failedAccountEmail}, retrying in ${useDelay}ms... (${attemptsLeft} left). reason=${policy.reason} error=${errMsg.slice(0, 200)}`,
 		);
 		await new Promise((r) => setTimeout(r, useDelay));
 		retryDelay = Math.min(retryDelay * 2, config.retry.maxDelayMs);

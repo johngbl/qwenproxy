@@ -26,6 +26,11 @@ const PRIORITY_FILE = join(DATA_DIR, "account-priority.json");
 
 let priorityCache: PriorityData | null = null;
 
+/** Invalidate the in-memory priority cache (test isolation). */
+export function invalidatePriorityCache(): void {
+  priorityCache = null;
+}
+
 function loadPriority(): PriorityData {
   if (priorityCache) return priorityCache;
 
