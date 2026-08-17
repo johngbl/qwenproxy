@@ -934,7 +934,7 @@ export async function getBasicHeaders(accountId: string): Promise<{
 
     const bxUa = cache.headers["bx-ua"];
     const bxUmidtoken = cache.headers["bx-umidtoken"];
-    const bxV = cache.headers["bx-v"] || "2.5.36";
+    const bxV = cache.headers["bx-v"] || "2.5.37";
 
     // Read cookie AFTER all refreshes (re-login may have updated it)
     const cookie = await getCookies(accountId);
@@ -1579,7 +1579,7 @@ export async function captureQwenHeaders(
         cookie: reqHeaders["cookie"] || "",
         "bx-ua": reqHeaders["bx-ua"] || "",
         "bx-umidtoken": reqHeaders["bx-umidtoken"] || "",
-        "bx-v": reqHeaders["bx-v"] || "2.5.36",
+        "bx-v": reqHeaders["bx-v"] || "2.5.37",
         "user-agent": reqHeaders["user-agent"] || "",
         "x-request-id": reqHeaders["x-request-id"] || "",
       };

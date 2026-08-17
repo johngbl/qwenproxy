@@ -2,7 +2,7 @@ import { v4 as uuidv4 } from "uuid";
 import { qwenUrl, qwenOrigin } from "./qwen-url.ts";
 import { config } from "../core/config.js";
 
-export const QWEN_WEB_VERSION = "0.2.83";
+export const QWEN_WEB_VERSION = config.qwen.webVersion;
 export const DEFAULT_QWEN_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36";
 const QWEN_TIMEZONE_HEADER = new Date().toString().split(" (")[0];

@@ -18,6 +18,10 @@ const envSchema = z
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
       ),
     QWEN_BX_V: z.string().default("2.5.37"),
+    // Version header on Qwen API requests = the deployed web bundle version
+    // (snapshot 09/08). The server does not validate it today; override via
+    // env if Qwen ships a new bundle and starts rejecting stale versions.
+    QWEN_WEB_VERSION: z.string().default("0.2.83"),
     // The real chat.qwen.ai client sends ONLY bx-v on API requests (no
     // bx-ua/bx-umidtoken headers — the WAF carries them as cookies). Set true
     // to restore the legacy behavior of injecting the captured bx-ua tokens.
@@ -311,6 +315,8 @@ export const config = {
     deleteAllChatsOnShutdown: env.DELETE_ALL_CHATS_ON_SHUTDOWN === "true",
     /** Send the captured bx-ua/bx-umidtoken headers (real client does NOT). */
     sendBxUa: env.QWEN_SEND_BX_UA === "true",
+    /** Deployed web bundle version sent as the `version` API header. */
+    webVersion: env.QWEN_WEB_VERSION,
   },
   contextMeter: {
     enabled: env.CONTEXT_METER_ENABLED === "true",

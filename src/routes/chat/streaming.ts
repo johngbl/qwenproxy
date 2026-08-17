@@ -837,6 +837,11 @@ export async function processStreamingResponse(
   const reqId = params.reqId ?? completionId.substring(0, 8);
   const streamStartedAt = Date.now();
   let firstChunkAt: number | null = null;
+  // Last model delta handed to the client. Stream done reports the gap between
+  // this and the teardown (tail): a large tail means the visible response had
+  // finished long before the upstream terminal event arrived (thinking-model
+  // terminal lag), which reads as "loading after the answer" on the client.
+  let lastDeltaAt: number | null = null;
   let currentTokenEstimationContext = tokenEstimationContext;
 
   // Send the SSE response headers IMMEDIATELY (before the protocol probe): the
@@ -1099,14 +1104,16 @@ export async function processStreamingResponse(
         // First model output to reach the client: the emit-aware supersede uses
         // this to allow latest-wins only AFTER the client consumed something.
         markStreamEmitted(completionId);
+        const now = Date.now();
         if (firstChunkAt === null) {
-          firstChunkAt = Date.now();
+          firstChunkAt = now;
           if (logger.isLevelEnabled("info")) {
             console.log(
               `⏱️ [Chat] First chunk | req=${reqId} | +${firstChunkAt - streamStartedAt}ms`,
             );
           }
         }
+        lastDeltaAt = now;
         const serialized =
           `data: {${eventHead}${JSON.stringify(delta)}${eventTail}\n\n`;
         if (Array.isArray(flushBuffer)) {
@@ -2478,8 +2485,9 @@ export async function processStreamingResponse(
         // attempt that used retries then threw should not say "recovered".
         const recovered =
           streamCompletedOk && retryContext.retriesLeft < initialRetries;
+        const tailMs = lastDeltaAt === null ? null : Date.now() - lastDeltaAt;
         console.log(
-          `⏱️ [Chat] Stream done | req=${reqId} | ${Date.now() - streamStartedAt}ms | firstChunk=${firstChunkAt === null ? "none" : `${firstChunkAt - streamStartedAt}ms`}${recovered ? ` | recovered` : ""}`,
+          `⏱️ [Chat] Stream done | req=${reqId} | ${Date.now() - streamStartedAt}ms | firstChunk=${firstChunkAt === null ? "none" : `${firstChunkAt - streamStartedAt}ms`}${tailMs === null ? "" : ` | tail=${tailMs}ms`}${recovered ? ` | recovered` : ""}`,
         );
       }
 
