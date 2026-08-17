@@ -7,6 +7,7 @@ import {
 } from "./auth-playwright.ts";
 import { v4 as uuidv4 } from "uuid";
 import {
+  QwenBridgeError,
   UpstreamRateLimit,
   UpstreamError,
   AuthError,
@@ -279,6 +280,25 @@ export class RetryableQwenStreamError extends UpstreamRateLimit {
     super(message);
     this.name = "RetryableQwenStreamError";
     this.retryAfterMs = retryAfterMs;
+  }
+}
+
+/**
+ * The account-level personalization sync could not be confirmed. Agent
+ * instructions ride ONLY the personalization channel (never inline in the
+ * prompt), so an unconfirmed sync must fail the attempt — the retry policy
+ * rotates to another account — instead of sending a request the model would
+ * answer without any instructions or tools. Surfaces as 503 (service
+ * degraded) if every account fails to sync.
+ */
+export class PersonalizationSyncError extends QwenBridgeError {
+  readonly statusCode = 503;
+  readonly type = "service_unavailable";
+  readonly code = "personalization_unavailable";
+
+  constructor(message: string) {
+    super(message);
+    this.name = "PersonalizationSyncError";
   }
 }
 
@@ -1702,7 +1722,12 @@ export async function syncQwenRequestPersonalization(
     forceSync?: boolean;
   } = {},
 ): Promise<boolean> {
-  if (isAuthMockEnabled()) return true;
+  if (isAuthMockEnabled()) {
+    // Test hook: force the sync to report "not applied" so the fail-fast
+    // contract (personalization-required suite) is exercisable in mock mode.
+    if (process.env.TEST_PERSONALIZATION_SYNC_FAIL === "true") return false;
+    return true;
+  }
   // instruction pode ser vazia para limpar personalization
 
   const cacheKey = accountId || "global";

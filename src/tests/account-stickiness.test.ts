@@ -214,8 +214,11 @@ test("personalization contains complete agent instructions and tools", async () 
 
 	assert.match(ctx.requestPersonalizationInstruction ?? "", /Agent instructions/);
 	assert.match(ctx.requestPersonalizationInstruction ?? "", /TOOLS AVAILABLE/);
-	assert.match(ctx.finalPrompt, /Agent instructions/);
-	assert.match(ctx.finalPrompt, /execute commands/);
+	// Instructions ride ONLY the personalization channel — never in the prompt
+	// (not even on a brand-new chat; the sync is confirmed before the request).
+	assert.doesNotMatch(ctx.finalPrompt, /Agent instructions/);
+	assert.doesNotMatch(ctx.finalPrompt, /execute commands/);
+	assert.match(ctx.finalPrompt, /run the tool/);
 });
 
 test("account switch contract: full history is required when sticky owner changes", () => {

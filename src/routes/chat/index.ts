@@ -157,15 +157,17 @@ export async function chatCompletions(c: Context) {
     });
 
     stepStartedAt = Date.now();
-    // Full replay must retain system instructions even when personalization was
-    // requested: its update can fail or be invalidated after a profile refresh.
-    const fullPromptForRequest = [
-      parsed.systemPrompt,
-      parsed.toolInstructions,
-      parsed.prompt,
-    ]
-      .filter((part) => part.trim().length > 0)
-      .join("\n\n");
+    // Full replay carries the conversation only: agent instructions ride the
+    // account-level personalization, which is confirmed on the destination
+    // account BEFORE the replayed completion is sent (an unconfirmed sync now
+    // fails the attempt instead of degrading to inline). Title generation does
+    // not sync personalization and keeps the legacy inline replay.
+    const fullPromptForRequest =
+      ctx.requestPersonalizationInstruction !== null
+        ? parsed.prompt
+        : [parsed.systemPrompt, parsed.toolInstructions, parsed.prompt]
+            .filter((part) => part.trim().length > 0)
+            .join("\n\n");
     const initialContextMode: ContextMeterMode = ctx.existingThread
       ? "delta"
       : "full";

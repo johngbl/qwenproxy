@@ -8,6 +8,7 @@
 import { config } from "../../core/config.ts";
 import { logger } from "../../core/logger.ts";
 import {
+  PersonalizationSyncError,
   QwenNetworkError,
   QwenUpstreamError,
   QwenUpstreamUnavailableError,
@@ -446,6 +447,20 @@ export function classifyRetryAction(
       retryWithFullPrompt: false,
       retryAfterMs: Math.min(baseDelayMs, 1_000),
       reason: "account_busy",
+    };
+  }
+
+  // Agent instructions ride ONLY the account-level personalization. An
+  // unconfirmed sync means this account cannot serve the request as-is —
+  // rotate to another account (each attempt re-syncs on its own account).
+  if (err instanceof PersonalizationSyncError) {
+    return {
+      retryable: true,
+      switchAccount: true,
+      forceNewChat: true,
+      retryWithFullPrompt: false,
+      retryAfterMs: baseDelayMs,
+      reason: "personalization_sync_failed",
     };
   }
 

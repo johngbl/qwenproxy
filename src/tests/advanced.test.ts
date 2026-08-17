@@ -415,7 +415,7 @@ test("session-parent-tracking (stream): next turn parent is previous response_id
   }
 });
 
-test("thread-native: includes system and tools in first message, excludes from continuations", async () => {
+test("thread-native: never includes system and tools in messages (personalization-only), delta-only continuations", async () => {
   const capturedPayloads: any[] = [];
 
   const restore = setupFetchMock((_, init) => {
@@ -494,9 +494,11 @@ test("thread-native: includes system and tools in first message, excludes from c
     assert.ok(capturedPayloads[0].chat_id.length > 0);
     assert.strictEqual(capturedPayloads[1].chat_id, "qwen-chat-first-only");
     
-    // First message (new chat) includes system prompt and tools
-    assert.ok(firstContent.includes("FIRST_ONLY_SYSTEM_MARKER"), "First message should include system prompt");
-    assert.ok(firstContent.includes("first_only_tool_marker"), "First message should include tools");
+    // System prompt and tools ride ONLY the account-level personalization —
+    // never in the message payload, not even on the first message of a new
+    // chat (the sync is confirmed before the completion request is sent).
+    assert.ok(!firstContent.includes("FIRST_ONLY_SYSTEM_MARKER"), "First message must not include system prompt (personalization-only)");
+    assert.ok(!firstContent.includes("first_only_tool_marker"), "First message must not include tools (personalization-only)");
     assert.ok(firstContent.includes("User: Turn 1"), "First message should include user content");
     
     // Continuation message excludes system prompt, tools, and history replay

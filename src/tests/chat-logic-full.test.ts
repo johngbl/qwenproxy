@@ -18,6 +18,7 @@ const {
 } = await import("../routes/chat/retry-policy.ts");
 const { parseQwenErrorPayload } = await import("../routes/chat/errors.ts");
 const { buildFinalContext } = await import("../routes/chat/context.ts");
+const { ContextLengthExceededError } = await import("../core/errors.ts");
 const { getIncrementalDelta } = await import("../routes/chat/helpers.ts");
 const { classifyError } = await import("../api/error-classifier.ts");
 const { createError, sendOpenAIError } = await import("../api/error-helpers.ts");
@@ -324,25 +325,30 @@ test("parseQwenErrorPayload maps success:false with wait hint and statuses", () 
 // routes/chat/context.ts — remaining branches
 // ---------------------------------------------------------------------------
 
-test("buildFinalContext skips personalization when instruction exceeds limit", async () => {
+test("buildFinalContext rejects instructions that exceed the personalization limit", async () => {
   const original = config.qwen.maxPersonalizationBytes;
   config.qwen.maxPersonalizationBytes = 10;
   try {
-    const ctx = await buildFinalContext({
-      messages: [{ role: "user", content: "hi" }],
-      systemPrompt: "You are a helpful assistant.",
-      toolInstructions: "",
-      prompt: "User: hi\n\n",
-      currentPrompt: "User: hi\n\n",
-      modelId: "qwen3.7-plus",
-      enableThinking: false,
-      conversationKey: null,
-      hasExplicitConversationKey: false,
-    });
-    assert.strictEqual(ctx.requestPersonalizationInstruction, null);
-    // Instructions must still be sent inline for a brand-new chat.
-    assert.ok(ctx.finalPrompt.includes("You are a helpful assistant."));
-    assert.strictEqual(ctx.isTitleGenerationRequest, false);
+    // Instructions are no longer sent inline: when the personalization
+    // channel cannot carry them, the request must fail loud.
+    await assert.rejects(
+      buildFinalContext({
+        messages: [{ role: "user", content: "hi" }],
+        systemPrompt: "You are a helpful assistant.",
+        toolInstructions: "",
+        prompt: "User: hi\n\n",
+        currentPrompt: "User: hi\n\n",
+        modelId: "qwen3.7-plus",
+        enableThinking: false,
+        conversationKey: null,
+        hasExplicitConversationKey: false,
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof ContextLengthExceededError);
+        assert.match(error.message, /personalization payload limit/);
+        return true;
+      },
+    );
   } finally {
     config.qwen.maxPersonalizationBytes = original;
   }

@@ -1,5 +1,5 @@
 import { config } from "../../core/config.ts";
-import { logger } from "../../core/logger.ts";
+import { ContextLengthExceededError, ValidationError } from "../../core/errors.ts";
 import { getModelContextWindow } from "../../core/model-registry.ts";
 import {
   assertPromptWithinLimits,
@@ -101,26 +101,32 @@ export async function buildFinalContext(
   const useRequestPersonalization =
     requestedPersonalization &&
     isRequestPersonalizationWithinLimit(personalizationInstruction);
-  if (requestedPersonalization && !useRequestPersonalization) {
-    logger.warn(
-      "[chat] system instructions and tools exceed the personalization payload limit; sending them inline",
-      {
-        instructionBytes: Buffer.byteLength(personalizationInstruction, "utf8"),
-        maxPersonalizationBytes: config.qwen.maxPersonalizationBytes,
-      },
-    );
+
+  // Agent instructions and tools ride ONLY the account-level personalization
+  // (confirmed before the completion request is sent — the real Qwen client
+  // also never sends a system prompt in the completions payload). When the
+  // channel cannot carry them, fail loud instead of degrading to inline.
+  if (completeInstructions && !useRequestPersonalization) {
+    if (requestedPersonalization) {
+      throw new ContextLengthExceededError(
+        `System instructions and tools (${Buffer.byteLength(personalizationInstruction, "utf8")} bytes) exceed the personalization payload limit (${config.qwen.maxPersonalizationBytes} bytes) and are no longer sent inline. Raise QWEN_MAX_PERSONALIZATION_BYTES or reduce the instruction size.`,
+      );
+    }
+    if (!isTitleGenerationRequest) {
+      throw new ValidationError(
+        "Agent instructions can only be delivered via Qwen account personalization, but QWEN_PERSONALIZATION_FROM_REQUEST is disabled. Re-enable it or remove the system instructions from the request.",
+      );
+    }
   }
   const estimatedTokens = estimateTokenCount(
     completeInstructions,
     activePrompt,
   );
-  // Send the complete instruction block in the prompt for NEW chats to establish
-  // context immediately. Continuations rely on the account-level personalization.
-  const isNewChat = !existingThread;
-  const shouldSendInstructions = !useRequestPersonalization || isNewChat;
-
+  // Instructions are delivered exclusively via account-level personalization;
+  // the prompt carries only the conversation. Title generation does not sync
+  // personalization, so it keeps its (small) instructions inline.
   const finalPrompt =
-    shouldSendInstructions && completeInstructions
+    isTitleGenerationRequest && completeInstructions
       ? `${completeInstructions}\n${activePrompt}`
       : activePrompt;
 
