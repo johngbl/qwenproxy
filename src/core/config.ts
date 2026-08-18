@@ -35,14 +35,14 @@ const envSchema = z
     PLAYWRIGHT_IDLE_CONTEXT_TTL_MS: z.string().default("60000"),
     PLAYWRIGHT_JS_HEAP_MB: z.string().default("256"),
     PLAYWRIGHT_LOW_MEMORY_FLAGS: z.string().default("true"),
-    // Keep only 1 warm context by default (user preference over failover speed):
-    // after warmup exactly one browser stays open for immediate use; any extra
-    // context (simultaneous use / failover hop) is closed once idle. The cap
-    // only evicts IDLE contexts — busy mutexes and active streams are never
-    // touched, so concurrent accounts each keep their own context while serving.
-    // Tradeoff: an account whose context was evicted pays a context recreation
-    // on its next use (set higher, e.g. 3, to keep failover hops warm).
-    PLAYWRIGHT_MAX_ACTIVE_CONTEXTS: z.string().default("1"),
+    // Keep 2 warm contexts by default ({main + reserve} covers the common
+    // failover hop without opening one browser per account): after warmup two
+    // browsers stay open; any extra context (simultaneous use / failover) is
+    // closed once idle. The cap only evicts IDLE contexts — busy mutexes and
+    // active streams are never touched, so concurrent accounts each keep their
+    // own context while serving. Accounts in cooldown (rate-limited) sit idle,
+    // drop out of the warm set and get evicted.
+    PLAYWRIGHT_MAX_ACTIVE_CONTEXTS: z.string().default("2"),
     PLAYWRIGHT_PREPARE_ALL_ON_STARTUP: z.string().default("true"),
     CAPTCHA_SOLVER_ENABLED: z.string().default("true"),
     CAPTCHA_SOLVER_MAX_ATTEMPTS: z.string().default("3"),

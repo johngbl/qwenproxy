@@ -261,7 +261,7 @@ npm start
 1. Prepara as contas em sequência, reutilizando o profile persistente quando ele já está autenticado.
 2. Se o profile não tiver uma sessão válida, autentica com as credenciais da conta e salva a sessão em `data/qwen_profiles/<accountId>`.
 3. O servidor sobe após a primeira conta ficar pronta e continua preparando as demais em background.
-4. Com `PLAYWRIGHT_MAX_ACTIVE_CONTEXTS=1` (padrão), só 1 contexto fica aberto após o warmup; contextos extras (uso simultâneo ou failover) fecham ao ficar idle. O watchdog RSS fecha contextos idle sob pressão de RAM.
+4. Com `PLAYWRIGHT_MAX_ACTIVE_CONTEXTS=2` (padrão), 2 contextos ficam abertos após o warmup ({principal + reserva}, cobrindo o failover comum); contextos extras (uso simultâneo ou failover) fecham ao ficar idle. O watchdog RSS fecha contextos idle sob pressão de RAM.
 5. Use `PLAYWRIGHT_PREPARE_ALL_ON_STARTUP=false` para voltar ao modo econômico, preparando as contas adicionais somente quando forem necessárias.
 
 Exemplo de log:
@@ -324,7 +324,7 @@ npm run typecheck  # tipos
 | `PLAYWRIGHT_BROWSER` | `chromium` | `chromium` / `chrome` / `edge` |
 | `PLAYWRIGHT_INIT_BATCH_SIZE` | `1` | Contas em paralelo no background init |
 | `PLAYWRIGHT_PREPARE_ALL_ON_STARTUP` | `true` | Prepara todas as contas no boot (`false` = só quando necessárias) |
-| `PLAYWRIGHT_MAX_ACTIVE_CONTEXTS` | `1` | Contextos idle mantidos quentes (streams ativos nunca são fechados; uso simultâneo abre mais) |
+| `PLAYWRIGHT_MAX_ACTIVE_CONTEXTS` | `2` | Contextos idle mantidos quentes ({principal + reserva}); streams ativos nunca são fechados; uso simultâneo abre mais. Contas em cooldown (rate limit) ficam idle e são evictadas |
 | `PLAYWRIGHT_CONTEXT_CLOSE_TIMEOUT_MS` | `10000` | Timeout de close antes do kill |
 | `PLAYWRIGHT_IDLE_CONTEXT_TTL_MS` | `60000` | Fecha contextos idle acima do cap (`0` desativa) |
 | `PLAYWRIGHT_JS_HEAP_MB` | `256` | Cap V8 do Chromium (`--max-old-space-size`) |
