@@ -807,6 +807,10 @@ export async function getBasicHeaders(accountId: string): Promise<{
   bxV: string;
   bxUa: string;
   bxUmidtoken: string;
+  secChUa: string;
+  secChUaMobile: string;
+  secChUaPlatform: string;
+  version: string;
 }> {
   const page = accountPages.get(accountId);
   if (!page) {
@@ -820,18 +824,62 @@ export async function getBasicHeaders(accountId: string): Promise<{
   );
   try {
     touchAccountActivity(accountId);
-    // Get real user agent from browser. It is constant for the lifetime of the
-    // context, so it is fetched once and cached per account to avoid a CDP
-    // round-trip on every request.
+    // Get real user agent + client hints from the browser. They are constant
+    // for the lifetime of the context, so they are fetched once and cached per
+    // account to avoid CDP round-trips on every request. The client-hint
+    // headers (sec-ch-ua / platform / mobile) are derived from the live
+    // browser so the anti-bot fingerprint stays current instead of a hardcoded
+    // Chrome version.
     let userAgent = cachedUserAgents.get(accountId) ?? "";
+    let clientHints = {
+      secChUa: "",
+      secChUaMobile: "?0",
+      secChUaPlatform: "",
+      version: config.qwen.webVersion,
+    };
     try {
       if (!userAgent) {
-        userAgent = await withTimeout(
-          page.evaluate(() => navigator.userAgent),
+        const nav = await withTimeout(
+          page.evaluate(() => {
+            const ua = navigator.userAgent;
+            const data = (navigator as unknown as {
+              userAgentData?: { brands?: { brand: string; version: string }[]; platform?: string; mobile?: boolean };
+            }).userAgentData;
+            let secChUa = "";
+            let platform = "";
+            let mobile = "?0";
+            if (data?.brands && Array.isArray(data.brands)) {
+              secChUa = data.brands
+                .map((b) => `${JSON.stringify(b.brand)};v="${b.version}"`)
+                .join(", ");
+              platform = data.platform || "";
+              mobile = data.mobile ? "?1" : "?0";
+            }
+            return { ua, secChUa, platform, mobile };
+          }),
           config.timeouts.page,
           `User-agent lookup timed out for ${accountId}`,
         );
+        userAgent = nav.ua;
         cachedUserAgents.set(accountId, userAgent);
+        const hints = getHeaderCache(accountId).headers;
+        clientHints = {
+          secChUa: nav.secChUa,
+          secChUaMobile: nav.mobile,
+          secChUaPlatform: nav.platform ? JSON.stringify(nav.platform) : "",
+          version: hints["version"] || config.qwen.webVersion,
+        };
+        if (nav.secChUa) hints["sec-ch-ua"] = nav.secChUa;
+        hints["sec-ch-ua-mobile"] = nav.mobile;
+        if (nav.platform) hints["sec-ch-ua-platform"] = nav.platform;
+      } else {
+        const hints = getHeaderCache(accountId).headers;
+        clientHints = {
+          secChUa: hints["sec-ch-ua"] || "",
+          secChUaMobile: hints["sec-ch-ua-mobile"] || "?0",
+          secChUaPlatform: hints["sec-ch-ua-platform"] || "",
+          version: hints["version"] || config.qwen.webVersion,
+        };
       }
     } catch {
       userAgent = config.auth.userAgent;
@@ -851,7 +899,7 @@ export async function getBasicHeaders(accountId: string): Promise<{
       const bxUmidtoken = cache.headers["bx-umidtoken"];
       const bxV = cache.headers["bx-v"] || "2.5.37";
       const cookie = await getCookies(accountId);
-      return { cookie, userAgent, bxV, bxUa, bxUmidtoken };
+      return { cookie, userAgent, bxV, bxUa, bxUmidtoken, ...clientHints };
     }
 
     // Extended fast path: headers are stale but auth token is still valid.
@@ -862,6 +910,7 @@ export async function getBasicHeaders(accountId: string): Promise<{
       // cookie string (previously 3 round-trips: 2 validators + lightweight
       // refresh).
       const cookieSnapshot = await getCookieSnapshot(accountId);
+      await getCookieSnapshot(accountId);
       if (
         cookieSnapshot &&
         isAuthTokenValidFrom(cookieSnapshot) &&
@@ -880,7 +929,7 @@ export async function getBasicHeaders(accountId: string): Promise<{
         console.log(
           `🔄 [Playwright] Skipped header recapture for ${accountId} (token still valid, age: ${Math.round(headersAge / 60000)} min)`,
         );
-        return { cookie, userAgent, bxV, bxUa, bxUmidtoken };
+        return { cookie, userAgent, bxV, bxUa, bxUmidtoken, ...clientHints };
       }
     }
 
@@ -945,6 +994,7 @@ export async function getBasicHeaders(accountId: string): Promise<{
       bxV,
       bxUa,
       bxUmidtoken,
+      ...clientHints,
     };
   } finally {
     release();
@@ -1575,6 +1625,9 @@ export async function captureQwenHeaders(
       }
 
       const reqHeaders = request.headers();
+      // Capture the REAL browser request headers — including version and the
+      // client-hint fingerprint — so the Node paths reuse exactly what the live
+      // browser sends (anti-hardcoded: no stale Chrome/version literals).
       const capturedHeaders: Record<string, string> = {
         cookie: reqHeaders["cookie"] || "",
         "bx-ua": reqHeaders["bx-ua"] || "",
@@ -1582,6 +1635,10 @@ export async function captureQwenHeaders(
         "bx-v": reqHeaders["bx-v"] || "2.5.37",
         "user-agent": reqHeaders["user-agent"] || "",
         "x-request-id": reqHeaders["x-request-id"] || "",
+        "version": reqHeaders["version"] || "",
+        "sec-ch-ua": reqHeaders["sec-ch-ua"] || "",
+        "sec-ch-ua-mobile": reqHeaders["sec-ch-ua-mobile"] || "?0",
+        "sec-ch-ua-platform": reqHeaders["sec-ch-ua-platform"] || "",
       };
 
       // Extract chat_id and parent_id from POST body for session coherence
@@ -1678,7 +1735,11 @@ export async function captureQwenHeaders(
         }
       }
 
-      const inputSelector = 'textarea:visible, [contenteditable="true"]:visible';
+      // Prefer the Qwen-specific input selector first (stable against the DOM
+      // picking a sibling textarea/contenteditable), then fall back to generic.
+      // Mirrors upstream 5b3fd3e (robust account header capture).
+      const inputSelector =
+        'textarea.message-input-textarea:visible, textarea:visible, [contenteditable="true"]:visible';
       await page.focus(inputSelector);
       if (settled) return;
       await page.fill(inputSelector, "");

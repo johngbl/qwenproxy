@@ -811,6 +811,28 @@ const modelsCache = new Map<
 const nativeToolsDisabled = new Set<string>();
 const disablingNativeToolsInProgress = new Set<string>();
 const lastSyncedPersonalizationHashes = new Map<string, string>();
+
+// Direct-fetch circuit breaker for the personalization settings API. A raw
+// Node fetch to chat.qwen.ai can be WAF-blocked (baxia/captcha challenge) in
+// some environments; after N consecutive block-like responses we open the
+// breaker for that account and route personalization through the browser (the
+// guaranteed WAF-safe transport) until the app restarts. This keeps the fast
+// direct path primary while never letting a WAF block cost a round-trip on
+// every sync.
+const directSettingsFetchConsecutiveFailures = new Map<string, number>();
+const DIRECT_SETTINGS_FETCH_BLOCK_THRESHOLD = 2;
+const directSettingsFetchBlocked = new Set<string>();
+const DIRECT_SETTINGS_FETCH_TIMEOUT_MS = 10_000;
+
+// Direct-fetch circuit breaker for POST /api/v2/chat/completions. The real
+// client posts from the browser; a raw Node fetch can be WAF-blocked, so we
+// keep the SSE fast path (no CDP bridge, no page wait) but fall back to the
+// browser relay on a WAF/HTML/non-SSE response. After repeated failures the
+// breaker opens per account so WAF-hostile accounts go straight to the browser.
+const directFetchFailures = new Map<string, number>();
+const DIRECT_FETCH_FAILURE_THRESHOLD = 3;
+const directFetchBlockedUntil = new Map<string, number>();
+const DIRECT_FETCH_BLOCK_MS = 5 * 60 * 1000;
 const activePersonalizationByAccount = new Map<
   string,
   PersonalizationEstimationInfo
@@ -918,6 +940,10 @@ function buildCapturedQwenHeaders(
     bxUa: headers["bx-ua"],
     bxUmidtoken: headers["bx-umidtoken"],
     bxV: headers["bx-v"],
+    secChUa: headers["sec-ch-ua"] || undefined,
+    secChUaMobile: headers["sec-ch-ua-mobile"] || undefined,
+    secChUaPlatform: headers["sec-ch-ua-platform"] || undefined,
+    version: headers["version"] || undefined,
     chatSessionId: options.chatSessionId,
     extra: {
       ...(options.referer ? { Referer: options.referer } : {}),
@@ -1026,10 +1052,21 @@ const QWEN_SAFE_SETTINGS_HASH = crypto
   .digest("hex")
   .slice(0, 12);
 
-function buildQwenSettingsUpdatePayload(
+export function buildQwenSettingsUpdatePayload(
   currentSettings: any,
   instruction: string,
 ): Record<string, unknown> {
+  // The real client (HAR networkv2) POSTs ONLY `{personalization: {...}}` to
+  // /api/v2/users/user/settings/update. Live probes confirmed the personalization
+  // object accepts the GET-personalization spread + enable_for_new_chat, but the
+  // FULL-settings spread this used to send (ui/memory/tools_enabled + every GET
+  // field like tts_speaker_v2, code_settings, manage_cookies) is rejected with
+  // RequestValidationError. Safe-settings are applied by disableNativeTools as
+  // their own combined partial POST (probe-accepted). NOTE: the persistent
+  // RequestValidationError that haunted the sync was NOT the payload — it was a
+  // missing Content-Type header (attemptPost received the raw getQwenHeaders
+  // map); the body was not parsed as a JSON object ("Field '': Input should be
+  // a valid dictionary...").
   const currentPersonalization =
     currentSettings?.personalization &&
     typeof currentSettings.personalization === "object"
@@ -1037,32 +1074,13 @@ function buildQwenSettingsUpdatePayload(
       : {};
 
   return {
-    ...(currentSettings && typeof currentSettings === "object"
-      ? currentSettings
-      : {}),
-    ui: {
-      ...(currentSettings?.ui && typeof currentSettings.ui === "object"
-        ? currentSettings.ui
-        : {}),
-      ...QWEN_SAFE_SETTINGS_PATCH.ui,
-    },
-    mcp_remind: QWEN_SAFE_SETTINGS_PATCH.mcp_remind,
-    memory: {
-      ...(currentSettings?.memory && typeof currentSettings.memory === "object"
-        ? currentSettings.memory
-        : {}),
-      ...QWEN_SAFE_SETTINGS_PATCH.memory,
-    },
-    tools_enabled: {
-      ...(currentSettings?.tools_enabled &&
-      typeof currentSettings.tools_enabled === "object"
-        ? currentSettings.tools_enabled
-        : {}),
-      ...QWEN_SAFE_SETTINGS_PATCH.tools_enabled,
-    },
     personalization: {
       ...currentPersonalization,
       name: "",
+      description:
+        currentPersonalization.description === undefined
+          ? null
+          : currentPersonalization.description,
       style: null,
       instruction,
       enable_for_new_chat: true,
@@ -1293,6 +1311,104 @@ export async function requestQwenTextInBrowser(
   });
 }
 
+/**
+ * Direct Node fetch of Qwen settings/user APIs using the captured (now
+ * anti-hardcoded) headers. This is exactly what the real web client does — a
+ * plain fetch against `/api/v2/users/user/settings` on the same origin — and
+ * it avoids the flaky `page.evaluate` + settings-page navigation that hung
+ * the personalization sync (the 30s sync timeout / "stuck page operation").
+ *
+ * Returns null (instead of throwing) when the direct path should not be used:
+ * the account's circuit breaker is open, a WAF block is detected, or the
+ * request errors — in all cases the caller falls back to the browser path.
+ */
+export async function requestQwenSettingsDirectFetch(
+  accountId: string | undefined,
+  method: "GET" | "POST",
+  path: string,
+  headers: Record<string, string>,
+  payload?: Record<string, unknown>,
+): Promise<{ status: number; raw: string; json: any } | null> {
+  const cacheKey = accountId || "global";
+  if (directSettingsFetchBlocked.has(cacheKey)) {
+    return null;
+  }
+
+  const url = qwenUrl(path);
+  const controller = new AbortController();
+  const timeoutId = setTimeout(
+    () => controller.abort(),
+    DIRECT_SETTINGS_FETCH_TIMEOUT_MS,
+  );
+  try {
+    const response = await fetch(url, {
+      method,
+      headers,
+      ...(payload === undefined ? {} : { body: JSON.stringify(payload) }),
+      signal: controller.signal,
+    });
+    const raw = await response.text();
+    const contentType =
+      response.headers.get("content-type") || "application/json";
+
+    // A WAF/baxia challenge (or proxy error page) is HTML, not the JSON the
+    // settings API always returns. If we see one, treat it as a block and let
+    // the browser path take over — the browser has the real fingerprint that
+    // passes the WAF.
+    let json: any = null;
+    let okShape = false;
+    if (contentType.includes("html")) {
+      okShape = false;
+    } else {
+      try {
+        json = JSON.parse(raw);
+        okShape = json && typeof json === "object" && "success" in json;
+      } catch {
+        okShape = false;
+      }
+    }
+
+    if (!okShape) {
+      const failures = (directSettingsFetchConsecutiveFailures.get(cacheKey) ??
+        0) + 1;
+      if (failures >= DIRECT_SETTINGS_FETCH_BLOCK_THRESHOLD) {
+        directSettingsFetchBlocked.add(cacheKey);
+        logger.debug(
+          "[Qwen] Direct settings fetch WAF-blocked; routing personalization through the browser",
+          {
+            accountId: cacheKey,
+            path,
+            consecutiveFailures: failures,
+            contentType,
+            status: response.status,
+          },
+        );
+      } else {
+        directSettingsFetchConsecutiveFailures.set(cacheKey, failures);
+      }
+      return null;
+    }
+
+    directSettingsFetchConsecutiveFailures.delete(cacheKey);
+    logger.debug("[Qwen] Direct settings fetch succeeded", {
+      accountId: cacheKey,
+      path,
+      status: response.status,
+    });
+    return { status: response.status, raw, json };
+  } catch (err) {
+    // Network error or the bounded timeout — fall back to the browser path.
+    logger.debug("[Qwen] Direct settings fetch failed; using browser path", {
+      accountId: cacheKey,
+      path,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 async function requestQwenPersonalizationInBrowser(
   accountId: string | undefined,
   method: "GET" | "POST",
@@ -1300,6 +1416,22 @@ async function requestQwenPersonalizationInBrowser(
   headers: Record<string, string>,
   payload?: Record<string, unknown>,
 ): Promise<{ status: number; raw: string; json: any }> {
+  // Fast, stable primary path: direct Node fetch with the captured headers
+  // (cookie, bx-v, version, sec-ch-ua, source, referer). Falls back to the
+  // browser only when unavailable (circuit breaker / WAF block / network err).
+  if (!isAuthMockEnabled()) {
+    const direct = await requestQwenSettingsDirectFetch(
+      accountId,
+      method,
+      path,
+      headers,
+      payload,
+    );
+    if (direct) {
+      return direct;
+    }
+  }
+
   const response = await requestQwenTextInBrowser(
     accountId,
     method,
@@ -1881,8 +2013,12 @@ export async function syncQwenRequestPersonalization(
   let raw: string;
   let json: any;
 
-  // Layer 1: First attempt
-  ({ raw, json } = await attemptPost(headers));
+  // Layer 1: First attempt. attemptPost MUST receive the fully-built request
+  // headers (Content-Type: application/json, Origin, Referer, source, ...) —
+  // the raw getQwenHeaders map lacks Content-Type, and the Qwen API rejects a
+  // body POSTed without it with RequestValidationError ("Field '': Input
+  // should be a valid dictionary..." — the body is not parsed as a JSON object).
+  ({ raw, json } = await attemptPost(requestHeaders));
 
   // Layer 2: On 401/Unauthorized → refresh session and retry once
   const isUnauthorized =
@@ -1901,7 +2037,7 @@ export async function syncQwenRequestPersonalization(
       requestHeaders = buildCapturedQwenHeaders(freshHeaders, {
         referer: qwenUrl("/settings/personalization"),
       });
-      ({ raw, json } = await attemptPost(freshHeaders));
+      ({ raw, json } = await attemptPost(requestHeaders));
     } catch (retryErr) {
       // Layer 3: Retry failed → non-fatal, continue without personalization
       console.warn(
@@ -1990,19 +2126,13 @@ export async function disableNativeTools(accountId?: string): Promise<void> {
   disablingNativeToolsInProgress.add(cacheKey);
 
   try {
-    const payload = {
-      tools_enabled: {
-        web_extractor: false,
-        web_search_image: false,
-        web_search: false,
-        image_gen_tool: false,
-        code_interpreter: false,
-        history_retriever: false,
-        image_edit_tool: false,
-        bio: false,
-        image_zoom_in_tool: false,
-      },
-    };
+    // Apply the FULL safe-settings patch (tools_enabled + ui + memory +
+    // mcp_remind), not just tools_enabled: since the personalization POST
+    // became personalization-only, nothing else applies ui/memory/mcp_remind,
+    // and the sync's verified-cache check (existingSafeSettingsApplied)
+    // requires ALL of them false. A live probe confirmed the combined
+    // no-personalization payload is accepted by settings/update.
+    const payload = QWEN_SAFE_SETTINGS_PATCH;
 
     // Use an isolated page only when the main page is actively serving a stream.
     // Startup/idle operations should not open a visible extra tab.
@@ -2935,6 +3065,137 @@ async function readResponsePreview(
   return Buffer.concat(chunks).toString("utf8");
 }
 
+/**
+ * Direct (Node-side) completion fast path.
+ *
+ * The browser relay streams every SSE chunk across the CDP bridge
+ * (page.evaluate + browserStreamStates), which is a serialized round-trip per
+ * chunk and also requires the lane page to be on the chat.qwen.ai origin. For
+ * the fastest path we POST the completion directly from Node using the
+ * already-captured anti-bot headers — no bridge, no page wait. The HAR
+ * (networkv2) confirms the real client posts with bx-ua/bx-v on completions,
+ * so we mirror that. Anything but a clean SSE success falls back to the
+ * browser relay below; a per-account circuit breaker opens after repeated
+ * failures so WAF-hostile accounts stay on the browser path automatically.
+ */
+export function canUseDirectFetchRequest(accountId?: string): boolean {
+  if (!config.qwen.directFetch) return false;
+  if (!accountId) return false;
+  return (directFetchBlockedUntil.get(accountId) || 0) <= Date.now();
+}
+
+export function recordDirectFetchSuccess(accountId?: string): void {
+  if (!accountId) return;
+  directFetchFailures.delete(accountId);
+}
+
+export function recordDirectFetchFailure(accountId?: string): void {
+  if (!accountId) return;
+  const failures = (directFetchFailures.get(accountId) || 0) + 1;
+  directFetchFailures.set(accountId, failures);
+  if (failures >= DIRECT_FETCH_FAILURE_THRESHOLD) {
+    directFetchBlockedUntil.set(accountId, Date.now() + DIRECT_FETCH_BLOCK_MS);
+    logger.debug("[Qwen] Direct completion fetch circuit opened", {
+      accountId,
+      failures,
+      blockedForS: DIRECT_FETCH_BLOCK_MS / 1000,
+    });
+  }
+}
+
+/**
+ * Headers for the Node-side completion POST. Reuses buildCapturedQwenHeaders
+ * (cookie, origin, referer with the chat id, sec-ch-ua, version, bx-v, source)
+ * and additionally injects bx-ua/bx-umidtoken when captured — the real
+ * completions request carries them (HAR networkv2), so the direct path matches
+ * the browser client and stands the best chance of passing the WAF.
+ */
+export function buildDirectCompletionHeaders(
+  headers: Record<string, string>,
+  chatSessionId: string | null | undefined,
+): Record<string, string> {
+  const base = buildCapturedQwenHeaders(headers, {
+    chatSessionId: chatSessionId || null,
+    extra: {
+      "x-accel-buffering": "no",
+    },
+  });
+  if (headers["bx-ua"]) base["bx-ua"] = headers["bx-ua"];
+  if (headers["bx-umidtoken"]) base["bx-umidtoken"] = headers["bx-umidtoken"];
+  return base;
+}
+
+/**
+ * Try the direct Node fetch of the completion. Returns a Response only when it
+ * is a clean SSE success (ok + text/event-stream + body); otherwise records a
+ * circuit-breaker failure and returns undefined so the caller falls back to
+ * the browser relay (which can solve a baxia challenge). Never throws for
+ * network/timeout errors — it returns undefined. Bounded to a first-byte
+ * deadline so a silently-dropped direct request does not stall the browser
+ * fallback.
+ */
+export async function tryDirectCompletionFetch(
+  accountId: string | undefined,
+  chatSessionId: string | null | undefined,
+  url: string,
+  payloadJson: string,
+  headers: Record<string, string>,
+  externalSignal: AbortSignal,
+): Promise<Response | undefined> {
+  const payloadMb = Math.ceil(
+    Buffer.byteLength(payloadJson, "utf8") / (1024 * 1024),
+  );
+  const headerTimeoutMs =
+    Math.max(15_000, config.timeouts.timeToFirstByte) +
+    payloadMb * METADATA_TIMEOUT_PER_PAYLOAD_MB_MS;
+
+  const controller = new AbortController();
+  const headerTimeoutId = setTimeout(() => controller.abort(), headerTimeoutMs);
+  const onExternalAbort = () => controller.abort();
+  externalSignal.addEventListener("abort", onExternalAbort, { once: true });
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: buildDirectCompletionHeaders(headers, chatSessionId),
+      body: payloadJson,
+      signal: controller.signal,
+    });
+
+    const contentType = response.headers.get("content-type") || "";
+    if (response.ok && contentType.includes("text/event-stream") && response.body) {
+      recordDirectFetchSuccess(accountId);
+      return response;
+    }
+
+    // Not a clean SSE success — read the body and fall back unless it is a
+    // real (non-WAF) upstream error we should surface. We deliberately route
+    // everything through the browser relay on non-SSE, so the recovery
+    // machinery below sees browser responses it knows how to handle.
+    const bodyText = await response.text().catch(() => "");
+    if (
+      isWafChallengeResponse(bodyText) ||
+      isHtmlResponseBody(bodyText) ||
+      isHtmlResponseContentType(contentType)
+    ) {
+      recordDirectFetchFailure(accountId);
+      return undefined;
+    }
+    recordDirectFetchFailure(accountId);
+    return undefined;
+  } catch (err) {
+    recordDirectFetchFailure(accountId);
+    logger.debug("[Qwen] Direct completion fetch failed; using browser relay", {
+      accountId,
+      chatId: chatSessionId ?? "new",
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return undefined;
+  } finally {
+    clearTimeout(headerTimeoutId);
+    externalSignal.removeEventListener("abort", onExternalAbort);
+  }
+}
+
 export async function createQwenStream(
   prompt: string,
   enableThinking: boolean,
@@ -3339,17 +3600,30 @@ async function createQwenStreamInternal(
   signal?.addEventListener("abort", onExternalAbort, { once: true });
 
   try {
-    const fetchCompletion = (requestHeaders: Record<string, string>) =>
-      createQwenBrowserResponse(
+    const fetchCompletion = async (requestHeaders: Record<string, string>): Promise<Response> => {
+      // Direct Node fetch fast path (no CDP bridge, no page wait). Only a clean
+      // SSE success is used; anything WAF/HTML/non-SSE falls back to the
+      // browser relay so the recovery machinery below (captcha solve, header
+      // refresh) still sees browser responses it knows how to handle.
+      if (!isAuthMockEnabled() && canUseDirectFetchRequest(accountId)) {
+        const direct = await tryDirectCompletionFetch(
+          accountId,
+          chatSessionId,
+          url,
+          payloadJson,
+          requestHeaders,
+          controller.signal,
+        );
+        if (direct) return direct;
+      }
+      return createQwenBrowserResponse(
         accountId,
         url,
         "POST",
-        buildCapturedQwenHeaders(requestHeaders, {
-          chatSessionId,
-          extra: {
-            "x-accel-buffering": "no",
-          },
-        }),
+        // Same headers as the direct path: the 0.2.86 HAR shows the real
+        // client POSTs completions with bx-ua/bx-umidtoken + x-accel-buffering,
+        // so the browser relay matches it instead of relying on sendBxUa.
+        buildDirectCompletionHeaders(requestHeaders, chatSessionId),
         payloadJson,
         controller.signal,
         qwenUrl(
@@ -3359,6 +3633,7 @@ async function createQwenStreamInternal(
         ),
         browserStreamBudgetMs,
       );
+    };
 
     let response!: Response;
     let captchaRecoveryAttempted = false;

@@ -14,6 +14,12 @@ export interface BuildQwenHeadersOptions {
   bxUmidtoken?: string;
   bxV?: string;
   chatSessionId?: string | null;
+  /** Real browser client-hints captured by getBasicHeaders (anti-hardcoded). */
+  secChUa?: string;
+  secChUaMobile?: string;
+  secChUaPlatform?: string;
+  /** Real web bundle version captured from the browser request (anti-hardcoded). */
+  version?: string;
   extra?: Record<string, string>;
 }
 
@@ -33,10 +39,6 @@ export function buildQwenRequestHeaders(
       (opts.chatSessionId
         ? qwenUrl(`/c/${encodeURIComponent(opts.chatSessionId)}`)
         : qwenUrl("/")),
-    "sec-ch-ua":
-      '"Google Chrome";v="150", "Chromium";v="150", "Not.A/Brand";v="99"',
-    "sec-ch-ua-mobile": "?0",
-    "sec-ch-ua-platform": '"Windows"',
     "Sec-Fetch-Dest": "empty",
     "Sec-Fetch-Mode": "cors",
     "Sec-Fetch-Site": "same-origin",
@@ -45,8 +47,13 @@ export function buildQwenRequestHeaders(
     "X-Request-Id": uuidv4(),
     "bx-v": opts.bxV || "2.5.37",
     source: "web",
-    version: QWEN_WEB_VERSION,
+    version: opts.version || QWEN_WEB_VERSION,
     timezone: QWEN_TIMEZONE_HEADER,
+    // Use the real browser client-hints when captured (anti-hardcoded); fall
+    // back to the static fingerprint otherwise.
+    "sec-ch-ua": opts.secChUa || '"Google Chrome";v="150", "Chromium";v="150", "Not.A/Brand";v="99"',
+    "sec-ch-ua-mobile": opts.secChUaMobile || "?0",
+    "sec-ch-ua-platform": opts.secChUaPlatform || '"Windows"',
   };
 
   // The real chat.qwen.ai client sends ONLY bx-v on API requests — the WAF

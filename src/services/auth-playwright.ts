@@ -64,6 +64,10 @@ export async function getBasicHeaders(accountId?: string): Promise<{
   bxV: string;
   bxUa: string;
   bxUmidtoken: string;
+  secChUa: string;
+  secChUaMobile: string;
+  secChUaPlatform: string;
+  version: string;
 }> {
   if (isAuthMockEnabled()) {
     return {
@@ -72,6 +76,10 @@ export async function getBasicHeaders(accountId?: string): Promise<{
       bxV: "2.5.37",
       bxUa: "mock-bx-ua",
       bxUmidtoken: "mock-bx-umidtoken",
+      secChUa: "",
+      secChUaMobile: "?0",
+      secChUaPlatform: "",
+      version: "0.2.86",
     };
   }
 
@@ -126,6 +134,7 @@ export async function getQwenHeaders(
         "bx-v": basic.bxV,
         "bx-ua": basic.bxUa,
         "bx-umidtoken": basic.bxUmidtoken,
+        version: basic.version,
       },
       chatSessionId: "",
       parentMessageId: null,
@@ -153,6 +162,10 @@ export async function getQwenHeaders(
       "bx-v": basic.bxV,
       "bx-ua": basic.bxUa || "",
       "bx-umidtoken": basic.bxUmidtoken || "",
+      "sec-ch-ua": basic.secChUa,
+      "sec-ch-ua-mobile": basic.secChUaMobile,
+      "sec-ch-ua-platform": basic.secChUaPlatform,
+      version: basic.version,
     },
     chatSessionId: "",
     parentMessageId: null,

@@ -19,13 +19,26 @@ const envSchema = z
       ),
     QWEN_BX_V: z.string().default("2.5.37"),
     // Version header on Qwen API requests = the deployed web bundle version
-    // (snapshot 09/08). The server does not validate it today; override via
-    // env if Qwen ships a new bundle and starts rejecting stale versions.
-    QWEN_WEB_VERSION: z.string().default("0.2.83"),
-    // The real chat.qwen.ai client sends ONLY bx-v on API requests (no
-    // bx-ua/bx-umidtoken headers — the WAF carries them as cookies). Set true
-    // to restore the legacy behavior of injecting the captured bx-ua tokens.
+    // (snapshot 18/08, networkv2 HAR: bundle qwen-chat-fe/0.2.86). The server
+    // does not validate it today; override via env when Qwen ships a new bundle.
+    QWEN_WEB_VERSION: z.string().default("0.2.86"),
+    // Controls bx-ua/bx-umidtoken injection on the GENERAL API paths
+    // (chats/new, settings): those work without them (live-probed). The
+    // completions paths are the exception — the 0.2.86 HAR shows the real
+    // client POSTs completions WITH bx-ua, so they always include the captured
+    // tokens regardless of this flag (buildDirectCompletionHeaders). Set true
+    // to inject them everywhere (legacy behavior).
     QWEN_SEND_BX_UA: z.string().default("false"),
+    // POST /api/v2/chat/completions directly from Node using the captured
+    // anti-bot headers, skipping the CDP bridge + page wait. DEFAULT OFF: a
+    // live probe showed the Qwen WAF that signs baxia challenges URL-fingerprints
+    // the TLS stack and BLOCKS Node/undici fetches with FAIL_SYS_USER_VALIDATE /
+    // RGV587_ERROR (challenge captcha) even with browser-captured headers, so
+    // it would add ~1.4s of failed latency per request before the fallback.
+    // Opt in only in environments where the direct POST actually returns SSE
+    // (no WAF). Falls back to the browser relay on WAF/HTML/non-SSE; a
+    // per-account circuit breaker opens after repeated failures.
+    QWEN_DIRECT_FETCH: z.string().default("false"),
     PLAYWRIGHT_HEADLESS: z.string().default("true"),
     PLAYWRIGHT_BROWSER: z
       .enum(["chromium", "chrome", "edge"])
@@ -315,6 +328,8 @@ export const config = {
     deleteAllChatsOnShutdown: env.DELETE_ALL_CHATS_ON_SHUTDOWN === "true",
     /** Send the captured bx-ua/bx-umidtoken headers (real client does NOT). */
     sendBxUa: env.QWEN_SEND_BX_UA === "true",
+    /** POST completions directly from Node (browser relay fallback on WAF). */
+    directFetch: env.QWEN_DIRECT_FETCH === "true",
     /** Deployed web bundle version sent as the `version` API header. */
     webVersion: env.QWEN_WEB_VERSION,
   },
