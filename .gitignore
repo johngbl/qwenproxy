@@ -25,7 +25,6 @@ qwenproxy-api-*.log.txt
 
 # Network captures
 network/
-networkv2/
 
 # Coverage & cache
 coverage/

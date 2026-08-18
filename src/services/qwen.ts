@@ -824,15 +824,6 @@ const DIRECT_SETTINGS_FETCH_BLOCK_THRESHOLD = 2;
 const directSettingsFetchBlocked = new Set<string>();
 const DIRECT_SETTINGS_FETCH_TIMEOUT_MS = 10_000;
 
-// Direct-fetch circuit breaker for POST /api/v2/chat/completions. The real
-// client posts from the browser; a raw Node fetch can be WAF-blocked, so we
-// keep the SSE fast path (no CDP bridge, no page wait) but fall back to the
-// browser relay on a WAF/HTML/non-SSE response. After repeated failures the
-// breaker opens per account so WAF-hostile accounts go straight to the browser.
-const directFetchFailures = new Map<string, number>();
-const DIRECT_FETCH_FAILURE_THRESHOLD = 3;
-const directFetchBlockedUntil = new Map<string, number>();
-const DIRECT_FETCH_BLOCK_MS = 5 * 60 * 1000;
 const activePersonalizationByAccount = new Map<
   string,
   PersonalizationEstimationInfo
@@ -3066,51 +3057,19 @@ async function readResponsePreview(
 }
 
 /**
- * Direct (Node-side) completion fast path.
+ * Headers for the completions POST (browser relay). Reuses
+ * buildCapturedQwenHeaders (cookie, origin, referer with the chat id,
+ * sec-ch-ua, version, bx-v, source) and additionally injects
+ * bx-ua/bx-umidtoken when captured — the real client POSTs completions WITH
+ * them (0.2.86 HAR, network/), so the relay matches the browser client.
  *
- * The browser relay streams every SSE chunk across the CDP bridge
- * (page.evaluate + browserStreamStates), which is a serialized round-trip per
- * chunk and also requires the lane page to be on the chat.qwen.ai origin. For
- * the fastest path we POST the completion directly from Node using the
- * already-captured anti-bot headers — no bridge, no page wait. The HAR
- * (networkv2) confirms the real client posts with bx-ua/bx-v on completions,
- * so we mirror that. Anything but a clean SSE success falls back to the
- * browser relay below; a per-account circuit breaker opens after repeated
- * failures so WAF-hostile accounts stay on the browser path automatically.
+ * NOTE: a direct Node-side fetch was tried and removed — the Qwen WAF
+ * fingerprints the HTTP stack beyond headers and JA3 (live probes: blocked
+ * with no headers at all AND with a chrome_136 TLS profile), so completions
+ * must go through the browser. The settings endpoints have no such WAF and
+ * use direct Node fetch (requestQwenSettingsDirectFetch).
  */
-export function canUseDirectFetchRequest(accountId?: string): boolean {
-  if (!config.qwen.directFetch) return false;
-  if (!accountId) return false;
-  return (directFetchBlockedUntil.get(accountId) || 0) <= Date.now();
-}
-
-export function recordDirectFetchSuccess(accountId?: string): void {
-  if (!accountId) return;
-  directFetchFailures.delete(accountId);
-}
-
-export function recordDirectFetchFailure(accountId?: string): void {
-  if (!accountId) return;
-  const failures = (directFetchFailures.get(accountId) || 0) + 1;
-  directFetchFailures.set(accountId, failures);
-  if (failures >= DIRECT_FETCH_FAILURE_THRESHOLD) {
-    directFetchBlockedUntil.set(accountId, Date.now() + DIRECT_FETCH_BLOCK_MS);
-    logger.debug("[Qwen] Direct completion fetch circuit opened", {
-      accountId,
-      failures,
-      blockedForS: DIRECT_FETCH_BLOCK_MS / 1000,
-    });
-  }
-}
-
-/**
- * Headers for the Node-side completion POST. Reuses buildCapturedQwenHeaders
- * (cookie, origin, referer with the chat id, sec-ch-ua, version, bx-v, source)
- * and additionally injects bx-ua/bx-umidtoken when captured — the real
- * completions request carries them (HAR networkv2), so the direct path matches
- * the browser client and stands the best chance of passing the WAF.
- */
-export function buildDirectCompletionHeaders(
+export function buildCompletionHeaders(
   headers: Record<string, string>,
   chatSessionId: string | null | undefined,
 ): Record<string, string> {
@@ -3123,77 +3082,6 @@ export function buildDirectCompletionHeaders(
   if (headers["bx-ua"]) base["bx-ua"] = headers["bx-ua"];
   if (headers["bx-umidtoken"]) base["bx-umidtoken"] = headers["bx-umidtoken"];
   return base;
-}
-
-/**
- * Try the direct Node fetch of the completion. Returns a Response only when it
- * is a clean SSE success (ok + text/event-stream + body); otherwise records a
- * circuit-breaker failure and returns undefined so the caller falls back to
- * the browser relay (which can solve a baxia challenge). Never throws for
- * network/timeout errors — it returns undefined. Bounded to a first-byte
- * deadline so a silently-dropped direct request does not stall the browser
- * fallback.
- */
-export async function tryDirectCompletionFetch(
-  accountId: string | undefined,
-  chatSessionId: string | null | undefined,
-  url: string,
-  payloadJson: string,
-  headers: Record<string, string>,
-  externalSignal: AbortSignal,
-): Promise<Response | undefined> {
-  const payloadMb = Math.ceil(
-    Buffer.byteLength(payloadJson, "utf8") / (1024 * 1024),
-  );
-  const headerTimeoutMs =
-    Math.max(15_000, config.timeouts.timeToFirstByte) +
-    payloadMb * METADATA_TIMEOUT_PER_PAYLOAD_MB_MS;
-
-  const controller = new AbortController();
-  const headerTimeoutId = setTimeout(() => controller.abort(), headerTimeoutMs);
-  const onExternalAbort = () => controller.abort();
-  externalSignal.addEventListener("abort", onExternalAbort, { once: true });
-  try {
-    const response = await fetch(url, {
-      method: "POST",
-      headers: buildDirectCompletionHeaders(headers, chatSessionId),
-      body: payloadJson,
-      signal: controller.signal,
-    });
-
-    const contentType = response.headers.get("content-type") || "";
-    if (response.ok && contentType.includes("text/event-stream") && response.body) {
-      recordDirectFetchSuccess(accountId);
-      return response;
-    }
-
-    // Not a clean SSE success — read the body and fall back unless it is a
-    // real (non-WAF) upstream error we should surface. We deliberately route
-    // everything through the browser relay on non-SSE, so the recovery
-    // machinery below sees browser responses it knows how to handle.
-    const bodyText = await response.text().catch(() => "");
-    if (
-      isWafChallengeResponse(bodyText) ||
-      isHtmlResponseBody(bodyText) ||
-      isHtmlResponseContentType(contentType)
-    ) {
-      recordDirectFetchFailure(accountId);
-      return undefined;
-    }
-    recordDirectFetchFailure(accountId);
-    return undefined;
-  } catch (err) {
-    recordDirectFetchFailure(accountId);
-    logger.debug("[Qwen] Direct completion fetch failed; using browser relay", {
-      accountId,
-      chatId: chatSessionId ?? "new",
-      error: err instanceof Error ? err.message : String(err),
-    });
-    return undefined;
-  } finally {
-    clearTimeout(headerTimeoutId);
-    externalSignal.removeEventListener("abort", onExternalAbort);
-  }
 }
 
 export async function createQwenStream(
@@ -3601,29 +3489,14 @@ async function createQwenStreamInternal(
 
   try {
     const fetchCompletion = async (requestHeaders: Record<string, string>): Promise<Response> => {
-      // Direct Node fetch fast path (no CDP bridge, no page wait). Only a clean
-      // SSE success is used; anything WAF/HTML/non-SSE falls back to the
-      // browser relay so the recovery machinery below (captcha solve, header
-      // refresh) still sees browser responses it knows how to handle.
-      if (!isAuthMockEnabled() && canUseDirectFetchRequest(accountId)) {
-        const direct = await tryDirectCompletionFetch(
-          accountId,
-          chatSessionId,
-          url,
-          payloadJson,
-          requestHeaders,
-          controller.signal,
-        );
-        if (direct) return direct;
-      }
       return createQwenBrowserResponse(
         accountId,
         url,
         "POST",
-        // Same headers as the direct path: the 0.2.86 HAR shows the real
-        // client POSTs completions with bx-ua/bx-umidtoken + x-accel-buffering,
-        // so the browser relay matches it instead of relying on sendBxUa.
-        buildDirectCompletionHeaders(requestHeaders, chatSessionId),
+        // The 0.2.86 HAR shows the real client POSTs completions with
+        // bx-ua/bx-umidtoken + x-accel-buffering, so the relay matches it
+        // instead of relying on sendBxUa.
+        buildCompletionHeaders(requestHeaders, chatSessionId),
         payloadJson,
         controller.signal,
         qwenUrl(
