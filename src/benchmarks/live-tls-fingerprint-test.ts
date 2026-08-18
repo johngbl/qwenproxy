@@ -143,9 +143,11 @@ async function main() {
 async function testNodeTlsClient(headers: Record<string, string>) {
   let initTLS: any, Session: any, ClientIdentifier: any, destroyTLS: any;
   try {
-    ({ initTLS, Session, ClientIdentifier, destroyTLS } = await import(
-      "node-tls-client"
-    ));
+    // Non-literal specifier: the package is optional (local-only, not in
+    // dependencies); a static import string fails tsc in CI where it is
+    // not installed (TS2307).
+    const spec = "node-tls-client" as string;
+    ({ initTLS, Session, ClientIdentifier, destroyTLS } = await import(spec));
   } catch (e) {
     console.log(
       `[node-tls-client ] SKIPPED: ${e instanceof Error ? e.message.slice(0, 120) : String(e)}`,
