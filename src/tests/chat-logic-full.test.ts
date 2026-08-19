@@ -441,7 +441,7 @@ test("classifyError splits RetryableQwenStreamError into rate limit vs upstream"
   assert.ok(classifyError(busy) instanceof UpstreamError);
 });
 
-test("classifyError passes through known QwenBridgeError instances", () => {
+test("classifyError passes through known QwenProxyError instances", () => {
   const upstream = new QwenUpstreamError("boom", "BadGateway", 502);
   assert.strictEqual(classifyError(upstream), upstream);
 
@@ -507,7 +507,7 @@ function fakeContext() {
   return { c, calls };
 }
 
-test("sendOpenAIError serializes QwenBridgeError directly", () => {
+test("sendOpenAIError serializes QwenProxyError directly", () => {
   const { c, calls } = fakeContext();
   sendOpenAIError(c, new ValidationError("bad input"));
   assert.strictEqual(calls.length, 1);

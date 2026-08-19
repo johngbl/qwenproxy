@@ -151,7 +151,7 @@ export interface ResponsesUsage {
   output_tokens_details: {
     reasoning_tokens: number;
   };
-  /** Optional QwenBridge diagnostic extension when context metering is enabled. */
+  /** Optional QwenProxy diagnostic extension when context metering is enabled. */
   context_meter?: ContextMeterSnapshot;
 }
 

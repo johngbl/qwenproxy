@@ -15,7 +15,7 @@ function getOrCreateKey(): Buffer {
 
   const envKey = process.env.ENCRYPTION_KEY;
   if (envKey) {
-    cachedKey = crypto.scryptSync(envKey, "qwenbridge-salt", KEY_LENGTH);
+    cachedKey = crypto.scryptSync(envKey, "qwenproxy-salt", KEY_LENGTH);
     return cachedKey;
   }
 

@@ -156,7 +156,7 @@ test("account-manager: database failures are swallowed by cooldown writers", () 
   // Break the database: close it, then replace the file with a directory so
   // every reopen attempt throws.
   closeDatabase();
-  const dbPath = path.join(tmpDir, "data-test", "db", "qwenbridge.db");
+  const dbPath = path.join(tmpDir, "data-test", "db", "qwenproxy.db");
   fs.renameSync(dbPath, `${dbPath}.bak`);
   fs.mkdirSync(dbPath);
 

@@ -268,47 +268,47 @@ export function getContextMeterHeaders(
   if (!snapshot) return {};
 
   const headers: Record<string, string> = {
-    "X-QwenBridge-Context-Meter": "enabled",
-    "X-QwenBridge-Context-Model": snapshot.model,
-    "X-QwenBridge-Context-Mode": snapshot.mode,
-    "X-QwenBridge-Context-Window-Tokens": String(snapshot.contextWindowTokens),
-    "X-QwenBridge-Context-Window-Source": snapshot.contextWindowSource,
-    "X-QwenBridge-Context-Measurement": snapshot.measurementSource,
-    "X-QwenBridge-Context-Estimated-Tokens": String(
+    "X-QwenProxy-Context-Meter": "enabled",
+    "X-QwenProxy-Context-Model": snapshot.model,
+    "X-QwenProxy-Context-Mode": snapshot.mode,
+    "X-QwenProxy-Context-Window-Tokens": String(snapshot.contextWindowTokens),
+    "X-QwenProxy-Context-Window-Source": snapshot.contextWindowSource,
+    "X-QwenProxy-Context-Measurement": snapshot.measurementSource,
+    "X-QwenProxy-Context-Estimated-Tokens": String(
       snapshot.estimatedContextTokens,
     ),
-    "X-QwenBridge-Context-Percent": String(snapshot.estimatedContextPercent),
-    "X-QwenBridge-Context-Remaining-Tokens": String(
+    "X-QwenProxy-Context-Percent": String(snapshot.estimatedContextPercent),
+    "X-QwenProxy-Context-Remaining-Tokens": String(
       snapshot.remainingContextTokens,
     ),
-    "X-QwenBridge-Context-Full-Prompt-Bytes": String(
+    "X-QwenProxy-Context-Full-Prompt-Bytes": String(
       snapshot.fullPromptBytes,
     ),
-    "X-QwenBridge-Context-Request-Prompt-Bytes": String(
+    "X-QwenProxy-Context-Request-Prompt-Bytes": String(
       snapshot.requestPromptBytes,
     ),
-    "X-QwenBridge-Context-Qwen-Payload-Bytes": String(
+    "X-QwenProxy-Context-Qwen-Payload-Bytes": String(
       snapshot.qwenPayloadBytes ?? 0,
     ),
   };
 
   if (snapshot.upstreamPromptTokens !== null) {
-    headers["X-QwenBridge-Context-Upstream-Tokens"] = String(
+    headers["X-QwenProxy-Context-Upstream-Tokens"] = String(
       snapshot.upstreamPromptTokens,
     );
   }
   if (snapshot.upstreamContextPercent !== null) {
-    headers["X-QwenBridge-Context-Upstream-Percent"] = String(
+    headers["X-QwenProxy-Context-Upstream-Percent"] = String(
       snapshot.upstreamContextPercent,
     );
   }
   if (snapshot.upstreamRemainingContextTokens !== null) {
-    headers["X-QwenBridge-Context-Upstream-Remaining-Tokens"] = String(
+    headers["X-QwenProxy-Context-Upstream-Remaining-Tokens"] = String(
       snapshot.upstreamRemainingContextTokens,
     );
   }
   if (snapshot.reportedPromptTokens !== null) {
-    headers["X-QwenBridge-Context-Reported-Tokens"] = String(
+    headers["X-QwenProxy-Context-Reported-Tokens"] = String(
       snapshot.reportedPromptTokens,
     );
   }

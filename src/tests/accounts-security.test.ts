@@ -2,7 +2,7 @@ import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 
 process.env.ENCRYPTION_KEY =
-  process.env.ENCRYPTION_KEY || "qwenbridge-test-key";
+  process.env.ENCRYPTION_KEY || "qwenproxy-test-key";
 const originalQwenAccounts = process.env.QWEN_ACCOUNTS;
 delete process.env.QWEN_ACCOUNTS;
 

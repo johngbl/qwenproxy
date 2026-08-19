@@ -1,6 +1,6 @@
 /*
  * File: completions.ts
- * Project: QwenBridge
+ * Project: QwenProxy
  *
  * Legacy OpenAI Completions API (POST /v1/completions) — thin adapter over the
  * internal Chat Completions pipeline. The legacy surface uses a freeform

@@ -273,7 +273,7 @@ Exemplo de log:
 ...
 
 +----------------------------------------------------------+
-|                   QwenBridge                             |
+|                   QwenProxy                             |
 |             OpenAI-Compatible API                        |
 |  Endpoint    http://127.0.0.1:3000/v1                    |
 |  Accounts    1/6 warm                                    |
@@ -407,7 +407,7 @@ Fingerprint estável por conta (UA, locale, viewport, hardware/WebGL) é aplicad
 | `CONTEXT_METER_WINDOW_TOKENS` | `0` | Janela usada pelo medidor (`0` usa a janela real registrada para o modelo) |
 | `CONTEXT_METER_REPORT_USAGE` | `true` | Reporta em `usage.prompt_tokens` o valor real `input_tokens` do Qwen quando disponível; só usa a estimativa como fallback |
 
-O medidor de contexto é padrão e não exige nenhuma variável no `.env`. Ele não é um tokenizer nativo do Zed/Cline nem substitui o tokenizer privado do Qwen: calcula uma estimativa local do histórico completo recebido pelo proxy, registra o prompt delta/replay efetivamente enviado e preserva `usage.context_meter` com `measurementSource=qwen` quando o Qwen devolve `input_tokens`, ou `measurementSource=local_estimate` quando não devolve. A janela do modelo é sincronizada automaticamente pelo `/api/models`, e são emitidos headers `X-QwenBridge-Context-*` e logs estruturados. As três variáveis podem ser usadas somente como overrides avançados; por padrão o valor real do Qwen é preferido e a estimativa só é fallback.
+O medidor de contexto é padrão e não exige nenhuma variável no `.env`. Ele não é um tokenizer nativo do Zed/Cline nem substitui o tokenizer privado do Qwen: calcula uma estimativa local do histórico completo recebido pelo proxy, registra o prompt delta/replay efetivamente enviado e preserva `usage.context_meter` com `measurementSource=qwen` quando o Qwen devolve `input_tokens`, ou `measurementSource=local_estimate` quando não devolve. A janela do modelo é sincronizada automaticamente pelo `/api/models`, e são emitidos headers `X-QwenProxy-Context-*` e logs estruturados. As três variáveis podem ser usadas somente como overrides avançados; por padrão o valor real do Qwen é preferido e a estimativa só é fallback.
 
 ### Observabilidade
 
@@ -613,9 +613,9 @@ O proxy envia o id do modelo ao Qwen **como está**. Apenas os sufixos de racioc
 
 ```yaml
 services:
-  qwenbridge:
+  qwenproxy:
     build: .
-    container_name: qwenbridge
+    container_name: qwenproxy
     ports:
       - "${PORT:-3000}:3000"
     env_file:

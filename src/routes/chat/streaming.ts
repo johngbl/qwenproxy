@@ -1,6 +1,6 @@
 /*
  * File: streaming.ts
- * Project: QwenBridge
+ * Project: QwenProxy
  *
  * Upstream stream consumption: both non-streaming (JSON) and streaming (SSE)
  * response modes. Encapsulates heartbeat, abort handling, reasoning tag

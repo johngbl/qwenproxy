@@ -1,6 +1,6 @@
 /*
  * File: playwright.ts
- * Project: QwenBridge
+ * Project: QwenProxy
  *
  * Playwright browser automation with stealth plugin for anti-bot evasion.
  * Captures real browser headers (bx-ua, bx-umidtoken) per account.

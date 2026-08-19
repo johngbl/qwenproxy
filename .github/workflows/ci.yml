@@ -65,8 +65,8 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: |
-            pedrofariasx/qwenbridge:latest
-            pedrofariasx/qwenbridge:${{ github.sha }}
+            pedrofariasx/qwenproxy:latest
+            pedrofariasx/qwenproxy:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

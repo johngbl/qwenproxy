@@ -1,6 +1,6 @@
 /*
  * File: helpers.ts
- * Project: QwenBridge
+ * Project: QwenProxy
  * Description: Stable helper functions for chat completions processing
  */
 

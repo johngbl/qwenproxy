@@ -7,7 +7,7 @@ export const MAX_PAYLOAD_SIZE = 50 * 1024 * 1024;
  * Model metadata exposed by Qwen's live `/api/models` catalog.
  *
  * The registry deliberately has no model-name table. Qwen can add, remove or
- * change models without requiring a QwenBridge release. The values below are
+ * change models without requiring a QwenProxy release. The values below are
  * conservative fallbacks used only until the selected account's catalog has
  * been synchronized.
  */

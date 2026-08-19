@@ -36,7 +36,7 @@ export class MemoryCache {
   private scanRegexCache: Map<string, RegExp> = new Map();
 
   constructor(options?: { prefix?: string; defaultTTL?: number }) {
-    this.prefix = options?.prefix || "qwenbridge:";
+    this.prefix = options?.prefix || "qwenproxy:";
     this.defaultTTL = options?.defaultTTL || config.cache.defaultTTL;
     this.store = new Map();
     this.cleanupInterval = null;

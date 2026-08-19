@@ -1,6 +1,6 @@
 /*
  * File: index.ts
- * Project: QwenBridge
+ * Project: QwenProxy
  *
  * Thin orchestrator for chat completions. Delegates to specialized modules:
  * - validation.ts: request parsing
@@ -233,7 +233,7 @@ export async function chatCompletions(c: Context) {
 
     mark("upstream", stepStartedAt);
     timings.preResponse = Date.now() - startedAt;
-    c.header("X-QwenBridge-Timing", formatTimingHeader(timings));
+    c.header("X-QwenProxy-Timing", formatTimingHeader(timings));
 
     if ("error" in streamResult) {
       if (streamResult.allOnCooldown) {
@@ -582,7 +582,7 @@ export async function chatCompletions(c: Context) {
         }
   } catch (err) {
     timings.preResponse = Date.now() - startedAt;
-    c.header("X-QwenBridge-Timing", formatTimingHeader(timings));
+    c.header("X-QwenProxy-Timing", formatTimingHeader(timings));
     if (releaseChatLock) {
       releaseChatLock();
       releaseChatLock = null;

@@ -1,7 +1,7 @@
 import { ZodError } from "zod";
 import { logger } from "../core/logger.js";
 import {
-  QwenBridgeError,
+  QwenProxyError,
   InternalError,
   ValidationError,
   UpstreamRateLimit,
@@ -18,10 +18,10 @@ import {
 } from "../services/qwen.js";
 
 /**
- * Classifies unknown errors into standard QwenBridgeError hierarchy.
+ * Classifies unknown errors into standard QwenProxyError hierarchy.
  * Preserves specific error metadata when possible.
  */
-export function classifyError(err: unknown): QwenBridgeError {
+export function classifyError(err: unknown): QwenProxyError {
   // These errors are retryable upstream failures, not rate-limit responses.
   // RetryableQwenStreamError inherits UpstreamRateLimit for legacy behavior,
   // so classify the concrete network/upstream types before that base class.
@@ -71,7 +71,7 @@ export function classifyError(err: unknown): QwenBridgeError {
     return err;
   }
 
-  if (err instanceof QwenBridgeError) {
+  if (err instanceof QwenProxyError) {
     return err;
   }
 

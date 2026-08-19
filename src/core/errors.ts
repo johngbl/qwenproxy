@@ -1,7 +1,7 @@
 /**
  * Valid HTTP status codes for operational errors.
  */
-export type QwenBridgeStatusCode =
+export type QwenProxyStatusCode =
   | 400
   | 401
   | 403
@@ -14,11 +14,11 @@ export type QwenBridgeStatusCode =
   | 504;
 
 /**
- * Base class for all QwenBridge operational errors.
+ * Base class for all QwenProxy operational errors.
  * Provides OpenAI-compatible error formatting.
  */
-export abstract class QwenBridgeError extends Error {
-  abstract readonly statusCode: QwenBridgeStatusCode;
+export abstract class QwenProxyError extends Error {
+  abstract readonly statusCode: QwenProxyStatusCode;
   abstract readonly type: string;
   abstract readonly code: string;
   param?: string;
@@ -40,7 +40,7 @@ export abstract class QwenBridgeError extends Error {
   }
 }
 
-export class ValidationError extends QwenBridgeError {
+export class ValidationError extends QwenProxyError {
   readonly statusCode = 400;
   readonly type = "invalid_request_error";
   readonly code: string = "bad_request";
@@ -56,43 +56,43 @@ export class ContextLengthExceededError extends ValidationError {
   }
 }
 
-export class AuthError extends QwenBridgeError {
+export class AuthError extends QwenProxyError {
   readonly statusCode = 401;
   readonly type = "authentication_error";
   readonly code = "invalid_api_key";
 }
 
-export class ForbiddenError extends QwenBridgeError {
+export class ForbiddenError extends QwenProxyError {
   readonly statusCode = 403;
   readonly type = "permission_error";
   readonly code = "insufficient_quota";
 }
 
-export class NotFoundError extends QwenBridgeError {
+export class NotFoundError extends QwenProxyError {
   readonly statusCode = 404;
   readonly type = "not_found_error";
   readonly code = "resource_not_found";
 }
 
-export class UpstreamRateLimit extends QwenBridgeError {
+export class UpstreamRateLimit extends QwenProxyError {
   readonly statusCode = 429;
   readonly type = "rate_limit_error";
   readonly code = "rate_limit_exceeded";
 }
 
-export class UpstreamError extends QwenBridgeError {
+export class UpstreamError extends QwenProxyError {
   readonly statusCode = 502;
   readonly type = "upstream_error";
   readonly code = "upstream_unavailable";
 }
 
-export class UpstreamTimeout extends QwenBridgeError {
+export class UpstreamTimeout extends QwenProxyError {
   readonly statusCode = 504;
   readonly type = "timeout_error";
   readonly code = "upstream_timeout";
 }
 
-export class InternalError extends QwenBridgeError {
+export class InternalError extends QwenProxyError {
   readonly statusCode = 500;
   readonly type = "internal_error";
   readonly code = "internal_server_error";
@@ -105,13 +105,13 @@ export class InternalError extends QwenBridgeError {
  * a server fault nor an upstream failure. HTTP 499 (Client Closed Request)
  * keeps the semantics without polluting error metrics.
  */
-export class ClientAbortedError extends QwenBridgeError {
-  readonly statusCode = 499 as QwenBridgeStatusCode;
+export class ClientAbortedError extends QwenProxyError {
+  readonly statusCode = 499 as QwenProxyStatusCode;
   readonly type = "request_aborted";
   readonly code = "client_aborted";
 }
 
-export class ServiceUnavailable extends QwenBridgeError {
+export class ServiceUnavailable extends QwenProxyError {
   readonly statusCode = 503;
   readonly type = "service_unavailable";
   readonly code = "service_degraded";

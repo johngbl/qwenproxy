@@ -7,7 +7,7 @@ import {
 } from "./auth-playwright.ts";
 import { v4 as uuidv4 } from "uuid";
 import {
-  QwenBridgeError,
+  QwenProxyError,
   UpstreamRateLimit,
   UpstreamError,
   AuthError,
@@ -39,8 +39,8 @@ import { isAccountBusy } from "../core/account-concurrency.ts";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-const BROWSER_STREAM_BINDING = "__qwenBridgeStreamEvent";
-const BROWSER_ABORTERS_KEY = "__qwenBridgeAborters";
+const BROWSER_STREAM_BINDING = "__qwenProxyStreamEvent";
+const BROWSER_ABORTERS_KEY = "__qwenProxyAborters";
 const BROWSER_STREAM_FLUSH_BYTES = 4096;
 const BROWSER_STREAM_FLUSH_MS = 25;
 const METADATA_TIMEOUT_PER_PAYLOAD_MB_MS = 10_000;
@@ -291,7 +291,7 @@ export class RetryableQwenStreamError extends UpstreamRateLimit {
  * answer without any instructions or tools. Surfaces as 503 (service
  * degraded) if every account fails to sync.
  */
-export class PersonalizationSyncError extends QwenBridgeError {
+export class PersonalizationSyncError extends QwenProxyError {
   readonly statusCode = 503;
   readonly type = "service_unavailable";
   readonly code = "personalization_unavailable";

@@ -39,7 +39,7 @@ function formatAccountId(accountId: string): string {
 function buildPortInUseMessage(port: number, host: string): string {
   return (
     `❌ [Server] Port ${port} is already in use (${host}:${port}).` +
-    `\n   Another QwenBridge instance (or another program) is listening on this port.` +
+    `\n   Another QwenProxy instance (or another program) is listening on this port.` +
     `\n   Stop the other instance first, or start on another port: PORT=3001 npm start`
   );
 }
@@ -797,7 +797,7 @@ export async function startServer(options?: {
     console.log(`
 +${"-".repeat(W)}+
 |${blank()}|
-|${center("QwenBridge")}|
+|${center("QwenProxy")}|
 |${center("OpenAI-Compatible API")}|
 |${blank()}|
 +${"-".repeat(W)}+

@@ -1,7 +1,7 @@
 import type { Context } from "hono";
-import type { QwenBridgeStatusCode } from "../core/errors.js";
+import type { QwenProxyStatusCode } from "../core/errors.js";
 import {
-  QwenBridgeError,
+  QwenProxyError,
   ValidationError,
   AuthError,
   ForbiddenError,
@@ -19,14 +19,14 @@ const VALID_STATUSES: ReadonlySet<number> = new Set([
   400, 401, 403, 404, 429, 499, 500, 502, 503, 504,
 ]);
 
-function isValidStatus(code: number): code is QwenBridgeStatusCode {
+function isValidStatus(code: number): code is QwenProxyStatusCode {
   return VALID_STATUSES.has(code);
 }
 
 function errorForStatus(
-  status: QwenBridgeStatusCode,
+  status: QwenProxyStatusCode,
   message: string,
-): QwenBridgeError {
+): QwenProxyError {
   switch (status) {
     case 400:
       return new ValidationError(message);
@@ -53,36 +53,36 @@ function errorForStatus(
 
 /**
  * Sends a standardized OpenAI-compatible error response.
- * Handles QwenBridgeError directly, checks upstreamStatus hints on plain errors,
+ * Handles QwenProxyError directly, checks upstreamStatus hints on plain errors,
  * and falls back to the error classifier.
  */
 export function sendOpenAIError(
   c: Context,
   err: unknown,
-  fallbackStatus?: QwenBridgeStatusCode,
+  fallbackStatus?: QwenProxyStatusCode,
 ): Response {
-  let qwenBridgeErr: QwenBridgeError;
+  let qwenProxyErr: QwenProxyError;
 
-  if (err instanceof QwenBridgeError) {
-    qwenBridgeErr = err;
+  if (err instanceof QwenProxyError) {
+    qwenProxyErr = err;
   } else {
     const hint = (err as Record<string, unknown>)?.upstreamStatus;
     if (typeof hint === "number" && isValidStatus(hint)) {
-      qwenBridgeErr = errorForStatus(
+      qwenProxyErr = errorForStatus(
         hint,
         err instanceof Error ? err.message : String(err),
       );
     } else if (fallbackStatus) {
-      qwenBridgeErr = errorForStatus(
+      qwenProxyErr = errorForStatus(
         fallbackStatus,
         err instanceof Error ? err.message : String(err),
       );
     } else {
-      qwenBridgeErr = classifyError(err);
+      qwenProxyErr = classifyError(err);
     }
   }
 
-  const inner = qwenBridgeErr.toOpenAI().error;
+  const inner = qwenProxyErr.toOpenAI().error;
   const body = {
     error: {
       message: inner.message,
@@ -94,24 +94,24 @@ export function sendOpenAIError(
   // 499 (Client Closed Request) is not part of Hono's ContentfulStatusCode
   // union. The abort is intercepted before sendOpenAIError in the chat route,
   // but keep the fallback type-safe by building the Response directly.
-  if (qwenBridgeErr.statusCode === 499) {
+  if (qwenProxyErr.statusCode === 499) {
     return new Response(JSON.stringify(body), {
       status: 499,
       headers: { "content-type": "application/json" },
     });
   }
-  return c.json(body, qwenBridgeErr.statusCode);
+  return c.json(body, qwenProxyErr.statusCode);
 }
 
 /**
- * Creates a QwenBridgeError mapped to the given HTTP status code.
+ * Creates a QwenProxyError mapped to the given HTTP status code.
  * Useful for inline error returns without throwing.
  */
 export function createError(
-  status: QwenBridgeStatusCode,
+  status: QwenProxyStatusCode,
   message: string,
   param?: string,
-): QwenBridgeError {
+): QwenProxyError {
   const err = errorForStatus(status, message);
   if (param) err.param = param;
   return err;

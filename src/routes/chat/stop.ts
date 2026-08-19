@@ -1,6 +1,6 @@
 /*
  * File: stop.ts
- * Project: QwenBridge
+ * Project: QwenProxy
  *
  * Handler for aborting an in-flight chat completion via the upstream
  * Qwen stop endpoint. Looks up the active stream in the registry,

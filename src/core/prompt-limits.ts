@@ -88,7 +88,7 @@ export function assertPromptWithinLimits(
 
   if (maxPromptBytes > 0 && stats.bytes > maxPromptBytes) {
     throw new ContextLengthExceededError(
-      `Input is too large for QwenBridge (${stats.bytes} UTF-8 bytes; limit ${maxPromptBytes}). Reduce or summarize the conversation before retrying.`,
+      `Input is too large for QwenProxy (${stats.bytes} UTF-8 bytes; limit ${maxPromptBytes}). Reduce or summarize the conversation before retrying.`,
     );
   }
 

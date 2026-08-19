@@ -578,7 +578,7 @@ async function benchmarkNonStream(
     const totalMs = round(performance.now() - startedAt);
     const proxyMs = parseXResponseTime(response.headers.get("x-response-time"));
     const internalTimings = parseInternalTimings(
-      response.headers.get("x-qwenbridge-timing"),
+      response.headers.get("x-qwenproxy-timing"),
     );
     let completionChars = 0;
     let usage: UsageSnapshot | null = null;
@@ -655,7 +655,7 @@ async function benchmarkStream(config: BenchmarkConfig): Promise<StreamSample> {
 
     const proxyMs = parseXResponseTime(response.headers.get("x-response-time"));
     const internalTimings = parseInternalTimings(
-      response.headers.get("x-qwenbridge-timing"),
+      response.headers.get("x-qwenproxy-timing"),
     );
     if (!response.body) {
       const elapsedMs = round(performance.now() - startedAt);
@@ -984,7 +984,7 @@ async function run(): Promise<void> {
   };
   const accountContext = buildAccountBenchmarkContext(configuredAccounts);
 
-  console.log("=== QwenBridge Benchmark ===");
+  console.log("=== QwenProxy Benchmark ===");
   console.log(
     JSON.stringify(
       {

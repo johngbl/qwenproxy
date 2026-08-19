@@ -1,6 +1,6 @@
 /*
  * File: media.ts
- * Project: QwenBridge
+ * Project: QwenProxy
  *
  * Native image/video generation over /v1/chat/completions. When the client
  * selects a generation-specific model (qwen-image-*, wan2.*), the request is

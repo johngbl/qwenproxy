@@ -32,7 +32,7 @@ async function showMenu() {
   while (true) {
     const accounts = listAccounts();
     clear();
-    console.log("=== QwenBridge Account Manager ===\n");
+    console.log("=== QwenProxy Account Manager ===\n");
     console.log("Auth mode: Playwright (validated on server start)\n");
 
     if (accounts.length > 0) {

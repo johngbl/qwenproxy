@@ -1,6 +1,6 @@
 /*
  * File: chat.ts
- * Project: QwenBridge
+ * Project: QwenProxy
  * Author: Pedro Farias
  * Created: 2026-05-09
  *
