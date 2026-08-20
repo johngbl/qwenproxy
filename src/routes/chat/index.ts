@@ -23,7 +23,7 @@ import {
   handleChatCompletionsError,
   type AssistantCompleteEvent,
 } from "./streaming.ts";
-import { config } from "../../core/config.ts";
+import { config, type ChatMode } from "../../core/config.ts";
 import { logger } from "../../core/logger.ts";
 import { getContextMeterHeaders, type ContextMeterMode } from "../../services/context-meter.ts";
 import {
@@ -45,6 +45,16 @@ function formatTimingHeader(timings: Record<string, number>): string {
   return Object.entries(timings)
     .map(([key, value]) => `${key}=${Math.max(0, Math.round(value))}`)
     .join(";");
+}
+
+/**
+ * Per-request chat-mode override (X-QwenProxy-Chat-Mode) falls back to the
+ * QWEN_CHAT_MODE env default. Only the two known modes are accepted; anything
+ * else silently uses the configured default.
+ */
+function resolveChatMode(headerValue: string | undefined): ChatMode {
+  if (headerValue === "thread" || headerValue === "temp") return headerValue;
+  return config.qwen.chatMode;
 }
 
 export async function chatCompletions(c: Context) {
@@ -103,6 +113,7 @@ export async function chatCompletions(c: Context) {
     }
 
     stepStartedAt = Date.now();
+    const chatMode = resolveChatMode(c.req.header("x-qwenproxy-chat-mode"));
     const ctx = await buildFinalContext({
       messages,
       systemPrompt,
@@ -113,6 +124,7 @@ export async function chatCompletions(c: Context) {
       enableThinking,
       conversationKey,
       hasExplicitConversationKey: parsed.hasExplicitConversationKey,
+      chatMode,
     });
     mark("context", stepStartedAt);
 
@@ -227,6 +239,7 @@ export async function chatCompletions(c: Context) {
       requestSignal: c.req.raw.signal,
       messages,
       parallelEscape,
+      chatMode,
     });
 
 
@@ -296,6 +309,7 @@ export async function chatCompletions(c: Context) {
           ? false
           : ctx.updateLogicalThread,
         parallelEscape,
+        chatMode,
         allowThreadReuse: ctx.allowThreadReuse,
         messageCount: msgCount,
         fullMessageCount: parsed.messageCount,
@@ -506,6 +520,7 @@ export async function chatCompletions(c: Context) {
               requestSignal: c.req.raw.signal,
               messages,
               parallelEscape: retryParallelEscape,
+              chatMode,
             });
 
             if ("error" in newStreamResult) {
@@ -556,6 +571,7 @@ export async function chatCompletions(c: Context) {
                   ? false
                   : ctx.updateLogicalThread,
                 parallelEscape: retryParallelEscape,
+                chatMode,
                 allowThreadReuse: ctx.allowThreadReuse,
                 messageCount: retryMessageCount,
                 fullMessageCount: parsed.messageCount,

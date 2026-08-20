@@ -7,7 +7,7 @@ import {
 } from "../../core/account-manager.ts";
 import { markAccountSuccessful, markAccountFailed, getAccountsByPriority } from "../../core/account-priority.ts";
 import { loadAccounts, type QwenAccount } from "../../core/accounts.ts";
-import { config } from "../../core/config.ts";
+import { config, type ChatMode } from "../../core/config.ts";
 import { ClientAbortedError, UpstreamRateLimit } from "../../core/errors.ts";
 import {
   assertPromptWithinLimits,
@@ -179,6 +179,8 @@ export interface AcquireParams {
 	useThreadNative: boolean;
 	updateLogicalThread: boolean;
 	allowThreadReuse: boolean;
+	/** "thread" (reuse upstream chat) or "temp" (new ephemeral chat per request). */
+	chatMode: ChatMode;
 	/** Full message history for intelligent context truncation after model sync. */
 	messages?: Message[];
 	forceNewChat?: boolean;
@@ -360,6 +362,7 @@ export async function acquireUpstreamStream(
 		useThreadNative,
 		updateLogicalThread,
 		allowThreadReuse,
+		chatMode,
 		forceNewChat = false,
 		preferredAccountId,
 		excludeAccountIds,
@@ -585,6 +588,7 @@ export async function acquireUpstreamStream(
 					messages: params.messages,
 					completionId,
 					parallelEscape: params.parallelEscape,
+					chatMode,
 				},
 				accountId,
 				accountEmail,
@@ -832,6 +836,8 @@ async function tryCreateStreamWithRetry(
 		 * waiting on the main chat's lock, and hop accounts fast (tryAcquire).
 		 */
 		parallelEscape?: boolean;
+		/** "thread" (reuse upstream chat) or "temp" (new ephemeral chat per request). */
+		chatMode: ChatMode;
 	},
 	accountId: string,
 	accountEmail: string,
@@ -1191,6 +1197,7 @@ async function tryCreateStreamWithRetry(
 									forceNewChat: false,
 									reasoningMode: params.reasoningMode,
 									parallelEscape: params.parallelEscape,
+									chatMode: params.chatMode,
 								}
 							: params.reasoningMode ? { reasoningMode: params.reasoningMode } : undefined,
 						combinedSignal,

@@ -23,6 +23,7 @@ import { getDatabase } from "../core/database.ts";
 import { resolveInitialAccount, shouldWaitQueueForever } from "../routes/chat/account.ts";
 import { buildFinalContext } from "../routes/chat/context.ts";
 import {
+	clearAllSessionsForAccount,
 	getLogicalThreadState,
 	updateLogicalThreadState,
 } from "../services/qwen.ts";
@@ -197,6 +198,104 @@ test("thread-native continuation reuses sticky account binding from logical stat
 	// forceNewChat semantics: sticky owner remains readable even if caller forces
 	// a new chat (account layer should still pin to this account unless null).
 	assert.equal(state!.accountId, "acc-sticky");
+});
+
+test("tool-loop history without an assistant role is treated as a continuation, not a new session", async () => {
+	// Some tool-loop clients (Zed/Cline) send the conversation history with
+	// tool/function responses and assistant tool_calls but WITHOUT a plain
+	// role:"assistant" entry. Previously isNewSession checked ONLY for an
+	// assistant role, so such a history was misclassified as a brand-new chat
+	// on every turn — which made existingThread resolve to null and forced the
+	// FULL ~1MB history to be re-sent on every request (and every
+	// chat_in_progress retry).
+	const continuations: Array<Record<string, unknown>> = [
+		{ role: "tool", tool_call_id: "call_1", name: "shell", content: "out" },
+		{ role: "function", name: "shell", content: "out" },
+		{
+			role: "assistant",
+			content: null,
+			tool_calls: [
+				{
+					id: "call_1",
+					type: "function",
+					function: { name: "shell", arguments: "{}" },
+				},
+			],
+		},
+	];
+
+	for (const trailing of continuations) {
+		const messages = [
+			{ role: "user", content: "first question" },
+			trailing,
+			{ role: "user", content: "continue" },
+		] as any[];
+
+		const ctx = await buildFinalContext({
+			messages,
+			systemPrompt: "",
+			toolInstructions: "",
+			prompt: "full history",
+			currentPrompt: "delta",
+			modelId: "qwen3.7-plus",
+			enableThinking: false,
+			conversationKey: null,
+			hasExplicitConversationKey: false,
+		});
+
+		assert.equal(
+			ctx.isNewSession,
+			false,
+			`role=${trailing.role} history must be a continuation`,
+		);
+		assert.equal(
+			ctx.allowThreadReuse,
+			true,
+			`role=${trailing.role} history must allow thread reuse`,
+		);
+	}
+});
+
+test("tool-loop continuation resolves the existing thread and sends the delta", async () => {
+	const messages = [
+		{ role: "user", content: "first question" },
+		{ role: "tool", tool_call_id: "call_1", name: "shell", content: "output" },
+		{ role: "user", content: "continue" },
+	] as any[];
+
+	// conversationKey is null → buildFinalContext derives the implicit-thread id.
+	const sessionId = deriveSessionId(messages, "", "implicit-thread");
+	updateLogicalThreadState(sessionId, {
+		accountId: "tool-loop-acc",
+		chatSessionId: "chat-tool-loop",
+		parentId: "parent-1",
+		instructionsSent: true,
+	});
+
+	try {
+		const ctx = await buildFinalContext({
+			messages,
+			systemPrompt: "",
+			toolInstructions: "",
+			prompt: "FULL_HISTORY",
+			currentPrompt: "DELTA",
+			modelId: "qwen3.7-plus",
+			enableThinking: false,
+			conversationKey: null,
+			hasExplicitConversationKey: false,
+		});
+
+		assert.equal(ctx.isNewSession, false);
+		assert.equal(ctx.allowThreadReuse, true);
+		assert.equal(ctx.existingThread, true);
+		assert.equal(
+			ctx.finalPrompt,
+			"DELTA",
+			"a continuation with a known thread must send the delta, not the full history",
+		);
+	} finally {
+		clearAllSessionsForAccount("tool-loop-acc");
+	}
 });
 
 test("personalization contains complete agent instructions and tools", async () => {

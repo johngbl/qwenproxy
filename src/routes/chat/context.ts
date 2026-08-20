@@ -1,4 +1,4 @@
-import { config } from "../../core/config.ts";
+import { config, type ChatMode } from "../../core/config.ts";
 import { ContextLengthExceededError, ValidationError } from "../../core/errors.ts";
 import { getModelContextWindow } from "../../core/model-registry.ts";
 import {
@@ -20,6 +20,7 @@ export interface FinalContext {
   isNewSession: boolean;
   useThreadNative: boolean;
   updateLogicalThread: boolean;
+  chatMode: ChatMode;
   isThinkingModel: boolean;
   estimatedTokens: number;
   modelContextWindow: number;
@@ -39,6 +40,7 @@ export interface BuildContextParams {
   enableThinking: boolean;
   conversationKey: string | null;
   hasExplicitConversationKey: boolean;
+  chatMode?: ChatMode;
 }
 
 export async function buildFinalContext(
@@ -54,11 +56,23 @@ export async function buildFinalContext(
     enableThinking,
     conversationKey,
     hasExplicitConversationKey,
+    chatMode = "thread",
   } = params;
 
   const modelContextWindow = getModelContextWindow(modelId);
   const useThreadNative = true;
-  const isNewSession = !messages.some((m) => m.role === "assistant");
+  const isTempMode = chatMode === "temp";
+  // A continuation is ANY evidence of a prior turn, not just a plain
+  // role:"assistant" message. Tool-loop clients (Zed/Cline) can send history
+  // with tool/function responses or assistant tool_calls but WITHOUT a plain
+  // assistant entry; misclassifying those as a new session forced the FULL
+  // history to be re-sent on every request (and every chat_in_progress retry)
+  // instead of the thread-native delta.
+  // In temp mode EVERY request is a new (ephemeral) chat, so the whole history
+  // is always sent and no thread state is ever consulted.
+  const isNewSession = isTempMode
+    ? true
+    : !messages.some(isContinuationMessage);
   const completeInstructions = [systemPrompt.trim(), toolInstructions.trim()]
     .filter(Boolean)
     .join("\n\n");
@@ -69,19 +83,23 @@ export async function buildFinalContext(
   //    OR: this is a continuation (has assistant messages in history)
   // This prevents new IDE chats from accidentally reusing old Qwen chats
   // while still allowing continuations without explicit session_id
-  const allowThreadReuse =
-    useThreadNative && (hasExplicitConversationKey || !isNewSession); // has assistant messages = continuation of existing chat
+  const allowThreadReuse = isTempMode
+    ? false
+    : useThreadNative && (hasExplicitConversationKey || !isNewSession); // has assistant messages = continuation of existing chat
 
   // Compute sessionId: only generate a persistent session ID when we have
   // an explicit conversation key. Otherwise, generate an ephemeral ID for
-  // logging/metrics only (not used for thread reuse).
-  const sessionId = (conversationKey || useThreadNative)
-    ? deriveSessionId(
-        messages,
-        conversationKey ? completeInstructions : "",
-        conversationKey ?? "implicit-thread",
-      )
-    : null;
+  // logging/metrics only (not used for thread reuse). Temp mode never persists
+  // a thread, so it has no session id.
+  const sessionId = isTempMode
+    ? null
+    : (conversationKey || useThreadNative)
+      ? deriveSessionId(
+          messages,
+          conversationKey ? completeInstructions : "",
+          conversationKey ?? "implicit-thread",
+        )
+      : null;
 
   // Only load existing thread when reuse is allowed
   const existingThread = allowThreadReuse
@@ -91,9 +109,11 @@ export async function buildFinalContext(
   const hasTrailingToolResult = detectTrailingToolResult(messages);
   // Thread-native: send full history when Qwen has no context yet, but preserve
   // tool-result deltas because the upstream parent chain already owns the call.
-  const activePrompt =
-    (!existingThread && !hasTrailingToolResult ? prompt : currentPrompt) ||
-    prompt;
+  // Temp mode: always send the FULL history (OpenAI standard).
+  const activePrompt = isTempMode
+    ? prompt
+    : (!existingThread && !hasTrailingToolResult ? prompt : currentPrompt) ||
+      prompt;
   const isTitleGenerationRequest = detectTitleGenerationRequest(messages);
   const requestedPersonalization =
     config.qwen.personalizationFromRequest && !isTitleGenerationRequest;
@@ -146,9 +166,9 @@ export async function buildFinalContext(
     shouldResetUpstreamThread,
     isNewSession,
     useThreadNative,
-    // Always update logical thread in thread-native mode (except title generation)
-    // This ensures the thread state is saved even for new sessions
-    updateLogicalThread: useThreadNative,
+    // Thread state is only persisted in thread mode (temp chats are ephemeral).
+    updateLogicalThread: isTempMode ? false : useThreadNative,
+    chatMode,
     isThinkingModel,
     estimatedTokens,
     modelContextWindow,
@@ -159,6 +179,15 @@ export async function buildFinalContext(
     hasExplicitConversationKey,
     allowThreadReuse,
   };
+}
+
+function isContinuationMessage(message: Message): boolean {
+  return (
+    message.role === "assistant" ||
+    message.role === "tool" ||
+    message.role === "function" ||
+    (Array.isArray(message.tool_calls) && message.tool_calls.length > 0)
+  );
 }
 
 function extractMessageText(message: Message | undefined): string {

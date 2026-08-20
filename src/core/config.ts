@@ -29,6 +29,12 @@ const envSchema = z
     // tokens regardless of this flag (buildCompletionHeaders). Set true
     // to inject them everywhere (legacy behavior).
     QWEN_SEND_BX_UA: z.string().default("false"),
+    // Conversation mode: "thread" (default) reuses the upstream Qwen chat via
+    // parent_id and sends the thread-native delta; "temp" creates a NEW Qwen
+    // temp chat (chat_mode:"local") for every request and sends the full
+    // history inline (OpenAI standard). Temp chats are ephemeral and never
+    // appear in the account's chat list (live-probed).
+    QWEN_CHAT_MODE: z.enum(["thread", "temp"]).default("thread"),
     PLAYWRIGHT_HEADLESS: z.string().default("true"),
     PLAYWRIGHT_BROWSER: z
       .enum(["chromium", "chrome", "edge"])
@@ -310,6 +316,8 @@ export const config = {
     personalizationFromRequest:
       env.QWEN_PERSONALIZATION_FROM_REQUEST === "true",
     personalizationVerifyGet: env.QWEN_PERSONALIZATION_VERIFY_GET !== "false",
+    /** "thread" (reuse upstream chat) or "temp" (new ephemeral chat per request). */
+    chatMode: env.QWEN_CHAT_MODE,
     maxPromptBytes: Math.max(0, parseInt(env.QWEN_MAX_PROMPT_BYTES)),
     maxPersonalizationBytes: Math.max(
       0,
@@ -329,3 +337,6 @@ export const config = {
 };
 
 export type Config = typeof config;
+
+/** Conversation mode: thread-native reuse vs ephemeral temp chat per request. */
+export type ChatMode = "thread" | "temp";

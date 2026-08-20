@@ -18,6 +18,7 @@ API compatível com **OpenAI** que conecta clientes ao **Qwen (`chat.qwen.ai`)**
 - **Compatibilidade OpenAI** — `/v1/chat/completions`, `/v1/completions` (legado), `/v1/models`, `/v1/chat/completions/stop`, `/v1/upload` e **Responses API** `/v1/responses`.
 - **Responses API completa** — SSE com `event:` + `data:` + `sequence_number`, memória persistente via `previous_response_id` (SQLite durável), `last_response_id`, multimodal (`input_image`/`input_file`), reasoning effort normalization, lifecycle events de reasoning e usage real do upstream.
 - **Thread-native** — Reutiliza sessão/pai no Qwen; preservação de contexto entre turns
+- **Dois modos de conversa** — `thread` (default, reutiliza chat e envia delta) e `temp` (novo chat temporário `chat_mode:"local"` por request, envia histórico completo; zero `chat_in_progress` e zero chats órfãos)
 - **Playwright + stealth** — Headers reais (`bx-ua`, `bx-umidtoken`, `bx-v`) por conta; fingerprint estável e cleanup de processos.
 - **Transporte Qwen via Chromium** — No fluxo principal de chat, modelos, criação de sessão, personalização, completion e stop usam o contexto Playwright; o completion lê o `ReadableStream` incrementalmente e preserva o SSE sem bufferizar a resposta inteira.
 - **Startup rápido multi-conta** — Sobe com a **primeira conta pronta**; as demais continuam preparando em background.
@@ -315,6 +316,7 @@ npm run typecheck  # tipos
 | `QWEN_MAX_PERSONALIZATION_BYTES` | `200000` | Teto UTF-8 para personalization por request; acima disso as instruções seguem inline |
 | `QWEN_CHAT_POOL_SIZE` | `1` | Warm pool de chats por modelo; fica desativado quando personalization por request está ativa |
 | `QWEN_CHAT_POOL_MODELS` | `qwen3.7-plus` | Modelos aquecidos no warm pool |
+| `QWEN_CHAT_MODE` | `thread` | Modo de conversa: `thread` (reutiliza o chat upstream via `parent_id` e envia o delta) ou `temp` (cria um chat temporário `chat_mode:"local"` a cada request e envia o histórico completo). Override por request via header `X-QwenProxy-Chat-Mode: thread/temp` |
 
 ### Playwright / processos
 

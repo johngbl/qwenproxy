@@ -15,7 +15,7 @@ import {
 } from "../core/errors.ts";
 import { buildQwenRequestHeaders } from "./qwen-headers.ts";
 import { qwenOrigin, qwenUrl } from "./qwen-url.ts";
-import { config } from "../core/config.ts";
+import { config, type ChatMode } from "../core/config.ts";
 import { logger, isToolcallDebugEnabled } from "../core/logger.ts";
 import { estimateTokenCount } from "../utils/context-truncation.ts";
 import type {
@@ -1103,6 +1103,7 @@ async function withQwenBrowserPage<T>(
   fn: (page: Page) => Promise<T>,
   targetPath?: string,
   operationTimeoutMs = config.timeouts.page,
+  recoverOnTimeout = true,
 ): Promise<T> {
   // Keep the account page on the chat UI for normal browser operations. The
   // personalization helper passes /settings/personalization explicitly; an
@@ -1140,6 +1141,7 @@ async function withQwenBrowserPage<T>(
     },
     operationTimeoutMs,
     Math.min(config.timeouts.page, 5_000),
+    recoverOnTimeout,
   );
 }
 
@@ -1147,6 +1149,7 @@ async function withQwenPersonalizationPage<T>(
   accountId: string,
   fn: (page: Page) => Promise<T>,
   operationTimeoutMs = config.timeouts.page,
+  recoverOnTimeout = true,
 ): Promise<T> {
   return withQwenBrowserPage(
     accountId,
@@ -1177,6 +1180,7 @@ async function withQwenPersonalizationPage<T>(
     },
     "/settings/personalization",
     operationTimeoutMs,
+    recoverOnTimeout,
   );
 }
 
@@ -1224,6 +1228,13 @@ export async function requestQwenTextInBrowser(
     settingsPage?: boolean;
     referrer?: string;
     timeoutMs?: number;
+    /**
+     * Best-effort operations (e.g. the post-disconnect stop) must not trigger
+     * the aggressive stuck-mutex recovery: the mutex is legitimately held by the
+     * NEW request that superseded this one, and closing the context / resetting
+     * the profile would kill the account for a healthy in-flight generation.
+     */
+    noMutexRecovery?: boolean;
   } = {},
 ): Promise<Response> {
   const url = qwenUrl(path);
@@ -1281,17 +1292,20 @@ export async function requestQwenTextInBrowser(
         referrer: options.referrer,
       },
     );
+  const recoverOnTimeout = !options.noMutexRecovery;
   const response = options.settingsPage
     ? await withQwenPersonalizationPage<BrowserTextResponse>(
         accountId,
         evaluateRequest,
         options.timeoutMs,
+        recoverOnTimeout,
       )
     : await withQwenBrowserPage<BrowserTextResponse>(
         accountId,
         evaluateRequest,
         undefined,
         options.timeoutMs,
+        recoverOnTimeout,
       );
 
   return new Response(response.raw, {
@@ -2520,6 +2534,7 @@ async function createQwenChatSession(
   headers: Record<string, string>,
   model: string,
   accountId?: string,
+  chatMode: ChatMode = "thread",
 ): Promise<string> {
   if (isAuthMockEnabled()) {
     return process.env.TEST_SESSION_ID || "mock-session";
@@ -2532,7 +2547,7 @@ async function createQwenChatSession(
     buildCapturedQwenHeaders(headers, {
       referer: qwenUrl("/"),
     }),
-    JSON.stringify(buildChatNewBody(model)),
+    JSON.stringify(buildChatNewBody(model, chatMode)),
     { referrer: qwenUrl("/") },
   );
 
@@ -2571,14 +2586,18 @@ async function createQwenChatSession(
  * list title to "New chat", which isReusableUnusedChatTitle accepts so the
  * warm pool can still find and recycle the chat.
  */
-export function buildChatNewBody(model: string): Record<string, unknown> {
+export function buildChatNewBody(
+  model: string,
+  chatMode: ChatMode = "thread",
+): Record<string, unknown> {
   return {
     chatId: "",
     models: [model],
     project_id: "",
     timestamp: Date.now(),
     chat_type: "t2t",
-    chat_mode: "normal",
+    // thread → normal (persisted), temp → local (ephemeral, not listed).
+    chat_mode: chatMode === "temp" ? "local" : "normal",
   };
 }
 
@@ -2692,8 +2711,9 @@ async function acquireNewQwenChatSession(
   headers: Record<string, string>,
   model: string,
   accountId?: string,
+  chatMode: ChatMode = "thread",
 ): Promise<{ chatId: string; leasedFromPool: boolean }> {
-  if (isQwenChatPoolEnabled()) {
+  if (isQwenChatPoolEnabled() && chatMode !== "temp") {
     const key = chatPoolKey(accountId, model);
     const pooled = precreatedChatSessions.get(key);
     const chatId = pooled?.shift();
@@ -2720,13 +2740,13 @@ async function acquireNewQwenChatSession(
     }
   }
 
-  const created = await createQwenChatSession(headers, model, accountId);
+  const created = await createQwenChatSession(headers, model, accountId, chatMode);
   logger.debug("[Qwen] created fresh chat", {
     accountId: accountId || "global",
     model,
     chatId: created,
   });
-  if (isQwenChatPoolEnabled()) {
+  if (isQwenChatPoolEnabled() && chatMode !== "temp") {
     void scheduleQwenChatPoolRefill(headers, model, accountId);
   }
   return { chatId: created, leasedFromPool: false };
@@ -3097,6 +3117,8 @@ export async function createQwenStream(
     reasoningMode?: "auto" | "thinking" | "fast";
     /** Auxiliary stream (title on its own chat): short idle cap. */
     parallelEscape?: boolean;
+    /** "thread" (chat_mode:"normal") or "temp" (chat_mode:"local"). */
+    chatMode?: ChatMode;
   },
   signal?: AbortSignal,
 ): Promise<{
@@ -3169,6 +3191,8 @@ async function createQwenStreamInternal(
     reasoningMode?: "auto" | "thinking" | "fast";
     /** Auxiliary stream (title on its own chat): short idle cap. */
     parallelEscape?: boolean;
+    /** "thread" (chat_mode:"normal") or "temp" (chat_mode:"local"). */
+    chatMode?: ChatMode;
   } | undefined,
   signal: AbortSignal | undefined,
   releaseStreamLock: () => void,
@@ -3224,6 +3248,7 @@ async function createQwenStreamInternal(
         headers,
         model,
         accountId,
+        options?.chatMode ?? "thread",
       );
       chatSessionId = acquired.chatId;
       leasedWarmChat = acquired.leasedFromPool;
@@ -3238,6 +3263,7 @@ async function createQwenStreamInternal(
         headers,
         model,
         accountId,
+        options?.chatMode ?? "thread",
       );
       chatSessionId = acquired.chatId;
       leasedWarmChat = acquired.leasedFromPool;
@@ -3373,7 +3399,7 @@ async function createQwenStreamInternal(
     chatId: chatSessionId || null,
     parentId: actualParentId ?? "",
     chat_id: chatSessionId || null,
-    chat_mode: "normal",
+    chat_mode: options?.chatMode === "temp" ? "local" : "normal",
     model: model,
     parent_id: actualParentId,
     messages: [
