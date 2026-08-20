@@ -5,8 +5,8 @@ import {
 	getNextAvailableAccount,
 	markAccountRateLimited,
 } from "../../core/account-manager.ts";
-import { markAccountSuccessful, markAccountFailed } from "../../core/account-priority.ts";
-import { loadAccounts } from "../../core/accounts.ts";
+import { markAccountSuccessful, markAccountFailed, getAccountsByPriority } from "../../core/account-priority.ts";
+import { loadAccounts, type QwenAccount } from "../../core/accounts.ts";
 import { config } from "../../core/config.ts";
 import { ClientAbortedError, UpstreamRateLimit } from "../../core/errors.ts";
 import {
@@ -289,6 +289,37 @@ function hasFreeAlternateAccount(
 	);
 }
 
+/**
+ * Pick the next account for a PARALLEL escape, preferring one with a FREE slot:
+ * not busy, not temporarily busy, not on cooldown, not already tried. A normal
+ * request keeps getNextAvailableAccount (cooldown-only picker) so saturated or
+ * single-account pools stay lossless — but an auxiliary parallel request must
+ * land on an available slot fast and never queue behind a second occupied
+ * account (the 2026-08-20 stall rotated ldyjl->cgnx3, both busy, ~14s wait).
+ * Falls back to the cooldown-only picker when no FREE account is left, so a
+ * fully-busy pool still rotates instead of dead-ending.
+ */
+function getNextFreeAccountForParallel(
+	accounts: QwenAccount[],
+	triedAccountIds: Set<string>,
+	currentAccountId: string,
+): QwenAccount | null {
+	const ordered = getAccountsByPriority(accounts);
+	const free = ordered.find(
+		(c) =>
+			c.id !== currentAccountId &&
+			!triedAccountIds.has(c.id) &&
+			!getAccountCooldownInfo(c.id) &&
+			!isAccountTemporarilyBusy(c.id) &&
+			!isAccountBusy(c.id),
+	);
+	if (free) return free;
+	// No free slot anywhere: fall back to the normal picker so we still rotate
+	// (the tryAcquireAccountLease fail-fast will report account_busy and the
+	// loop gives up rather than blocking on a busy pool).
+	return getNextAvailableAccount(triedAccountIds);
+}
+
 
 async function attemptRelogin(
 	accountId: string,
@@ -361,12 +392,22 @@ export async function acquireUpstreamStream(
 	// - string: pin to account
 	// - null: explicit failover away from sticky (error path)
 	// - undefined: keep sticky when available
+	// A PARALLEL escape must NOT pin to the sticky thread owner: it races the
+	// main generation that is likely using that very account, so targeting the
+	// sticky would just fail-fast account_busy and waste a rotation hop (the
+	// 2026-08-20 02:43:41 stall: parallel req chose the sticky busy account, then
+	// a second busy one, ~18s until the client aborted). Rotate to any account
+	// so the first hop has a real chance of landing on a free slot.
+	const effectivePreferred = params.parallelEscape ? null : preferredAccountId;
 	const resolvedPreferred =
-		preferredAccountId === null
+		effectivePreferred === null
 			? null
-			: (preferredAccountId ?? stickyThreadAccountId ?? undefined);
+			: (effectivePreferred ?? stickyThreadAccountId ?? undefined);
 	const excludeSet = new Set(excludeAccountIds ?? []);
-	if (preferredAccountId === null && stickyThreadAccountId) {
+	// When rotating away (resolvedPreferred === null) — either an explicit
+	// failover OR a parallel escape — exclude the sticky owner so the rotation
+	// can never land back on the account the main generation is using.
+	if (resolvedPreferred === null && stickyThreadAccountId) {
 		excludeSet.add(stickyThreadAccountId);
 	}
 
@@ -1532,14 +1573,21 @@ async function tryCreateStreamWithRetry(
 			return { success: false, error: err };
 		}
 
-		// Prefer switching account for any retryable upstream error when possible
+		// Prefer switching account for any retryable upstream error when possible.
+		// A PARALLEL escape hops to a FREE account (skip busy/temporarily-busy):
+		// the auxiliary request must land on an available slot fast, never on a
+		// second occupied account (the 2026-08-20 stall rotated ldyjl→cgnx3, both
+		// busy, ~14s lease wait). Normal requests keep the cooldown-only picker so
+		// single-account/saturated pools stay lossless.
 		if (
 			policy.retryable &&
 			shouldSwitchAccount &&
 			!isSingleAccount &&
 			accountSwitches < maxAccountSwitches
 		) {
-			const nextAccount = getNextAvailableAccount(triedAccounts);
+			const nextAccount = params.parallelEscape
+				? getNextFreeAccountForParallel(accounts, triedAccounts, currentAccountId)
+				: getNextAvailableAccount(triedAccounts);
 			if (nextAccount && nextAccount.id !== currentAccountId) {
 				console.warn(
 					`🔄 [Chat] Switching account after ${policy.reason} | ${currentAccountEmail} -> ${maskEmail(nextAccount.email)}`,
