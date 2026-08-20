@@ -50,7 +50,7 @@ import {
 import { sendOpenAIError } from "../../api/error-helpers.js";
 import { classifyError } from "../../api/error-classifier.js";
 import { ClientAbortedError } from "../../core/errors.js";
-import { config } from "../../core/config.js";
+import { config, type ChatMode } from "../../core/config.js";
 import { parseQwenErrorPayload } from "./errors.ts";
 import {
   isNetworkLikeError,
@@ -205,6 +205,8 @@ export interface StreamProcessingParams {
     updateLogicalThread: boolean;
     /** Parallel request (own chat): recovery must not kill or rebind. */
     parallelEscape?: boolean;
+    /** "thread" (reuse upstream chat) or "temp" (new ephemeral chat per request). */
+    chatMode: ChatMode;
     allowThreadReuse: boolean;
     messageCount: number;
     fullMessageCount: number;
@@ -642,6 +644,7 @@ export async function processNonStreamingResponse(
         updateLogicalThread: midStreamRetry.updateLogicalThread,
         parallelEscape: midStreamRetry.parallelEscape,
         allowThreadReuse: midStreamRetry.allowThreadReuse,
+        chatMode: midStreamRetry.chatMode,
         forceNewChat: true,
         preferredAccountId: midStreamRetry.activeAccountId,
         excludeAccountIds: undefined,
@@ -961,7 +964,14 @@ export async function processStreamingResponse(
             chat_id: stopSessionId,
             response_id: targetResponseId,
           }),
-          { referrer: qwenUrl(`/c/${encodeURIComponent(stopSessionId)}`) },
+          {
+            referrer: qwenUrl(`/c/${encodeURIComponent(stopSessionId)}`),
+            // The client is already gone and a retry may own the page mutex.
+            // A mutex timeout here must NOT trigger the stuck-mutex recovery
+            // (close context + reset profile) or a best-effort stop cools the
+            // account for 300s.
+            noMutexRecovery: true,
+          },
         )
           .then(() => {
             // A successful stop response means the account no longer needs the
@@ -1420,6 +1430,7 @@ export async function processStreamingResponse(
           updateLogicalThread: midStreamRetry.updateLogicalThread,
           parallelEscape: midStreamRetry.parallelEscape,
           allowThreadReuse: midStreamRetry.allowThreadReuse,
+          chatMode: midStreamRetry.chatMode,
           forceNewChat: forceRetryNewChat || switchAccount,
           preferredAccountId: switchAccount ? null : currentAccountId,
           excludeAccountIds: switchAccount ? [currentAccountId] : undefined,
@@ -1994,6 +2005,7 @@ export async function processStreamingResponse(
             updateLogicalThread: midStreamRetry.updateLogicalThread,
             parallelEscape: midStreamRetry.parallelEscape,
             allowThreadReuse: midStreamRetry.allowThreadReuse,
+            chatMode: midStreamRetry.chatMode,
             forceNewChat: true,
             preferredAccountId: midStreamRetry.activeAccountId,
             excludeAccountIds: undefined,

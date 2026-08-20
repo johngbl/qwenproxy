@@ -156,12 +156,14 @@ async function acquireAccountMutex(
   accountId: string,
   key: string,
   timeoutMs = PLAYWRIGHT_MUTEX_WAIT_MS,
+  recoverOnTimeout = true,
 ): Promise<() => void> {
   const mutex = getAccountMutex(accountId);
   try {
     return await mutex.acquire(timeoutMs, key);
   } catch (error) {
     if (
+      recoverOnTimeout &&
       error instanceof Error &&
       error.message.startsWith("Mutex[playwright:") &&
       error.message.includes("acquire timeout")
@@ -2030,6 +2032,7 @@ export async function withAccountPage<T>(
   fn: (page: Page) => Promise<T>,
   timeoutMs = ACCOUNT_PAGE_OPERATION_TIMEOUT_MS,
   mutexTimeoutMs = PLAYWRIGHT_MUTEX_WAIT_MS,
+  recoverOnTimeout = true,
 ): Promise<T> {
   const page = accountPages.get(accountId);
   if (!page || page.isClosed()) {
@@ -2039,6 +2042,7 @@ export async function withAccountPage<T>(
     accountId,
     `page:${accountId.substring(0, 12)}`,
     Math.max(1_000, mutexTimeoutMs),
+    recoverOnTimeout,
   );
   try {
     touchAccountActivity(accountId);
@@ -2083,15 +2087,54 @@ function isPlaywrightProfileCorruptedError(error: unknown): boolean {
 async function resetPlaywrightProfileLocked(accountId: string): Promise<void> {
   await closePlaywrightForAccountLocked(accountId);
   const profilePath = path.resolve("data", "qwen_profiles", accountId);
+  removePlaywrightProfile(profilePath);
+}
+
+/**
+ * Best-effort removal of a Playwright profile directory.
+ *
+ * On Windows, `fs.rmSync` can fail with EPERM/EBUSY/Permission denied because
+ * the browser process still holds a file lock on the directory. Instead of
+ * letting that failure abort the profile-reset/re-init cycle (which used to
+ * cascade into a 45s re-init timeout + 300s account cooldown), the locked
+ * directory is renamed to a `.stale-*` sibling so a fresh profile can be
+ * created on the next init. Never throws.
+ *
+ * @param rmSyncOverride test hook: replaces `fs.rmSync` to simulate a lock.
+ */
+export function removePlaywrightProfile(
+  profilePath: string,
+  rmSyncOverride?: (path: string, opts: { recursive: boolean; force: boolean }) => void,
+): void {
+  const doRemove =
+    rmSyncOverride ??
+    ((p: string, opts: { recursive: boolean; force: boolean }) =>
+      fs.rmSync(p, opts));
   try {
-    fs.rmSync(profilePath, { recursive: true, force: true });
+    doRemove(profilePath, { recursive: true, force: true });
   } catch (error) {
-    if (!isPlaywrightProfileCorruptedError(error)) {
-      console.warn(
-        `[Playwright] Failed to delete profile for ${accountId}:`,
-        getErrorMessage(error),
-      );
+    if (isPlaywrightProfileCorruptedError(error)) return;
+    // EPERM / EBUSY: the OS still holds a file lock (Windows). Rename the
+    // locked directory out of the way so re-init can create a fresh profile.
+    const message =
+      error instanceof Error ? error.message : String(error ?? "");
+    if (
+      message.includes("EPERM") ||
+      message.includes("EBUSY") ||
+      message.includes("Permission denied")
+    ) {
+      try {
+        const stalePath = `${profilePath}.stale-${Date.now()}`;
+        fs.renameSync(profilePath, stalePath);
+      } catch {
+        // Best effort: re-init will either reuse or fail cleanly.
+      }
+      return;
     }
+    console.warn(
+      `[Playwright] Failed to delete profile at ${profilePath}:`,
+      getErrorMessage(error),
+    );
   }
 }
 
