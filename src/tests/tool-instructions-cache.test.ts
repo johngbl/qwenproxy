@@ -51,3 +51,18 @@ test("buildToolInstructions: cache respects max entries limit", () => {
   const finalResult = buildToolInstructions('[{"name": "final"}]');
   assert.ok(finalResult.includes("final"));
 });
+
+test("buildToolInstructions: robustness rules guard against malformed/nested calls", () => {
+  const result = buildToolInstructions('[{"name": "grep"}]');
+  // Each call block must be self-contained (never nested/interleaved) — this is
+  // what prevents the `name:"grep\n<tool_call>\n{"` malformed shape.
+  assert.ok(result.includes("self-contained"), "missing self-contained block rule");
+  // The name field must be ONLY the exact tool name (never tags/JSON/newlines),
+  // and tool names vary by client (never approximate/invent).
+  assert.ok(
+    result.includes("never approximate or invent"),
+    "missing exact-tool-name rule",
+  );
+  // Only valid JSON inside the block (no markdown/comments/text).
+  assert.ok(result.includes("no markdown"), "missing JSON-only-inside-block rule");
+});

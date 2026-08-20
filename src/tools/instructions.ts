@@ -46,9 +46,17 @@ ${toolOpen}
 ${toolClose}
 Then STOP, output no text, and wait silently for the tool results.
 
+Each ${toolOpen} block must be complete and self-contained: open tag, one valid
+JSON object, then the matching close tag. Never nest, interleave, or split a
+block, and never place a ${toolOpen} tag inside another block.
+
 # JSON VALIDITY (malformed calls are discarded)
-- "name" must be an exact declared tool name.
+- "name" must be an exact declared tool name. Tool names vary by client/editor;
+use exactly what was provided — never approximate or invent one.
+- "name" contains ONLY the tool name — never tags, JSON, or newlines.
 - "arguments" must be a plain JSON object, never a string that contains JSON.
+- Put only a single valid JSON object inside each block: no markdown fences,
+comments, or explanatory text.
 - Escape quotes and backslashes exactly once. On Windows, paths use double
 backslashes, e.g. {"file":"C:\\\\Users\\\\you\\\\file.txt"}.
 - Never send escaped (double-layered) JSON inside a value.
