@@ -6,6 +6,8 @@ import {
   ValidationError,
   UpstreamRateLimit,
   UpstreamError,
+  UpstreamTimeout,
+  ServiceUnavailable,
   ClientAbortedError,
 } from "../core/errors.js";
 import {
@@ -90,6 +92,33 @@ export function classifyError(err: unknown): QwenProxyError {
     (err as Error & { code?: string }).code === "account_busy"
   ) {
     return new UpstreamRateLimit(err.message);
+  }
+
+  // Some call sites attach an explicit hint on a plain Error (e.g.
+  // acquireUpstreamStream sets upstreamStatus=429 when the whole pool is in
+  // cooldown). Respect it instead of falling through to a misleading 500.
+  const rawError = err as Error | null | undefined;
+  const statusHint = (err as Error & { upstreamStatus?: number })
+    ?.upstreamStatus;
+  if (typeof statusHint === "number") {
+    const message =
+      rawError instanceof Error
+        ? rawError.message
+        : typeof err === "string"
+          ? err
+          : "Unknown upstream error";
+    switch (statusHint) {
+      case 429:
+        return new UpstreamRateLimit(message);
+      case 502:
+        return new UpstreamError(message);
+      case 503:
+        return new ServiceUnavailable(message);
+      case 504:
+        return new UpstreamTimeout(message);
+      default:
+        break; // unknown hint: fall through to the normal mapping
+    }
   }
 
   if (err instanceof ZodError) {

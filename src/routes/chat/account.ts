@@ -1362,13 +1362,15 @@ async function tryCreateStreamWithRetry(
 			return { success: false, error: err };
 		}
 
-		// Log the error details for debugging (skip quota errors — logged separately below)
-			const errMsg = err instanceof Error ? err.message : String(err || "");
-			if (
-				err &&
-				!isAccountUnavailableError(err) &&
-				!(err as any)?.parallelEscape
-			) {
+		// Log the error details for debugging (skip quota errors — logged separately below,
+		// and client aborts — they are silent by design).
+		const errMsg = err instanceof Error ? err.message : String(err || "");
+		if (
+			err &&
+			!(err instanceof ClientAbortedError) &&
+			!isAccountUnavailableError(err) &&
+			!(err as any)?.parallelEscape
+		) {
 				const errCode = getQwenErrorCode(err) || "unknown";
 				console.warn(
 						`❌ [Chat] Request failed | ${currentAccountEmail} | ${errCode} | ${errMsg.substring(0, 200)}`,

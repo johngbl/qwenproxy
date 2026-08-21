@@ -157,6 +157,34 @@ async function waitForBrowserStreamMetadata(
   );
 }
 
+/**
+ * Idle timeout for an upstream stream, derived from model type, payload size
+ * and whether the stream is an auxiliary parallel-escape request.
+ *
+ * Base: REASONING_MODEL_TIMEOUT when thinking, IDLE_STREAM_TIMEOUT otherwise;
+ * +30s per MB of payload.
+ *
+ * Auxiliary (parallel-escape) streams serve a small request (e.g. a chat
+ * title) that generates in seconds; a SHORT cap frees the account slot fast
+ * when the upstream never sends the SSE terminal. The tight cap must ONLY
+ * apply to NON-thinking models: thinking streams legitimately pause >15s
+ * between reasoning chunks, and a 15s cap killed a 564KB full-replay in
+ * production (log 2026-08-21, etimedout idle after 15000ms on qwen3.8-max).
+ */
+export function computeDynamicIdleTimeout(opts: {
+  enableThinking: boolean;
+  parallelEscape?: boolean;
+  baseTimeoutMs: number;
+  payloadSize: number;
+}): number {
+  const payloadMB = opts.payloadSize / (1024 * 1024);
+  const dynamic = opts.baseTimeoutMs + Math.ceil(payloadMB * 30_000);
+  if (opts.parallelEscape && !opts.enableThinking) {
+    return Math.min(15_000, dynamic);
+  }
+  return dynamic;
+}
+
 function addIdleTimeoutToStream(
   stream: ReadableStream<Uint8Array>,
   controller: AbortController,
@@ -3320,20 +3348,19 @@ async function createQwenStreamInternal(
     }
 
     // Dynamic idle timeout based on model type and payload size
-    // Reasoning models (thinking enabled): use REASONING_MODEL_TIMEOUT as base (600s default)
-    // Non-reasoning models: use IDLE_STREAM_TIMEOUT as base (60s default)
-    // Both add 30s per MB of payload
+    // Reasoning models (thinking enabled): use REASONING_MODEL_TIMEOUT as base
+    // Non-reasoning models: use IDLE_STREAM_TIMEOUT as base
+    // Both add 30s per MB of payload. Parallel-escape streams get a tight cap
+    // ONLY when non-thinking (see computeDynamicIdleTimeout).
     const baseTimeoutMs = enableThinking
       ? config.timeouts.reasoningModelTimeout
       : config.timeouts.idleStreamTimeout;
-    const payloadMB = payloadSize / (1024 * 1024);
-    // Auxiliary (parallel-escape) streams serve a small request (e.g. a chat
-    // title) that generates in seconds. The upstream sometimes never sends the
-    // SSE terminal event for these; a SHORT idle cap frees the account slot in
-    // ~15s instead of holding it for minutes (observed: 183s → block).
-    const dynamicIdleTimeoutMs = options?.parallelEscape
-      ? Math.min(15_000, baseTimeoutMs + Math.ceil(payloadMB * 30_000))
-      : baseTimeoutMs + Math.ceil(payloadMB * 30_000);
+    const dynamicIdleTimeoutMs = computeDynamicIdleTimeout({
+      enableThinking,
+      parallelEscape: options?.parallelEscape,
+      baseTimeoutMs,
+      payloadSize,
+    });
 
     logger.debug("[Qwen] dynamic idle timeout", {
       chatId: chatSessionId || "new",
