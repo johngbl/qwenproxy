@@ -6,6 +6,7 @@
  */
 
 import { config } from "../../core/config.ts";
+import { computeQuotaCooldownMs } from "../../core/account-manager.ts";
 import { logger } from "../../core/logger.ts";
 import {
   PersonalizationSyncError,
@@ -286,7 +287,6 @@ function classifyQuotaCooldown(message: string): {
   accountCooldownReason: string;
 } {
   const lower = message.toLowerCase();
-  const hourHint = message.match(/Wait about (\d+) hour/i);
   const temporary =
     lower.includes("rate increased too quickly") ||
     lower.includes("request rate increased too quickly") ||
@@ -295,19 +295,35 @@ function classifyQuotaCooldown(message: string): {
     lower.includes("tente novamente mais tarde") ||
     lower.includes("try again later");
 
+  if (temporary) {
+    return {
+      accountCooldownMs: 2 * 60 * 1000,
+      accountCooldownReason: "RateLimitTemporary",
+    };
+  }
+
+  // REAL daily quota: the Qwen resets the account at the next UTC midnight
+  // (verified against 2026-08-21 production log: every proxy `until` matched
+  // the next 00:00 UTC exactly). The upstream "Wait about N hour(s)" hint is
+  // ONLY accurate when the error lands mid-day; near midnight it rounds UP to
+  // N≈24 while the real reset is minutes away (mzgns errored 23:37, hint
+  // "23h", but the account was usable 23 minutes later). Trust the daily
+  // reset, never the literal hint, never a blind 24h.
   return {
-    accountCooldownMs: hourHint
-      ? parseInt(hourHint[1], 10) * 60 * 60 * 1000
-      : temporary
-        ? 2 * 60 * 1000
-        : undefined,
-    accountCooldownReason: temporary
-      ? "RateLimitTemporary"
-      : hourHint
-        ? "RateLimited"
-        : "QuotaExceeded",
+    accountCooldownMs: computeQuotaCooldownMs(Date.now()),
+    accountCooldownReason: "RateLimited",
   };
 }
+
+/**
+ * Milliseconds until the next UTC midnight plus a small safety margin. The
+ * Qwen daily quota resets at 00:00 UTC, so this is the correct "when is this
+ * account usable again" for a quota exhaust — regardless of what the upstream
+ * "Wait about N hour(s)" hint guessed.
+ */
+// Implemented in core/account-manager.ts (shared with the @[] fallback); kept
+// re-exporting here for callers that already import from retry-policy.
+export { computeQuotaCooldownMs } from "../../core/account-manager.ts";
 
 export function isChatNotExistError(err: unknown): boolean {
   const message = errMessage(err).toLowerCase();

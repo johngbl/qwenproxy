@@ -15,7 +15,30 @@ interface CooldownEntry {
 
 const cooldowns = new Map<string, CooldownEntry>();
 
-const DEFAULT_COOLDOWN_MS = 24 * 60 * 60 * 1000; // 24 hours
+/**
+ * Milliseconds until the next UTC midnight plus a safety margin. The Qwen
+ * daily quota resets at 00:00 UTC, so this is the correct "when is this
+ * account usable again" for a quota exhaust — regardless of the upstream
+ * "Wait about N hour(s)" hint (accurate mid-day, but rounds to ~24h near
+ * midnight when the real reset is minutes away).
+ */
+export function computeQuotaCooldownMs(
+  nowMs: number,
+  marginMs = 5 * 60 * 1000,
+): number {
+  const nextMidnight = new Date(nowMs);
+  nextMidnight.setUTCHours(24, 0, 0, 0);
+  return Math.max(60_000, nextMidnight.getTime() - nowMs + marginMs);
+}
+
+// The long-ago 24h blind fallback was the source of "treated available accounts
+// as unavailable": when no explicit duration was given (e.g. a quota exhaust
+// without the wait hint) the account was parked for a full day even though the
+// Qwen daily quota resets at the next UTC midnight. Fall back to the same
+// midnight-based behavior instead.
+function defaultCooldownDurationMs(): number {
+  return computeQuotaCooldownMs(Date.now());
+}
 
 export function markAccountRateLimited(
   accountId: string,
@@ -23,7 +46,7 @@ export function markAccountRateLimited(
   reason?: string,
   options: { silent?: boolean } = {},
 ): void {
-  const duration = cooldownMs ?? DEFAULT_COOLDOWN_MS;
+  const duration = cooldownMs ?? defaultCooldownDurationMs();
   const until = Date.now() + duration;
   const cooldownReason = reason ?? "RateLimited";
 

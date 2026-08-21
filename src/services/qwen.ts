@@ -23,7 +23,10 @@ import type {
   TokenEstimationContext,
 } from "./token-estimation-metrics.ts";
 import { getDatabase } from "../core/database.ts";
-import { markAccountRateLimited } from "../core/account-manager.ts";
+import {
+  computeQuotaCooldownMs,
+  markAccountRateLimited,
+} from "../core/account-manager.ts";
 import { mapClientModelToQwen } from "../core/model-alias.ts";
 import {
   MAX_PAYLOAD_SIZE,
@@ -2838,13 +2841,11 @@ async function refillQwenChatPool(
     // Mark account as rate-limited if chat creation fails with RateLimited error
     if (err instanceof QwenUpstreamError) {
       if (err.upstreamCode === "RateLimited" || err.upstreamStatus === 429) {
-        const hourHint = err.message?.match(/Wait about (\d+) hour/);
-        const cooldownMs = hourHint
-          ? parseInt(hourHint[1]) * 60 * 60 * 1000
-          : undefined;
+        // Daily quota resets at the next UTC midnight — never the literal
+        // "Wait about N hour(s)" hint (near midnight it over-blocks by ~22h).
         markAccountRateLimited(
           accountId || "global",
-          cooldownMs,
+          computeQuotaCooldownMs(Date.now()),
           "RateLimited",
         );
         console.warn(
