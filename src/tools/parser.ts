@@ -1188,6 +1188,21 @@ export class StreamingToolParser {
   }
 
   /**
+   * True once the per-turn tool-call cap has been reached (the number of
+   * processed tool calls hit `maxToolCallsPerTurn`). The streaming layer uses
+   * this to stop consuming the upstream and close the turn cleanly
+   * (finish_reason "tool_calls") instead of letting the model keep emitting
+   * calls that would only be dropped. A cap-reached turn is a SUCCESSFUL turn
+   * with valid calls, not an error — it must never trigger a mid-stream retry.
+   */
+  isToolCapReached(): boolean {
+    return (
+      this.maxToolCallsPerTurn > 0 &&
+      this.emittedToolCallCount >= this.maxToolCallsPerTurn
+    );
+  }
+
+  /**
    * Clear malformed tool calls tracking.
    */
   clearMalformedToolCalls() {
@@ -1461,6 +1476,17 @@ export class StreamingToolParser {
 
     const incremental = this.activeIncrementalToolCall;
     if (incremental.disabled) return;
+
+    // Once the per-turn cap is reached, no further incremental deltas may be
+    // emitted. The over-cap call is finalized as a capped drop; streaming its
+    // arguments would hand the client a partial tool call that is never
+    // completed (and the turn is being closed early anyway).
+    if (
+      this.maxToolCallsPerTurn > 0 &&
+      this.emittedToolCallCount >= this.maxToolCallsPerTurn
+    ) {
+      return;
+    }
 
     const snapshot = inspectIncrementalJsonToolObject(content);
     if (!snapshot) return;

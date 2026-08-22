@@ -449,6 +449,38 @@ const logicalThreadDirty: Set<string> =
   (globalThis as any)._logicalThreadDirty || new Set();
 (globalThis as any)._logicalThreadDirty = logicalThreadDirty;
 
+// Pending "tool-call cap reached" notices, keyed by logical session id. Set when
+// a turn is closed early at the per-turn tool-call cap; consumed by the NEXT
+// turn of the same session so the model is told that calls beyond the cap were
+// not executed (and it can re-issue them). In-memory only: a restart drops the
+// notice, which is acceptable — the model simply continues without the hint.
+const toolCapNotices: Map<string, number> =
+  (globalThis as any)._toolCapNotices || new Map();
+(globalThis as any)._toolCapNotices = toolCapNotices;
+
+/** Record that `logicalSessionId` hit the per-turn tool-call cap this turn. */
+export function setToolCapNotice(
+  logicalSessionId: string | null | undefined,
+): void {
+  if (!logicalSessionId) return;
+  toolCapNotices.set(logicalSessionId, Date.now());
+}
+
+/**
+ * Consume (read + clear) the pending tool-cap notice for `logicalSessionId`.
+ * Returns true when the previous turn of this session was closed early at the
+ * cap, so the caller can inject a notice into the current turn's prompt.
+ */
+export function consumeToolCapNotice(
+  logicalSessionId: string | null | undefined,
+): boolean {
+  if (!logicalSessionId) return false;
+  const ts = toolCapNotices.get(logicalSessionId);
+  if (ts === undefined) return false;
+  toolCapNotices.delete(logicalSessionId);
+  return Date.now() - ts <= SESSION_TTL_MS;
+}
+
 let logicalThreadFlushTimer: NodeJS.Timeout | null = null;
 
 function scheduleLogicalThreadFlush(): void {

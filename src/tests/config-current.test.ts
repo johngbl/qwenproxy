@@ -50,6 +50,11 @@ test("config exposes only Playwright/thread-native current auth and context sett
   // settle ~1-2s). .env.test overrides it to 100ms for suite speed.
   assert.ok(config.retry.chatInProgressBusyMs <= 4_000);
   assert.ok(config.retry.chatInProgressBusyMs >= 100);
+  // Per-turn tool-call cap: raised from 8 to 24 so legitimate agentic batches
+  // (e.g. a multi-file schema migration emitting ~20 calls in one turn) are not
+  // silently dropped, while a true runaway loop is still bounded. Env-tunable
+  // via MAX_TOOL_CALLS_PER_TURN; 0 disables the cap.
+  assert.equal(config.retry.maxToolCallsPerTurn, 24);
 });
 
 test("config keeps Qwen anti-bot static config limited to bx-v fallback and web version", () => {

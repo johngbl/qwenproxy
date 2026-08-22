@@ -18,6 +18,7 @@ import {
   invalidateLogicalThreadParent,
   getQwenErrorCode,
   RetryableQwenStreamError,
+  setToolCapNotice,
 } from "../../services/qwen.ts";
 import { acquireUpstreamStream } from "./account.ts";
 import { markAccountRateLimited } from "../../core/account-manager.ts";
@@ -881,6 +882,12 @@ export async function processStreamingResponse(
     // suffix on Stream done must only appear for attempts that COMPLETED after
     // a mid-stream retry, not for failed attempts that consumed retries.
     let streamCompletedOk = false;
+    // Set when the turn is closed early because the per-turn tool-call cap was
+    // reached. The turn ends CLEANLY (finish_reason "tool_calls" + [DONE]) and
+    // the upstream generation is stopped — this is a success path, never a
+    // mid-stream retry. The next turn carries a notice so the model knows calls
+    // beyond the cap were not executed.
+    let stoppedByToolCap = false;
 
     // The client socket went away. When config.stream.disconnectGraceMs > 0 we
     // do NOT tear down Qwen/stop/release the lease immediately: a transient
@@ -1638,6 +1645,11 @@ export async function processStreamingResponse(
                 lastRawContentLength = result.contentLength;
                 lastRawContentSuffix = result.contentSuffix;
                 await emitAnswerText(vStr);
+                if (toolParser?.isToolCapReached()) {
+                  stoppedByToolCap = true;
+                  if (!clientDisconnected) flushWrites();
+                  break;
+                }
               }
             }
             continue;
@@ -1760,6 +1772,11 @@ export async function processStreamingResponse(
                 writeDeltaEvent({ reasoning_content: vStr });
               } else {
                 await emitAnswerText(vStr);
+                if (toolParser?.isToolCapReached()) {
+                  stoppedByToolCap = true;
+                  if (!clientDisconnected) flushWrites();
+                  break;
+                }
               }
             }
           } catch (_e) {
@@ -1787,8 +1804,26 @@ export async function processStreamingResponse(
         // lingering keep-alive upstream connection doesn't stall the tail
         // (finish_reason + [DONE]) until the idle timeout or connection close.
         if (upstreamDone) break;
+        if (stoppedByToolCap) break;
 
         buffer = lineStart > 0 ? buffer.slice(lineStart) : buffer;
+      }
+
+      // Tool-call cap reached: stop the upstream generation now. The turn
+      // closes cleanly below (finish_reason "tool_calls" + [DONE]); this is a
+      // SUCCESS path, never a mid-stream retry. Cancelling the active reader
+      // closes the upstream connection so Qwen stops generating the calls that
+      // would only be dropped.
+      if (stoppedByToolCap) {
+        logger.warn("[chat] stream: tool-call cap reached — closing turn early", {
+          completionId,
+          maxToolCallsPerTurn: config.retry.maxToolCallsPerTurn,
+          emittedToolCalls: toolParser?.getEmittedToolCallCount() ?? 0,
+        });
+        // Tell the NEXT turn of this session that calls beyond the cap were not
+        // executed, so the model can re-issue them.
+        setToolCapNotice(logicalSessionId);
+        await reader.cancel().catch(() => undefined);
       }
 
       // Post-stream: error check + flush remaining content

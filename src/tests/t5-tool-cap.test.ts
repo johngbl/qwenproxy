@@ -87,3 +87,49 @@ test("T5: cap-drop does not disturb subsequent text/tool parsing", () => {
   assert.strictEqual(parser.getCappedToolCalls().length, 1);
   assert.strictEqual(parser.getCappedToolCalls()[0].toolName, "read_file");
 });
+
+test("T5: isToolCapReached reflects the cap lifecycle", () => {
+  const parser = new StreamingToolParser(READ_FILE_TOOLS, {
+    maxToolCallsPerTurn: 2,
+  });
+
+  assert.strictEqual(parser.isToolCapReached(), false, "fresh parser is below the cap");
+
+  parser.feed(callBlock("a.txt"));
+  assert.strictEqual(parser.isToolCapReached(), false, "one call is below the cap");
+
+  parser.feed(callBlock("b.txt"));
+  assert.strictEqual(parser.isToolCapReached(), true, "cap reached at the second call");
+
+  parser.feed(callBlock("c.txt"));
+  assert.strictEqual(parser.isToolCapReached(), true, "cap stays reached after drops");
+  assert.strictEqual(parser.getCappedToolCalls().length, 1);
+  assert.strictEqual(parser.getMalformedToolCalls().length, 0);
+});
+
+test("T5: incremental deltas are not emitted beyond the cap", () => {
+  const parser = new StreamingToolParser(READ_FILE_TOOLS, {
+    maxToolCallsPerTurn: 2,
+    incrementalToolCalls: true,
+  });
+
+  const full =
+    callBlock("a.txt") +
+    callBlock("b.txt") +
+    callBlock("c.txt") +
+    callBlock("d.txt");
+
+  const seenIndices = new Set<number>();
+  for (let i = 0; i < full.length; i += 5) {
+    const r = parser.feed(full.slice(i, i + 5));
+    for (const d of r.toolCallDeltas) seenIndices.add(d.index);
+  }
+  parser.flush();
+
+  assert.ok(seenIndices.size > 0, "incremental deltas must be emitted for allowed calls");
+  for (const idx of seenIndices) {
+    assert.ok(idx < 2, `delta index ${idx} leaked beyond the cap`);
+  }
+  assert.strictEqual(parser.getCappedToolCalls().length, 2, "calls 3 and 4 are capped");
+  assert.strictEqual(parser.getMalformedToolCalls().length, 0);
+});

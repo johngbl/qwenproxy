@@ -8,7 +8,7 @@ import {
 import type { Message } from "../../utils/types.ts";
 import { estimateTokenCount } from "../../utils/context-truncation.ts";
 import { deriveSessionId } from "../../utils/session-id.ts";
-import { getLogicalThreadState } from "../../services/qwen.ts";
+import { getLogicalThreadState, consumeToolCapNotice } from "../../services/qwen.ts";
 
 export { estimateTokenCount, getModelContextWindow, deriveSessionId };
 
@@ -110,10 +110,22 @@ export async function buildFinalContext(
   // Thread-native: send full history when Qwen has no context yet, but preserve
   // tool-result deltas because the upstream parent chain already owns the call.
   // Temp mode: always send the FULL history (OpenAI standard).
-  const activePrompt = isTempMode
+  const baseActivePrompt = isTempMode
     ? prompt
     : (!existingThread && !hasTrailingToolResult ? prompt : currentPrompt) ||
       prompt;
+
+  // If the previous turn of this session was closed early at the per-turn
+  // tool-call cap, tell the model so it knows calls beyond the cap were NOT
+  // executed and can re-issue them. The notice is consumed once (it clears
+  // itself) and rides this single turn only. This is a transient system notice,
+  // not the persistent personalization instruction, so it may live in the prompt.
+  const toolCapNotice = consumeToolCapNotice(sessionId)
+    ? `[SYSTEM NOTICE] Your previous response reached the maximum of ${config.retry.maxToolCallsPerTurn} tool calls per turn; any tool calls beyond that limit were NOT executed. Review the tool results below and continue; if you intended more operations, issue them now in smaller batches.\n\n`
+    : "";
+  const activePrompt = toolCapNotice
+    ? toolCapNotice + baseActivePrompt
+    : baseActivePrompt;
   const isTitleGenerationRequest = detectTitleGenerationRequest(messages);
   const requestedPersonalization =
     config.qwen.personalizationFromRequest && !isTitleGenerationRequest;
