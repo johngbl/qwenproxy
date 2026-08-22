@@ -12,7 +12,6 @@ const {
   isTerminalLocalError,
   isQuotaLikeError,
   throwFromSseUpstreamError,
-  parseSseErrorFromBuffer,
   shouldRetryChatInProgressOnSameAccount,
   shouldRetryInvalidInputOnSameAccount,
 } = await import("../routes/chat/retry-policy.ts");
@@ -197,22 +196,6 @@ test("throwFromSseUpstreamError maps WAF user-validate codes to retryable stream
     assert.strictEqual(typed.switchAccount, true);
     assert.ok(typed.message.includes("anti-bot"));
   }
-});
-
-test("parseSseErrorFromBuffer skips malformed, empty and DONE data lines", () => {
-  const buffer = [
-    "event: junk",
-    "data: {not valid json",
-    "data:",
-    "data: [DONE]",
-    'data: {"error":{"message":"boom"}}',
-  ].join("\n");
-  const parsed = parseSseErrorFromBuffer(buffer);
-  assert.ok(parsed);
-  assert.strictEqual(parsed!.code, "upstream_error");
-  assert.strictEqual(parsed!.details, "boom");
-
-  assert.strictEqual(parseSseErrorFromBuffer("nothing here"), null);
 });
 
 test("same-account retry helpers gate by reason and prior attempt", () => {

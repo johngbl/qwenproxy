@@ -2426,42 +2426,6 @@ export async function deleteAllQwenChats(accountId?: string): Promise<boolean> {
   return true;
 }
 
-export async function deleteQwenChat(
-  chatId: string,
-  accountId?: string,
-): Promise<boolean> {
-  if (!chatId) return false;
-  const { headers } = await getQwenHeaders(false, accountId);
-  const response = await requestQwenTextInBrowser(
-    accountId,
-    "DELETE",
-    `/api/v2/chats/${encodeURIComponent(chatId)}`,
-    buildCapturedQwenHeaders(headers, {
-      referer: qwenUrl("/settings/chats"),
-    }),
-    undefined,
-    { referrer: qwenUrl("/settings/chats") },
-  );
-
-  const { raw, json: parsed } = await readJsonTextResponse(response, {
-    strict: true,
-  });
-  if (!response.ok) {
-    throw new Error(
-      `Failed to delete Qwen chat ${chatId}: ${response.status} ${raw.substring(0, 200)}`,
-    );
-  }
-
-  const success = parsed?.success === true && parsed?.data?.status === true;
-  if (!success) {
-    throw new Error(
-      `Qwen delete chat returned unexpected payload: ${raw.substring(0, 200)}`,
-    );
-  }
-
-  return true;
-}
-
 export async function fetchQwenModels(
   accountId?: string,
 ): Promise<PublicQwenModel[]> {

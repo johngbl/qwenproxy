@@ -799,30 +799,3 @@ export function throwFromSseUpstreamError(
 
   throw toRetryableStreamError(normalizedErrCode, errDetails);
 }
-
-export function parseSseErrorFromBuffer(
-  buffer: string,
-): { code: string; details: string } | null {
-  const lines = buffer.split("\n");
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith("data:")) continue;
-    const dataStr = trimmed.slice(5).trimStart();
-    if (!dataStr || dataStr === "[DONE]") continue;
-    try {
-      const chunk = JSON.parse(dataStr);
-      if (chunk?.error) {
-        return {
-          code: chunk.error.code || "upstream_error",
-          details:
-            chunk.error.details ||
-            chunk.error.message ||
-            JSON.stringify(chunk.error),
-        };
-      }
-    } catch {
-      // ignore non-JSON SSE lines
-    }
-  }
-  return null;
-}
