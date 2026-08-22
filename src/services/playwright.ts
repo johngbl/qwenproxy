@@ -109,13 +109,19 @@ export function buildChromiumLaunchArgs(viewport: {
   return args;
 }
 
-// Per-account mutexes for browser access
+// Per-account mutexes for browser access. maxHoldMs = 60s: a page operation
+// legitimately takes a few seconds per step, but one exceeding 60s is a stuck
+// browser op (closed context / WAF page swallow) and the account should return
+// to the pool quickly (the 2026-08-22 log showed a lock held for 154s before
+// the waiter's recovery path finally ran). The chat lock keeps its own longer
+// hold budget (see acquireChatLock).
+const ACCOUNT_MUTEX_MAX_HOLD_MS = 60_000;
 const accountMutexes = new Map<string, Mutex>();
 
 function getAccountMutex(accountId: string): Mutex {
   let mutex = accountMutexes.get(accountId);
   if (!mutex) {
-    mutex = new Mutex(`playwright:${accountId.substring(0, 8)}`);
+    mutex = new Mutex(`playwright:${accountId.substring(0, 8)}`, ACCOUNT_MUTEX_MAX_HOLD_MS);
     accountMutexes.set(accountId, mutex);
   }
   return mutex;
