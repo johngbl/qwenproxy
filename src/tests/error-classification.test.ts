@@ -9,8 +9,10 @@ import {
   ClientAbortedError,
   UpstreamRateLimit,
   InternalError,
+  ServiceUnavailable,
 } from "../core/errors.ts";
 import { computeDynamicIdleTimeout } from "../services/qwen.ts";
+import { config } from "../core/config.ts";
 
 /**
  * Uses the LIVE-logs audit (2026-08-21):
@@ -102,4 +104,47 @@ test("C: normal (non-escape) streams keep the dynamic per-MB idle", () => {
   });
   // 180s + 30s = 210000ms
   assert.strictEqual(ms, 210_000);
+});
+
+// --- Bug D: a Mutex acquire timeout (chat lock held by a long legitimate
+// generation) classified as InternalError 500 in production — every concurrent
+// request on the same chat died with internal_server_error. A busy resource is
+// retryable: map to 503 ServiceUnavailable so clients wait and re-request
+// instead of treating it as a server fault.
+test("D: chat-lock acquire timeout classifies as ServiceUnavailable (503), not 500", () => {
+  const err = new Error(
+    "Mutex[chat:4047f7c0] acquire timeout after 60000ms (held by chat:4047f7c0-311 for 62813ms)",
+  );
+  const classified = classifyError(err);
+  assert.ok(
+    classified instanceof ServiceUnavailable,
+    `expected ServiceUnavailable, got ${classified.constructor.name} (${classified.statusCode})`,
+  );
+  assert.strictEqual(classified.statusCode, 503);
+  assert.ok(
+    !(classified instanceof InternalError),
+    "must NOT be InternalError (500)",
+  );
+});
+
+test("D: non-mutex errors still fall through to the normal mapping", () => {
+  const classified = classifyError(new Error("some other failure"));
+  assert.ok(
+    classified instanceof InternalError,
+    "unrelated errors must keep the existing InternalError fallback",
+  );
+});
+
+// --- Config: the chat lock budget must cover the longest legitimate
+// generation (reasoning + huge context), not the old fixed 60s cap that
+// produced the false 500s / acquire_deadline cascades above.
+test("D: chat-lock timeout default covers long generations (>= 2 min)", () => {
+  assert.ok(
+    config.concurrency.chatLockTimeoutMs >= 120_000,
+    `chat-lock timeout must exceed the longest normal turn, got ${config.concurrency.chatLockTimeoutMs}ms`,
+  );
+  assert.ok(
+    config.concurrency.chatLockTimeoutMs <= 300_000,
+    "chat-lock timeout must stay bounded",
+  );
 });

@@ -91,14 +91,22 @@ const chatLocks = new Map<string, Mutex>();
 // creation serialized per account when the experimental request-sync mode is used.
 const personalizationLocks = new Map<string, Mutex>();
 
-export async function acquireChatLock(chatId: string): Promise<() => void> {
+	export async function acquireChatLock(chatId: string): Promise<() => void> {
 	const acquireStartedAt = Date.now();
+	const timeoutMs = config.concurrency.chatLockTimeoutMs;
 	let mutex = chatLocks.get(chatId);
 	if (!mutex) {
-		mutex = new Mutex(`chat:${chatId.substring(0, 8)}`);
+		mutex = new Mutex(
+			`chat:${chatId.substring(0, 8)}`,
+			// The chat lock is held for the whole stream lifetime. A long
+			// generation (reasoning + huge context) can legitimately exceed the
+			// global 120s hold limit; use the same budget as the acquire timeout
+			// so the force-release never kills a healthy mid-stream turn.
+			timeoutMs,
+		);
 		chatLocks.set(chatId, mutex);
 	}
-	const release = await mutex.acquire(60_000, `chat:${chatId.substring(0, 12)}`);
+	const release = await mutex.acquire(timeoutMs, `chat:${chatId.substring(0, 12)}`);
 	// Held time must exclude the wait: capture right after the acquire settles,
 	// not at function entry (the wait is already visible as `waited Xms` above).
 	const heldStartedAt = Date.now();

@@ -15,14 +15,22 @@ export class Mutex {
   private lockedAt = 0;
   private lockedByKey = "";
 
-  constructor(public readonly name: string = "unnamed") {}
+  constructor(
+    public readonly name: string = "unnamed",
+    private readonly maxHoldMs: number = MAX_HOLD_MS,
+  ) {}
 
   async acquire(timeoutMs = 300_000, key = ""): Promise<() => void> {
-    // Stale detection: force-release if held beyond MAX_HOLD_MS (leaked lock)
-    if (this.locked && Date.now() - this.lockedAt > MAX_HOLD_MS) {
+    // Stale detection: force-release if held beyond the hold limit
+    // (leaked lock). The chat lock uses a longer hold so a legitimate
+    // long generation (2-3 min with huge contexts) is not force-released
+    // mid-stream; the page/init locks keep the shorter safety net so a
+    // stuck browser op releases the account back to the pool faster.
+    const holdLimitMs = this.maxHoldMs;
+    if (this.locked && Date.now() - this.lockedAt > holdLimitMs) {
       const heldFor = Date.now() - this.lockedAt;
       logger.warn(
-        `[Mutex:${this.name}] Force-releasing stale lock | heldBy=${this.lockedByKey} | heldFor=${heldFor}ms | limit=${MAX_HOLD_MS}ms`,
+        `[Mutex:${this.name}] Force-releasing stale lock | heldBy=${this.lockedByKey} | heldFor=${heldFor}ms | limit=${holdLimitMs}ms`,
       );
       this.locked = false;
       this.lockedAt = 0;

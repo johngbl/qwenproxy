@@ -112,6 +112,16 @@ const envSchema = z
     ACQUIRE_DEADLINE_MS: z.string().default("120000"),
     ACCOUNT_LEASE_MAX_DURATION_MS: z.string().default("600000"),
     ACCOUNT_INIT_FAILURE_COOLDOWN_MS: z.string().default("300000"),
+    // Timeout before a request waiting on the CHAT lock gives up. The chat lock
+    // is held for the entire stream lifetime, so it must cover the longest
+    // legitimate generation (reasoning models with huge contexts can spend
+    // 2-3 min producing the first byte chain). A 60s hard cap turned a normal
+    // long turn into a 500 for every concurrent request on the same chat
+    // (2026-08-22 production log: lock held 130s -> acquire_deadline 120s).
+    CHAT_LOCK_TIMEOUT_MS: z
+      .string()
+      .regex(/^\d+$/, "CHAT_LOCK_TIMEOUT_MS must be a number")
+      .default("180000"),
     STREAM_DISCONNECT_GRACE_MS: z
       .string()
       .regex(/^\d+$/, "STREAM_DISCONNECT_GRACE_MS must be a number")
@@ -288,6 +298,11 @@ export const config = {
     initFailureCooldownMs: Math.max(
       30_000,
       parseInt(env.ACCOUNT_INIT_FAILURE_COOLDOWN_MS),
+    ),
+    /** Max time a request waits on the per-chat lock (default 3 min). */
+    chatLockTimeoutMs: Math.max(
+      0,
+      parseInt(env.CHAT_LOCK_TIMEOUT_MS),
     ),
   },
   stream: {
