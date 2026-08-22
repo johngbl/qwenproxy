@@ -136,7 +136,7 @@ test("invalid_input retries a clean chat once before account rotation", () => {
   );
 });
 
-test("chat_in_progress allows three same-account retries before rotating", () => {
+test("chat_in_progress allows three same-account recovery retries, then gives up (no escalation)", () => {
   assert.equal(
     shouldRetryChatInProgressOnSameAccount("chat_in_progress", 0),
     true,

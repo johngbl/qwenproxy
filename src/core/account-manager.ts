@@ -115,6 +115,41 @@ function isAccountOnCooldown(accountId: string): boolean {
   return getAccountCooldownInfo(accountId) !== null;
 }
 
+// ─── Headers-ready gate (mirrors upstream `markAccountReady`) ───────────────
+// Accounts whose anti-bot headers were successfully captured are "ready". The
+// rotation pickers below skip not-ready accounts whenever at least one account
+// IS ready, so a request never lands on a lane that is still warming up or
+// whose context just died (Playwright page unavailable → 300s init cooldown).
+// The gate degrades to "all accounts pass" when NO account is ready (startup
+// warmup / freshly-restored headers) so a single-account or cold pool stays
+// lossless — exactly the upstream `anyReady` rule.
+const headersReadyAccounts = new Set<string>();
+
+export function markAccountHeadersReady(accountId: string): void {
+  if (!accountId || accountId === "global") return;
+  headersReadyAccounts.add(accountId);
+}
+
+export function unmarkAccountHeadersReady(accountId: string): void {
+  if (!accountId) return;
+  headersReadyAccounts.delete(accountId);
+}
+
+export function isAccountHeadersReady(accountId: string): boolean {
+  return headersReadyAccounts.has(accountId);
+}
+
+function anyAccountHeadersReady(accounts: QwenAccount[]): boolean {
+  return accounts.some((a) => isAccountHeadersReady(a.id));
+}
+
+function passesHeadersReadyGate(
+  accountId: string,
+  anyReady: boolean,
+): boolean {
+  return !anyReady || isAccountHeadersReady(accountId);
+}
+
 export function syncCooldownsFromDb(accounts: QwenAccount[]): void {
   const now = Date.now();
   for (const account of accounts) {
@@ -143,11 +178,16 @@ export function getNextAccount(): QwenAccount | null {
 
   // Ordena por prioridade (contas que funcionaram bem vêm primeiro)
   const prioritized = getAccountsByPriority(accounts);
+  // Gate: once ANY account has captured headers, only ready accounts rotate.
+  const anyReady = anyAccountHeadersReady(accounts);
 
   for (let i = 0; i < prioritized.length; i++) {
     const account = prioritized[currentIndex % prioritized.length];
     currentIndex = (currentIndex + 1) % prioritized.length;
-    if (!isAccountOnCooldown(account.id)) {
+    if (
+      !isAccountOnCooldown(account.id) &&
+      passesHeadersReadyGate(account.id, anyReady)
+    ) {
       return account;
     }
   }
@@ -175,6 +215,8 @@ export function getNextAvailableAccount(
 
   // Ordena por prioridade (contas que funcionaram bem vêm primeiro)
   const prioritized = getAccountsByPriority(accounts);
+  // Gate: once ANY account has captured headers, only ready accounts rotate.
+  const anyReady = anyAccountHeadersReady(accounts);
 
   let triedSet: Set<string>;
   if (triedAccountIds instanceof Set) {
@@ -188,7 +230,10 @@ export function getNextAvailableAccount(
     const idx = (currentIndex + i) % prioritized.length;
     const account = prioritized[idx];
     if (triedSet.has(account.id)) continue;
-    if (!isAccountOnCooldown(account.id)) {
+    if (
+      !isAccountOnCooldown(account.id) &&
+      passesHeadersReadyGate(account.id, anyReady)
+    ) {
       currentIndex = (idx + 1) % prioritized.length;
       return account;
     }

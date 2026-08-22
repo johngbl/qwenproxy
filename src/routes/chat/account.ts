@@ -667,6 +667,22 @@ export async function acquireUpstreamStream(
 			);
 		}
 
+		// chat_in_progress exhaustion is TERMINAL: tryCreateStreamWithRetry already
+		// spent the full same-chat settle budget (jittered retries covering the
+		// upstream settle window). Rotating from here would replay the FULL
+		// context on a cold account for a transient settle — the most expensive
+		// response to the most common error (~1MB re-upload, the "~40 minutes"
+		// cascade). Fail the request; the client's own retry lands on the settled
+		// chat with the thread binding intact.
+		if (isChatInProgressError(lastError)) {
+			if (logger.isLevelEnabled("info")) {
+				console.log(
+					`🛑 [Chat] chat_in_progress budget exhausted | ${maskEmail(accountEmail)} | failing without account rotation (settle is transient)`,
+				);
+			}
+			break;
+		}
+
 		if (stickyThreadAccountId === accountId) {
 			// A challenged sticky account must be allowed to fall through to the
 			// anti-bot handling below; otherwise the whole conversation dies on the
@@ -674,12 +690,11 @@ export async function acquireUpstreamStream(
 			const stickyAccountMustRotate =
 				isAccountUnavailableError(lastError) ||
 				isAccountInitializationError(lastError) ||
-				isChatInProgressError(lastError) ||
 				isAntiBotError(lastError);
 			if (stickyAccountMustRotate) {
 				if (!quotaInfo) {
 					console.warn(
-						`⚠️  [Chat] Sticky account unavailable (${isChatInProgressError(lastError) ? "chat_in_progress" : isAntiBotError(lastError) ? "waf_challenge" : "upstream failure"}); trying another account with full context.`,
+						`⚠️  [Chat] Sticky account unavailable (${isAntiBotError(lastError) ? "waf_challenge" : "upstream failure"}); trying another account with full context.`,
 					);
 				}
 			} else {
@@ -778,7 +793,7 @@ interface CreateStreamSuccess {
 	uiSessionId: string;
 	accountId: string;
 	/** Account email that actually served the request (inner rotation may
-	 * switch accounts — parallel escape / chat_in_progress escalation). */
+	 * switch accounts — parallel escape / other retry policies). */
 	accountEmail: string;
 	controller: AbortController;
 	headers: Record<string, string>;
@@ -790,6 +805,24 @@ interface CreateStreamSuccess {
 interface CreateStreamFailure {
 	success: false;
 	error: any;
+}
+
+/**
+ * Pure: jittered same-chat settle wait for the nth chat_in_progress retry.
+ * The base grows with the failure count (busyMs → 2×busyMs from the 4th
+ * retry) and the result is randomized within ±25% so concurrent sessions
+ * sharing an account never retry in lock-step (the old fixed 4s/8s ladder
+ * synchronized every session onto the same interval). Upstream uses
+ * `2000 + rand(2000)` for the same reason.
+ */
+export function jitterChatInProgressDelay(
+	retryCount: number,
+	busyMs: number,
+	rand: () => number = Math.random,
+): number {
+	const base = retryCount >= 4 ? busyMs * 2 : busyMs;
+	const raw = base * (0.75 + 0.5 * Math.min(1, Math.max(0, rand())));
+	return Math.min(20_000, Math.max(1, Math.round(raw)));
 }
 
 /**
@@ -858,12 +891,12 @@ async function tryCreateStreamWithRetry(
 	let quotaRetried = false;
 	let accountSwitches = 0;
 	let chatInProgressCount = 0;
-	let chatInProgressEscalated = false;
 	// Account that accumulated the chat_in_progress failures (the one whose
-	// upstream chat is actually stuck "in progress"). The escalation branch
-	// switches currentAccountId to a FRESH account, and the loop-exit session
-	// clear must drop the binding to the stuck chat — NOT clear the sessions of
-	// an account that never served this session (cross-session damage).
+	// upstream chat is actually stuck "in progress"). The ESCALATION branch
+	// used to switch currentAccountId to a FRESH account, and the loop-exit
+	// session clear must drop the binding to the stuck chat — NOT clear the
+	// sessions of an account that never served this session (cross-session
+	// damage). With the escalation removed the origin IS the failed account.
 	let chatInProgressOriginAccountId: string | null = null;
 	let chatInProgressOriginAccountEmail: string | null = null;
 	let lastAttemptError: any = null;
@@ -1507,13 +1540,23 @@ async function tryCreateStreamWithRetry(
 		// yet (the tool loop fires the next turn the instant the previous one
 		// completes; the upstream chat stays "in progress" for a few seconds
 		// after the terminal event — usually 2-4s, measured >6s after a 491KB
-		// turn). Retry the SAME chat three times with escalating waits, then
-		// rotate: an escalation replays the full context on a cold account
-		// (~12s context reopen + captcha; observed 45s + a 495KB replay).
+		// turn). Policy design (settle-aware, upstream-aligned):
+		//  1. Retry the SAME chat with JITTERED busyMs-based waits — never a
+		//     fixed ladder (concurrent sessions would retry in lock-step).
+		//  2. NO escalation — the previous design rebuilt a new chat + full
+		//     context on the 4th failure (~1MB re-upload on a cold account;
+		//     the "~40 minutes" cascade). chat_in_progress is transient
+		//     settle noise; a full-context replay is the most expensive
+		//     response to the most common error.
+		//  3. After the same-chat budget the request FAILS with the thread
+		//     binding intact; the client's own retry lands on the settled
+		//     chat with the delta. Account rotation with full replay only
+		//     happens through other policy classes (acquire_deadline,
+		//     invalid_input, corrupted_chat_history, account init).
 		if (policy.reason === "chat_in_progress") {
 			if (chatInProgressOriginAccountId === null) {
 				// First chat_in_progress of this request: remember the account
-				// whose chat is stuck BEFORE any escalation switch happens.
+				// whose chat is stuck (used by the loop-exit session handling).
 				chatInProgressOriginAccountId = currentAccountId;
 				chatInProgressOriginAccountEmail = currentAccountEmail;
 			}
@@ -1523,56 +1566,29 @@ async function tryCreateStreamWithRetry(
 				config.retry.chatInProgressBusyMs,
 			);
 
-			if (chatInProgressCount >= 4) {
-				if (!chatInProgressEscalated) {
-					chatInProgressEscalated = true;
-					const nextAccount =
-						!isSingleAccount && accountSwitches < maxAccountSwitches
-							? getNextAvailableAccount(triedAccounts)
-							: null;
-					if (nextAccount && nextAccount.id !== currentAccountId) {
-						console.warn(
-							`🔄 [Chat] chat_in_progress escalation (${chatInProgressCount}) | switching ${currentAccountEmail} -> ${maskEmail(nextAccount.email)}`,
-						);
-						triedAccounts.add(currentAccountId);
-						currentAccountId = nextAccount.id;
-						currentAccountEmail = maskEmail(nextAccount.email);
-						accountSwitches++;
-					} else {
-						console.warn(
-							`🔄 [Chat] chat_in_progress escalation (${chatInProgressCount}) | forcing a new chat on ${currentAccountEmail}`,
-						);
-					}
-
-					if (params.useThreadNative) {
-						params.existingThread = null;
-						params.finalPrompt = params.fullPrompt;
-						params.messageCount = params.fullMessageCount ?? params.messageCount;
-						params.forceNewChat = true;
-					}
-
-					// The escalation attempt gets its own budget and no settle wait —
-					// it targets a fresh chat/account, not the busy one. If it ALSO
-					// fails with chat_in_progress the budget stays exhausted and the
-					// outer rotation (acquireUpstreamStream) takes over.
-					attemptsLeft = Math.max(attemptsLeft, 1);
-					policy.retryAfterMs = 0;
-				}
+			if (chatInProgressCount > config.retry.chatInProgressMaxAttempts) {
+				// Same-chat settle budget exhausted (~35s of jittered waits at
+				// the default 6 retries): the chat is genuinely stuck, not just
+				// settling. Fail the budget — do NOT create a new chat and do
+				// NOT re-send the full context (that cost IS the bug this
+				// design removes). The thread binding stays so the client's
+				// next request lands on the settled chat with its delta.
+				attemptsLeft = 0;
+				policy.retryable = false;
 			} else {
-				// The same-chat settle window has its own budget, independent of the
-				// global RETRY_MAX_ATTEMPTS: with maxAttempts=3 the counter above
-				// would hit 0 on the 3rd failure and the 3rd same-chat retry (the
-				// 2x-busyMs wait) would never run — escalating ~8s early into a
-				// full-context replay on a cold account.
+				// The settle window has its own budget, independent of the
+				// global RETRY_MAX_ATTEMPTS: with maxAttempts=3 the counter
+				// above would hit 0 on the 3rd failure and skip the longer
+				// waits that absorb the >6s settles of huge turns (2026-08-11).
 				attemptsLeft = Math.max(attemptsLeft, 1);
 
-				// Same-chat waits grow with the failure count so a slow settle is
-				// absorbed before the (expensive) escalation: the 2nd retry waits the
-				// busy window, the 3rd waits double.
-				if (chatInProgressCount >= 3) {
-					policy.retryAfterMs = config.retry.chatInProgressBusyMs * 2;
-				} else if (chatInProgressCount >= 2) {
-					policy.retryAfterMs = config.retry.chatInProgressBusyMs;
+				// The 1st failure keeps the upstream-suggested wait (~1.2s);
+				// later retries wait a jittered busyMs-based window.
+				if (chatInProgressCount >= 2) {
+					policy.retryAfterMs = jitterChatInProgressDelay(
+						chatInProgressCount,
+						config.retry.chatInProgressBusyMs,
+					);
 				}
 			}
 		}
@@ -1683,13 +1699,16 @@ async function tryCreateStreamWithRetry(
 			}
 
 			if (
-				err instanceof RetryableQwenStreamError ||
-				isChatInProgressError(err)
+				err instanceof RetryableQwenStreamError &&
+				!isChatInProgressError(err)
 			) {
-				// After an escalation, currentAccountId points at the FRESH account
-				// that never served this session — clearing ITS sessions would wipe
-				// other sessions' bindings on an innocent account. Clear the ORIGIN
-				// account instead (the one whose chat is genuinely stuck).
+				// chat_in_progress exhaustion keeps the thread binding: the chat
+				// settles in seconds and the client's retry lands on it with the
+				// delta intact — clearing would force a full-context replay on the
+				// next turn. Other retryable upstream errors (network/quota) still
+				// clear the ORIGIN account's sessions (the binding may point at a
+				// genuinely stuck chat) instead of the current account (which the
+				// pre-escalation switch may have changed for other policies).
 				const clearTargetId = chatInProgressOriginAccountId ?? currentAccountId;
 				const clearTargetEmail =
 					chatInProgressOriginAccountEmail ?? currentAccountEmail;

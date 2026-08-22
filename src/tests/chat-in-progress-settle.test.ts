@@ -13,10 +13,12 @@ import { clearTemporaryBusy } from "../core/account-concurrency.ts";
 import { invalidatePriorityCache } from "../core/account-priority.ts";
 
 /**
- * Seed a second account so the chat_in_progress escalation can actually
- * switch accounts (the log-label / session-clear bugs only manifest when the
- * escalation moves to a fresh account). Snapshots and restores the accounts
- * table in a finally so sibling tests keep their single-account world.
+ * Seed two accounts so a hypothetical chat_in_progress escalation could switch
+ * accounts (the old escalation bugs only manifested when the escalation moved
+ * to a fresh account). The new settle design never escalates, so these seeded
+ * accounts assert the NEGATIVE: even with an alternate account available, the
+ * request stays on the original one. Snapshots and restores the accounts table
+ * in a finally so sibling tests keep their single-account world.
  */
 function withEscalationAccounts(
   fn: () => void | Promise<void>,
@@ -29,9 +31,9 @@ function withEscalationAccounts(
     const originalEnv = process.env.QWEN_ACCOUNTS;
     delete process.env.QWEN_ACCOUNTS;
 
-    // account-priority.ts persists to the REAL data/ dir (not data-test); the
-    // successful escalation attempt calls markAccountSuccessful on a seeded
-    // account, polluting the production priority file. Snapshot and restore it.
+    // account-priority.ts persists to the REAL data/ dir (not data-test); a
+    // successful attempt calls markAccountSuccessful on a seeded account,
+    // polluting the production priority file. Snapshot and restore it.
     const priorityPath = "data/account-priority.json";
     const hadPriorityFile = existsSync(priorityPath);
     const prioritySnapshot = hadPriorityFile
@@ -86,7 +88,7 @@ function withEscalationAccounts(
       // (chatInProgressBusyMs window). Clear it so the NEXT test in the file
       // starts on mock-account and not on a leftover busy-flag skip (which
       // silently falls through to the seeded alt accounts / real accounts in
-      // CI where the DB is empty, breaking the sibling "four times" test).
+      // CI where the DB is empty, breaking the sibling tests).
       clearTemporaryBusy("mock-account");
       clearTemporaryBusy("escalation-alt-1");
       clearTemporaryBusy("escalation-alt-2");
@@ -117,9 +119,9 @@ function captureWarns(): {
 /**
  * End-to-end guard for the chat_in_progress settle path: the tool loop fires
  * the next turn the instant the previous one completes, and the upstream chat
- * stays "in progress" for a few seconds. The attempt loop must retry the same
- * chat (up to three retries) before any escalation, and a request that hits
- * the transient error repeatedly must still succeed on the next attempt.
+ * stays "in progress" for a few seconds. The attempt loop must retry the SAME
+ * chat with jittered busyMs-based waits (up to CHAT_IN_PROGRESS_MAX_RETRIES)
+ * — and never escalate to a new chat with a full-context replay.
  *
  * The mock upstream returns the upstream JSON error for the first N completion
  * calls and a normal stream afterwards.
@@ -193,8 +195,28 @@ function installMockFetch(failures = 2) {
   };
 }
 
-test("chat_in_progress twice then success: same-chat retries before escalation", async () => {
+test("jitterChatInProgressDelay: stays inside the +/-25% window and grows from the 4th retry", async () => {
+  const { jitterChatInProgressDelay } = await import("../routes/chat/account.ts");
+  const mid = () => 0.5; // midpoint → exactly the base
+  assert.strictEqual(jitterChatInProgressDelay(2, 4000, mid), 4000);
+  assert.strictEqual(jitterChatInProgressDelay(3, 4000, mid), 4000);
+  // From the 4th retry the base doubles (2× busyMs) so a slow settle keeps
+  // getting absorbed without clamping the ladder to the shortest wait.
+  assert.strictEqual(jitterChatInProgressDelay(4, 4000, mid), 8000);
+  assert.strictEqual(jitterChatInProgressDelay(6, 4000, mid), 8000);
+});
+
+test("jitterChatInProgressDelay: bounded for cold rand and capped at 20s", async () => {
+  const { jitterChatInProgressDelay } = await import("../routes/chat/account.ts");
+  assert.strictEqual(jitterChatInProgressDelay(2, 4000, () => 0), 3000); // 0.75x
+  assert.strictEqual(jitterChatInProgressDelay(2, 4000, () => 1), 5000); // 1.25x
+  assert.strictEqual(jitterChatInProgressDelay(4, 4000, () => 1), 10000); // 2x * 1.25
+  assert.strictEqual(jitterChatInProgressDelay(6, 60000, () => 1), 20000); // capped
+});
+
+test("chat_in_progress twice then success: same-chat retries before any escalation", async () => {
   const mock = installMockFetch();
+  clearTemporaryBusy("mock-account");
   try {
     const res = await app.fetch(
       new Request("http://localhost/v1/chat/completions", {
@@ -229,6 +251,7 @@ test("chat_in_progress twice then success: same-chat retries before escalation",
 
 test("chat_in_progress three times then success: the 3rd same-chat retry also avoids escalation", async () => {
   const mock = installMockFetch(3);
+  clearTemporaryBusy("mock-account");
   try {
     const res = await app.fetch(
       new Request("http://localhost/v1/chat/completions", {
@@ -249,9 +272,8 @@ test("chat_in_progress three times then success: the 3rd same-chat retry also av
     assert.ok(text.includes("data: [DONE]"), "stream must terminate");
 
     // Exactly 4 completion calls: 3 transient chat_in_progress (settle >6s was
-    // observed after huge turns) + 1 success. Escalating earlier would replay
-    // the full context on another account instead. The settle window has its
-    // own budget inside tryCreateStreamWithRetry (independent of the global
+    // observed after huge turns) + 1 success. The settle window has its own
+    // budget inside tryCreateStreamWithRetry (independent of the global
     // RETRY_MAX_ATTEMPTS=3), so all 4 calls happen in the same retry loop.
     assert.strictEqual(
       mock.completionCalls(),
@@ -263,7 +285,7 @@ test("chat_in_progress three times then success: the 3rd same-chat retry also av
   }
 });
 
-test("chat_in_progress escalation: the generic retry log names the account that ACTUALLY failed, not the freshly-selected one", withEscalationAccounts(async () => {
+test("chat_in_progress four times with an alternate account available: NO escalation, NO switch, success on the same account", withEscalationAccounts(async () => {
   const mock = installMockFetch(4);
   const capture = captureWarns();
   try {
@@ -273,51 +295,35 @@ test("chat_in_progress escalation: the generic retry log names the account that 
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: "qwen3.6-plus",
-          session_id: "chat-progress-escalation-label",
+          session_id: "chat-progress-no-escalation",
           messages: [{ role: "user", content: "hi" }],
           stream: true,
         }),
       }),
     );
 
-    assert.strictEqual(res.status, 200, "escalation attempt must succeed");
+    assert.strictEqual(res.status, 200, "request must survive the settle window");
     const text = await res.text();
     assert.ok(text.includes("settled"), "final attempt should stream normally");
 
-    // The escalation switched accounts (the second account now serves). The
-    // generic retry log emitted AFTER the switch must still name the account
-    // whose request failed — the ORIGINAL one — not the escalation target
-    // that was never attempted. Regression: it logged the NEW account, e.g.
-    // "Qwen request failed for chat.qwen.ai.280wu" when 280wu never failed.
-    const escalation = capture.warns.find((w) =>
-      w.includes("chat_in_progress escalation (4)"),
-    );
-    assert.ok(
-      escalation,
-      "escalation must fire: " + capture.warns.join("\n"),
-    );
-    assert.ok(
-      escalation!.includes("mock"),
-      "escalation switches away from the original account, got: " + escalation,
-    );
-    assert.ok(
-      escalation!.includes("escalation-alt"),
-      "escalation must target a seeded alt account, got: " + escalation,
+    assert.strictEqual(
+      mock.completionCalls(),
+      5,
+      "expected 4 chat_in_progress failures + 1 success",
     );
 
-    const retryLog = capture.warns.find(
-      (w) =>
-        w.includes("Qwen request failed for") &&
-        w.includes("retrying in 0ms"),
-    );
-    assert.ok(retryLog, "post-escalation retry log must exist");
+    // The OLD design escalated on the 4th failure: it switched to a seeded
+    // alt account (or forced a new chat) and re-sent the full context. The
+    // new design never escalates — even with a free alternate account the
+    // request stays on the original account with the delta intact.
     assert.ok(
-      retryLog!.includes("Qwen request failed for mock"),
-      "retry log must name the ORIGINAL account, got: " + retryLog,
+      !capture.warns.some((w) => w.includes("chat_in_progress escalation")),
+      "escalation must not fire, got: " +
+        capture.warns.filter((w) => w.includes("chat_in_progress")).join("\n"),
     );
     assert.ok(
-      !retryLog!.includes("escalation-alt-1"),
-      "retry log must NOT name the escalation target, got: " + retryLog,
+      !capture.warns.some((w) => w.includes("Switching account after")),
+      "no account switch may happen for chat_in_progress",
     );
   } finally {
     capture.restore();
@@ -325,14 +331,15 @@ test("chat_in_progress escalation: the generic retry log names the account that 
   }
 }));
 
-test("chat_in_progress escalation: exhausted-retries session clear targets the ORIGIN account, never the escalation target", withEscalationAccounts(async () => {
-  // 5 failures: 4 accumulate chat_in_progress on the original account, the
-  // 5th is the escalation attempt on the fresh account — it ALSO fails, so
-  // the settle budget is exhausted and the loop-exit clear must drop the
-  // binding to the account whose chat is stuck (the origin), not the fresh
-  // account that never served this session (cross-session damage).
-  const mock = installMockFetch(5);
+test("chat_in_progress budget exhaustion keeps the thread binding: no session clear, no replay, request fails", async () => {
+  // CHAT_IN_PROGRESS_MAX_RETRIES default 6: the 7th consecutive failure
+  // exhausts the same-chat budget. The OLD design cleared the origin account's
+  // sessions on exhaustion (escalation-era semantics); the new design KEEPS
+  // the binding so the client's own retry lands on the settled chat with its
+  // delta — clearing would force a wasteful full-context replay.
+  const mock = installMockFetch(7);
   const capture = captureWarns();
+  clearTemporaryBusy("mock-account");
   try {
     const res = await app.fetch(
       new Request("http://localhost/v1/chat/completions", {
@@ -340,36 +347,41 @@ test("chat_in_progress escalation: exhausted-retries session clear targets the O
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: "qwen3.6-plus",
-          session_id: "chat-progress-escalation-clear",
+          session_id: "chat-progress-budget-keep-binding",
           messages: [{ role: "user", content: "hi" }],
           stream: true,
         }),
       }),
     );
-    // Drain the response so the underlying stream is consumed and the event
-    // loop can shut down (an unread SSE stream keeps the process alive).
     await res.text();
 
-    const clearLog = capture.warns.find((w) =>
-      w.includes("Clearing session state for"),
-    );
-    assert.ok(clearLog, "exhausted retries must clear session state");
     assert.ok(
-      clearLog!.includes("(mock-account)"),
-      "clear must target the ORIGIN account (mock-account), got: " + clearLog,
+      res.status >= 400,
+      "budget exhaustion must fail the request, got " + res.status,
+    );
+    assert.strictEqual(
+      mock.completionCalls(),
+      7,
+      "exactly the settle budget — no 8th escalation call",
     );
     assert.ok(
-      !clearLog!.includes("escalation-alt-1"),
-      "clear must NOT target the escalation account, got: " + clearLog,
+      !capture.warns.some((w) => w.includes("Clearing session state for")),
+      "chat_in_progress exhaustion must keep the thread binding",
+    );
+    assert.ok(
+      !capture.warns.some((w) => w.includes("chat_in_progress escalation")),
+      "escalation must not exist",
     );
   } finally {
     capture.restore();
     mock.restore();
   }
-}));
+});
 
-test("chat_in_progress four times: the settle window is exhausted and the escalation attempt succeeds", async () => {
+test("chat_in_progress four times then success: the extended jittered settle window absorbs it", async () => {
   const mock = installMockFetch(4);
+  const capture = captureWarns();
+  clearTemporaryBusy("mock-account");
   try {
     const res = await app.fetch(
       new Request("http://localhost/v1/chat/completions", {
@@ -390,19 +402,24 @@ test("chat_in_progress four times: the settle window is exhausted and the escala
       "request must survive an exhausted settle window",
     );
     const text = await res.text();
-    assert.ok(text.includes("settled"), "escalation attempt should stream normally");
+    assert.ok(text.includes("settled"), "final attempt should stream normally");
     assert.ok(text.includes("data: [DONE]"), "stream must terminate");
 
-    // 5 completion calls: 4 chat_in_progress failures (3 same-chat retries +
-    // the 4th triggers the escalation) and the escalation attempt itself
-    // succeeds — it gets its own budget instead of dying with the exhausted
-    // settle window.
+    // 5 completion calls: 4 chat_in_progress failures absorbed by the
+    // same-chat jittered settle budget + the 5th success. The 4th failure no
+    // longer triggers an escalation (the old design rebuilt a new chat with
+    // the full context at exactly this point).
     assert.strictEqual(
       mock.completionCalls(),
       5,
-      "expected 4 chat_in_progress failures + 1 escalation success",
+      "expected 4 chat_in_progress failures + 1 success",
+    );
+    assert.ok(
+      !capture.warns.some((w) => w.includes("chat_in_progress escalation")),
+      "the 4th failure must not escalate",
     );
   } finally {
+    capture.restore();
     mock.restore();
   }
 });

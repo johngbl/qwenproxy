@@ -12,18 +12,36 @@ import {
 } from "../services/qwen.ts";
 import { deriveSessionId } from "../utils/session-id.ts";
 
+/** Capture console.warn lines during a request (log-assertion tests). */
+function captureWarns(): {
+  warns: string[];
+  restore: () => void;
+} {
+  const warns: string[] = [];
+  const original = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warns.push(args.map(String).join(" "));
+  };
+  return {
+    warns,
+    restore: () => {
+      console.warn = original;
+    },
+  };
+}
+
 /**
- * CONFIRMS (opção A) why a large conversation feels like "40 minutes":
- * after the chat_in_progress settle window is exhausted (3 same-chat retries +
- * the 4th that triggers escalation), the ESCALATION re-sends the FULL prompt
- * (params.finalPrompt = params.fullPrompt) to a fresh upstream chat. With a
- * ~1MB conversation every escalation re-uploads the whole history — the
- * dominant cost, invisible in the existing settle tests because their prompt
- * is tiny ("hi").
+ * CONFIRMS the settle design (opção A, 2026-08-22): chat_in_progress is
+ * transient upstream settle lag, so the same-chat retry budget (jittered
+ * busyMs-based waits, up to CHAT_IN_PROGRESS_MAX_RETRIES) NEVER re-sends the
+ * full prompt. The OLD behavior escalated on the 4th failure: it reset
+ * existingThread and re-sent params.fullPrompt (~1MB) to a fresh chat — the
+ * dominant cost that made large tool loops feel like "~40 minutes".
  *
  * This test seeds the client with a LARGE message payload and asserts that:
- *   1. The same-chat settle attempts send only the small trailing delta.
- *   2. The ESCALATION call re-sends the FULL (large) prompt.
+ *   1. Every same-chat settle attempt sends only the small trailing delta.
+ *   2. After 4 failures the 5th attempt STILL sends the delta — no escalation
+ *      full-replay appears anywhere in the payloads.
  */
 function installMockFetch(failures = 4) {
   const originalFetch = globalThis.fetch;
@@ -89,10 +107,14 @@ function installMockFetch(failures = 4) {
   };
 }
 
-test("chat_in_progress escalation re-sends the FULL prompt (the ~1MB replay cost)", async () => {
-  // A "large conversation": one long user message → the fullPrompt grows.
+test("chat_in_progress budget exhaustion: 7 failures fail the request WITHOUT new chat, account switch or full replay (the ~1MB escalation is gone)", async () => {
+  // CHAT_IN_PROGRESS_MAX_RETRIES default 6: retries 1-6 are the same-chat
+  // settle budget; the 7th consecutive failure exhausts it. The OLD behavior
+  // escalated at 4 (new chat + full replay); the new behavior fails the
+  // request with the thread intact.
   const bigPrompt = "user: " + "lorem ipsum dolor sit amet. ".repeat(20000);
-  const mock = installMockFetch(4);
+  const mock = installMockFetch(7);
+  const capture = captureWarns();
   try {
     const res = await app.fetch(
       new Request("http://localhost/v1/chat/completions", {
@@ -100,51 +122,47 @@ test("chat_in_progress escalation re-sends the FULL prompt (the ~1MB replay cost
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: "qwen3.6-plus",
-          session_id: "chat-progress-scale-cost",
+          session_id: "chat-progress-budget-exhausted",
           messages: [{ role: "user", content: bigPrompt }],
           stream: true,
         }),
       }),
     );
+    // Drain the response so the underlying stream is consumed and the event
+    // loop can shut down (an unread SSE stream keeps the process alive).
+    await res.text();
 
-    assert.strictEqual(res.status, 200, "request must survive the settle window");
-    const text = await res.text();
-    assert.ok(text.includes("settled"), "escalation attempt should stream");
-
-    // 5 completion calls in total: 4 chat_in_progress + 1 successful escalation.
+    assert.ok(
+      res.status >= 400,
+      "budget exhaustion must fail the request, got " + res.status,
+    );
     assert.strictEqual(
       mock.completionCalls(),
-      5,
-      "expected 4 chat_in_progress failures + 1 escalation success",
-    );
-
-    // The FIRST same-chat attempts use the thread-native delta (small): the
-    // client already threaded history, so the first upstream attempt is small.
-    // But the ESCALATION (last call) re-sends the FULL prompt — it must be
-    // substantially larger than the 1-MB-scale tiny "hi" settle tests, and it
-    // must AT LEAST contain the bigPrompt bytes (the full replay).
-    const escalationBody = mock.bodies[mock.bodies.length - 1].body;
-    assert.ok(
-      escalationBody.length > 1000,
-      "escalation must re-send the full prompt (large), got size=" +
-        escalationBody.length,
+      7,
+      "exactly the settle budget — no 8th \"escalation\" call",
     );
     assert.ok(
-      escalationBody.includes("lorem ipsum dolor sit amet"),
-      "escalation body must carry the full conversation, not just a delta",
+      !capture.warns.some((w) => w.includes("chat_in_progress escalation")),
+      "escalation must not exist",
+    );
+    assert.ok(
+      !capture.warns.some((w) =>
+        w.includes("Retry will force a new upstream chat"),
+      ),
+      "no new-chat full-context replay",
     );
   } finally {
+    capture.restore();
     mock.restore();
   }
 });
 
-test("tool-loop continuation: same-chat settle sends the delta, escalation sends the full history", async () => {
+test("tool-loop continuation: ALL chat_in_progress retries (incl. after 4 failures) send ONLY the delta — the full-history replay is gone", async () => {
   // A tool-loop client (Zed/Cline) sends a large accumulated history whose
   // prior assistant turn is represented by a tool response WITHOUT a plain
-  // role:"assistant" message. Before the isNewSession fix this was treated as
-  // a new chat each turn, so every same-chat settle retry re-uploaded the FULL
-  // ~1MB history (the "~40 minute" cascade). The fix must make the thread
-  // resolve and send only the trailing delta until the escalation rebuilds.
+  // role:"assistant" message. The isNewSession fix makes the thread resolve
+  // and send only the trailing delta; the OLD escalation rebuilt on the 5th
+  // attempt and re-sent the FULL ~50KB history. That must never happen now.
   const bigHistory = "BIG_HISTORY_MARKER_" + "x".repeat(50000);
   const smallDelta = "SMALL_DELTA_MARKER";
   const messages = [
@@ -186,12 +204,12 @@ test("tool-loop continuation: same-chat settle sends the delta, escalation sends
     assert.strictEqual(
       mock.completionCalls(),
       5,
-      "expected 4 chat_in_progress failures + 1 escalation success",
+      "expected 4 chat_in_progress failures + 1 success",
     );
 
-    // The first four attempts are same-chat settle retries: they must carry
-    // ONLY the small trailing delta, never the ~50KB full history.
-    for (let i = 0; i < 4; i++) {
+    // EVERY attempt — including the 5th that the old design escalated on —
+    // carries ONLY the small trailing delta, never the ~50KB full history.
+    for (let i = 0; i < 5; i++) {
       const body = mock.bodies[i].body;
       assert.ok(
         body.includes(smallDelta),
@@ -202,18 +220,6 @@ test("tool-loop continuation: same-chat settle sends the delta, escalation sends
         `attempt ${i + 1} must NOT re-upload the full history (size=${mock.bodies[i].size})`,
       );
     }
-
-    // The escalation (5th attempt) rebuilds a fresh chat and re-sends the full
-    // history — that is the expected, bounded cost (once, not 4-5x).
-    const escalationBody = mock.bodies[4].body;
-    assert.ok(
-      escalationBody.includes("BIG_HISTORY_MARKER"),
-      "escalation must re-send the full conversation",
-    );
-    assert.ok(
-      escalationBody.length > mock.bodies[0].body.length,
-      "escalation body must be substantially larger than the settle delta",
-    );
   } finally {
     clearAllSessionsForAccount("mock-account");
     clearTemporaryBusy("mock-account");

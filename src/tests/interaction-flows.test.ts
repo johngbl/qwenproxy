@@ -221,22 +221,24 @@ test("interaction: temporary load-shed retries same account, real quota switches
   assert.ok(realAction.accountCooldownMs! > 0, "real quota sets a finite cooldown");
 });
 
-// ── chat_in_progress same-chat retry ladder ────────────────────────────────
-// The settle window allows 3 same-chat retries; the 4th failure escalates to
-// account rotation. This ladder is what prevents the "~40 min" full-replay
-// cascade on the tool loop.
-test("interaction: chat_in_progress ladder allows 3 same-chat retries then escalates", () => {
+// ── chat_in_progress same-account retry cap (mid-stream recovery) ───────────
+// The settle design (2026-08-22) removed the create-path escalation entirely
+// (jittered same-chat retries up to CHAT_IN_PROGRESS_MAX_RETRIES, then fail
+// with the thread intact). This pure predicate still gates the MID-STREAM
+// recovery path, where a fresh stream on the same account may be tried a few
+// times before giving up — never an account switch with a full-context replay.
+test("interaction: chat_in_progress same-account retries are capped at 3 for mid-stream recovery", () => {
   assert.strictEqual(shouldRetryChatInProgressOnSameAccount("chat_in_progress", 0), true);
   assert.strictEqual(shouldRetryChatInProgressOnSameAccount("chat_in_progress", 1), true);
   assert.strictEqual(shouldRetryChatInProgressOnSameAccount("chat_in_progress", 2), true);
   assert.strictEqual(
     shouldRetryChatInProgressOnSameAccount("chat_in_progress", 3),
     false,
-    "4th failure escalates to rotation",
+    "4th same-account recovery gives up (no escalation)",
   );
   assert.strictEqual(
     shouldRetryChatInProgressOnSameAccount("some_other_reason", 0),
     false,
-    "only chat_in_progress uses the ladder",
+    "only chat_in_progress uses the same-account budget",
   );
 });

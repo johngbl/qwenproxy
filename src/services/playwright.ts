@@ -18,6 +18,10 @@ import { hasActiveAccountLease } from "../core/account-concurrency.ts";
 import { config } from "../core/config.ts";
 import { maskEmail } from "../core/logger.ts";
 import { Mutex } from "../core/mutex.ts";
+import {
+  markAccountHeadersReady,
+  unmarkAccountHeadersReady,
+} from "../core/account-manager.ts";
 import { getAccountsByPriority } from "../core/account-priority.ts";
 import {
   clearFingerprintCache,
@@ -903,6 +907,7 @@ export async function getBasicHeaders(accountId: string): Promise<{
       headersAge < HEADER_CACHE_TTL * HEADER_REFRESH_THRESHOLD
     ) {
       await tryLightweightCookieRefresh(accountId, cache);
+      markAccountHeadersReady(accountId);
       const bxUa = cache.headers["bx-ua"];
       const bxUmidtoken = cache.headers["bx-umidtoken"];
       const bxV = cache.headers["bx-v"] || "2.5.37";
@@ -932,8 +937,8 @@ export async function getBasicHeaders(accountId: string): Promise<{
         const bxUa = cache.headers["bx-ua"];
         const bxUmidtoken = cache.headers["bx-umidtoken"];
         const bxV = cache.headers["bx-v"] || "2.5.37";
-        // Update lastRefresh to extend the cache
         cache.lastRefresh = Date.now();
+        markAccountHeadersReady(accountId);
         console.log(
           `🔄 [Playwright] Skipped header recapture for ${accountId} (token still valid, age: ${Math.round(headersAge / 60000)} min)`,
         );
@@ -989,6 +994,7 @@ export async function getBasicHeaders(accountId: string): Promise<{
       );
     }
 
+    markAccountHeadersReady(accountId);
     const bxUa = cache.headers["bx-ua"];
     const bxUmidtoken = cache.headers["bx-umidtoken"];
     const bxV = cache.headers["bx-v"] || "2.5.37";
@@ -1679,6 +1685,9 @@ export async function captureQwenHeaders(
       if (timeout) clearTimeout(timeout);
       cache.headers = capturedHeaders;
       cache.lastRefresh = Date.now();
+      // The account now has a valid anti-bot header set — the rotation gate
+      // (account-manager `markAccountHeadersReady`) may route requests to it.
+      markAccountHeadersReady(accountId);
       // Header interception can set challenge/session cookies, so do not reuse
       // a cookie snapshot taken before this browser request.
       cookieCaches.delete(accountId);
@@ -2412,6 +2421,10 @@ function cleanupPlaywrightAccountState(accountId: string): void {
   lastAccountActivity.delete(accountId);
   lastKeepAliveNavigation.delete(accountId);
   clearFingerprintCache(accountId);
+  // The account's context died/closed — its captured headers are stale or the
+  // page is gone, so it must not be selected by the rotation gate until a
+  // fresh capture succeeds again.
+  unmarkAccountHeadersReady(accountId);
 }
 
 async function closePlaywrightContextBestEffort(

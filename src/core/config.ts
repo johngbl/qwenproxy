@@ -132,6 +132,14 @@ const envSchema = z
     // turn of the sticky owner is not pushed to a cold account with a full
     // context replay (8s caused a needless 13.3s hop in the 20:04 session).
     CHAT_IN_PROGRESS_BUSY_MS: z.string().default("4000"),
+    // Same-chat retry budget for chat_in_progress. The upstream chat stays "in
+    // progress" for 2-16s after a completed turn (grows with turn size); each
+    // retry waits a jittered window (busyMs-based) and NO retry re-sends the
+    // full context — the escalation (new chat + full replay on a cold account)
+    // was the ~1MB re-upload that made tool loops feel like ~40 minutes. After
+    // this budget the request FAILS (thread binding kept) and the client's own
+    // retry lands on the settled chat with the delta intact.
+    CHAT_IN_PROGRESS_MAX_RETRIES: z.string().default("6"),
     MID_STREAM_FAILOVER_THRESHOLD: z.string().default("2"),
     MID_STREAM_FAILOVER_BUSY_MS: z.string().default("60000"),
 
@@ -252,6 +260,7 @@ export const config = {
     onUnknownUpstream: env.RETRY_ON_UNKNOWN_UPSTREAM !== "false",
     chatInProgressDelayMs: Math.max(0, parseInt(env.CHAT_IN_PROGRESS_RETRY_DELAY_MS)),
     chatInProgressBusyMs: Math.max(0, parseInt(env.CHAT_IN_PROGRESS_BUSY_MS)),
+    chatInProgressMaxAttempts: Math.max(1, parseInt(env.CHAT_IN_PROGRESS_MAX_RETRIES)),
     midStreamFailoverThreshold: Math.max(
       0,
       parseInt(env.MID_STREAM_FAILOVER_THRESHOLD),

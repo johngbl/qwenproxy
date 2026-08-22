@@ -327,6 +327,36 @@ test("playwright header capture stops re-triggering when headers stay incomplete
   assert.equal(state.unroutes, 1);
 });
 
+test("playwright header capture marks the account headers-ready for the rotation gate", async () => {
+  const { captureQwenHeaders } = await import("../services/playwright.ts");
+  const {
+    isAccountHeadersReady,
+    unmarkAccountHeadersReady,
+  } = await import("../core/account-manager.ts");
+
+  const { page, state } = makeRetriggerPage([
+    {
+      cookie: "token=x",
+      "user-agent": "ua",
+      "bx-v": "2.5.37",
+      "bx-ua": "present",
+      "bx-umidtoken": "present",
+    },
+  ]);
+
+  try {
+    await captureQwenHeaders("test-header-ready", page as any, 30_000, 50);
+    assert.equal(
+      isAccountHeadersReady("test-header-ready"),
+      true,
+      "a successful capture must mark the account ready for rotation",
+    );
+    assert.equal(state.aborts, 1, "no intercepted request may reach Qwen");
+  } finally {
+    unmarkAccountHeadersReady("test-header-ready");
+  }
+});
+
 test("auth-playwright: falls back to first configured account when no account id is provided", async () => {
   const existing = snapshotAccounts();
   delete process.env.TEST_MOCK_QWEN_AUTH;

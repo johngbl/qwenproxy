@@ -33,7 +33,6 @@ import {
 } from "../../services/qwen.ts";
 import {
   classifyRetryAction,
-  shouldRetryChatInProgressOnSameAccount,
   shouldRetryInvalidInputOnSameAccount,
 } from "./retry-policy.ts";
 import { classifyMediaModel } from "../../services/media-generation.ts";
@@ -333,7 +332,6 @@ export async function chatCompletions(c: Context) {
     // Retry loop for mid-stream/create-stream failures (generic policy)
         let streamProcessingRetries = Math.max(0, config.retry.maxAttempts - 1);
         let invalidInputSameAccountRetries = 0;
-        let chatInProgressSameAccountRetries = 0;
         let currentStreamResult = streamResult;
         let currentParams = params;
 
@@ -358,6 +356,17 @@ export async function chatCompletions(c: Context) {
 
             if (policy.reason === "corrupted_chat_history") {
               invalidateLogicalThreadParent(ctx.sessionId);
+            }
+
+            if (policy.reason === "chat_in_progress") {
+              // The same-chat settle budget (jittered retries inside
+              // tryCreateStreamWithRetry) was already spent at the create path.
+              // A request-level retry would restart that budget and, once
+              // exhausted, switch accounts with a full-context replay — the
+              // exact ~1MB re-upload cost the settle design removes. Surface
+              // the error; the client's own retry lands on the settled chat
+              // with the thread binding intact.
+              throw streamErr;
             }
 
             // Prefer explicit RetryableQwenStreamError OR generic retryable policy
@@ -395,18 +404,8 @@ export async function chatCompletions(c: Context) {
             if (retryInvalidInputOnSameAccount) {
               invalidInputSameAccountRetries++;
             }
-            const retryChatInProgressOnSameAccount =
-              shouldRetryChatInProgressOnSameAccount(
-                policy.reason,
-                chatInProgressSameAccountRetries,
-              );
-            if (retryChatInProgressOnSameAccount) {
-              chatInProgressSameAccountRetries++;
-            }
             const switchAccount =
-              (policy.switchAccount && !retryInvalidInputOnSameAccount) ||
-              (policy.reason === "chat_in_progress" &&
-                !retryChatInProgressOnSameAccount);
+              policy.switchAccount && !retryInvalidInputOnSameAccount;
             const forceRetryNewChat = policy.forceNewChat;
             const retryWithFullPrompt = policy.retryWithFullPrompt;
             const retryFiles = policy.dropFiles ? [] : files;

@@ -1391,10 +1391,22 @@ export async function processStreamingResponse(
         if (retryChatInProgressOnSameAccount) {
           chatInProgressSameAccountRetries++;
         }
+        // chat_in_progress never escalates to an account switch with a
+        // full-context replay (the ~1MB re-upload cost the settle design
+        // removes). After the same-chat settle budget, fail the stream and let
+        // the request-level policy surface the error — the client's own retry
+        // lands on the settled chat, thread intact.
+        if (
+          policy.reason === "chat_in_progress" &&
+          !retryChatInProgressOnSameAccount
+        ) {
+          console.warn(
+            `🛑 [Chat] Stream recovery: chat_in_progress budget exhausted | account=${currentAccountId} | failing without full-context replay`,
+          );
+          return false;
+        }
         const switchAccount =
-          (policy.switchAccount && !retryInvalidInputOnSameAccount) ||
-          (policy.reason === "chat_in_progress" &&
-            !retryChatInProgressOnSameAccount);
+          policy.switchAccount && !retryInvalidInputOnSameAccount;
 
         if (
           switchAccount &&
