@@ -331,13 +331,13 @@ test("chat_in_progress four times with an alternate account available: NO escala
   }
 }));
 
-test("chat_in_progress budget exhaustion keeps the thread binding: no session clear, no replay, request fails", async () => {
-  // CHAT_IN_PROGRESS_MAX_RETRIES default 6: the 7th consecutive failure
-  // exhausts the same-chat budget. The OLD design cleared the origin account's
-  // sessions on exhaustion (escalation-era semantics); the new design KEEPS
-  // the binding so the client's own retry lands on the settled chat with its
-  // delta — clearing would force a wasteful full-context replay.
-  const mock = installMockFetch(7);
+test("chat_in_progress budget exhaustion triggers ONE bounded escalation; if it also fails the origin binding is cleared", async () => {
+  // CHAT_IN_PROGRESS_MAX_RETRIES default 6: failures 1-6 are the same-chat
+  // settle budget; the 7th failure escalates ONCE (fresh chat + full replay);
+  // if the escalated attempt ALSO fails the request gives up and clears the
+  // origin binding so the client's next turn starts fresh instead of re-wedging
+  // on the stuck chat (observed: a 2.1MB turn held a chat busy ~9 minutes).
+  const mock = installMockFetch(8);
   const capture = captureWarns();
   clearTemporaryBusy("mock-account");
   try {
@@ -347,7 +347,7 @@ test("chat_in_progress budget exhaustion keeps the thread binding: no session cl
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: "qwen3.6-plus",
-          session_id: "chat-progress-budget-keep-binding",
+          session_id: "chat-progress-budget-escalate-fail",
           messages: [{ role: "user", content: "hi" }],
           stream: true,
         }),
@@ -357,20 +357,24 @@ test("chat_in_progress budget exhaustion keeps the thread binding: no session cl
 
     assert.ok(
       res.status >= 400,
-      "budget exhaustion must fail the request, got " + res.status,
+      "give-up after a failed escalation must fail the request, got " + res.status,
     );
     assert.strictEqual(
       mock.completionCalls(),
-      7,
-      "exactly the settle budget — no 8th escalation call",
+      8,
+      "6 settle retries + 1 escalation + 1 failed escalation attempt",
+    );
+    const escalations = capture.warns.filter((w) =>
+      w.includes("chat_in_progress escalation"),
+    );
+    assert.strictEqual(
+      escalations.length,
+      1,
+      "exactly ONE bounded escalation, got: " + escalations.join("\n"),
     );
     assert.ok(
-      !capture.warns.some((w) => w.includes("Clearing session state for")),
-      "chat_in_progress exhaustion must keep the thread binding",
-    );
-    assert.ok(
-      !capture.warns.some((w) => w.includes("chat_in_progress escalation")),
-      "escalation must not exist",
+      capture.warns.some((w) => w.includes("Clearing session state for")),
+      "give-up clears the origin binding so the next turn starts fresh",
     );
   } finally {
     capture.restore();

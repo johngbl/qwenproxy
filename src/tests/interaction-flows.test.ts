@@ -222,11 +222,13 @@ test("interaction: temporary load-shed retries same account, real quota switches
 });
 
 // ── chat_in_progress same-account retry cap (mid-stream recovery) ───────────
-// The settle design (2026-08-22) removed the create-path escalation entirely
-// (jittered same-chat retries up to CHAT_IN_PROGRESS_MAX_RETRIES, then fail
-// with the thread intact). This pure predicate still gates the MID-STREAM
-// recovery path, where a fresh stream on the same account may be tried a few
-// times before giving up — never an account switch with a full-context replay.
+// The settle design (2026-08-22/23) retries the SAME chat with jittered
+// busyMs-based waits up to CHAT_IN_PROGRESS_MAX_RETRIES (create path), then
+// fires ONE bounded escalation (fresh chat + full replay); only if that also
+// fails does the request fail with the origin binding cleared. On the MID-
+// STREAM path a chat that reports in-progress mid-generation gets a few
+// same-account recovery attempts and then gives up — never an account switch
+// with a full-context replay.
 test("interaction: chat_in_progress same-account retries are capped at 3 for mid-stream recovery", () => {
   assert.strictEqual(shouldRetryChatInProgressOnSameAccount("chat_in_progress", 0), true);
   assert.strictEqual(shouldRetryChatInProgressOnSameAccount("chat_in_progress", 1), true);
