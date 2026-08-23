@@ -359,13 +359,12 @@ export async function chatCompletions(c: Context) {
             }
 
             if (policy.reason === "chat_in_progress") {
-              // The same-chat settle budget (jittered retries inside
-              // tryCreateStreamWithRetry) was already spent at the create path.
-              // A request-level retry would restart that budget and, once
-              // exhausted, switch accounts with a full-context replay — the
-              // exact ~1MB re-upload cost the settle design removes. Surface
-              // the error; the client's own retry lands on the settled chat
-              // with the thread binding intact.
+              // The same-chat settle budget AND the single bounded escalation
+              // (fresh chat + full replay) were already spent at the create path
+              // before this error surfaced. A request-level retry would restart
+              // that whole budget and replay the full context again. Surface the
+              // error; the inner loop already cleared the origin binding, so the
+              // client's own retry starts a fresh chat.
               throw streamErr;
             }
 

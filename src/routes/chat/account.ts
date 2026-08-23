@@ -668,16 +668,15 @@ export async function acquireUpstreamStream(
 		}
 
 		// chat_in_progress exhaustion is TERMINAL: tryCreateStreamWithRetry already
-		// spent the full same-chat settle budget (jittered retries covering the
-		// upstream settle window). Rotating from here would replay the FULL
-		// context on a cold account for a transient settle — the most expensive
-		// response to the most common error (~1MB re-upload, the "~40 minutes"
-		// cascade). Fail the request; the client's own retry lands on the settled
-		// chat with the thread binding intact.
+		// spent the full same-chat settle budget AND its single bounded escalation
+		// (fresh chat + full replay). Reaching this point means even the escalated
+		// fresh chat failed — the inner loop already cleared the origin binding, so
+		// the client's next turn starts fresh. Rotating from here would only add a
+		// SECOND full-context replay on a cold account for no gain.
 		if (isChatInProgressError(lastError)) {
 			if (logger.isLevelEnabled("info")) {
 				console.log(
-					`🛑 [Chat] chat_in_progress budget exhausted | ${maskEmail(accountEmail)} | failing without account rotation (settle is transient)`,
+					`🛑 [Chat] chat_in_progress budget exhausted (post-escalation) | ${maskEmail(accountEmail)} | failing without account rotation`,
 				);
 			}
 			break;
