@@ -809,17 +809,23 @@ interface CreateStreamFailure {
 /**
  * Pure: jittered same-chat settle wait for the nth chat_in_progress retry.
  * The base grows with the failure count (busyMs → 2×busyMs from the 4th
- * retry) and the result is randomized within ±25% so concurrent sessions
- * sharing an account never retry in lock-step (the old fixed 4s/8s ladder
- * synchronized every session onto the same interval). Upstream uses
- * `2000 + rand(2000)` for the same reason.
+ * retry) and context size (promptChars > 500KB/1MB/2MB), randomized within ±25%
+ * so concurrent sessions sharing an account never retry in lock-step.
  */
 export function jitterChatInProgressDelay(
 	retryCount: number,
 	busyMs: number,
 	rand: () => number = Math.random,
+	promptChars: number = 0,
 ): number {
-	const base = retryCount >= 4 ? busyMs * 2 : busyMs;
+	let base = retryCount >= 4 ? busyMs * 2 : busyMs;
+	if (promptChars > 2_000_000) {
+		base = Math.round(base * 1.75);
+	} else if (promptChars > 1_000_000) {
+		base = Math.round(base * 1.5);
+	} else if (promptChars > 500_000) {
+		base = Math.round(base * 1.25);
+	}
 	const raw = base * (0.75 + 0.5 * Math.min(1, Math.max(0, rand())));
 	return Math.min(20_000, Math.max(1, Math.round(raw)));
 }
@@ -1403,13 +1409,15 @@ async function tryCreateStreamWithRetry(
 		}
 
 		// Log the error details for debugging (skip quota errors — logged separately below,
-		// and client aborts — they are silent by design).
+		// client aborts — they are silent by design, and chat_in_progress — handled
+		// by the dedicated settling log below to avoid alarming false-positive error spam).
 		const errMsg = err instanceof Error ? err.message : String(err || "");
 		if (
 			err &&
 			!(err instanceof ClientAbortedError) &&
 			!isAccountUnavailableError(err) &&
-			!(err as any)?.parallelEscape
+			!(err as any)?.parallelEscape &&
+			!isChatInProgressError(err)
 		) {
 				const errCode = getQwenErrorCode(err) || "unknown";
 				console.warn(
@@ -1603,11 +1611,17 @@ async function tryCreateStreamWithRetry(
 				attemptsLeft = Math.max(attemptsLeft, 1);
 
 				// The 1st failure keeps the upstream-suggested wait (~1.2s);
-				// later retries wait a jittered busyMs-based window.
+				// later retries wait a jittered context-scaled busyMs-based window.
 				if (chatInProgressCount >= 2) {
+					const promptChars =
+						params.fullPrompt?.length ??
+						params.finalPrompt?.length ??
+						0;
 					policy.retryAfterMs = jitterChatInProgressDelay(
 						chatInProgressCount,
 						config.retry.chatInProgressBusyMs,
+						Math.random,
+						promptChars,
 					);
 				}
 			}
@@ -1748,9 +1762,26 @@ async function tryCreateStreamWithRetry(
 			policy.retryAfterMs ?? retryDelay ?? config.retry.baseDelayMs,
 		);
 
-		console.warn(
-			`🔄 [Chat] Qwen request failed for ${failedAccountEmail}, retrying in ${useDelay}ms... (${attemptsLeft} left). reason=${policy.reason} error=${errMsg.slice(0, 200)}`,
-		);
+		if (policy.reason === "chat_in_progress") {
+			const promptChars =
+				params.fullPrompt?.length ??
+				params.finalPrompt?.length ??
+				0;
+			const contextLabel =
+				promptChars > 1_000_000
+					? `${(promptChars / (1024 * 1024)).toFixed(1)}MB context`
+					: promptChars > 100_000
+						? `${Math.round(promptChars / 1024)}KB context`
+						: "";
+			const contextSuffix = contextLabel ? ` | ${contextLabel}` : "";
+			console.warn(
+				`⏳ [Chat] Chat settling | ${failedAccountEmail}${contextSuffix} | waiting ${(useDelay / 1000).toFixed(1)}s (attempt ${chatInProgressCount}/${config.retry.chatInProgressMaxAttempts})...`,
+			);
+		} else {
+			console.warn(
+				`🔄 [Chat] Qwen request failed for ${failedAccountEmail}, retrying in ${useDelay}ms... (${attemptsLeft} left). reason=${policy.reason} error=${errMsg.slice(0, 200)}`,
+			);
+		}
 		await new Promise((r) => setTimeout(r, useDelay));
 		retryDelay = Math.min(retryDelay * 2, config.retry.maxDelayMs);
 	}

@@ -206,6 +206,21 @@ test("jitterChatInProgressDelay: stays inside the +/-25% window and grows from t
   assert.strictEqual(jitterChatInProgressDelay(6, 4000, mid), 8000);
 });
 
+test("jitterChatInProgressDelay: scales dynamically with large context size", async () => {
+  const { jitterChatInProgressDelay } = await import("../routes/chat/account.ts");
+  const mid = () => 0.5;
+  // < 500KB context: base unmodified (4000ms)
+  assert.strictEqual(jitterChatInProgressDelay(2, 4000, mid, 100_000), 4000);
+  // > 500KB context: 1.25x (5000ms)
+  assert.strictEqual(jitterChatInProgressDelay(2, 4000, mid, 600_000), 5000);
+  // > 1MB context: 1.5x (6000ms)
+  assert.strictEqual(jitterChatInProgressDelay(2, 4000, mid, 1_200_000), 6000);
+  // > 2MB context: 1.75x (7000ms)
+  assert.strictEqual(jitterChatInProgressDelay(2, 4000, mid, 2_100_000), 7000);
+  // > 2MB context on retry 4 (base 8000 * 1.75 = 14000ms)
+  assert.strictEqual(jitterChatInProgressDelay(4, 4000, mid, 2_100_000), 14000);
+});
+
 test("jitterChatInProgressDelay: bounded for cold rand and capped at 20s", async () => {
   const { jitterChatInProgressDelay } = await import("../routes/chat/account.ts");
   assert.strictEqual(jitterChatInProgressDelay(2, 4000, () => 0), 3000); // 0.75x
