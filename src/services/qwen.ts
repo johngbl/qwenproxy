@@ -677,6 +677,22 @@ export async function readJsonTextResponse(
     return { raw, json: null };
   }
 
+  // Pre-check HTTP status: upstream gateways (like Alibaba GA) returning 502/503/504
+  // with an HTML body (e.g. <html><head><title>502 Bad Gateway</title>...) will fail JSON.parse.
+  // In strict mode on a non-ok response with non-JSON/HTML, throw an upfront descriptive upstream error
+  // rather than a cryptic SyntaxError ("Unexpected token '<'").
+  if (!response.ok && (raw.trimStart().startsWith("<") || response.status >= 500)) {
+    if (options.strict) {
+      const { QwenUpstreamError } = await import("./qwen-errors.ts");
+      throw new QwenUpstreamError(
+        `Upstream gateway error ${response.status} ${response.statusText}: ${raw.substring(0, 200)}`,
+        "UpstreamGatewayError",
+        response.status >= 500 ? 502 : response.status,
+      );
+    }
+    return { raw, json: null };
+  }
+
   try {
     return { raw, json: JSON.parse(raw) };
   } catch (error) {

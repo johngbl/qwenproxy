@@ -1702,19 +1702,20 @@ export async function captureQwenHeaders(
     // a re-trigger types into the page that is already loaded, and reloading
     // would throw away the bx SDK state that just finished warming up.
     const openChatPage = async () => {
+      if (settled || page.isClosed()) return;
       await page.goto(qwenUrl("/"), {
         waitUntil: "domcontentloaded",
         timeout: Math.min(config.timeouts.navigation, timeoutMs),
       });
-      if (settled) return;
+      if (settled || page.isClosed()) return;
       await sleep(2000);
     };
 
     /** Type the probe message and send it, then wait out the grace window. */
     const triggerSend = async (attempt: number) => {
-      if (settled) return;
+      if (settled || page.isClosed()) return;
       await clearVisibleChallenge(page);
-      if (settled) return;
+      if (settled || page.isClosed()) return;
 
       // Session-expiry fast path: if the page landed on the auth/login screen
       // (redirection after a dead session), typing into the chat input would
@@ -1741,7 +1742,7 @@ export async function captureQwenHeaders(
           // Re-login navigated away; reload the chat page so the send below
           // types into a live chat input (never leave the loop parked).
           await openChatPage();
-          if (settled) return;
+          if (settled || page.isClosed()) return;
         } else {
           settle(
             new Error(
@@ -1752,19 +1753,21 @@ export async function captureQwenHeaders(
         }
       }
 
+      if (settled || page.isClosed()) return;
+
       // Prefer the Qwen-specific input selector first (stable against the DOM
       // picking a sibling textarea/contenteditable), then fall back to generic.
       // Mirrors upstream 5b3fd3e (robust account header capture).
       const inputSelector =
         'textarea.message-input-textarea:visible, textarea:visible, [contenteditable="true"]:visible';
       await page.focus(inputSelector);
-      if (settled) return;
+      if (settled || page.isClosed()) return;
       await page.fill(inputSelector, "");
-      if (settled) return;
+      if (settled || page.isClosed()) return;
       await page.type(inputSelector, "a", { delay: 100 });
-      if (settled) return;
+      if (settled || page.isClosed()) return;
       await sleep(2000);
-      if (settled) return;
+      if (settled || page.isClosed()) return;
 
       const sendSelectors = [
         ".message-input-right-button-send .send-button",
@@ -1774,7 +1777,7 @@ export async function captureQwenHeaders(
 
       let clicked = false;
       for (const selector of sendSelectors) {
-        if (settled) return;
+        if (settled || page.isClosed()) return;
         try {
           const btn = await page.$(selector);
           if (btn && (await btn.isVisible())) {
@@ -1785,7 +1788,7 @@ export async function captureQwenHeaders(
                 element.click();
               }
             }, selector);
-            if (!settled) {
+            if (!settled && !page.isClosed()) {
               await btn.click({ force: true, delay: 50 }).catch(() => {});
             }
             clicked = true;
@@ -1796,7 +1799,7 @@ export async function captureQwenHeaders(
         }
       }
 
-      if (!clicked && !settled) {
+      if (!clicked && !settled && !page.isClosed()) {
         await page.keyboard.press("Enter");
       }
 
