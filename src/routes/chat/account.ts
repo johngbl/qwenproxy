@@ -4,6 +4,7 @@ import {
 	getNextAccount,
 	getNextAvailableAccount,
 	markAccountRateLimited,
+	syncCooldownsFromDb,
 } from "../../core/account-manager.ts";
 import { markAccountSuccessful, markAccountFailed, getAccountsByPriority } from "../../core/account-priority.ts";
 import { loadAccounts, type QwenAccount } from "../../core/accounts.ts";
@@ -236,6 +237,7 @@ export function resolveInitialAccount(
 
 	const configuredAccounts = loadAccounts();
 	if (configuredAccounts.length > 0) {
+		syncCooldownsFromDb(configuredAccounts);
 		const excluded = new Set(excludeAccountIds ?? []);
 
 		// Explicit preferred account (sticky / same-account retry)
@@ -494,8 +496,13 @@ export async function acquireUpstreamStream(
 			console.log(
 				`⏭️  [Chat] Skipping account ${accountEmail} (${accountId}) busy; rotating to a free account`,
 			);
-			account = getNextAvailableAccount(triedAccountIds);
-			continue;
+			const nextCandidate = getNextAvailableAccount(triedAccountIds);
+			if (nextCandidate && !getAccountCooldownInfo(nextCandidate.id)) {
+				account = nextCandidate;
+				continue;
+			}
+			// No usable alternate account exists (e.g. all other accounts are on cooldown):
+			// do NOT skip this busy account to death. Fall through and queue on its slot.
 		}
 
 		const cooldownInfo = getAccountCooldownInfo(accountId);
@@ -779,8 +786,20 @@ export async function acquireUpstreamStream(
 		}
 	}
 
+	if (!lastError) {
+		const busyOrCooldownError: any = new Error(
+			"No accounts available: all accounts are either in use or on cooldown. Retry shortly.",
+		);
+		busyOrCooldownError.upstreamStatus = 429;
+		return {
+			error: busyOrCooldownError,
+			completionId,
+			allOnCooldown: false,
+		};
+	}
+
 	return {
-		error: lastError ?? new Error("No accounts available"),
+		error: lastError,
 		completionId,
 		allOnCooldown: false,
 	};
