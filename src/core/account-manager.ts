@@ -88,6 +88,19 @@ export function clearAccountCooldown(accountId: string): void {
   }
 }
 
+export function clearAllAccountCooldowns(): number {
+  const accounts = loadAccounts();
+  let count = 0;
+  for (const account of accounts) {
+    if (cooldowns.has(account.id) || (account.cooldown_until && account.cooldown_until > 0)) {
+      clearAccountCooldown(account.id);
+      count++;
+    }
+  }
+  cooldowns.delete("global");
+  return count;
+}
+
 export function getAccountCooldownInfo(
   accountId: string,
 ): { onCooldown: boolean; remainingMs: number; reason: string } | null {
@@ -139,8 +152,16 @@ export function isAccountHeadersReady(accountId: string): boolean {
   return headersReadyAccounts.has(accountId);
 }
 
-function anyAccountHeadersReady(accounts: QwenAccount[]): boolean {
-  return accounts.some((a) => isAccountHeadersReady(a.id));
+function anyUsableAccountHeadersReady(
+  accounts: QwenAccount[],
+  triedSet?: Set<string>,
+): boolean {
+  return accounts.some(
+    (a) =>
+      (!triedSet || !triedSet.has(a.id)) &&
+      !isAccountOnCooldown(a.id) &&
+      isAccountHeadersReady(a.id),
+  );
 }
 
 function passesHeadersReadyGate(
@@ -178,8 +199,10 @@ export function getNextAccount(): QwenAccount | null {
 
   // Ordena por prioridade (contas que funcionaram bem vêm primeiro)
   const prioritized = getAccountsByPriority(accounts);
-  // Gate: once ANY account has captured headers, only ready accounts rotate.
-  const anyReady = anyAccountHeadersReady(accounts);
+  // Gate: once ANY usable account has captured headers, only ready accounts rotate.
+  // If all ready accounts are on cooldown, anyReady degrades to false so non-ready
+  // accounts can be initialized on-demand instead of falsely reporting pool exhaustion.
+  const anyReady = anyUsableAccountHeadersReady(accounts);
 
   for (let i = 0; i < prioritized.length; i++) {
     const account = prioritized[currentIndex % prioritized.length];
@@ -213,17 +236,19 @@ export function getNextAvailableAccount(
 
   syncCooldownsFromDb(accounts);
 
-  // Ordena por prioridade (contas que funcionaram bem vêm primeiro)
-  const prioritized = getAccountsByPriority(accounts);
-  // Gate: once ANY account has captured headers, only ready accounts rotate.
-  const anyReady = anyAccountHeadersReady(accounts);
-
   let triedSet: Set<string>;
   if (triedAccountIds instanceof Set) {
     triedSet = triedAccountIds;
   } else {
     triedSet = new Set(triedAccountIds ? [triedAccountIds] : []);
   }
+
+  // Ordena por prioridade (contas que funcionaram bem vêm primeiro)
+  const prioritized = getAccountsByPriority(accounts);
+  // Gate: once ANY untried, non-cooldown account has captured headers, only ready accounts rotate.
+  // If all ready accounts are on cooldown or tried, anyReady degrades to false so non-ready
+  // accounts can be initialized on-demand instead of falsely reporting pool exhaustion.
+  const anyReady = anyUsableAccountHeadersReady(accounts, triedSet);
 
   // 1. Try to find an untried account that is NOT on cooldown
   for (let i = 0; i < prioritized.length; i++) {
