@@ -1961,7 +1961,37 @@ export class StreamingToolParser {
         this.pendingLeadIn = "";
       }
     } else {
-      this.emitVisibleText(result, this.buffer);
+      // If we are not insideTool, the model may have emitted raw JSON tool calls
+      // (e.g. `{"name":"read","arguments":{...}} {"name":"glob",...} ......`)
+      // without wrapping them in <tool_call> tags, or left an incomplete `<tool_call` tag at the end.
+      let textToProcess = this.buffer;
+
+      // 1. Strip any trailing orphaned `<tool_call` or `<tool_calls` prefix at the end of buffer
+      // (e.g. model output `... <tool_call` without closing `>`)
+      textToProcess = textToProcess.replace(/<\/?tool_calls?\b[^>]*$/i, "").trimEnd();
+
+      // 2. Extract any unwrapped JSON tool calls from the buffer
+      const { toolCalls: unwrappedCalls, remainingText } =
+        this.extractUnwrappedToolCalls(textToProcess);
+
+      if (unwrappedCalls.length > 0) {
+        if (isToolcallDebugEnabled()) {
+          logger.debug("[parser] flush: extracted unwrapped tool calls from buffer", {
+            count: unwrappedCalls.length,
+            names: unwrappedCalls.map((tc) => tc.name),
+            remainingTextPreview: remainingText.substring(0, 100),
+          });
+        }
+        for (const tc of unwrappedCalls) {
+          this.finalizeSuccessfulToolCall(tc, result);
+        }
+        // If there was prose before the unwrapped tool calls, emit it as visible text
+        if (remainingText.trim().length > 0 && this.emittedToolCallCount === unwrappedCalls.length) {
+          this.emitVisibleText(result, remainingText);
+        }
+      } else {
+        this.emitVisibleText(result, textToProcess);
+      }
     }
 
     if (isToolcallDebugEnabled()) {
@@ -2813,4 +2843,84 @@ export class StreamingToolParser {
       arguments: args,
     };
   }
+
+  /**
+   * Scans a text buffer for one or more unwrapped raw JSON tool calls
+   * (e.g. `{"name":"read","arguments":{...}} {"name":"glob",...} ......`)
+   * and extracts them cleanly without letting raw JSON leak into user-facing text.
+   */
+  public extractUnwrappedToolCalls(
+    text: string,
+  ): { toolCalls: ParsedToolCall[]; remainingText: string } {
+    const trimmed = text.trim();
+    if (!trimmed.includes('"name"') && !trimmed.includes('name":') && !trimmed.includes("'name'")) {
+      return { toolCalls: [], remainingText: text };
+    }
+
+    const toolCalls: ParsedToolCall[] = [];
+    let remainingText = "";
+    let i = 0;
+
+    while (i < text.length) {
+      if (text[i] === "{") {
+        const jsonEnd = findMatchingClosingBrace(text, i);
+        if (jsonEnd !== -1) {
+          const candidate = text.substring(i, jsonEnd + 1);
+          const recovered =
+            this.tryRecoverToolCall(candidate) ||
+            this.lastChanceRecoverToolCall(candidate);
+          if (recovered && this.isDeclaredToolName(recovered.name)) {
+            toolCalls.push(recovered);
+            i = jsonEnd + 1;
+            continue;
+          }
+        }
+      }
+      remainingText += text[i];
+      i++;
+    }
+
+    if (toolCalls.length > 0) {
+      // Strip trailing hallucinated ellipsis dots/spaces (e.g. `...... ......`)
+      remainingText = remainingText.replace(/(\s*\.{2,}\s*)+$/g, "").trimEnd();
+    }
+
+    return { toolCalls, remainingText };
+  }
+}
+
+/**
+ * String and escape-aware scanner to find the matching closing brace '}'
+ * for a JSON object starting at `startIdx`.
+ */
+function findMatchingClosingBrace(text: string, startIdx: number): number {
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  let quoteChar = "";
+
+  for (let j = startIdx; j < text.length; j++) {
+    const ch = text[j];
+    if (inString) {
+      if (escape) {
+        escape = false;
+      } else if (ch === "\\") {
+        escape = true;
+      } else if (ch === quoteChar) {
+        inString = false;
+      }
+    } else {
+      if (ch === '"' || ch === "'") {
+        inString = true;
+        quoteChar = ch;
+      } else if (ch === "{") {
+        depth++;
+      } else if (ch === "}") {
+        depth--;
+        if (depth === 0) return j;
+      }
+    }
+  }
+
+  return -1;
 }
