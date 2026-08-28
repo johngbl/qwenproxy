@@ -50,14 +50,18 @@ ${toolClose}
 
 Then STOP immediately, output NO other text, explanations, trailing dots, or reasoning, and wait silently for the tool results.
 
-# CRITICAL RULES (VIOLATIONS WILL CAUSE TOOL FAILURE)
+ # CRITICAL RULES (VIOLATIONS WILL CAUSE TOOL FAILURE)
 1. NEVER output raw JSON (like {"name":"tool_name",...}) directly in your message without wrapping it in ${toolOpen} and ${toolClose} tags.
 2. Each ${toolOpen} block must be complete and self-contained: open tag, one valid JSON object, and matching close tag. Never nest, interleave, or omit tags.
 3. Put only valid JSON inside each block: no markdown fences, comments, or explanatory text.
 4. Stop immediately after the final ${toolClose} tag. Do NOT emit trailing dots, ellipsis (......), or placeholder text.
 5. "name" must be an exact declared tool name from the list above; never approximate or invent one.
 6. "arguments" must be a plain JSON object, never a string that contains JSON.
-7. Escape quotes and backslashes properly (e.g. Windows paths use double backslashes: {"file":"C:\\\\Users\\\\you\\\\file.txt"}).
+7. Escape double quotes and backslashes inside JSON strings. Single quotes do NOT need escaping.
+   - Windows paths: use double backslashes, e.g. {"file":"C:\\\\Users\\\\you\\\\file.txt"}
+   - Shell/PowerShell commands with single quotes: keep them as-is, e.g. {"cmd":"docker run --rm wpcli wp eval '$x=1; echo 1;'"}
+   - Never insert line breaks inside a JSON string value unless the tool explicitly requires multiline. Keep commands on one line or use \\n, never literal newlines between characters.
+8. Keep argument values compact and on one line. Do NOT split a value like "fields" into "f\\ni\\ne\\nl\\nd\\ns".
 
 # REPEAT PROTECTION (most important)
 - NEVER call the same tool more than once with the same arguments in this conversation. If an identical call already exists in the history, use its result and continue; do not re-call.

@@ -2789,12 +2789,60 @@ export class StreamingToolParser {
     return null;
   }
 
+  private isHallucinatedToolCall(parsed: any): boolean {
+    const args =
+      parsed.arguments ||
+      parsed.function?.arguments ||
+      parsed.args ||
+      parsed.parameters ||
+      parsed.input ||
+      {};
+    const values =
+      typeof args === "string"
+        ? [args]
+        : typeof args === "object" && args !== null
+          ? Object.values(args).filter((v) => typeof v === "string") as string[]
+          : [];
+    for (const val of values) {
+      // Detect vertical hallucination: single chars separated by newlines
+      // e.g. "f\ni\ne\nl\nd\ns" or "a\nc\nf\ng\ne\nt..." (5+ single-char lines)
+      // and zero-width / ornament chars inserted by WAF/bx
+      const lines = val.split("\n");
+      if (lines.length >= 8) {
+        let singleCharLines = 0;
+        for (const line of lines) {
+          const trimmed = line.replace(/[\u200B\uFEFF¨\u00A8]/g, "").trim();
+          if (trimmed.length === 1 && /^[A-Za-z0-9=_\-;()]$/.test(trimmed)) {
+            singleCharLines++;
+          }
+        }
+        if (singleCharLines >= 6 && singleCharLines / lines.length > 0.5) {
+          return true;
+        }
+      }
+      // Also catch the compact form "f\ni\ne..." after JSON parsing already
+      // converted literal newlines to \n -> string contains "\n" per char
+      if (/^([A-Za-z0-9=_\-;()]\n){6,}/.test(val) || /(\w\n){8,}/.test(val)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   private parseToolCall(parsed: any): ParsedToolCall | null {
     if (!parsed || typeof parsed !== "object") return null;
 
     const name =
       parsed.name || parsed.function?.name || parsed.tool_name || parsed.tool;
     if (!name || typeof name !== "string" || name.length === 0) return null;
+
+    // Drop hallucinated tool calls where the model split a value vertically
+    // (e.g. "fields" -> "f\ni\ne\nl\nd\ns"). These are valid JSON after
+    // sanitizeAndBalance but semantically broken; treat as malformed so the
+    // [SYSTEM CORRECTION] auto-retry fires instead of delivering garbage.
+    if (this.isHallucinatedToolCall(parsed)) {
+      return null;
+    }
 
     let args =
       parsed.arguments ||
