@@ -72,20 +72,24 @@ export function buildToolInstructions(
 ${manifest}
 ${forcedInstruction}
 [TOOL CALL CONTRACT - MANDATORY]
-To invoke a tool, output a JSON object wrapped EXACTLY in ${TOOL_CALL_OPEN} and ${TOOL_CALL_CLOSE} tags:
+To invoke a tool, output a JSON object wrapped EXACTLY in ${TOOL_CALL_OPEN} and ${TOOL_CALL_CLOSE} tags.
+When calling multiple independent tools, output consecutive blocks:
 
 ${TOOL_CALL_OPEN}
-{"name": "tool_name", "arguments": {"param_name": "value"}}
+{"name": "read_file", "arguments": {"path": "file1.txt"}}
+${TOOL_CALL_CLOSE}
+${TOOL_CALL_OPEN}
+{"name": "read_file", "arguments": {"path": "file2.txt"}}
 ${TOOL_CALL_CLOSE}
 
 CRITICAL RULES:
 1. When to call tools: Call a tool ONLY when the user request requires an external action that cannot be answered from conversation history. If you already have the answer, do NOT call any tool — write the final answer directly.
-2. Single vs Parallel: Emit at most ONE tool call per turn unless the user explicitly requested multiple independent operations. Each block must be complete and self-contained (never nested, interleaved, or omitted).
+2. Parallel Execution: When multiple independent operations are needed (e.g. reading several files, searching multiple paths), emit multiple consecutive ${TOOL_CALL_OPEN} blocks in parallel. Each block must be complete and self-contained (never nested, interleaved, or omitted). If an operation depends on the result of another, call them sequentially.
 3. Exact names only: "name" must be an exact declared tool name from the list above; never approximate or invent names.
 4. Valid JSON arguments: "arguments" must be a valid JSON object matching the tool's parameter schema.
 5. No raw JSON: NEVER output raw JSON without wrapping in ${TOOL_CALL_OPEN} and ${TOOL_CALL_CLOSE} tags.
 6. Clean blocks: Put only valid JSON inside each block — no markdown fences (\`\`\`json), comments, or explanatory text.
-7. Stop immediately: Stop generating immediately after closing with ${TOOL_CALL_CLOSE}. Do not emit trailing dots, ellipsis (......), explanations, or reasoning after the tool call.
+7. Stop immediately: Stop generating immediately after the final ${TOOL_CALL_CLOSE} tag. Do not emit trailing dots, ellipsis (......), explanations, or reasoning after the tool calls.
 8. Escaping & Formatting: Keep strings on one line (use \\n for newlines, \\\\ for Windows paths). Do not split values across lines.
 9. No duplicate calls: Never call the same tool with identical arguments if the result is already in the history.
 `;
