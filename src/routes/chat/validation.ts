@@ -18,9 +18,7 @@ import {
   type ReasoningMode,
 } from "../../core/model-alias.ts";
 
-// Tag literals split to avoid proxy parser misinterpretation
-const TOOL_CALL_OPEN = "<" + "tool_call>";
-const TOOL_CALL_CLOSE = "</" + "tool_call>";
+import { TOOL_CALL_OPEN, TOOL_CALL_CLOSE } from "../../tools/toolcall-tags.ts";
 
 export interface ParsedRequest {
   body: OpenAIRequest;
