@@ -79,7 +79,7 @@ export async function getBasicHeaders(accountId?: string): Promise<{
       secChUa: "",
       secChUaMobile: "?0",
       secChUaPlatform: "",
-      version: "0.2.86",
+      version: "0.2.89",
     };
   }
 
