@@ -99,7 +99,7 @@ const envSchema = z
     RETRY_AUTO_MALFORMED_TOOLS_MAX: z.string().default("2"),
     MAX_TOOL_CALLS_PER_TURN: z.string().default("24"),
     QWEN_REPEATED_TOOL_CALL_WARN: z.string().default("2"),
-    ACCOUNT_MAX_CONCURRENT_STREAMS: z.string().default("1"),
+    ACCOUNT_MAX_CONCURRENT_STREAMS: z.string().default("2"),
     ACCOUNT_BUSY_WAIT_MS: z.string().default("30000"),
     // Cap for the "wait forever" account-lease queue (thread owner / last
     // usable account): the queue previously had NO deadline, so a stuck lease
