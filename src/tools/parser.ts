@@ -8,11 +8,7 @@ import {
   TOOL_CALL_CLOSE,
   getOpenNames,
   getCloseNames,
-  findToolOpen,
   matchToolCloseAt,
-  openTagName,
-  closeTagFor,
-  sanitizeStrayCloses,
 } from "./toolcall-tags.ts";
 
 export interface ToolCallDelta {
@@ -56,7 +52,6 @@ interface ActiveIncrementalToolCall {
 // ─── XML Helpers ───────────────────────────────────────────────────────────────
 
 const TOOL_END = "</" + "tool_call>";
-const TOOL_END_ALIASES = ["</" + "tool_calls>", TOOL_END];
 
 interface ToolEndMatch {
   index: number;

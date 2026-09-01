@@ -7,6 +7,7 @@ import {
 	syncCooldownsFromDb,
 } from "../../core/account-manager.ts";
 import { markAccountSuccessful, markAccountFailed, getAccountsByPriority } from "../../core/account-priority.ts";
+import { recordWafHardBlock, noteWafRecovery } from "../../core/waf-isolation.ts";
 import { loadAccounts, type QwenAccount } from "../../core/accounts.ts";
 import { config, type ChatMode } from "../../core/config.ts";
 import { ClientAbortedError, UpstreamRateLimit } from "../../core/errors.ts";
@@ -713,13 +714,11 @@ export async function acquireUpstreamStream(
 		// outright, then stop: walking the whole pool would only get every account
 		// challenged in turn and multiply the solver budget by the pool size.
 		if (isAntiBotError(lastError)) {
-			if (config.captcha.accountCooldownMs > 0) {
-				markAccountRateLimited(
-					accountId,
-					config.captcha.accountCooldownMs,
-					"WafChallenge",
-				);
-			}
+			// Hard block: the challenge was NOT solved here. Quarantine with an
+			// escalating window AND rotate the device fingerprint + reset the
+			// browser context, so the account does not return from cooldown on the
+			// same identity the WAF already flagged (upstream account-isolation).
+			recordWafHardBlock(accountId);
 
 			if (antiBotRotations >= MAX_ANTI_BOT_ROTATIONS) {
 				console.warn(
@@ -1389,6 +1388,10 @@ async function tryCreateStreamWithRetry(
 				});
 			}
 
+			// A served stream means the WAF accepted this account's identity:
+			// clear the hard-block escalation streak (keeps the next block at the
+			// base window instead of compounding forever).
+			noteWafRecovery(currentAccountId);
 			markAccountSuccessful(currentAccountId);
 			if (accountLease) {
 				markLeaseCompletion(

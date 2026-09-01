@@ -149,11 +149,30 @@ export interface FingerprintProfile {
 
 const profileCache = new Map<string, FingerprintProfile>();
 
+// Per-account rotation salt. The seed is normally derived ONLY from the
+// accountId, so after a hard WAF block (captcha/TMD) the account would return
+// from its cooldown on the SAME device identity the WAF already flagged — the
+// flag re-propagates immediately. Bumping the salt (and closing the browser
+// context) makes the next profile a fresh device identity.
+const rotationSalts = new Map<string, number>();
+
+export function rotateFingerprintSeed(accountId: string): number {
+  const next = (rotationSalts.get(accountId) ?? 0) + 1;
+  rotationSalts.set(accountId, next);
+  profileCache.delete(accountId);
+  return next;
+}
+
+export function getFingerprintRotation(accountId: string): number {
+  return rotationSalts.get(accountId) ?? 0;
+}
+
 export function getFingerprintProfile(accountId: string): FingerprintProfile {
   const cached = profileCache.get(accountId);
   if (cached) return cached;
 
-  const seed = seedFromString(accountId);
+  const salt = rotationSalts.get(accountId) ?? 0;
+  const seed = seedFromString(salt === 0 ? accountId : `${accountId}#r${salt}`);
   const rng = mulberry32(seed);
   const viewport = pick(rng, VIEWPORTS);
   const webgl = pick(rng, WEBGL_PROFILES);

@@ -305,6 +305,22 @@ export function sanitizeCaptchaErrorDetail(error: unknown): string {
     .slice(0, 220);
 }
 
+// Global mouse lock: the NC slider drag is a physical pointer interaction —
+// two concurrent solvers on the same browser would interleave mouse events.
+let captchaMouseLock: Promise<void> = Promise.resolve();
+
+async function withCaptchaMouseLock<T>(fn: () => Promise<T>): Promise<T> {
+  const previous = captchaMouseLock;
+  const { promise: gate, resolve } = Promise.withResolvers<void>();
+  captchaMouseLock = gate;
+  await previous;
+  try {
+    return await fn();
+  } finally {
+    resolve();
+  }
+}
+
 /**
  * Solve a Baxia/TMD slider challenge already present in the account page.
  *
@@ -314,6 +330,16 @@ export function sanitizeCaptchaErrorDetail(error: unknown): string {
  * challenge tokens.
  */
 export async function solveBaxiaCaptcha(
+  page: Page,
+  options: BaxiaSolverOptions = {},
+): Promise<boolean> {
+  // One physical mouse per browser: with concurrent relay streams on one page
+  // two watchers could interleave drag events and break each other's slider.
+  // Serialize the whole solve (upstream captcha-solver uses the same lock).
+  return await withCaptchaMouseLock(() => solveBaxiaCaptchaUnlocked(page, options));
+}
+
+async function solveBaxiaCaptchaUnlocked(
   page: Page,
   options: BaxiaSolverOptions = {},
 ): Promise<boolean> {

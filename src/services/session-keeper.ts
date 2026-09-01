@@ -4,6 +4,7 @@ import {
   closeIdlePlaywrightAccounts,
   evictIdlePlaywrightContextsToLimit,
   getActivePlaywrightAccountIds,
+  isPlaywrightAlreadyClosedError,
   keepAlivePlaywrightAccount,
 } from "./playwright.ts";
 import { humanDelay, sleep } from "./human-behavior.ts";
@@ -24,16 +25,17 @@ async function runKeepAliveCycle(): Promise<void> {
       const accountIds = getActivePlaywrightAccountIds();
       for (const accountId of accountIds) {
         await keepAlivePlaywrightAccount(accountId).catch((error) => {
+          // Shutdown/eviction closes contexts while a cycle is in flight; the
+          // resulting "already closed" rejection is benign. The old substring
+          // filter ("Target closed"/"Page is closed") missed Playwright's real
+          // message ("Target page, context or browser has been closed") and
+          // leaked a warning on every Ctrl+C.
+          if (isPlaywrightAlreadyClosedError(error)) return;
           const message =
             error instanceof Error ? error.message : String(error);
-          if (
-            !message.includes("Target closed") &&
-            !message.includes("Page is closed")
-          ) {
-            console.warn(
-              `[SessionKeeper] Keep-alive failed for ${accountId}: ${message}`,
-            );
-          }
+          console.warn(
+            `[SessionKeeper] Keep-alive failed for ${accountId}: ${message}`,
+          );
         });
         await sleep(humanDelay(250, 900));
       }

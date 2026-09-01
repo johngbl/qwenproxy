@@ -31,6 +31,7 @@ import {
 import { subtlePageActivity } from "./human-behavior.ts";
 import { solveBaxiaCaptcha } from "./captcha-solver.ts";
 import { qwenOrigin, qwenUrl } from "./qwen-url.ts";
+import { setWafContextResetListener } from "../core/waf-isolation.ts";
 
 // Try to import playwright-extra and stealth, fallback to regular playwright
 let chromiumWithStealth: typeof chromium | null = null;
@@ -923,7 +924,6 @@ export async function getBasicHeaders(accountId: string): Promise<{
       // cookie string (previously 3 round-trips: 2 validators + lightweight
       // refresh).
       const cookieSnapshot = await getCookieSnapshot(accountId);
-      await getCookieSnapshot(accountId);
       if (
         cookieSnapshot &&
         isAuthTokenValidFrom(cookieSnapshot) &&
@@ -2488,7 +2488,12 @@ async function closePlaywrightForAccountLocked(
   }
 }
 
-function isPlaywrightAlreadyClosedError(error: unknown): boolean {
+/**
+ * True for Playwright rejections that mean "the page/context/browser was
+ * closed underneath the operation" — benign races against shutdown/eviction
+ * that must not be logged as keep-alive failures.
+ */
+export function isPlaywrightAlreadyClosedError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return (
     message.includes("Target page, context or browser has been closed") ||
@@ -2510,6 +2515,21 @@ export async function closePlaywrightForAccount(
     release();
   }
 }
+
+// WAF hard-block contingency: after the fingerprint seed rotates, close this
+// account's context so the next use re-initializes with the fresh device
+// identity (cookies/storage persist in the profile dir). Fire-and-forget — the
+// quarantine is already applied; a failed close must not abort it.
+setWafContextResetListener((accountId: string) => {
+  if (!accountPages.has(accountId)) return;
+  void closePlaywrightForAccount(accountId).catch((error: unknown) => {
+    console.warn(
+      `[Playwright] WAF context reset failed for ${accountId}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  });
+});
 
 export async function closeAllPlaywright(): Promise<void> {
   closingAllPlaywright = true;

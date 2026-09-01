@@ -109,3 +109,72 @@ test("idle sweep never closes a context that holds a stream lease", async () => 
     await closePlaywrightForAccount(accountId).catch(() => {});
   }
 });
+
+// ── shutdown race: closeAllPlaywright closes contexts while a keep-alive
+// cycle is in flight; the resulting "already closed" rejection is benign and
+// must NOT leak a warning (the user saw it on Ctrl+C).
+function closedGotoPage(message: string): any {
+  return {
+    isClosed: () => false,
+    url: () => "https://chat.qwen.ai/",
+    goto: async () => {
+      throw new Error(message);
+    },
+  };
+}
+
+function captureWarns(): { warns: string[]; restore: () => void } {
+  const warns: string[] = [];
+  const original = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warns.push(args.map((a) => String(a)).join(" "));
+  };
+  return { warns, restore: () => { console.warn = original; } };
+}
+
+test("keep-alive suppresses the benign already-closed error on shutdown", async () => {
+  resetAccountConcurrencyForTests();
+  stopSessionKeeper();
+  const accountId = "keeper-closed-race";
+  registerPlaywrightAccountForTests(
+    accountId,
+    closedGotoPage(
+      "page.goto: Target page, context or browser has been closed\nCall log:\nnavigating to https://chat.qwen.ai/",
+    ),
+    STALE_ACTIVITY_AT,
+  );
+  const captured = captureWarns();
+  try {
+    await runSessionKeeperOnceForTesting();
+    assert.equal(
+      captured.warns.filter((w) => w.includes("Keep-alive failed")).length,
+      0,
+      `already-closed must be silent, got: ${captured.warns.join(" | ")}`,
+    );
+  } finally {
+    captured.restore();
+    await closePlaywrightForAccount(accountId).catch(() => {});
+  }
+});
+
+test("keep-alive still warns for real errors (no over-suppression)", async () => {
+  resetAccountConcurrencyForTests();
+  stopSessionKeeper();
+  const accountId = "keeper-real-error";
+  registerPlaywrightAccountForTests(
+    accountId,
+    closedGotoPage("page.goto: net::ERR_CONNECTION_RESET"),
+    STALE_ACTIVITY_AT,
+  );
+  const captured = captureWarns();
+  try {
+    await runSessionKeeperOnceForTesting();
+    assert.ok(
+      captured.warns.some((w) => w.includes("Keep-alive failed")),
+      "a non-closed error must still be reported",
+    );
+  } finally {
+    captured.restore();
+    await closePlaywrightForAccount(accountId).catch(() => {});
+  }
+});
