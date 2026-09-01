@@ -18,6 +18,11 @@ import {
   type ReasoningMode,
 } from "../../core/model-alias.ts";
 
+import {
+  normalizeReasoningEffort,
+  effortToReasoningMode,
+} from "../../core/reasoning-effort.ts";
+
 import { TOOL_CALL_OPEN, TOOL_CALL_CLOSE } from "../../tools/toolcall-tags.ts";
 
 export interface ParsedRequest {
@@ -73,6 +78,21 @@ export async function parseRequestBody(c: Context): Promise<ParsedRequest> {
   const { baseModel, enableThinking, reasoningMode } = stripThinkingSuffix(body.model);
   const modelId = mapClientModelToQwen(baseModel);
 
+  // OpenAI `reasoning_effort` (none|minimal|low|medium|high|xhigh|max).
+  // Precedence: an explicit model suffix wins — effort only acts on unsuffixed
+  // models (reasoningMode "auto"). Absent/empty effort is a complete no-op.
+  // Qwen has no medium gradient, so only the low tier is meaningful: it forces
+  // Fast (thinking off). medium/high/max keep Qwen's own auto decision.
+  // The camelCase alias is accepted too: OpenCode-style configs overlay the
+  // raw `reasoningEffort` setting into the request body.
+  const rawEffort = body.reasoning_effort ?? body.reasoningEffort;
+  const effortMode =
+    reasoningMode === "auto"
+      ? effortToReasoningMode(normalizeReasoningEffort(rawEffort))
+      : undefined;
+  const finalReasoningMode = effortMode ?? reasoningMode;
+  const finalEnableThinking = effortMode === "fast" ? false : enableThinking;
+
   return {
     body,
     isStream,
@@ -86,8 +106,8 @@ export async function parseRequestBody(c: Context): Promise<ParsedRequest> {
     currentFiles,
     shouldParseToolCalls,
     modelId,
-    enableThinking,
-    reasoningMode,
+    enableThinking: finalEnableThinking,
+    reasoningMode: finalReasoningMode,
     messageCount: promptParts.length,
     currentMessageCount: currentPromptParts.length,
   };

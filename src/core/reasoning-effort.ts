@@ -9,7 +9,7 @@
  * Qwen upstream only has a boolean + Thinking|Fast — no true medium gradient.
  */
 
-import { stripFastSuffix } from "../../core/model-registry.ts";
+import { stripFastSuffix } from "./model-registry.ts";
 
 export type NormalizedEffort = "low" | "medium" | "high";
 
@@ -71,7 +71,7 @@ export function normalizeReasoningEffort(
   }
 
   console.warn(
-    `[Responses] Unknown reasoning.effort '${value}' — defaulting to high`,
+    `[Effort] Unknown reasoning effort '${value}' — defaulting to high`,
   );
   return "high";
 }
@@ -95,4 +95,21 @@ export function applyEffortToModel(
 
   // medium/high: strip -fast so the base model enables Thinking.
   return base;
+}
+
+/**
+ * Chat-completions mapping: effort -> Qwen reasoning mode.
+ *
+ * The chat route controls thinking via the model suffix (`-fast` / `-thinking`)
+ * and an `auto` default where Qwen decides. Effort therefore only has two
+ * meaningful outcomes: `low` forces Fast, everything else leaves `auto` alone
+ * (Qwen's own default already reasons, and there is no medium gradient upstream).
+ *
+ * Returns undefined when the effort carries no chat-relevant instruction, so
+ * callers can keep their existing mode untouched.
+ */
+export function effortToReasoningMode(
+  effort: NormalizedEffort | undefined,
+): "fast" | undefined {
+  return effort === "low" ? "fast" : undefined;
 }

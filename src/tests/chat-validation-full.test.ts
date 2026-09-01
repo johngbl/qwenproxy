@@ -377,3 +377,85 @@ test("parseRequestBody builds tool instructions and logs forced tool_choice", as
   assert.ok(parsed.shouldParseToolCalls);
   assert.ok(parsed.toolInstructions.includes("alpha"));
 });
+
+// ── reasoning_effort (OpenAI chat spec: none|minimal|low|medium|high|xhigh|max)
+// Precedence: an explicit model suffix wins; effort only acts on unsuffixed
+// models. Absent field must be a complete no-op (zero regression).
+test("reasoning_effort absent is a no-op (auto, thinking on)", async () => {
+  const parsed = await parseRequestBody(
+    mockContext({
+      model: "qwen3.7-plus",
+      messages: [{ role: "user", content: "hi" }],
+    }),
+  );
+  assert.strictEqual(parsed.reasoningMode, "auto");
+  assert.strictEqual(parsed.enableThinking, true);
+  assert.strictEqual(parsed.modelId, "qwen3.7-plus");
+});
+
+test("reasoning_effort low/none/minimal forces fast mode on unsuffixed model", async () => {
+  for (const effort of ["low", "none", "minimal"]) {
+    const parsed = await parseRequestBody(
+      mockContext({
+        model: "qwen3.7-plus",
+        reasoning_effort: effort,
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    );
+    assert.strictEqual(
+      parsed.reasoningMode,
+      "fast",
+      `effort '${effort}' must map to fast`,
+    );
+    assert.strictEqual(parsed.enableThinking, false);
+    assert.strictEqual(parsed.modelId, "qwen3.7-plus");
+  }
+});
+
+test("reasoning_effort medium/high/max keeps auto (Qwen decides)", async () => {
+  for (const effort of ["medium", "high", "xhigh", "max"]) {
+    const parsed = await parseRequestBody(
+      mockContext({
+        model: "qwen3.7-plus",
+        reasoning_effort: effort,
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    );
+    assert.strictEqual(parsed.reasoningMode, "auto");
+    assert.strictEqual(parsed.enableThinking, true);
+  }
+});
+
+test("model suffix wins over reasoning_effort (both directions)", async () => {
+  const thinkingWithLow = await parseRequestBody(
+    mockContext({
+      model: "qwen3.7-plus-thinking",
+      reasoning_effort: "low",
+      messages: [{ role: "user", content: "hi" }],
+    }),
+  );
+  assert.strictEqual(thinkingWithLow.reasoningMode, "thinking");
+  assert.strictEqual(thinkingWithLow.enableThinking, true);
+
+  const fastWithHigh = await parseRequestBody(
+    mockContext({
+      model: "qwen3.7-plus-fast",
+      reasoning_effort: "high",
+      messages: [{ role: "user", content: "hi" }],
+    }),
+  );
+  assert.strictEqual(fastWithHigh.reasoningMode, "fast");
+  assert.strictEqual(fastWithHigh.enableThinking, false);
+});
+
+test("camelCase reasoningEffort is accepted (OpenCode body overlay)", async () => {
+  const parsed = await parseRequestBody(
+    mockContext({
+      model: "qwen3.7-plus",
+      reasoningEffort: "low",
+      messages: [{ role: "user", content: "hi" }],
+    }),
+  );
+  assert.strictEqual(parsed.reasoningMode, "fast");
+  assert.strictEqual(parsed.enableThinking, false);
+});

@@ -50,6 +50,10 @@ export interface OpenAIRequest {
   user?: string;
   session_id?: string;
   conversation_id?: string;
+  /** OpenAI chat spec: none|minimal|low|medium|high|xhigh|max (reasoning models). */
+  reasoning_effort?: string | null;
+  /** camelCase alias overlaid by OpenCode-style configs. */
+  reasoningEffort?: string | null;
   stream_options?: {
     include_usage?: boolean;
   };

@@ -142,6 +142,14 @@ interface ModelCapabilities {
 
 As variantes usam a mesma janela de contexto e o mesmo modelo upstream do modelo base; o modo de raciocínio é selecionado pelo `feature_config` do Qwen (Auto/Fast/Thinking). O ID antigo `-no-thinking` não é publicado; é apenas normalizado internamente para `-fast` por compatibilidade legada.
 
+### `reasoning_effort` no Chat Completions
+
+O campo OpenAI `reasoning_effort` (`none`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`) também é aceito em `/v1/chat/completions`:
+
+- `low`/`none`/`minimal` → força Fast (thinking OFF) quando o modelo **não** tem sufixo
+- `medium`/`high`/`xhigh`/`max` → mantém Auto (o Qwen decide, como hoje)
+- **Precedência:** um sufixo explícito no modelo (`-fast`/`-thinking`) sempre vence o `reasoning_effort`; ausente o campo, comportamento idêntico ao anterior (no-op)
+
 ---
 
 ## Responses API (`/v1/responses`)
@@ -647,7 +655,7 @@ QwenProxy/
 │   ├── core/                # Config, accounts, DB, metrics, cooldowns, model-registry
 │   ├── routes/
 │   │   ├── chat/            # Completions, streaming, account acquire, retry-policy
-│   │   └── responses/       # OpenAI Responses API (effort, state, streaming, adapter)
+│   │   └── responses/       # OpenAI Responses API (state, streaming, adapter)
 │   ├── services/
 │   │   ├── playwright.ts    # Browser + headers + cleanup
 │   │   ├── qwen.ts          # Upstream Qwen + personalization + idle timeout

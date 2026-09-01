@@ -1,6 +1,6 @@
 import crypto from "crypto";
 import { mapClientModelToQwen } from "../../core/model-alias.ts";
-import { normalizeReasoningEffort, applyEffortToModel } from "./effort.ts";
+import { normalizeReasoningEffort, applyEffortToModel } from "../../core/reasoning-effort.ts";
 import type {
   ResponsesRequest,
   ResponsesResponse,
