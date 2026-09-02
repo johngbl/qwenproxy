@@ -141,49 +141,18 @@ type MediaModelDefinition = {
 };
 
 const MEDIA_MODEL_DEFINITIONS: readonly MediaModelDefinition[] = [
-  // Text-to-image models.
-  { id: "qwen-image-3.0-pro", kind: "image", modes: ["t2i"] },
-  { id: "qwen-image-2.0-pro", kind: "image", modes: ["t2i"] },
-  {
-    id: "qwen-image-2.0-pro-2026-06-22",
-    kind: "image",
-    modes: ["t2i", "i2i"],
-  },
-  { id: "qwen-image-2512", kind: "image", modes: ["t2i"] },
-  { id: "qwen-image-max", kind: "image", modes: ["t2i"] },
-  { id: "qwen-image-plus", kind: "image", modes: ["t2i"] },
-  { id: "qwen-image", kind: "image", modes: ["t2i"] },
-  { id: "wan2.6-t2i", kind: "image", modes: ["t2i"] },
-  { id: "wan2.5-t2i-preview", kind: "image", modes: ["t2i"] },
-  { id: "wan2.2-t2i-flash", kind: "image", modes: ["t2i"] },
+  // Text-to-image & image-editing models (current 3.0, 2.7 and turbo generation).
+  { id: "qwen-image-3.0-pro", kind: "image", modes: ["t2i", "i2i"] },
+  { id: "qwen-image-3.0", kind: "image", modes: ["t2i", "i2i"] },
   { id: "wan2.7-image-pro", kind: "image", modes: ["t2i", "i2i"] },
   { id: "wan2.7-image", kind: "image", modes: ["t2i", "i2i"] },
   { id: "z-image-turbo", kind: "image", modes: ["t2i"] },
-  { id: "qwen-image-prompt-extend", kind: "image", modes: ["t2i"] },
 
-  // Image-to-image/edit models. Reference-image transport is not enabled yet.
-  { id: "qwen-image-edit", kind: "image", modes: ["i2i"] },
-  { id: "qwen-image-edit-2511", kind: "image", modes: ["i2i"] },
-  { id: "wan2.6-image", kind: "image", modes: ["i2i"] },
-  { id: "wan2.5-i2i-preview", kind: "image", modes: ["i2i"] },
-
-  // Text-to-video models.
+  // Video generation models (current 3.0 and 2.7 generation).
+  { id: "wan3.0-video", kind: "video", modes: ["t2v", "i2v"] },
   { id: "wan2.7-t2v", kind: "video", modes: ["t2v"] },
-  { id: "wan2.6-t2v", kind: "video", modes: ["t2v"] },
-  { id: "wan2.5-t2v-preview", kind: "video", modes: ["t2v"] },
-  { id: "wan2.2-t2v-flash", kind: "video", modes: ["t2v"] },
-
-  // Image-to-video models. Reference-image transport is not enabled yet.
   { id: "wan2.7-i2v", kind: "video", modes: ["i2v"] },
-  { id: "wan2.5-i2v-preview", kind: "video", modes: ["i2v"] },
-  { id: "wan2.6-i2v", kind: "video", modes: ["i2v"] },
-  {
-    id: "wan-v2.2-a14b",
-    kind: "video",
-    modes: ["t2v", "i2v"],
-  },
 ];
-
 const MEDIA_IMAGE_MODELS = MEDIA_MODEL_DEFINITIONS.filter(
   ({ kind }) => kind === "image",
 ).map(({ id }) => id);

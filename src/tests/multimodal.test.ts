@@ -75,10 +75,14 @@ test("media generation uses the model selected by the client", async () => {
 
 test("classifyMediaModel routes generation models for native chat media", () => {
   assert.strictEqual(classifyMediaModel("qwen-image-3.0-pro"), "image");
-  assert.strictEqual(classifyMediaModel("qwen-image-max"), "image");
-  assert.strictEqual(classifyMediaModel("wan2.6-t2i"), "image");
-  assert.strictEqual(classifyMediaModel("wan2.6-t2v"), "video");
-  assert.strictEqual(classifyMediaModel("wan2.2-t2v-flash"), "video");
+  assert.strictEqual(classifyMediaModel("qwen-image-3.0"), "image");
+  assert.strictEqual(classifyMediaModel("wan2.7-image-pro"), "image");
+  assert.strictEqual(classifyMediaModel("wan2.7-image"), "image");
+  assert.strictEqual(classifyMediaModel("z-image-turbo"), "image");
+  assert.strictEqual(classifyMediaModel("wan3.0-video"), "video");
+  assert.strictEqual(classifyMediaModel("wan2.7-t2v"), "video");
+  assert.strictEqual(classifyMediaModel("wan2.6-t2v"), null);
+  assert.strictEqual(classifyMediaModel("qwen-image-max"), null);
   assert.strictEqual(classifyMediaModel("qwen3.8-max"), null);
   assert.strictEqual(classifyMediaModel("qwen3.7-plus"), null);
   assert.strictEqual(classifyMediaModel(undefined), null);
@@ -90,33 +94,31 @@ test("media catalog includes the requested model IDs and modality metadata", () 
     listMediaGenerationModels().map((model) => [model.id, model]),
   );
   const expectedIds = [
-    "qwen-image-2.0-pro-2026-06-22",
-    "qwen-image-2512",
+    "qwen-image-3.0-pro",
+    "qwen-image-3.0",
     "wan2.7-image-pro",
     "wan2.7-image",
     "z-image-turbo",
-    "qwen-image-prompt-extend",
-    "qwen-image-edit",
-    "qwen-image-edit-2511",
-    "wan2.6-image",
-    "wan2.5-i2i-preview",
+    "wan3.0-video",
     "wan2.7-t2v",
-    "wan-v2.2-a14b",
     "wan2.7-i2v",
-    "wan2.5-i2v-preview",
-    "wan2.6-i2v",
   ];
-
   for (const id of expectedIds) {
     assert.ok(models.has(id), `missing media model: ${id}`);
   }
-  assert.deepEqual(getMediaModelModes("qwen-image-2.0-pro-2026-06-22"), [
+  assert.deepEqual(getMediaModelModes("qwen-image-3.0-pro"), [
     "t2i",
     "i2i",
   ]);
-  assert.strictEqual(supportsPromptMediaGeneration("qwen-image-edit", "image"), false);
+  assert.deepEqual(getMediaModelModes("wan3.0-video"), [
+    "t2v",
+    "i2v",
+  ]);
   assert.strictEqual(supportsPromptMediaGeneration("wan2.7-i2v", "video"), false);
   assert.strictEqual(supportsPromptMediaGeneration("wan2.7-t2v", "video"), true);
+  assert.strictEqual(supportsPromptMediaGeneration("wan3.0-video", "video"), true);
+  assert.strictEqual(supportsPromptMediaGeneration("qwen-image-3.0", "image"), true);
+  assert.strictEqual(supportsPromptMediaGeneration("z-image-turbo", "image"), true);
 });
 
 test("media sizes include the Qwen portrait ratio and reject unknown ratios", () => {
