@@ -34,9 +34,8 @@ test("Anthropic: mapAnthropicModel maps Claude and Qwen models accurately", () =
 
   // Claude 3 Opus & Sonnet & Haiku
   assert.equal(mapAnthropicModel("claude-3-opus-20240229"), "qwen3.8-max");
-  assert.equal(mapAnthropicModel("claude-3-sonnet-20240229"), "qwen3.7-plus");
+  assert.equal(mapAnthropicModel("claude-3-sonnet-20240229"), "qwen3.8-max");
   assert.equal(mapAnthropicModel("claude-3-haiku-20240307"), "qwen3.7-plus");
-
   // Suffix preservation (-fast and -thinking)
   assert.equal(mapAnthropicModel("claude-3-7-sonnet-fast"), "qwen3.8-max-fast");
   assert.equal(mapAnthropicModel("claude-3-7-sonnet-thinking"), "qwen3.8-max-thinking");
@@ -45,8 +44,17 @@ test("Anthropic: mapAnthropicModel maps Claude and Qwen models accurately", () =
   assert.equal(mapAnthropicModel("sonnet"), "qwen3.8-max");
   assert.equal(mapAnthropicModel("opus"), "qwen3.8-max");
   assert.equal(mapAnthropicModel("haiku"), "qwen3.7-plus");
+  // Future versions automatic compatibility (any version / date / format)
+  assert.equal(mapAnthropicModel("claude-3-8-sonnet"), "qwen3.8-max");
+  assert.equal(mapAnthropicModel("claude-4-sonnet"), "qwen3.8-max");
+  assert.equal(mapAnthropicModel("claude-4-opus-20261010"), "qwen3.8-max");
+  assert.equal(mapAnthropicModel("claude-4-haiku"), "qwen3.7-plus");
+  assert.equal(mapAnthropicModel("claude-5-sonnet-2027"), "qwen3.8-max");
+  assert.equal(mapAnthropicModel("claude-future-haiku"), "qwen3.7-plus");
+  assert.equal(mapAnthropicModel("claude-next-gen"), "qwen3.8-max");
+  assert.equal(mapAnthropicModel("claude-4-sonnet-fast"), "qwen3.8-max-fast");
+  assert.equal(mapAnthropicModel("claude-5-sonnet-thinking"), "qwen3.8-max-thinking");
 });
-
 test("Anthropic: validateAnthropicRequest validates required fields", () => {
   // Valid request
   const valid = validateAnthropicRequest({

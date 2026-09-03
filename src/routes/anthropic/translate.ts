@@ -11,77 +11,32 @@ import type {
 import { stripThinkingSuffix } from "../../core/model-alias.ts";
 
 /**
- * Mapping of Claude and generic model identifiers to internal Qwen models.
- */
-const ANTHROPIC_MODEL_ALIASES: Record<string, string> = {
-  // Claude 3.7
-  "claude-3-7-sonnet": "qwen3.8-max",
-  "claude-3-7-sonnet-20250219": "qwen3.8-max",
-  "claude-3-7-sonnet-latest": "qwen3.8-max",
-
-  // Claude 3.5
-  "claude-3-5-sonnet": "qwen3.8-max",
-  "claude-3-5-sonnet-20241022": "qwen3.8-max",
-  "claude-3-5-sonnet-20240620": "qwen3.8-max",
-  "claude-3-5-sonnet-latest": "qwen3.8-max",
-  "claude-3-5-haiku": "qwen3.7-plus",
-  "claude-3-5-haiku-20241022": "qwen3.7-plus",
-  "claude-3-5-haiku-latest": "qwen3.7-plus",
-
-  // Claude 3
-  "claude-3-opus": "qwen3.8-max",
-  "claude-3-opus-20240229": "qwen3.8-max",
-  "claude-3-opus-latest": "qwen3.8-max",
-  "claude-3-sonnet": "qwen3.7-plus",
-  "claude-3-sonnet-20240229": "qwen3.7-plus",
-  "claude-3-haiku": "qwen3.7-plus",
-  "claude-3-haiku-20240307": "qwen3.7-plus",
-
-  // Next-gen / legacy aliases
-  "claude-opus-4-8": "qwen3.8-max",
-  "claude-opus-4-7": "qwen3.8-max",
-  "claude-opus-4-6": "qwen3.8-max",
-  "claude-opus-4-5": "qwen3.8-max",
-  "claude-sonnet-4-6": "qwen3.7-plus",
-  "claude-sonnet-4-5": "qwen3.7-plus",
-  "claude-haiku-4-5": "qwen3.7-plus",
-
-  // Shorthands
-  "claude-sonnet": "qwen3.8-max",
-  "claude-opus": "qwen3.8-max",
-  "claude-haiku": "qwen3.7-plus",
-  "sonnet": "qwen3.8-max",
-  "opus": "qwen3.8-max",
-  "haiku": "qwen3.7-plus",
-
-  // GPT aliases for multi-provider compatibility
-  "gpt-4": "qwen3.6-plus",
-  "gpt-4-turbo": "qwen3.6-plus",
-  "gpt-4o": "qwen3.7-plus",
-  "gpt-4o-mini": "qwen3.7-plus",
-  "gpt-5": "qwen3.8-max",
-  "gpt-5-mini": "qwen3.7-plus",
-};
-
-/**
- * Map client-facing Anthropic model names to Qwen models.
+ * Resolves Anthropic model requests dynamically to internal Qwen models.
+ * Zero hardcoded versions — matches by model family/tier so ANY future Claude version
+ * (Claude 3.8, 4, 4.5, 5, etc.) works out of the box:
+ *  - opus / sonnet / generic claude -> qwen3.8-max
+ *  - haiku -> qwen3.7-plus
+ *  - direct qwen* models pass through as-is
  * Preserves -fast and -thinking reasoning suffixes.
  */
 export function mapAnthropicModel(model: string): string {
   if (!model) return "qwen3.8-max";
 
   const { baseModel, reasoningMode } = stripThinkingSuffix(model.trim());
-  const normalizedBase = baseModel.toLowerCase();
+  const normalized = baseModel.toLowerCase();
 
   let targetBase = baseModel;
-  if (ANTHROPIC_MODEL_ALIASES[normalizedBase]) {
-    targetBase = ANTHROPIC_MODEL_ALIASES[normalizedBase];
-  } else {
-    for (const [prefix, mapped] of Object.entries(ANTHROPIC_MODEL_ALIASES)) {
-      if (normalizedBase.startsWith(prefix)) {
-        targetBase = mapped;
-        break;
-      }
+
+  // Direct Qwen models pass through untouched (e.g. qwen3.8-max, qwen3.7-plus)
+  if (!normalized.startsWith("qwen")) {
+    if (normalized.includes("haiku")) {
+      targetBase = "qwen3.7-plus";
+    } else if (
+      normalized.includes("opus") ||
+      normalized.includes("sonnet") ||
+      normalized.startsWith("claude")
+    ) {
+      targetBase = "qwen3.8-max";
     }
   }
 
