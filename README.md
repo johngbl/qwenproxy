@@ -4,13 +4,15 @@
 
 # QwenProxy
 
-API compatível com **OpenAI** que conecta clientes ao **Qwen (`chat.qwen.ai`)** com suporte a múltiplas contas, tool calling robusto, thread-native, uploads multimodais, **Responses API completa com memória persistente** e sessões persistentes. Inclui Playwright com stealth, retries para erros transitórios, variantes públicas base/`-fast`/`-thinking`, cache comprimido, registro de capabilities por modelo e observabilidade.
+Gateway e API de alta performance compatível com **OpenAI** e **Anthropic** que conecta clientes e agentes (Codex, Claude Code CLI, Grok, Cursor) ao **Qwen (`chat.qwen.ai`)** com suporte a múltiplas contas, failover inteligente, tool calling robusto, thread-native, geração de fotos e vídeos, **Responses API completa com memória persistente** e sessões persistentes. Inclui Playwright com stealth, retries para erros transitórios, variantes públicas base/`-fast`/`-thinking`, cache comprimido, registro de capabilities por modelo e observabilidade.
 
 [![CI](https://github.com/johngbl/QwenProxy/actions/workflows/ci.yml/badge.svg)](https://github.com/johngbl/QwenProxy/actions/workflows/ci.yml)
 [![TypeScript](https://img.shields.io/badge/TypeScript-7.0-blue)](https://www.typescriptlang.org/)
-[![Hono](https://img.shields.io/badge/Hono-4.12-green)](https://hono.dev/)
+[![Hono](https://img.shields.io/badge/Hono-4.13-green)](https://hono.dev/)
+[![Playwright](https://img.shields.io/badge/Playwright-1.62-blueviolet)](https://playwright.dev/)
 [![License: ISC](https://img.shields.io/badge/License-ISC-yellow.svg)](LICENSE)
-
+[![GitHub Sponsors](https://img.shields.io/badge/sponsor-GitHub%20Sponsors-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/johngbl)
+[![Ko-fi](https://img.shields.io/badge/Donate-Ko--fi-ff5e5b?logo=kofi&logoColor=white)](https://ko-fi.com/johngbl)
 ---
 
 ## Principais funcionalidades
@@ -31,6 +33,8 @@ API compatível com **OpenAI** que conecta clientes ao **Qwen (`chat.qwen.ai`)**
 - **Thinking nativo** — raciocínio chega via `phase: thinking_summary` do upstream, sem sanitização de tags; o modelo é instruído a nunca emitir `<think>` no conteúdo visível
 - **Observabilidade** — `/health`, `/metrics` (Prometheus), watchdog e logs com emojis.
 - **Deploy simples** — `npm`, Docker e graceful shutdown.
+- **Geração de fotos e vídeos** — `/v1/images/generations` e `/v1/videos/generations` com modelos de ponta (`qwen-image-3.0-pro`, `qwen-image-3.0`, `wan2.7-image-pro`, `wan3.0-video` até 30s 1080P, `z-image-turbo`). Intercepta também pelo chat completions devolvendo Markdown renderizável.
+- **Logs padronizados e unificados** — Exatamente 1 par limpo (`📥 Incoming` e `📤 Request`) por turno em todos os protocolos (`[Chat]`, `[Anthropic]`, `[Responses]`, `[Completions]`).
 
 ---
 
@@ -38,16 +42,20 @@ API compatível com **OpenAI** que conecta clientes ao **Qwen (`chat.qwen.ai`)**
 
 ```mermaid
 flowchart TD
-    Client["Cliente OpenAI / Codex / Grok"] -->|HTTP| Proxy["QwenProxy - Hono"]
+    Client["Cliente OpenAI / Claude Code / Codex / Grok"] -->|HTTP| Proxy["QwenProxy - Hono"]
     Proxy --> Chat["/v1/chat/completions"]
+    Proxy --> Anthropic["/v1/messages"]
     Proxy --> Completions["/v1/completions (legado)"]
     Proxy --> Responses["/v1/responses"]
+    Proxy --> Media["/v1/images | /v1/videos"]
     Proxy --> Models["/v1/models"]
     Proxy --> Upload["/v1/upload"]
-    Chat --> Context["Thread-native context"]
+    Anthropic --> Chat
+    Completions --> Chat
     Responses --> Chat
     Responses --> Effort["Effort normalization"]
     Responses --> State[("SQLite responses_store")]
+    Chat --> Context["Thread-native context"]
     Chat --> Accounts["Account manager"]
     Accounts --> DB[("SQLite encrypted")]
     Accounts --> Playwright["Playwright + Stealth"]
@@ -56,6 +64,7 @@ flowchart TD
     Chat --> Personalization["Settings + personalization sync"]
     Chat --> BrowserTransport["Playwright page fetch + SSE bridge"]
     BrowserTransport --> Qwen["chat.qwen.ai"]
+    Media --> BrowserTransport
     Upload --> OSS["Qwen OSS"]
 ```
 
@@ -517,6 +526,15 @@ O README descreve o uso operacional. Para detalhes técnicos da API (schemas, ex
 |---|---|---|
 | `/v1/messages` | POST | Anthropic Messages API (stream, thinking, tools, Claude Code) |
 | `/v1/messages/count_tokens` | POST | Contagem de tokens compatível com Anthropic |
+
+### Geração de Mídia (Fotos e Vídeos)
+
+| Rota | Método | Descrição |
+|---|---|---|
+| `/v1/images/generations` | POST | Geração de fotos/imagens (`qwen-image-3.0-pro`, `wan2.7-image-pro`, `z-image-turbo`) |
+| `/v1/videos/generations` | POST | Geração de vídeos (`wan3.0-video` até 30s em 1080P, `wan2.7-t2v` com áudio) |
+| `/v1/tasks/status/:taskId` | GET | Consulta de status e download da tarefa de vídeo |
+
 ### Utilidades
 
 | Rota | Método | Descrição |
@@ -602,6 +620,35 @@ for await (const event of stream) {
   }
 }
 ```
+
+### Geração de Imagens (`/v1/images/generations`)
+
+```bash
+curl http://localhost:3000/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sua-api-key" \
+  -d '{
+    "model": "qwen-image-3.0-pro",
+    "prompt": "A futuristic cyberpunk city in the rain, ultra-detailed, cinematic lighting",
+    "size": "16:9"
+  }'
+```
+
+### Geração de Vídeos (`/v1/videos/generations`)
+
+```bash
+curl http://localhost:3000/v1/videos/generations \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sua-api-key" \
+  -d '{
+    "model": "wan3.0-video",
+    "prompt": "Drone shot flying over a misty pine forest at sunrise",
+    "size": "16:9",
+    "wait": true
+  }'
+```
+
+---
 
 ### cURL
 
@@ -763,6 +810,27 @@ chmod +x scripts/*.sh
 | Porta em uso | Altere `PORT` no `.env` |
 | Sessão expirada | `npm run login` ou deixe o refresh automático reautenticar |
 | API aberta em `0.0.0.0` sem key | Defina `API_KEY` e/ou `HOST=127.0.0.1` |
+
+---
+
+## ❤️ Apoie o projeto / Doações voluntárias
+
+Se o **QwenProxy** está sendo útil para você ou sua equipe e você deseja incentivar o desenvolvimento contínuo, novas integrações, testes ao vivo e atualizações rápidas, considere apoiar voluntariamente:
+
+<p align="left">
+  <a href="https://github.com/sponsors/johngbl" target="_blank">
+    <img src="https://img.shields.io/badge/Sponsor%20no%20GitHub-ea4aaa?style=for-the-badge&logo=githubsponsors&logoColor=white" alt="GitHub Sponsors">
+  </a>
+  &nbsp;&nbsp;
+  <a href="https://ko-fi.com/johngbl" target="_blank">
+    <img src="https://img.shields.io/badge/Apoiar%20via%20Ko--fi-ff5e5b?style=for-the-badge&logo=kofi&logoColor=white" alt="Ko-fi">
+  </a>
+</p>
+
++- **GitHub Sponsors:** [https://github.com/sponsors/johngbl](https://github.com/sponsors/johngbl)
++- **Ko-fi:** [https://ko-fi.com/johngbl](https://ko-fi.com/johngbl)
+
+Toda contribuição é muito bem-vinda e ajuda a cobrir custos de infraestrutura e contas de teste!
 
 ---
 
