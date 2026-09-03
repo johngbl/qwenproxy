@@ -334,3 +334,35 @@ test("syncAllClients: orchestrates discovery and records state file for rollback
 
   fs.rmSync(tmp, { recursive: true, force: true });
 });
+test("syncAllClients: respects targets filter to sync only selected clients", () => {
+  const tmp = createTempDir();
+  const claudePath = path.join(tmp, ".claude", "settings.json");
+  const codexPath = path.join(tmp, ".codex", "config.toml");
+
+  fs.mkdirSync(path.dirname(claudePath), { recursive: true });
+  fs.mkdirSync(path.dirname(codexPath), { recursive: true });
+
+  fs.writeFileSync(claudePath, JSON.stringify({ env: {}, model: "old" }), "utf-8");
+  fs.writeFileSync(codexPath, `model = "old"\n`, "utf-8");
+
+  const syncResult = syncAllClients({
+    targets: ["claude-code"],
+    customPaths: {
+      claudeCode: claudePath,
+      codex: codexPath,
+    },
+    apiKey: "sk-targeted",
+  });
+
+  assert.ok(syncResult.clients.claudeCode);
+  assert.equal(syncResult.clients.claudeCode.success, true);
+  assert.equal(syncResult.clients.codex, undefined);
+  assert.equal(syncResult.clients.openCode, undefined);
+  assert.equal(syncResult.clients.omp, undefined);
+
+  // Claude Code is updated, Codex remains untouched
+  assert.ok(fs.readFileSync(claudePath, "utf-8").includes("qwen3.8-max"));
+  assert.equal(fs.readFileSync(codexPath, "utf-8"), `model = "old"\n`);
+
+  fs.rmSync(tmp, { recursive: true, force: true });
+});

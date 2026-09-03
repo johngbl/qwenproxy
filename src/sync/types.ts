@@ -22,6 +22,7 @@ export interface SyncAllOptions {
   host?: string;
   setActive?: boolean;
   stateFilePath?: string;
+  targets?: ("claude-code" | "codex" | "opencode" | "omp")[];
   customPaths?: {
     claudeCode?: string;
     codex?: string;

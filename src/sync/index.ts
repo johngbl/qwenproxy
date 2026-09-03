@@ -25,6 +25,14 @@ export function resolveApiKey(overrideKey?: string, configKey?: string): string 
   }
   return "sk-qwenproxy-local";
 }
+export function normalizeClientName(name: string): "claude-code" | "codex" | "opencode" | "omp" | null {
+  const clean = name.trim().toLowerCase().replace(/[-_ ]/g, "");
+  if (clean === "claude" || clean === "claudecode" || clean === "anthropic") return "claude-code";
+  if (clean === "codex" || clean === "codexcli" || clean === "openai") return "codex";
+  if (clean === "opencode") return "opencode";
+  if (clean === "omp" || clean === "ohmypi") return "omp";
+  return null;
+}
 
 export function resolveBaseUrls(port = 7936, host = "127.0.0.1"): {
   anthropicBaseUrl: string;
@@ -102,74 +110,86 @@ export function syncAllClients(options: SyncAllOptions = {}): SyncAllResult {
   };
 
   const stateRecords: SyncStateFile["clients"] = {};
+  const shouldSync = (client: "claude-code" | "codex" | "opencode" | "omp") => {
+    if (!options.targets || options.targets.length === 0) return true;
+    return options.targets.includes(client);
+  };
 
   // 1. Claude Code
-  const claudeExisted = fs.existsSync(paths.claudeCode);
-  const claudeRes = syncClaudeCode({
-    filePath: paths.claudeCode,
-    apiKey,
-    baseUrl: anthropicBaseUrl,
-  });
-  results.clients.claudeCode = claudeRes;
-  if (claudeRes.success && claudeRes.backupPath) {
-    stateRecords.claudeCode = {
+  if (shouldSync("claude-code")) {
+    const claudeExisted = fs.existsSync(paths.claudeCode);
+    const claudeRes = syncClaudeCode({
       filePath: paths.claudeCode,
-      backupPath: claudeRes.backupPath,
-      existedBefore: claudeExisted,
-      syncedAt: Date.now(),
-    };
+      apiKey,
+      baseUrl: anthropicBaseUrl,
+    });
+    results.clients.claudeCode = claudeRes;
+    if (claudeRes.success && claudeRes.backupPath) {
+      stateRecords.claudeCode = {
+        filePath: paths.claudeCode,
+        backupPath: claudeRes.backupPath,
+        existedBefore: claudeExisted,
+        syncedAt: Date.now(),
+      };
+    }
   }
 
   // 2. Codex
-  const codexExisted = fs.existsSync(paths.codex);
-  const codexRes = syncCodex({
-    filePath: paths.codex,
-    apiKey,
-    baseUrl: openaiBaseUrl,
-    setActive: options.setActive ?? true,
-  });
-  results.clients.codex = codexRes;
-  if (codexRes.success && codexRes.backupPath) {
-    stateRecords.codex = {
+  if (shouldSync("codex")) {
+    const codexExisted = fs.existsSync(paths.codex);
+    const codexRes = syncCodex({
       filePath: paths.codex,
-      backupPath: codexRes.backupPath,
-      existedBefore: codexExisted,
-      syncedAt: Date.now(),
-    };
+      apiKey,
+      baseUrl: openaiBaseUrl,
+      setActive: options.setActive ?? true,
+    });
+    results.clients.codex = codexRes;
+    if (codexRes.success && codexRes.backupPath) {
+      stateRecords.codex = {
+        filePath: paths.codex,
+        backupPath: codexRes.backupPath,
+        existedBefore: codexExisted,
+        syncedAt: Date.now(),
+      };
+    }
   }
 
   // 3. OpenCode
-  const openCodeExisted = fs.existsSync(paths.openCode);
-  const openCodeRes = syncOpenCode({
-    filePath: paths.openCode,
-    apiKey,
-    baseUrl: openaiBaseUrl,
-  });
-  results.clients.openCode = openCodeRes;
-  if (openCodeRes.success && openCodeRes.backupPath) {
-    stateRecords.openCode = {
+  if (shouldSync("opencode")) {
+    const openCodeExisted = fs.existsSync(paths.openCode);
+    const openCodeRes = syncOpenCode({
       filePath: paths.openCode,
-      backupPath: openCodeRes.backupPath,
-      existedBefore: openCodeExisted,
-      syncedAt: Date.now(),
-    };
+      apiKey,
+      baseUrl: openaiBaseUrl,
+    });
+    results.clients.openCode = openCodeRes;
+    if (openCodeRes.success && openCodeRes.backupPath) {
+      stateRecords.openCode = {
+        filePath: paths.openCode,
+        backupPath: openCodeRes.backupPath,
+        existedBefore: openCodeExisted,
+        syncedAt: Date.now(),
+      };
+    }
   }
 
   // 4. OMP
-  const ompExisted = fs.existsSync(paths.omp);
-  const ompRes = syncOmp({
-    filePath: paths.omp,
-    apiKey,
-    baseUrl: openaiBaseUrl,
-  });
-  results.clients.omp = ompRes;
-  if (ompRes.success && ompRes.backupPath) {
-    stateRecords.omp = {
+  if (shouldSync("omp")) {
+    const ompExisted = fs.existsSync(paths.omp);
+    const ompRes = syncOmp({
       filePath: paths.omp,
-      backupPath: ompRes.backupPath,
-      existedBefore: ompExisted,
-      syncedAt: Date.now(),
-    };
+      apiKey,
+      baseUrl: openaiBaseUrl,
+    });
+    results.clients.omp = ompRes;
+    if (ompRes.success && ompRes.backupPath) {
+      stateRecords.omp = {
+        filePath: paths.omp,
+        backupPath: ompRes.backupPath,
+        existedBefore: ompExisted,
+        syncedAt: Date.now(),
+      };
+    }
   }
 
   // Persist sync state
