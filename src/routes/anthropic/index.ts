@@ -93,9 +93,6 @@ app.post("/v1/messages", async (c) => {
   const isStream = body.stream ?? false;
   const requestModel = body.model;
 
-  console.log(
-    `[Anthropic] Request | ${requestModel} | ${body.messages.length} msg(s)${body.tools ? ` | ${body.tools.length} tool(s)` : ""}${isStream ? " | stream" : ""}`,
-  );
 
   try {
     // 3. Translate Anthropic request to internal OpenAI format
@@ -107,6 +104,7 @@ app.post("/v1/messages", async (c) => {
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${process.env.API_KEY || config.apiKey || ""}`,
+          "x-qwenproxy-route": "Anthropic",
         },
         body: JSON.stringify({
           ...openaiRequest,
@@ -282,9 +280,6 @@ app.post("/v1/messages", async (c) => {
         requestModel,
       );
 
-      console.log(
-        `[Anthropic] Response | ${anthropicResponse.usage.input_tokens} prompt / ${anthropicResponse.usage.output_tokens} completion | stop=${anthropicResponse.stop_reason}`,
-      );
 
       c.header("anthropic-version", anthropicVersion);
       c.header("request-id", requestId);

@@ -105,6 +105,7 @@ export async function completionsLegacy(c: Context) {
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${process.env.API_KEY || config.apiKey || ""}`,
+        "x-qwenproxy-route": "Completions",
       },
       body: JSON.stringify(chatBody),
       signal: c.req.raw.signal,

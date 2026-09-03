@@ -48,11 +48,6 @@ app.post("/v1/responses", async (c) => {
   const isStream = req.stream ?? false;
   const requestModel = req.model;
 
-  if (logger.isLevelEnabled("info")) {
-    console.log(
-      `📥 [Responses] Incoming | ${requestModel} | ${typeof req.input === "string" ? "string" : `${req.input.length} msg(s)`}${req.tools ? ` | ${req.tools.length} tool(s)` : ""}${isStream ? " | stream" : ""}${req.previous_response_id ? " | stateful" : ""}`,
-    );
-  }
 
   try {
     // Retrieve history if previous_response_id is provided
@@ -134,6 +129,7 @@ app.post("/v1/responses", async (c) => {
                 headers: {
                   "Content-Type": "application/json",
                   Authorization: `Bearer ${process.env.API_KEY || config.apiKey || ""}`,
+                  "x-qwenproxy-route": "Responses",
                 },
                 body: JSON.stringify({
                   ...chatRequest,
@@ -260,11 +256,6 @@ app.post("/v1/responses", async (c) => {
                     ]);
                   }
 
-                  if (logger.isLevelEnabled("info")) {
-                    console.log(
-                      `📤 [Responses] Done | ${responseId} | ${finalUsage.input_tokens} in / ${finalUsage.output_tokens} out | stream`,
-                    );
-                  }
                 }
               } catch (finalError) {
                 console.error(
@@ -301,6 +292,7 @@ app.post("/v1/responses", async (c) => {
           headers: {
             "Content-Type": "application/json",
             Authorization: `Bearer ${process.env.API_KEY || config.apiKey || ""}`,
+            "x-qwenproxy-route": "Responses",
           },
           body: JSON.stringify(chatRequest),
         },
@@ -338,11 +330,6 @@ app.post("/v1/responses", async (c) => {
       }
 
       const duration = Date.now() - requestStartedAt;
-      if (logger.isLevelEnabled("info")) {
-        console.log(
-          `📤 [Responses] Done | ${responsesResponse.id} | ${responsesResponse.usage?.input_tokens || 0} in / ${responsesResponse.usage?.output_tokens || 0} out | ${duration}ms`,
-        );
-      }
 
       return c.json(responsesResponse);
     }
