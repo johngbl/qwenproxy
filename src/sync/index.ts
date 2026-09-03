@@ -1,3 +1,4 @@
+import "dotenv/config";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -18,8 +19,9 @@ export function resolveApiKey(overrideKey?: string, configKey?: string): string 
   if (overrideKey && overrideKey.trim().length > 0) {
     return overrideKey.trim();
   }
-  if (configKey && configKey.trim().length > 0) {
-    return configKey.trim();
+  const envKey = process.env.API_KEY || process.env.ADMIN_PASSWORD || configKey;
+  if (envKey && envKey.trim().length > 0) {
+    return envKey.trim();
   }
   return "sk-qwenproxy-local";
 }
@@ -86,7 +88,8 @@ export function syncAllClients(options: SyncAllOptions = {}): SyncAllResult {
   };
 
   const port = options.port ?? (config.server?.port || 3000);
-  const host = options.host ?? "127.0.0.1";
+  const configuredHost = config.server?.host;
+  const host = options.host ?? (configuredHost && configuredHost !== "0.0.0.0" ? configuredHost : "127.0.0.1");
   const apiKey = resolveApiKey(options.apiKey, config.apiKey);
   const { anthropicBaseUrl, openaiBaseUrl } = resolveBaseUrls(port, host);
   const stateFilePath = options.stateFilePath || getDefaultStateFilePath();

@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { syncAllClients, restoreAllClients } from "./sync/index.ts";
 
 function parseArgs() {

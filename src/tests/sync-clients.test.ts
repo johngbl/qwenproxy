@@ -31,9 +31,22 @@ function createTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "qwenproxy-sync-test-"));
 }
 
-test("sync: resolveApiKey returns configured key or falls back to sk-qwenproxy-local", () => {
+test("sync: resolveApiKey returns configured key, env API_KEY, or falls back to sk-qwenproxy-local", () => {
   assert.equal(resolveApiKey("custom-key", ""), "custom-key");
   assert.equal(resolveApiKey(undefined, "env-admin-key"), "env-admin-key");
+
+  const originalEnvKey = process.env.API_KEY;
+  try {
+    process.env.API_KEY = "from-env-file";
+    assert.equal(resolveApiKey(undefined, ""), "from-env-file");
+  } finally {
+    if (originalEnvKey !== undefined) {
+      process.env.API_KEY = originalEnvKey;
+    } else {
+      delete process.env.API_KEY;
+    }
+  }
+
   assert.equal(resolveApiKey(undefined, ""), "sk-qwenproxy-local");
   assert.equal(resolveApiKey(undefined, undefined), "sk-qwenproxy-local");
 });
