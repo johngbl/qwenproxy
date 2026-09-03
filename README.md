@@ -6,13 +6,13 @@
 
 Gateway e API de alta performance compatível com **OpenAI** e **Anthropic** que conecta clientes e agentes (Codex, Claude Code CLI, Grok, Cursor) ao **Qwen (`chat.qwen.ai`)** com suporte a múltiplas contas, failover inteligente, tool calling robusto, thread-native, geração de fotos e vídeos, **Responses API completa com memória persistente** e sessões persistentes. Inclui Playwright com stealth, retries para erros transitórios, variantes públicas base/`-fast`/`-thinking`, cache comprimido, registro de capabilities por modelo e observabilidade.
 
-![CI](https://github.com/johngbl/QwenProxy/actions/workflows/ci.yml/badge.svg)
-![TypeScript](https://img.shields.io/badge/TypeScript-7.0-blue)
-![Hono](https://img.shields.io/badge/Hono-4.13-green)
-![Playwright](https://img.shields.io/badge/Playwright-1.62-blueviolet)
-![License: ISC](https://img.shields.io/badge/License-ISC-yellow.svg)
-![GitHub Sponsors](https://img.shields.io/badge/sponsor-GitHub%20Sponsors-ea4aaa?logo=githubsponsors&logoColor=white)
-![Ko-fi](https://img.shields.io/badge/Donate-Ko--fi-ff5e5b?logo=kofi&logoColor=white)
+[![CI](https://github.com/johngbl/QwenProxy/actions/workflows/ci.yml/badge.svg)](https://github.com/johngbl/QwenProxy/actions/workflows/ci.yml)
+[![TypeScript](https://img.shields.io/badge/TypeScript-7.0-blue)](https://www.typescriptlang.org/)
+[![Hono](https://img.shields.io/badge/Hono-4.13-green)](https://hono.dev/)
+[![Playwright](https://img.shields.io/badge/Playwright-1.62-blueviolet)](https://playwright.dev/)
+[![License: ISC](https://img.shields.io/badge/License-ISC-yellow.svg)](LICENSE)
+[![GitHub Sponsors](https://img.shields.io/badge/sponsor-GitHub%20Sponsors-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/johngbl)
+[![Ko-fi](https://img.shields.io/badge/Donate-Ko--fi-ff5e5b?logo=kofi&logoColor=white)](https://ko-fi.com/johngbl)
 
 ## ❤️ Apoie o projeto
 

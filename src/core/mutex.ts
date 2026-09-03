@@ -64,7 +64,6 @@ export class Mutex {
         logger.warn(`[Mutex:${this.name}] TIMEOUT key=${logKey} waited=${timeoutMs}ms heldBy=${this.lockedByKey || "unknown"} heldFor=${heldFor}ms queueLeft=${this.queue.length}`);
         reject(new Error(`Mutex[${this.name}] acquire timeout after ${timeoutMs}ms (held by ${this.lockedByKey || "unknown"} for ${heldFor}ms)`));
       }, timeoutMs);
-      timer.unref?.();
       this.queue.push({ waiter, enqueuedAt, key: logKey });
     });
   }
