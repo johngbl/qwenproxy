@@ -187,7 +187,7 @@ test(
   "Agentic Stress Test: >30 messages multi-turn using the REAL live API",
   { skip: process.env.CI ? "Requires real accounts - skipped in CI" : false },
   async () => {
-    const DEFAULT_PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
+    const DEFAULT_PORT = process.env.PORT ? parseInt(process.env.PORT) : 7936;
     const port = await getFreePort(DEFAULT_PORT);
 
     const server = serve({

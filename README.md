@@ -211,7 +211,7 @@ Implementação completa da OpenAI Responses API com extensões para clientes ag
 
 ```bash
 # Primeira request
-curl http://localhost:3000/v1/responses \
+curl http://localhost:7936/v1/responses \
   -H "Authorization: Bearer local" \
   -H "Content-Type: application/json" \
   -d '{"model":"qwen3.8-max","input":"Meu nome é João","stream":true}'
@@ -219,7 +219,7 @@ curl http://localhost:3000/v1/responses \
 # Resposta inclui last_response_id: "resp_abc123..."
 
 # Segunda request com memória
-curl http://localhost:3000/v1/responses \
+curl http://localhost:7936/v1/responses \
   -H "Authorization: Bearer local" \
   -H "Content-Type: application/json" \
   -d '{"model":"qwen3.8-max","input":"Qual meu nome?","previous_response_id":"resp_abc123...","stream":true}'
@@ -228,7 +228,7 @@ curl http://localhost:3000/v1/responses \
 ### Exemplo: effort com Codex/Grok
 
 ```bash
-curl http://localhost:3000/v1/responses \
+curl http://localhost:7936/v1/responses \
   -H "Authorization: Bearer local" \
   -H "Content-Type: application/json" \
   -d '{"model":"qwen3.7-max","input":"hi","reasoning":{"effort":"xhigh"},"max_output_tokens":30}'
@@ -310,7 +310,7 @@ Exemplo de log:
 +----------------------------------------------------------+
 |                   QwenProxy                             |
 |             OpenAI-Compatible API                        |
-|  Endpoint    http://127.0.0.1:3000/v1                    |
+|  Endpoint    http://127.0.0.1:7936/v1                    |
 |  Accounts    1/6 warm                                    |
 |  Status      ● Online                                    |
 +----------------------------------------------------------+
@@ -336,7 +336,7 @@ npm run typecheck  # tipos
 
 | Variável  | Default   | Descrição                        |
 | --------- | --------- | -------------------------------- |
-| `PORT`    | `3000`    | Porta HTTP                       |
+| `PORT`    | `7936`    | Porta HTTP (padrão QWEN: 7936). Configurável via .env |
 | `HOST`    | `0.0.0.0` | Bind host. Local: `127.0.0.1`    |
 | `API_KEY` | vazio     | Protege `/v1/*` com Bearer token |
 
@@ -598,7 +598,7 @@ O README descreve o uso operacional. Para detalhes técnicos da API (schemas, ex
 import OpenAI from "openai";
 
 const client = new OpenAI({
-  baseURL: "http://localhost:3000/v1",
+  baseURL: "http://localhost:7936/v1",
   apiKey: "sua-api-key",
 });
 
@@ -616,7 +616,7 @@ O proxy é 100% compatível com o **Claude Code CLI** e o **Anthropic SDK**:
 
 ```bash
 # Configuração para Claude Code CLI
-export ANTHROPIC_BASE_URL="http://localhost:3000"
+export ANTHROPIC_BASE_URL="http://localhost:7936"
 export ANTHROPIC_API_KEY="sua-api-key"
 
 # Iniciar Claude Code
@@ -627,7 +627,7 @@ claude
 import Anthropic from "@anthropic-ai/sdk";
 
 const anthropic = new Anthropic({
-  baseURL: "http://localhost:3000",
+  baseURL: "http://localhost:7936",
   apiKey: "sua-api-key",
 });
 
@@ -646,7 +646,7 @@ console.log(message.content[0]);
 import OpenAI from "openai";
 
 const client = new OpenAI({
-  baseURL: "http://localhost:3000/v1",
+  baseURL: "http://localhost:7936/v1",
   apiKey: "sua-api-key",
 });
 
@@ -668,7 +668,7 @@ for await (const event of stream) {
 ### Geração de Imagens (`/v1/images/generations`)
 
 ```bash
-curl http://localhost:3000/v1/images/generations \
+curl http://localhost:7936/v1/images/generations \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer sua-api-key" \
   -d '{
@@ -681,7 +681,7 @@ curl http://localhost:3000/v1/images/generations \
 ### Geração de Vídeos (`/v1/videos/generations`)
 
 ```bash
-curl http://localhost:3000/v1/videos/generations \
+curl http://localhost:7936/v1/videos/generations \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer sua-api-key" \
   -d '{
@@ -697,7 +697,7 @@ curl http://localhost:3000/v1/videos/generations \
 ### cURL
 
 ```bash
-curl http://localhost:3000/v1/chat/completions \
+curl http://localhost:7936/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer sua-api-key" \
   -d '{
@@ -712,7 +712,7 @@ curl http://localhost:3000/v1/chat/completions \
 ```toml
 [model.qwen38-max]
 api_backend = "responses"
-base_url = "http://127.0.0.1:3000/v1"
+base_url = "http://127.0.0.1:7936/v1"
 ```
 
 ---
@@ -753,7 +753,7 @@ services:
     build: .
     container_name: qwenproxy
     ports:
-      - "${PORT:-3000}:3000"
+      - "${PORT:-7936}:7936"
     env_file:
       - .env
     volumes:

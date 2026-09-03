@@ -127,7 +127,7 @@ interface BenchmarkReport {
   stream: StreamBenchmark;
 }
 
-const DEFAULT_BASE_URL = "http://127.0.0.1:3000";
+const DEFAULT_BASE_URL = "http://127.0.0.1:7936";
 const DEFAULT_MODEL = "qwen3.6-plus";
 const DEFAULT_PROMPT = "Responda apenas com OK.";
 const DEFAULT_MANAGE_SERVER = true;

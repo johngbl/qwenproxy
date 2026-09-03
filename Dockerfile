@@ -28,7 +28,7 @@ RUN mkdir -p /app/data/db /app/data/qwen_profiles /tmp/playwright \
 # Declare volume for persistent data (database, encryption key and browser profiles)
 VOLUME ["/app/data"]
 
-EXPOSE 3000
+EXPOSE 7936
 ENV NODE_ENV=production
 
 # Use dumb-init to avoid zombie processes from Playwright and ensure writable volumes at startup

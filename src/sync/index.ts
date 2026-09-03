@@ -26,7 +26,7 @@ export function resolveApiKey(overrideKey?: string, configKey?: string): string 
   return "sk-qwenproxy-local";
 }
 
-export function resolveBaseUrls(port = 3000, host = "127.0.0.1"): {
+export function resolveBaseUrls(port = 7936, host = "127.0.0.1"): {
   anthropicBaseUrl: string;
   openaiBaseUrl: string;
 } {
@@ -87,7 +87,7 @@ export function syncAllClients(options: SyncAllOptions = {}): SyncAllResult {
     omp: options.customPaths?.omp || defaultPaths.omp,
   };
 
-  const port = options.port ?? (config.server?.port || 3000);
+  const port = options.port ?? (config.server?.port || 7936);
   const configuredHost = config.server?.host;
   const host = options.host ?? (configuredHost && configuredHost !== "0.0.0.0" ? configuredHost : "127.0.0.1");
   const apiKey = resolveApiKey(options.apiKey, config.apiKey);

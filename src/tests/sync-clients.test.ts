@@ -52,9 +52,13 @@ test("sync: resolveApiKey returns configured key, env API_KEY, or falls back to 
 });
 
 test("sync: resolveBaseUrls computes correct URLs for Anthropic and OpenAI protocols", () => {
-  const urls = resolveBaseUrls(3000, "127.0.0.1");
-  assert.equal(urls.anthropicBaseUrl, "http://127.0.0.1:3000");
-  assert.equal(urls.openaiBaseUrl, "http://127.0.0.1:3000/v1");
+  const defaultUrls = resolveBaseUrls();
+  assert.equal(defaultUrls.anthropicBaseUrl, "http://127.0.0.1:7936");
+  assert.equal(defaultUrls.openaiBaseUrl, "http://127.0.0.1:7936/v1");
+
+  const customUrls = resolveBaseUrls(8080, "127.0.0.1");
+  assert.equal(customUrls.anthropicBaseUrl, "http://127.0.0.1:8080");
+  assert.equal(customUrls.openaiBaseUrl, "http://127.0.0.1:8080/v1");
 });
 
 test("sync Claude Code: preserves existing settings, adds QwenProxy env, and restores cleanly", () => {
