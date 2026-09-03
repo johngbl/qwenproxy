@@ -807,6 +807,7 @@ QwenProxy/
 | `npm start`               | Iniciar servidor             |
 | `npm run login`           | Gerenciar contas             |
 | `npm run delete-chats`    | Limpar chats Qwen das contas |
+| `npm run sync:clients`    | Sincronizar provedor no Claude Code, Codex, OpenCode e OMP (com backup) |
 | `npm test`                | mock + live                  |
 | `npm run test:mock`       | Testes mock                  |
 | `npm run test:live`       | Testes live/stress           |
