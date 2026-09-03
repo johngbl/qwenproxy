@@ -28,7 +28,11 @@ export function computeQuotaCooldownMs(
 ): number {
   const nextMidnight = new Date(nowMs);
   nextMidnight.setUTCHours(24, 0, 0, 0);
-  return Math.max(60_000, nextMidnight.getTime() - nowMs + marginMs);
+  const targetMs = nextMidnight.getTime() - nowMs + marginMs;
+  // A daily quota cooldown must never exceed 24h (cap to 24h - 1m so it never spills over
+  // during the first marginMs window after 00:00 UTC).
+  const maxCooldownMs = 24 * 60 * 60 * 1000 - 60_000;
+  return Math.min(maxCooldownMs, Math.max(60_000, targetMs));
 }
 
 // The long-ago 24h blind fallback was the source of "treated available accounts

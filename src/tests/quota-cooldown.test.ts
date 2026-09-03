@@ -43,6 +43,12 @@ test("quota: late-day error (18:07) cools until the next midnight (~6h), not the
   assert.ok(ms > 5 * 60 * 60 * 1000 && ms < 8 * 60 * 60 * 1000,
     `expected ~6h, got ${Math.round(ms / 3600_000)}h`);
 });
+test("quota: error just after midnight (00:01 / 00:04) is capped and never exceeds 24h", () => {
+  const errMs = Date.parse("2026-08-21T00:04:54.000Z");
+  const ms = computeQuotaCooldownMs(errMs);
+  assert.ok(ms < 24 * 60 * 60 * 1000, `never exceed 24h, got ${ms}`);
+  assert.ok(ms > 23 * 60 * 60 * 1000, `must be ~24h, got ${Math.round(ms / 3600_000)}h`);
+});
 
 test("quota: without a wait hint it still uses the midnight-based cooldown (never the 24h fallback)", () => {
   const err = Object.assign(
