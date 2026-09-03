@@ -17,19 +17,19 @@ REM --- Verifica Node.js ---
 where node >nul 2>nul
 if errorlevel 1 (
   echo ❌ [ERRO] Node.js nao encontrado.
-  echo    Baixe e instale em: https://nodejs.org/ ^(versao 24 ou superior^)
+  echo    Baixe e instale em: https://nodejs.org/ ^(versao 22 ou superior^)
   exit /b 1
 )
 
-REM --- Verifica versao minima do Node (24+) ---
+REM --- Verifica versao minima do Node (22+) ---
 set "NODE_MAJOR="
 for /f "tokens=1 delims=v." %%a in ('node -v 2^>nul') do set "NODE_MAJOR=%%a"
 if not defined NODE_MAJOR (
   echo ❌ [ERRO] Nao foi possivel determinar a versao do Node.js.
   exit /b 1
 )
-if %NODE_MAJOR% LSS 24 (
-  echo ❌ [ERRO] Node.js 24+ e necessario. Versao atual:
+if %NODE_MAJOR% LSS 22 (
+  echo ❌ [ERRO] Node.js 22+ e necessario. Versao atual:
   node -v
   exit /b 1
 )

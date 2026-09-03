@@ -12,14 +12,14 @@ echo ""
 # --- Verifica Node.js ---
 if ! command -v node >/dev/null 2>&1; then
   echo "❌ [ERRO] Node.js não encontrado."
-  echo "   Baixe e instale em: https://nodejs.org/ (versão 24 ou superior)"
+  echo "   Baixe e instale em: https://nodejs.org/ (versão 22 ou superior)"
   exit 1
 fi
 
-# --- Verifica versão mínima do Node (24+) ---
+# --- Verifica versão mínima do Node (22+) ---
 NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
-if [ "$NODE_MAJOR" -lt 24 ]; then
-  echo "❌ [ERRO] Node.js 24+ é necessário. Versão atual: $(node -v)"
+if [ "$NODE_MAJOR" -lt 22 ]; then
+  echo "❌ [ERRO] Node.js 22+ é necessário. Versão atual: $(node -v)"
   exit 1
 fi
 echo "✅ Node.js encontrado: $(node -v)"

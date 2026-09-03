@@ -241,7 +241,7 @@ curl http://localhost:3000/v1/responses \
 
 | Dependência | Versão mínima | Observação                           |
 | ----------- | -------------: | ------------------------------------ |
-| Node.js     | 24+           | Conforme `engines` do `package.json` |
+| Node.js     | 22+           | Conforme `engines` do `package.json` |
 | npm         | 9+            | Incluído com Node                    |
 | Playwright  | -             | `npx playwright install chromium`    |
 | Docker      | opcional      | Deploy em container                  |
@@ -823,7 +823,7 @@ A pasta `scripts/` contém atalhos para instalar, iniciar e atualizar o projeto 
 
 | Script      | Windows               | Linux/macOS            | O que faz                                                                                    |
 | ----------- | --------------------- | ---------------------- | -------------------------------------------------------------------------------------------- |
-| Instalador  | `scripts\install.bat` | `./scripts/install.sh` | Verifica Node 24+, roda `npm install`, cria `.env` a partir de `.env.example` se não existir |
+| Instalador  | `scripts\install.bat` | `./scripts/install.sh` | Verifica Node 22+, roda `npm install`, cria `.env` a partir de `.env.example` se não existir |
 | Iniciador   | `scripts\start.bat`   | `./scripts/start.sh`   | Verifica dependências e `.env`, inicia o servidor com `npm start`                            |
 | Atualizador | `scripts\update.bat`  | `./scripts/update.sh`  | `git pull` (se for repositório), `npm install` e `npx playwright install chromium`           |
 
