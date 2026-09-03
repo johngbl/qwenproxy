@@ -15,7 +15,7 @@ API compatível com **OpenAI** que conecta clientes ao **Qwen (`chat.qwen.ai`)**
 
 ## Principais funcionalidades
 
-- **Compatibilidade OpenAI** — `/v1/chat/completions`, `/v1/completions` (legado), `/v1/models`, `/v1/chat/completions/stop`, `/v1/upload` e **Responses API** `/v1/responses`.
+- **Compatibilidade OpenAI & Anthropic** — `/v1/chat/completions`, `/v1/completions` (legado), `/v1/models`, `/v1/messages` (**Anthropic Messages API** nativa com suporte total a **Claude Code CLI** e `@anthropic-ai/sdk`), `/v1/messages/count_tokens` e **Responses API** `/v1/responses`.
 - **Responses API completa** — SSE com `event:` + `data:` + `sequence_number`, memória persistente via `previous_response_id` (SQLite durável), `last_response_id`, multimodal (`input_image`/`input_file`), reasoning effort normalization, lifecycle events de reasoning e usage real do upstream.
 - **Thread-native** — Reutiliza sessão/pai no Qwen; preservação de contexto entre turns
 - **Dois modos de conversa** — `thread` (default, reutiliza chat e envia delta) e `temp` (novo chat temporário `chat_mode:"local"` por request, envia histórico completo; zero `chat_in_progress` e zero chats órfãos)
@@ -511,6 +511,12 @@ O README descreve o uso operacional. Para detalhes técnicos da API (schemas, ex
 | `/v1/responses/:id` | GET | Recuperar response armazenada |
 | `/v1/responses/:id` | DELETE | Deletar response |
 
+### Anthropic Compatible (Claude Code CLI / Anthropic SDK)
+
+| Rota | Método | Descrição |
+|---|---|---|
+| `/v1/messages` | POST | Anthropic Messages API (stream, thinking, tools, Claude Code) |
+| `/v1/messages/count_tokens` | POST | Contagem de tokens compatível com Anthropic |
 ### Utilidades
 
 | Rota | Método | Descrição |
@@ -541,6 +547,35 @@ const completion = await client.chat.completions.create({
 });
 
 console.log(completion.choices[0].message.content);
+```
+### Anthropic SDK / Claude Code CLI
+
+O proxy é 100% compatível com o **Claude Code CLI** e o **Anthropic SDK**:
+
+```bash
+# Configuração para Claude Code CLI
+export ANTHROPIC_BASE_URL="http://localhost:3000"
+export ANTHROPIC_API_KEY="sua-api-key"
+
+# Iniciar Claude Code
+claude
+```
+
+```typescript
+import Anthropic from "@anthropic-ai/sdk";
+
+const anthropic = new Anthropic({
+  baseURL: "http://localhost:3000",
+  apiKey: "sua-api-key",
+});
+
+const message = await anthropic.messages.create({
+  model: "claude-3-7-sonnet-20250219", // ou "qwen3.8-max"
+  max_tokens: 1024,
+  messages: [{ role: "user", content: "Olá!" }],
+});
+
+console.log(message.content[0]);
 ```
 
 ### OpenAI Responses API (Codex / Grok CLI)
