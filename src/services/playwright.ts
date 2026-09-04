@@ -1832,10 +1832,11 @@ export async function captureQwenHeaders(
         armOverallDeadline();
 
         try {
-          // Navigate on the first attempt, or reload when the previous attempt
-          // produced no completion request (the page is likely blocked by
-          // WAF/captcha and needs a fresh load).
-          if (attempt === 1 || lastAttemptGraceTimedOut) {
+          // Navigate on the first attempt, or reload when attempt 2+ produced
+          // no request (indicating a stuck page/challenge that needs a fresh load).
+          // Attempt 2 preserves the page from attempt 1 so the bx SDK that just
+          // finished initializing in the background is not thrown away.
+          if (attempt === 1 || (lastAttemptGraceTimedOut && attempt >= 3)) {
             lastAttemptGraceTimedOut = false;
             await openChatPage();
           }
