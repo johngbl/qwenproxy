@@ -830,7 +830,7 @@ export async function startServer(options?: {
 +${"-".repeat(W)}+
 |${blank()}|
 |${center("QwenProxy")}|
-|${center("OpenAI-Compatible API")}|
+|${center("OpenAI & Anthropic Compatible API")}|
 |${blank()}|
 +${"-".repeat(W)}+
 |${blank()}|

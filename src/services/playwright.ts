@@ -2259,7 +2259,7 @@ export function pruneAllPlaywrightProfiles(baseDir = path.resolve("data", "qwen_
   return { totalFreedBytes, totalFreedFiles, profilesCleaned };
 }
 
-const PROFILE_RESET_TIMEOUT_MS = 45_000;
+const PROFILE_RESET_TIMEOUT_MS = Math.max(90_000, config.timeouts.headers);
 
 export async function refreshHeadersWithProfileReset(
   accountId: string,

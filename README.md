@@ -308,8 +308,8 @@ Exemplo de log:
 ...
 
 +----------------------------------------------------------+
-|                   QwenProxy                             |
-|             OpenAI-Compatible API                        |
+|                        QwenProxy                         |
+|           OpenAI & Anthropic Compatible API              |
 |  Endpoint    http://127.0.0.1:7936/v1                    |
 |  Accounts    1/6 warm                                    |
 |  Status      ● Online                                    |
