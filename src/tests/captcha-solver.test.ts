@@ -329,6 +329,76 @@ test("captcha solver reports an iframe with no slider", async () => {
   }
 });
 
+test("captcha solver recovers from error300/errloading state by clicking the reload link", async () => {
+  let refreshClicked = false;
+  let sliderVisible = false;
+
+  const refreshLocator = locator({
+    isVisible: async () => !sliderVisible,
+    waitFor: async () => undefined,
+  });
+  // Mock click on the reload link makes the slider visible on the next pass
+  (refreshLocator as any).click = async () => {
+    refreshClicked = true;
+    sliderVisible = true;
+  };
+
+  const sliderLocator = locator({
+    isVisible: async () => sliderVisible,
+    waitFor: async () => {
+      if (!sliderVisible) throw new Error("slider not visible yet");
+    },
+    boundingBox: async () => ({ x: 100, y: 100, width: 40, height: 40 }),
+  });
+
+  const trackLocator = locator({
+    isVisible: async () => true,
+    boundingBox: async () => ({ x: 100, y: 100, width: 300, height: 40 }),
+  });
+
+  const successLocator = locator({
+    isVisible: async () => true,
+  });
+
+  const frame = {
+    locator: (selector: string) => {
+      if (selector.includes("nc_1_refresh") || selector.includes("errloading") || selector.includes("btn_refresh")) {
+        return refreshLocator;
+      }
+      if (selector.includes("nc_1_n1z") || selector.includes(".btn_slide")) {
+        return sliderLocator;
+      }
+      if (selector.includes("nc_1_n1t") || selector.includes(".nc_scale")) {
+        return trackLocator;
+      }
+      if (selector.includes("btn_ok") || selector.includes("nc_ok") || selector.includes("nc_result")) {
+        return successLocator;
+      }
+      return locator();
+    },
+  } as unknown as FrameLocator;
+
+  const page = pageWithLocators(
+    {
+      ".baxia-dialog": locator({ isVisible: async () => true }),
+      "#baxia-dialog-content": locator({ isVisible: async () => true }),
+      ".baxia-dialog #baxia-dialog-content iframe": locator({ isVisible: async () => true }),
+    },
+    frame,
+  );
+
+  const solved = await solveBaxiaCaptcha(page, {
+    waitForMs: 0,
+    maxAttempts: 2,
+    retryDelayMs: 0,
+    settleMs: 0,
+    sliderTimeoutMs: 50,
+  });
+
+  assert.equal(refreshClicked, true, "expected refresh link to be clicked when error state is active");
+  assert.equal(solved, true, "expected captcha to be solved after recovering from error state");
+});
+
 const QWEN_BASE = "https://chat.qwen.ai";
 
 test("extractBaxiaChallengeUrl reads a protocol-relative punish url", () => {

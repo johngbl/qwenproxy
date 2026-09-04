@@ -8,6 +8,7 @@ export const BAXIA_CONTENT_SELECTOR = "#baxia-dialog-content";
 const CAPTCHA_EVENT_EMOJI: Record<string, string> = {
   dialog_detected: "🛡️",
   challenge_opened: "🚪",
+  challenge_reload: "🔄",
   recovery_skipped: "⏭️",
   iframe_found: "🖼️",
   challenge_detected: "🧩",
@@ -81,7 +82,8 @@ const BAXIA_TRACK_SELECTOR =
   "#nc_1_n1t, .nc_scale, .nc_wrapper .nc_scale, ._nc .nc_scale, .nc-container .nc_scale";
 const BAXIA_SUCCESS_SELECTOR =
   ".btn_ok, .nc_ok, .nc_success, .nc_result, .nc_wrapper.nc-success, .nc_wrapper.success, [data-nc-lang=\"SUCCESS\"], [data-nc-lang=\"success\"], #nc-loading-circle";
-
+const BAXIA_RELOAD_SELECTOR =
+  "#nc_1_refresh1, .errloading a, .nc-container .errloading a, .btn_refresh, .clickCaptcha_text .btn_refresh, [data-nc-lang=\"REFRESH\"], a[id*=\"refresh\"]";
 /**
  * A challenge served to a background fetch never renders anything: the WAF
  * answers the XHR with the punish document instead of the expected payload, so
@@ -149,7 +151,7 @@ interface BaxiaChallengeTarget {
 const DEFAULT_MAX_ATTEMPTS = 3;
 const DEFAULT_RETRY_DELAY_MS = 1_000;
 const DEFAULT_SETTLE_MS = 2_000;
-const DEFAULT_SLIDER_TIMEOUT_MS = 5_000;
+const DEFAULT_SLIDER_TIMEOUT_MS = 8_000;
 
 async function isVisible(locator: Locator): Promise<boolean> {
   return locator.isVisible().catch(() => false);
@@ -385,6 +387,17 @@ async function solveBaxiaCaptchaUnlocked(
         ? page.frameLocator(frameSelector)
         : page;
       const slider = frame.locator(BAXIA_SLIDER_SELECTOR);
+
+      // Check if Alibaba NoCaptcha entered the error300 / errloading state
+      // (e.g. from an earlier rejected drag, network hiccup, or expired token).
+      // If the reload link is visible, click it to trigger native noCaptcha.reset().
+      const reloadLink = frame.locator(BAXIA_RELOAD_SELECTOR).first();
+      if (await isVisible(reloadLink)) {
+        logBaxiaCaptcha("challenge_reload", { attempt });
+        await reloadLink.click({ force: true }).catch(() => {});
+        await sleep(500);
+      }
+
       await slider.waitFor({ state: "visible", timeout: sliderTimeoutMs });
       if (!sliderFoundReported) {
         logBaxiaCaptcha("slider_found");
