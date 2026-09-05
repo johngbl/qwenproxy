@@ -57,18 +57,17 @@ function parseArgs() {
 function printHelp() {
   console.log(`
 Uso:
-  npm run sync:clients [clientes...] [opções]
+  npm run sync [clientes...] [opções]
 
 Exemplos:
-  npm run sync:clients                # Sincroniza todos os clientes detectados
-  npm run sync:clients claude         # Sincroniza apenas o Claude Code
-  npm run sync:clients codex          # Sincroniza apenas o Codex CLI
-  npm run sync:clients opencode       # Sincroniza apenas o OpenCode
-  npm run sync:clients omp            # Sincroniza apenas o OMP (Oh My Pi)
-  npm run sync:clients claude codex   # Sincroniza Claude Code e Codex
-  npm run sync:clients --list         # Lista os arquivos dos clientes detectados
-  npm run sync:clients --restore      # Restaura as configurações originais (rollback)
-
+  npm run sync                # Sincroniza todos os clientes detectados
+  npm run sync claude         # Sincroniza apenas o Claude Code
+  npm run sync codex          # Sincroniza apenas o Codex CLI
+  npm run sync opencode       # Sincroniza apenas o OpenCode
+  npm run sync omp            # Sincroniza apenas o OMP (Oh My Pi)
+  npm run sync claude codex   # Sincroniza Claude Code e Codex
+  npm run sync -- --list      # Lista os arquivos dos clientes detectados
+  npm run sync -- --restore   # Restaura as configurações originais (rollback)
 Opções:
   --client <nome>    Nome do cliente (claude, codex, opencode, omp)
   --api-key <chave>  Sobrescrever chave de API (padrão: lê do .env ou usa sk-qwenproxy-local)
@@ -109,8 +108,8 @@ async function main() {
       console.log(`     ${c.path}`);
     }
     console.log("\nPara sincronizar um ou todos, execute:");
-    console.log("  npm run sync:clients");
-    console.log("  npm run sync:clients claude\n");
+    console.log("  npm run sync");
+    console.log("  npm run sync claude\n");
     return;
   }
 
@@ -168,7 +167,7 @@ async function main() {
   console.log("--------------------------------------------------");
   console.log(`✨ ${count} cliente(s) sincronizado(s) com zero perda de outras configs/provedores!`);
   console.log("💡 Para desfazer e restaurar a qualquer momento:");
-  console.log("   npm run sync:clients -- --restore");
+  console.log("   npm run sync -- --restore");
   console.log("==================================================\n");
 }
 

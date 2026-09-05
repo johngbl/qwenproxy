@@ -802,18 +802,17 @@ QwenProxy/
 ## Scripts úteis
 
 
-| Comando                   | Descrição                    |
-| ------------------------- | ---------------------------- |
-| `npm start`               | Iniciar servidor             |
-| `npm run login`           | Gerenciar contas             |
-| `npm run delete-chats`    | Limpar chats Qwen das contas |
-| `npm run sync:clients`    | Sincronizar provedor no Claude Code, Codex, OpenCode e OMP (com backup) |
-| `npm test`                | mock + live                  |
-| `npm run test:mock`       | Testes mock                  |
-| `npm run test:live`       | Testes live/stress           |
-| `npm run typecheck`       | Verificar tipos              |
-| `npm run benchmark:proxy` | Benchmark de latência        |
-
+| Comando             | Descrição                                                               |
+| ------------------- | ----------------------------------------------------------------------- |
+| `npm start`         | Iniciar o servidor QwenProxy                                            |
+| `npm run sync`      | Sincronizar clientes (Claude Code, Codex, OpenCode, OMP) com backup     |
+| `npm run clean`     | Limpar caches temporários dos perfis Chromium (~4.5MB por conta)        |
+| `npm run clean:all` | Limpar caches + remover navegadores órfãos do Playwright (+4GB no SSD)  |
+| `npm run reset`     | Zerar cooldowns de contas no banco de dados                             |
+| `npm run login`     | Adicionar/autenticar novas contas visualmente no navegador              |
+| `npm run purge`     | Limpar chats remotos do Qwen nas contas configuradas                    |
+| `npm test`          | Executar suíte de testes completa                                       |
+| `npm run typecheck` | Checagem estrita de tipos do TypeScript                                 |
 
 ---
 

@@ -145,7 +145,7 @@ async function main() {
       }
       console.log(`   Espaço recuperável no SSD: ${formatBytes(totalReclaimable)}.`);
       console.log(`   Para liberar esse espaço automaticamente, execute:`);
-      console.log(`   npm run clean:cache -- --all\n`);
+      console.log(`   npm run clean:all\n`);
     }
   } else {
     console.log("   [OK] O diretório do Playwright já está enxuto (sem navegadores órfãos).\n");
