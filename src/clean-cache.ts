@@ -41,29 +41,64 @@ export async function cleanPlaywrightBrowsers(cleanUnused: boolean): Promise<{
   freedBytes: number;
 }> {
   let activeBrowserDir: string | null = null;
+  let activeRevision: string | null = null;
+  let msPlaywrightDir: string | null = null;
+
   try {
     const execPath = chromium.executablePath();
     // E.g. C:\Users\...\AppData\Local\ms-playwright\chromium-1234\chrome-win64\chrome.exe
     // The browser folder is the first directory under ms-playwright
-    const msPlaywrightDir = path.resolve(execPath, "..", "..", "..");
-    const rel = path.relative(msPlaywrightDir, execPath);
+    const resolvedPlaywrightDir = path.resolve(execPath, "..", "..", "..");
+    const rel = path.relative(resolvedPlaywrightDir, execPath);
     const topFolder = rel.split(path.sep)[0];
     activeBrowserDir = topFolder;
+    msPlaywrightDir = resolvedPlaywrightDir;
+
+    const matchRev = topFolder.match(/-(\d+)$/);
+    if (matchRev) {
+      activeRevision = matchRev[1];
+    }
   } catch {}
 
-  const msPlaywrightDir = path.join(os.homedir(), "AppData", "Local", "ms-playwright");
+  if (!msPlaywrightDir || !fs.existsSync(msPlaywrightDir)) {
+    const defaultPlaywrightDir =
+      process.env.PLAYWRIGHT_BROWSERS_PATH ||
+      (process.platform === "win32"
+        ? path.join(os.homedir(), "AppData", "Local", "ms-playwright")
+        : process.platform === "darwin"
+          ? path.join(os.homedir(), "Library", "Caches", "ms-playwright")
+          : path.join(os.homedir(), ".cache", "ms-playwright"));
+    if (fs.existsSync(defaultPlaywrightDir)) {
+      msPlaywrightDir = defaultPlaywrightDir;
+    }
+  }
+
   const unusedDirs: { name: string; path: string; size: string; bytes: number }[] = [];
   let freedBytes = 0;
 
-  if (fs.existsSync(msPlaywrightDir)) {
+  if (msPlaywrightDir && fs.existsSync(msPlaywrightDir)) {
     try {
       const entries = fs.readdirSync(msPlaywrightDir, { withFileTypes: true });
       for (const entry of entries) {
         if (!entry.isDirectory()) continue;
         const folderName = entry.name;
-        // Keep active browser and critical tools like winldd/ffmpeg if needed
+
+        // Never delete:
+        // 1. Exact active browser folder (e.g. chromium-1234)
         if (folderName === activeBrowserDir) continue;
-        if (folderName.startsWith("winldd") || folderName.startsWith(".links")) continue;
+
+        // 2. Headless shell sharing the active revision (e.g. chromium_headless_shell-1234)
+        if (activeRevision && folderName.includes(activeRevision)) continue;
+
+        // 3. System tools and critical link directories
+        if (
+          folderName.startsWith("winldd") ||
+          folderName.startsWith("ffmpeg") ||
+          folderName.startsWith(".links") ||
+          folderName.startsWith(".registry")
+        ) {
+          continue;
+        }
 
         const fullPath = path.join(msPlaywrightDir, folderName);
         const { bytes } = getDirStats(fullPath);
