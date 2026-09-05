@@ -59,7 +59,7 @@ export function buildQwenRequestHeaders(
     "bx-v": opts.bxV || "2.5.37",
     source: "web",
     version: opts.version || getQwenWebVersion(),
-    timezone: QWEN_TIMEZONE_HEADER,
+    timezone: opts.extra?.timezone || new Date().toString().split(" (")[0],
     // Use the real browser client-hints when captured (anti-hardcoded); fall
     // back to the static fingerprint otherwise.
     "sec-ch-ua": opts.secChUa || '"Google Chrome";v="150", "Chromium";v="150", "Not.A/Brand";v="99"',
