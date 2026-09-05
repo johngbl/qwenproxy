@@ -64,7 +64,9 @@ export function getDefaultPaths(): {
 
   return {
     claudeCode: path.join(home, ".claude", "settings.json"),
-    codex: path.join(home, ".codex", "config.toml"),
+    codex: process.env.CODEX_HOME
+      ? path.join(process.env.CODEX_HOME, "config.toml")
+      : path.join(home, ".codex", "config.toml"),
     openCode: existingOpenCode || openCodeCandidates[0],
     omp: path.join(home, ".omp", "agent", "models.yml"),
   };

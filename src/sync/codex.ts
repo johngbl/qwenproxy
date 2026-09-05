@@ -58,6 +58,37 @@ experimental_bearer_token = "${apiKey}"
       content = updateTopLevelKey(content, "model_context_window", 1000000);
     }
 
+    // If a custom model_catalog_json is configured, ensure the target model is listed in it
+    const catalogMatch = content.match(/^model_catalog_json\s*=\s*["']([^"']+)["']/m);
+    if (catalogMatch && catalogMatch[1]) {
+      try {
+        const rawCatalogPath = catalogMatch[1];
+        const catalogPath = path.isAbsolute(rawCatalogPath)
+          ? rawCatalogPath
+          : path.resolve(path.dirname(filePath), rawCatalogPath);
+        if (fs.existsSync(catalogPath)) {
+          const catalog = JSON.parse(fs.readFileSync(catalogPath, "utf-8"));
+          if (Array.isArray(catalog.models)) {
+            const hasModel = catalog.models.some((m: any) => m?.slug === model);
+            if (!hasModel) {
+              const template = catalog.models[0] || {};
+              catalog.models.unshift({
+                ...template,
+                slug: model,
+                display_name: `Qwen (${model})`,
+                description: `QwenProxy ${model} with 1,000,000 token context window`,
+                context_window: 1000000,
+                max_context_window: 1000000,
+              });
+              fs.writeFileSync(catalogPath, JSON.stringify(catalog, null, 2), "utf-8");
+            }
+          }
+        }
+      } catch {
+        // Non-fatal catalog enhancement
+      }
+    }
+
     fs.writeFileSync(filePath, content.trimEnd() + "\n", "utf-8");
 
     return {
