@@ -6,6 +6,7 @@
   "scripts": {
     "postinstall": "playwright install chromium",
     "start": "tsx src/index.ts",
+    "tui": "npx tsx src/tui/index.ts",
     "login": "npx tsx src/login.ts",
     "sync": "npx tsx src/sync-clients.ts",
     "clean": "npx tsx src/clean-cache.ts",
