@@ -38,6 +38,88 @@ function buildOpenCodeProviderObject(baseUrl: string, apiKey: string): Record<st
     },
   };
 }
+function findKeyObjectSpan(content: string, key: string): { start: number; end: number; hasTrailingComma: boolean } | null {
+  const regex = new RegExp(`"${key}"\\s*:\\s*\\{`);
+  const match = content.match(regex);
+  if (!match || match.index === undefined) return null;
+
+  const startIndex = match.index;
+  const braceIndex = content.indexOf("{", startIndex + match[0].length - 1);
+  if (braceIndex === -1) return null;
+
+  let depth = 0;
+  let inString = false;
+  let inLineComment = false;
+  let inBlockComment = false;
+  let escape = false;
+
+  for (let i = braceIndex; i < content.length; i++) {
+    const ch = content[i];
+    const nextCh = content[i + 1] || "";
+
+    if (inLineComment) {
+      if (ch === "\n") inLineComment = false;
+      continue;
+    }
+    if (inBlockComment) {
+      if (ch === "*" && nextCh === "/") {
+        inBlockComment = false;
+        i++;
+      }
+      continue;
+    }
+    if (inString) {
+      if (escape) {
+        escape = false;
+      } else if (ch === "\\") {
+        escape = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === "/" && nextCh === "/") {
+      inLineComment = true;
+      i++;
+      continue;
+    }
+    if (ch === "/" && nextCh === "*") {
+      inBlockComment = true;
+      i++;
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+
+    if (ch === "{") {
+      depth++;
+    } else if (ch === "}") {
+      depth--;
+      if (depth === 0) {
+        let endIndex = i + 1;
+        let hasTrailingComma = false;
+        while (endIndex < content.length && /[\s,]/.test(content[endIndex])) {
+          if (content[endIndex] === ",") {
+            hasTrailingComma = true;
+            endIndex++;
+            break;
+          }
+          if (content[endIndex] === "\n") {
+            break;
+          }
+          endIndex++;
+        }
+        return { start: startIndex, end: endIndex, hasTrailingComma };
+      }
+    }
+  }
+
+  return null;
+}
 
 export function syncOpenCode(options: SyncOptions): ClientSyncResult {
   const { filePath, apiKey, baseUrl } = options;
@@ -69,10 +151,14 @@ export function syncOpenCode(options: SyncOptions): ClientSyncResult {
       };
       fs.writeFileSync(filePath, JSON.stringify(initial, null, 2) + "\n", "utf-8");
     } else {
-      // Check if "qwenproxy" already exists under "provider"
-      const existingQwenRegex = /"qwenproxy"\s*:\s*\{[\s\S]*?\n\s*\},?/m;
-      if (existingQwenRegex.test(content)) {
-        content = content.replace(existingQwenRegex, `"qwenproxy": ${providerJson},`);
+      // Check if "qwenproxy" already exists under "provider" with balanced braces
+      const existingSpan = findKeyObjectSpan(content, "qwenproxy");
+      if (existingSpan) {
+        const comma = existingSpan.hasTrailingComma ? "," : "";
+        content =
+          content.slice(0, existingSpan.start) +
+          `"qwenproxy": ${providerJson}${comma}` +
+          content.slice(existingSpan.end);
       } else {
         const providerMatch = content.match(/"provider"\s*:\s*\{/);
         if (providerMatch && providerMatch.index !== undefined) {

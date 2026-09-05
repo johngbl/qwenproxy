@@ -62,14 +62,9 @@ function baseModelId(modelId: string): string {
 }
 
 /**
- * Expand the public reasoning variants from the selected account's live
- * catalog. The upstream list is normalized first, so this function is the
- * sole owner of synthetic variants and cannot create nested/duplicate
- * suffixes.
- *
- * Qwen's web client always has a Thinking base and a Fast mode. Publish the
- * Fast alias for every catalog model, even when older metadata does not
- * include `think_skip`.
+ * Returns the public model catalog from the selected account's live
+ * catalog. Suffixes (-fast/-thinking) are not synthesized; reasoning
+ * is controlled via standard `reasoning_effort` (low/medium/high).
  */
 export function expandModelVariants(
   models: PublicModel[],
@@ -93,28 +88,7 @@ export function expandModelVariants(
     }
   }
 
-  const variants = new Map<string, PublicModel>();
-  for (const model of baseModels.values()) {
-    const addVariant = (suffix: string, nameSuffix: string) => {
-      const id = `${model.id}${suffix}`;
-      if (variants.has(id)) return;
-      variants.set(id, {
-        ...model,
-        id,
-        name:
-          typeof model.name === "string"
-            ? `${model.name}${nameSuffix}`
-            : `${model.id}${nameSuffix}`,
-        object: "model",
-      });
-    };
-
-    if (!variants.has(model.id)) variants.set(model.id, model);
-    addVariant("-fast", " (Fast)");
-    addVariant("-thinking", " (Thinking)");
-  }
-
-  return [...variants.values()];
+  return [...baseModels.values()];
 }
 
 function toAnthropicModel(model: PublicModel, accountId?: string) {

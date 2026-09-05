@@ -47,6 +47,7 @@ interface ChatRequest {
   max_completion_tokens?: number;
   parallel_tool_calls?: boolean;
   response_format?: Record<string, unknown>;
+  reasoning_effort?: string;
 }
 
 interface ChatChoice {
@@ -259,6 +260,7 @@ export function responsesToChatCompletions(
   const rawEffort = req.reasoning?.effort ?? (req as any).reasoning_effort;
   const normalizedEffort = normalizeReasoningEffort(rawEffort);
   if (normalizedEffort) {
+    chatReq.reasoning_effort = normalizedEffort;
     chatReq.model = applyEffortToModel(chatReq.model, normalizedEffort);
   }
 

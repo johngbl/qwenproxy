@@ -68,22 +68,11 @@ test("models endpoint returns ETag and supports 304", async () => {
     const body = (await first.json()) as any;
     assert.equal(body.object, "list");
     assert.ok(body.data.some((model: any) => model.id === "qwen-test-model"));
-    assert.ok(
-      body.data.some((m: any) => m.id === "qwen-test-model-fast"),
-      "models should expose the public Fast variant",
-    );
-    assert.ok(
-      body.data.some((m: any) => m.id === "qwen-test-model-thinking"),
-      "models should expose the public Thinking variant",
-    );
+    assert.ok(body.data.some((model: any) => model.id === "qwen-text-only-model"));
     assert.equal(
-      body.data.some((m: any) => m.id === "qwen-test-model-no-thinking"),
+      body.data.some((m: any) => m.id.endsWith("-fast") || m.id.endsWith("-thinking")),
       false,
-      "legacy no-thinking variants must not be published",
-    );
-    assert.ok(
-      body.data.some((m: any) => m.id === "qwen-text-only-model-fast"),
-      "Fast must be available even without think_skip metadata",
+      "synthetic -fast and -thinking variants must not be published",
     );
     assert.equal(
       body.data.filter((model: any) => model.id === "qwen-test-model").length,

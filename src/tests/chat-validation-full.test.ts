@@ -412,8 +412,8 @@ test("reasoning_effort low/none/minimal forces fast mode on unsuffixed model", a
   }
 });
 
-test("reasoning_effort medium/high/max keeps auto (Qwen decides)", async () => {
-  for (const effort of ["medium", "high", "xhigh", "max"]) {
+test("reasoning_effort medium sets auto mode (Qwen decides dynamically)", async () => {
+  for (const effort of ["medium", "med", "default"]) {
     const parsed = await parseRequestBody(
       mockContext({
         model: "qwen3.7-plus",
@@ -422,6 +422,20 @@ test("reasoning_effort medium/high/max keeps auto (Qwen decides)", async () => {
       }),
     );
     assert.strictEqual(parsed.reasoningMode, "auto");
+    assert.strictEqual(parsed.enableThinking, true);
+  }
+});
+
+test("reasoning_effort high/xhigh/max forces thinking mode (thinking on)", async () => {
+  for (const effort of ["high", "xhigh", "max", "ultra"]) {
+    const parsed = await parseRequestBody(
+      mockContext({
+        model: "qwen3.7-plus",
+        reasoning_effort: effort,
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    );
+    assert.strictEqual(parsed.reasoningMode, "thinking");
     assert.strictEqual(parsed.enableThinking, true);
   }
 });

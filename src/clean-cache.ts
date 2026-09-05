@@ -5,14 +5,14 @@ import os from "node:os";
 import { chromium } from "playwright";
 import { pruneAllPlaywrightProfiles } from "./services/playwright.ts";
 
-function formatBytes(bytes: number): string {
+export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(2)} KB`;
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
   return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
-function getDirStats(dir: string): { bytes: number; files: number } {
+export function getDirStats(dir: string): { bytes: number; files: number } {
   let bytes = 0;
   let files = 0;
   function walk(d: string) {
@@ -35,7 +35,7 @@ function getDirStats(dir: string): { bytes: number; files: number } {
   return { bytes, files };
 }
 
-async function cleanPlaywrightBrowsers(cleanUnused: boolean): Promise<{
+export async function cleanPlaywrightBrowsers(cleanUnused: boolean): Promise<{
   activeBrowserDir: string | null;
   unusedDirs: { name: string; path: string; size: string; bytes: number }[];
   freedBytes: number;
@@ -156,7 +156,14 @@ async function main() {
   console.log("==================================================\n");
 }
 
-main().catch((err) => {
-  console.error("[CleanCache] Erro fatal durante a limpeza:", err);
-  process.exit(1);
-});
+const isDirectRun =
+  process.argv[1] &&
+  (process.argv[1].endsWith("clean-cache.ts") ||
+    process.argv[1].endsWith("clean-cache.js"));
+
+if (isDirectRun) {
+  main().catch((err) => {
+    console.error("[CleanCache] Erro fatal durante a limpeza:", err);
+    process.exit(1);
+  });
+}

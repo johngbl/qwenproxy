@@ -77,39 +77,26 @@ export function normalizeReasoningEffort(
 }
 
 /**
- * Optionally rewrite the model id based on effort.
- * low/Fast → *-fast
- * medium/high/Max → the base model (Thinking)
+ * Returns the clean, canonical model id, stripping any legacy suffix.
  */
 export function applyEffortToModel(
   model: string,
-  effort: NormalizedEffort | undefined,
+  _effort: NormalizedEffort | undefined,
 ): string {
-  if (!effort) return model;
-
-  const base = stripFastSuffix(model);
-
-  if (effort === "low") {
-    return `${base}-fast`;
-  }
-
-  // medium/high: strip -fast so the base model enables Thinking.
-  return base;
+  return stripFastSuffix(model);
 }
 
 /**
  * Chat-completions mapping: effort -> Qwen reasoning mode.
- *
- * The chat route controls thinking via the model suffix (`-fast` / `-thinking`)
- * and an `auto` default where Qwen decides. Effort therefore only has two
- * meaningful outcomes: `low` forces Fast, everything else leaves `auto` alone
- * (Qwen's own default already reasons, and there is no medium gradient upstream).
- *
- * Returns undefined when the effort carries no chat-relevant instruction, so
- * callers can keep their existing mode untouched.
+ * - low    → "fast"     (thinking OFF / Fast mode)
+ * - medium → "auto"     (thinking AUTO / Qwen decides dynamically)
+ * - high   → "thinking" (thinking ON / forced reasoning mode)
  */
 export function effortToReasoningMode(
   effort: NormalizedEffort | undefined,
-): "fast" | undefined {
-  return effort === "low" ? "fast" : undefined;
+): "fast" | "auto" | "thinking" | undefined {
+  if (effort === "low") return "fast";
+  if (effort === "medium") return "auto";
+  if (effort === "high") return "thinking";
+  return undefined;
 }

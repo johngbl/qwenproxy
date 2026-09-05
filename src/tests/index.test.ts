@@ -62,11 +62,10 @@ test("Models endpoint returns live models and supported variants", async () => {
     assert.strictEqual(body.object, "list");
     assert.ok(Array.isArray(body.data));
     assert.ok(body.data.some((m: any) => m.id === "qwen3.6-plus"));
-    assert.ok(body.data.some((m: any) => m.id === "qwen3.6-plus-fast"));
-    assert.ok(body.data.some((m: any) => m.id === "qwen3.6-plus-thinking"));
     assert.equal(
-      body.data.some((m: any) => m.id === "qwen3.6-plus-no-thinking"),
+      body.data.some((m: any) => m.id.endsWith("-fast") || m.id.endsWith("-thinking")),
       false,
+      "synthetic -fast and -thinking variants must not be published",
     );
   } finally {
     globalThis.fetch = originalFetch;

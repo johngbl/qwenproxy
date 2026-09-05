@@ -81,8 +81,9 @@ export async function parseRequestBody(c: Context): Promise<ParsedRequest> {
   // OpenAI `reasoning_effort` (none|minimal|low|medium|high|xhigh|max).
   // Precedence: an explicit model suffix wins — effort only acts on unsuffixed
   // models (reasoningMode "auto"). Absent/empty effort is a complete no-op.
-  // Qwen has no medium gradient, so only the low tier is meaningful: it forces
-  // Fast (thinking off). medium/high/max keep Qwen's own auto decision.
+  // - low/none/minimal  → forces Fast (thinking off)
+  // - medium            → sets Auto (Qwen decides dynamically)
+  // - high/max/xhigh    → forces Thinking (thinking on)
   // The camelCase alias is accepted too: OpenCode-style configs overlay the
   // raw `reasoningEffort` setting into the request body.
   const rawEffort = body.reasoning_effort ?? body.reasoningEffort;
