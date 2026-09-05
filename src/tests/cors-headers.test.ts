@@ -83,3 +83,81 @@ test("paths without /v1 redirect (308, preserves method) to the /v1 routes", asy
   assert.strictEqual(models.status, 308);
   assert.strictEqual(models.headers.get("location"), "/v1/models");
 });
+
+test("streaming endpoints carry anti-buffering headers (X-Accel-Buffering and no-transform)", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const urlStr =
+      typeof input === "string" ? input : "url" in input ? input.url : String(input);
+    if (urlStr.includes("/v1/chat/completions")) {
+      return app.fetch(new Request("http://localhost/v1/chat/completions", init));
+    }
+    if (urlStr.includes("chat.qwen.ai")) {
+      if (urlStr.includes("/api/models")) {
+        return new Response(
+          JSON.stringify({ data: [{ id: "qwen3.7-plus", owned_by: "qwen" }] }),
+          { status: 200 },
+        );
+      }
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              new TextEncoder().encode(
+                'data: {"choices":[{"delta":{"content":"hello"}}]}\n\ndata: [DONE]\n\n',
+              ),
+            );
+            controller.close();
+          },
+        }),
+        { status: 200 },
+      );
+    }
+    return originalFetch(input, init);
+  };
+
+  try {
+    // 1. OpenAI Chat Completions stream
+    const chatRes = await app.fetch(
+      new Request("http://localhost/v1/chat/completions", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "qwen3.7-plus",
+          messages: [{ role: "user", content: "ping" }],
+          stream: true,
+        }),
+      }),
+    );
+    assert.strictEqual(chatRes.status, 200);
+    assert.strictEqual(chatRes.headers.get("x-accel-buffering"), "no");
+    assert.strictEqual(chatRes.headers.get("cache-control"), "no-cache, no-transform");
+
+    // 2. Anthropic Messages stream
+    const anthropicRes = await app.fetch(
+      new Request("http://localhost/v1/messages", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-api-key": "sk-dummy",
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify({
+          model: "claude-3-7-sonnet-20250219",
+          max_tokens: 100,
+          messages: [{ role: "user", content: "ping" }],
+          stream: true,
+        }),
+      }),
+    );
+    assert.strictEqual(anthropicRes.status, 200);
+    assert.strictEqual(anthropicRes.headers.get("x-accel-buffering"), "no");
+    assert.strictEqual(anthropicRes.headers.get("cache-control"), "no-cache, no-transform");
+
+    // Consume streams while fetch mock is still active
+    await chatRes.text();
+    await anthropicRes.text();
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

@@ -70,10 +70,16 @@ app.post("/v1/responses", async (c) => {
 
     if (isStream) {
       // ============ STREAMING MODE ============
-      c.header("Content-Type", "text/event-stream");
-      c.header("Cache-Control", "no-cache");
-      c.header("Connection", "keep-alive");
+      const socket =
+        (c.env as any)?.incoming?.socket || (c.req.raw as any)?.socket;
+      if (socket && typeof socket.setNoDelay === "function") {
+        socket.setNoDelay(true);
+      }
 
+      c.header("Content-Type", "text/event-stream");
+      c.header("Cache-Control", "no-cache, no-transform");
+      c.header("Connection", "keep-alive");
+      c.header("X-Accel-Buffering", "no");
       const responseId = generateResponseId();
       const inProgressResponse = buildInProgressResponse(
         responseId,
@@ -278,8 +284,9 @@ app.post("/v1/responses", async (c) => {
       return new Response(readable, {
         headers: {
           "Content-Type": "text/event-stream",
-          "Cache-Control": "no-cache",
+          "Cache-Control": "no-cache, no-transform",
           Connection: "keep-alive",
+          "X-Accel-Buffering": "no",
           "Transfer-Encoding": "chunked",
         },
       });

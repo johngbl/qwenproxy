@@ -848,15 +848,23 @@ export async function processStreamingResponse(
   let lastDeltaAt: number | null = null;
   let currentTokenEstimationContext = tokenEstimationContext;
 
+  // Disable Nagle's algorithm on the underlying TCP socket to eliminate 40ms delayed
+  // ACK latency on incremental SSE packet delivery.
+  const socket =
+    (c.env as any)?.incoming?.socket || (c.req.raw as any)?.socket;
+  if (socket && typeof socket.setNoDelay === "function") {
+    socket.setNoDelay(true);
+  }
+
   // Send the SSE response headers IMMEDIATELY (before the protocol probe): the
   // probe below can block for the upstream's first byte (slow thinking), and
   // without an early response the client sees nothing and times out on its own,
   // retrying the same session. The honoStream callback emits keep-alive
   // comments while the first byte is pending.
   c.header("Content-Type", "text/event-stream");
-  c.header("Cache-Control", "no-cache");
+  c.header("Cache-Control", "no-cache, no-transform");
   c.header("Connection", "keep-alive");
-
+  c.header("X-Accel-Buffering", "no");
   // Store retry context for transparent mid-stream recovery
   const retryContext = {
     activeAccountId,

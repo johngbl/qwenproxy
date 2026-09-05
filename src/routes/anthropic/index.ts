@@ -116,12 +116,18 @@ app.post("/v1/messages", async (c) => {
 
     if (isStream) {
       // ============ STREAMING MODE ============
+      const socket =
+        (c.env as any)?.incoming?.socket || (c.req.raw as any)?.socket;
+      if (socket && typeof socket.setNoDelay === "function") {
+        socket.setNoDelay(true);
+      }
+
       c.header("Content-Type", "text/event-stream; charset=utf-8");
       c.header("Cache-Control", "no-cache, no-transform");
       c.header("Connection", "keep-alive");
+      c.header("X-Accel-Buffering", "no");
       c.header("anthropic-version", anthropicVersion);
       c.header("request-id", requestId);
-
       return honoStream(c, async (stream) => {
         const encoder = new TextEncoder();
         const write = async (data: string) => {
