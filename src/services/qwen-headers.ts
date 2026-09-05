@@ -1,6 +1,17 @@
 import { v4 as uuidv4 } from "uuid";
 import { qwenUrl, qwenOrigin } from "./qwen-url.ts";
 import { config } from "../core/config.js";
+let dynamicWebVersion: string | null = null;
+
+export function updateQwenWebVersion(version?: string | null): void {
+  if (version && typeof version === "string" && /^\d+\.\d+\.\d+/.test(version)) {
+    dynamicWebVersion = version.trim();
+  }
+}
+
+export function getQwenWebVersion(): string {
+  return dynamicWebVersion || config.qwen.webVersion;
+}
 
 export const QWEN_WEB_VERSION = config.qwen.webVersion;
 export const DEFAULT_QWEN_USER_AGENT =
@@ -47,7 +58,7 @@ export function buildQwenRequestHeaders(
     "X-Request-Id": uuidv4(),
     "bx-v": opts.bxV || "2.5.37",
     source: "web",
-    version: opts.version || QWEN_WEB_VERSION,
+    version: opts.version || getQwenWebVersion(),
     timezone: QWEN_TIMEZONE_HEADER,
     // Use the real browser client-hints when captured (anti-hardcoded); fall
     // back to the static fingerprint otherwise.

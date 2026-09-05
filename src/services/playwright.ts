@@ -32,7 +32,7 @@ import { subtlePageActivity } from "./human-behavior.ts";
 import { solveBaxiaCaptcha } from "./captcha-solver.ts";
 import { qwenOrigin, qwenUrl } from "./qwen-url.ts";
 import { setWafContextResetListener } from "../core/waf-isolation.ts";
-
+import { updateQwenWebVersion, getQwenWebVersion } from "./qwen-headers.ts";
 // Try to import playwright-extra and stealth, fallback to regular playwright
 let chromiumWithStealth: typeof chromium | null = null;
 
@@ -852,7 +852,7 @@ export async function getBasicHeaders(accountId: string): Promise<{
       secChUa: "",
       secChUaMobile: "?0",
       secChUaPlatform: "",
-      version: config.qwen.webVersion,
+      version: getQwenWebVersion(),
     };
     try {
       if (!userAgent) {
@@ -872,19 +872,29 @@ export async function getBasicHeaders(accountId: string): Promise<{
               platform = data.platform || "";
               mobile = data.mobile ? "?1" : "?0";
             }
-            return { ua, secChUa, platform, mobile };
+            let bundleVersion: string | null = null;
+            try {
+              const el = document.querySelector('link[href*="qwen-chat-fe"], script[src*="qwen-chat-fe"], img[src*="qwen-chat-fe"]');
+              const src = el ? (el.getAttribute("href") || el.getAttribute("src") || "") : "";
+              const match = src.match(/qwen-chat-fe\/(\d+\.\d+\.\d+)/) || document.documentElement.innerHTML.match(/qwen-chat-fe\/(\d+\.\d+\.\d+)/);
+              if (match) bundleVersion = match[1];
+            } catch {}
+            return { ua, secChUa, platform, mobile, bundleVersion };
           }),
           config.timeouts.page,
           `User-agent lookup timed out for ${accountId}`,
         );
         userAgent = nav.ua;
+        if (nav.bundleVersion) {
+          updateQwenWebVersion(nav.bundleVersion);
+        }
         cachedUserAgents.set(accountId, userAgent);
         const hints = getHeaderCache(accountId).headers;
         clientHints = {
           secChUa: nav.secChUa,
           secChUaMobile: nav.mobile,
           secChUaPlatform: nav.platform ? JSON.stringify(nav.platform) : "",
-          version: hints["version"] || config.qwen.webVersion,
+          version: nav.bundleVersion || hints["version"] || getQwenWebVersion(),
         };
         if (nav.secChUa) hints["sec-ch-ua"] = nav.secChUa;
         hints["sec-ch-ua-mobile"] = nav.mobile;
@@ -895,7 +905,7 @@ export async function getBasicHeaders(accountId: string): Promise<{
           secChUa: hints["sec-ch-ua"] || "",
           secChUaMobile: hints["sec-ch-ua-mobile"] || "?0",
           secChUaPlatform: hints["sec-ch-ua-platform"] || "",
-          version: hints["version"] || config.qwen.webVersion,
+          version: hints["version"] || getQwenWebVersion(),
         };
       }
     } catch {
@@ -1688,10 +1698,11 @@ export async function captureQwenHeaders(
       headersCaptured = true;
       if (timeout) clearTimeout(timeout);
       cache.headers = capturedHeaders;
-      cache.lastRefresh = Date.now();
-      // The account now has a valid anti-bot header set — the rotation gate
-      // (account-manager `markAccountHeadersReady`) may route requests to it.
+      if (capturedHeaders["version"]) {
+        updateQwenWebVersion(capturedHeaders["version"]);
+      }
       markAccountHeadersReady(accountId);
+      cache.lastRefresh = Date.now();
       // Header interception can set challenge/session cookies, so do not reuse
       // a cookie snapshot taken before this browser request.
       cookieCaches.delete(accountId);

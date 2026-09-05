@@ -63,8 +63,21 @@ test("config keeps Qwen anti-bot static config limited to bx-v fallback and web 
   assert.equal("bxUa" in config.auth, false);
   assert.equal("bxUmidtoken" in config.auth, false);
   // Version header default matches the audited real-client bundle snapshot
-  // (network HAR: qwen-chat-fe/0.2.89).
-  assert.equal(config.qwen.webVersion, "0.2.89");
+  // (network HAR: qwen-chat-fe/0.2.91).
+  assert.equal(config.qwen.webVersion, "0.2.91");
+});
+
+test("qwen web version updates dynamically from live DOM/header discoveries", async () => {
+  const { getQwenWebVersion, updateQwenWebVersion } = await import("../services/qwen-headers.ts");
+  assert.equal(getQwenWebVersion(), "0.2.91");
+  updateQwenWebVersion("0.2.95");
+  assert.equal(getQwenWebVersion(), "0.2.95");
+  // Invalid formats should be ignored
+  updateQwenWebVersion("invalid");
+  assert.equal(getQwenWebVersion(), "0.2.95");
+  // Reset back to baseline
+  updateQwenWebVersion("0.2.91");
+  assert.equal(getQwenWebVersion(), "0.2.91");
 });
 
 test("prompt limits reject byte and model-context overages locally", () => {
