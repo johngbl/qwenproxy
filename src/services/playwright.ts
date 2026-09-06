@@ -33,6 +33,7 @@ import { solveBaxiaCaptcha } from "./captcha-solver.ts";
 import { qwenOrigin, qwenUrl } from "./qwen-url.ts";
 import { setWafContextResetListener } from "../core/waf-isolation.ts";
 import { updateQwenWebVersion, getQwenWebVersion } from "./qwen-headers.ts";
+import { getAccountProfilePath, getProfilesDir } from "../core/paths.ts";
 // Try to import playwright-extra and stealth, fallback to regular playwright
 let chromiumWithStealth: typeof chromium | null = null;
 
@@ -1054,7 +1055,7 @@ export async function initPlaywrightForAccount(
     // If a context limit is configured, make room by closing idle contexts.
     await evictIdlePlaywrightContextsToLimit().catch(() => {});
 
-    const profilePath = path.resolve("data", "qwen_profiles", account.id);
+    const profilePath = getAccountProfilePath(account.id);
     const fingerprint = getFingerprintProfile(account.id);
     const { engine, channel } = resolveBrowserEngine(browserType);
 
@@ -1218,7 +1219,7 @@ export async function validateAccountLogin(
   try {
     if (accountPages.has(account.id)) return true;
 
-    const profilePath = path.resolve("data", "qwen_profiles", account.id);
+    const profilePath = getAccountProfilePath(account.id);
     const fingerprint = getFingerprintProfile(account.id);
     const { engine, channel } = resolveBrowserEngine(browserType);
     const engineToUse = chromiumWithStealth || engine;
@@ -2120,7 +2121,7 @@ function isPlaywrightProfileCorruptedError(error: unknown): boolean {
 
 async function resetPlaywrightProfileLocked(accountId: string): Promise<void> {
   await closePlaywrightForAccountLocked(accountId);
-  const profilePath = path.resolve("data", "qwen_profiles", accountId);
+  const profilePath = getAccountProfilePath(accountId);
   removePlaywrightProfile(profilePath);
 }
 
@@ -2239,7 +2240,7 @@ export function prunePlaywrightProfileCaches(profilePath: string): {
 /**
  * Prunes transient caches across all profile directories in data/qwen_profiles.
  */
-export function pruneAllPlaywrightProfiles(baseDir = path.resolve("data", "qwen_profiles")): {
+export function pruneAllPlaywrightProfiles(baseDir = getProfilesDir()): {
   totalFreedBytes: number;
   totalFreedFiles: number;
   profilesCleaned: number;
@@ -2600,7 +2601,7 @@ async function closePlaywrightForAccountLocked(
   } finally {
     cleanupPlaywrightAccountState(accountId);
     try {
-      const profilePath = path.resolve("data", "qwen_profiles", accountId);
+      const profilePath = getAccountProfilePath(accountId);
       prunePlaywrightProfileCaches(profilePath);
     } catch {}
   }

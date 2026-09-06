@@ -57,7 +57,9 @@ after(() => {
   } else {
     process.env.QWEN_MAX_PROMPT_BYTES = originalMaxPromptBytes;
   }
-  fs.rmSync(tmpDir, { recursive: true, force: true });
+  try {
+    fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3 });
+  } catch {}
 });
 
 /* ------------------------------------------------------------------ */

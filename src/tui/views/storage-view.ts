@@ -8,6 +8,7 @@ import type { TuiView } from "../types.ts";
 import type { KeyEvent } from "../screen.ts";
 import { theme, glyphs, drawBox, pad } from "../theme.ts";
 import { pruneAllPlaywrightProfiles } from "../../services/playwright.ts";
+import { getProfilesDir } from "../../core/paths.ts";
 import {
   formatBytes,
   getDirStats,
@@ -52,8 +53,7 @@ export class StorageView implements TuiView {
 
     try {
       // 1. Scan profiles
-      const profilesDir = path.resolve("data", "qwen_profiles");
-      this.profileStats = [];
+      const profilesDir = getProfilesDir();
       let totalBytes = 0;
       let count = 0;
 

@@ -2,8 +2,10 @@ import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 
-const DATA_DIR = path.resolve("data", "db");
-const KEY_PATH = path.join(DATA_DIR, ".encryption_key");
+import { getDbDir, getEncryptionKeyPath } from "./paths.ts";
+
+const DATA_DIR = getDbDir();
+const KEY_PATH = getEncryptionKeyPath();
 const ALGORITHM = "aes-256-gcm";
 const IV_LENGTH = 16;
 const KEY_LENGTH = 32;

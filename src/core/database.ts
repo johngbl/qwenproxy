@@ -10,18 +10,16 @@ import { encrypt, isEncrypted } from "./crypto-utils.ts";
  * account set was lost once. Tests get their own file so the blast radius of a
  * failed restore is a throwaway directory.
  */
-function isRunningUnderNodeTest(): boolean {
-  return process.argv.some(
-    (arg) =>
-      arg === "--test" ||
-      arg.includes("src/tests/") ||
-      arg.includes("src\\tests\\"),
-  );
-}
+import {
+  getDataDir,
+  getDbDir,
+  getDbPath,
+  isRunningUnderNodeTest,
+} from "./paths.ts";
 
-const DATA_DIR = path.resolve(isRunningUnderNodeTest() ? "data-test" : "data");
-const DB_DIR = path.join(DATA_DIR, "db");
-const DB_PATH = path.join(DB_DIR, "qwenproxy.db");
+const DATA_DIR = getDataDir();
+const DB_DIR = getDbDir();
+const DB_PATH = getDbPath();
 const LEGACY_DB_PATH = path.join(DATA_DIR, "qwenproxy.db");
 const LEGACY_DB_IN_DIR_PATH = path.join(DB_DIR, "qwenproxy.db");
 const LEGACY_DB_WAL_PATH = `${LEGACY_DB_PATH}-wal`;

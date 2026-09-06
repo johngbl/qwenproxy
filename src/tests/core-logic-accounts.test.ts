@@ -34,8 +34,11 @@ const { formatCooldownUntil } = await import("../core/logger.ts");
 const { closeDatabase } = await import("../core/database.ts");
 
 after(() => {
+  closeDatabase();
   process.chdir(originalCwd);
-  fs.rmSync(tmpDir, { recursive: true, force: true });
+  try {
+    fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3 });
+  } catch {}
 });
 
 test("account-manager: cooldown until uses BR format without ms", () => {

@@ -4,6 +4,7 @@ import path from "node:path";
 import os from "node:os";
 
 import { config } from "../core/config.ts";
+import { getSyncStatePath } from "../core/paths.ts";
 import type {
   ClientSyncResult,
   SyncAllOptions,
@@ -73,7 +74,7 @@ export function getDefaultPaths(): {
 }
 
 export function getDefaultStateFilePath(): string {
-  return path.join(process.cwd(), "data", "sync-state.json");
+  return getSyncStatePath();
 }
 
 export interface SyncAllResult {

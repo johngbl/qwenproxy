@@ -21,8 +21,10 @@ function isPersistableAccount(accountId: string): boolean {
   return accountId !== MOCK_ACCOUNT_ID;
 }
 
-const DATA_DIR = resolve("data");
-const PRIORITY_FILE = join(DATA_DIR, "account-priority.json");
+import { getDataDir, getAccountPriorityPath } from "./paths.ts";
+
+const DATA_DIR = getDataDir();
+const PRIORITY_FILE = getAccountPriorityPath();
 
 let priorityCache: PriorityData | null = null;
 
