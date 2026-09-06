@@ -21,7 +21,7 @@ function buildOmpProviderYaml(baseUrl: string, apiKey: string): string {
         reasoning: true
         thinking:
           mode: effort
-          efforts: [low, medium, high, max]
+          efforts: [low, medium, high]
       - id: qwen3.7-plus
         name: Qwen3.7-Plus
         input: [text, image]
@@ -30,7 +30,7 @@ function buildOmpProviderYaml(baseUrl: string, apiKey: string): string {
         reasoning: true
         thinking:
           mode: effort
-          efforts: [low, medium, high, max]
+          efforts: [low, medium, high]
 `;
 }
 

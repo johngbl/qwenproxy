@@ -21,7 +21,6 @@ function buildOpenCodeProviderObject(baseUrl: string, apiKey: string): Record<st
           low: { effort: "low" },
           medium: { effort: "medium" },
           high: { effort: "high" },
-          max: { effort: "max" },
         },
       },
       "qwen3.7-plus": {
