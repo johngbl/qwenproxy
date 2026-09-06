@@ -2,7 +2,6 @@
  * QwenProxy TUI - Selective Client Sync View (Tab 3)
  */
 
-import fs from "node:fs";
 import type { TuiView } from "../types.ts";
 import type { KeyEvent } from "../screen.ts";
 import { theme, glyphs, drawBox, pad } from "../theme.ts";
@@ -10,6 +9,7 @@ import {
   syncAllClients,
   restoreAllClients,
   getDefaultPaths,
+  inspectClientSyncStatus,
 } from "../../sync/index.ts";
 import { fetchLiveModels } from "../proxy-client.ts";
 
@@ -19,8 +19,9 @@ interface ClientOption {
   path: string;
   selected: boolean;
   detected: boolean;
+  synced: boolean;
+  configuredModel?: string;
 }
-
 export class SyncView implements TuiView {
   public readonly id = "sync";
   public readonly title = "Sync";
@@ -48,7 +49,6 @@ export class SyncView implements TuiView {
     this.detectClients();
     void this.refreshModels();
   }
-
   private async refreshModels(): Promise<void> {
     try {
       const live = await fetchLiveModels();
@@ -60,36 +60,25 @@ export class SyncView implements TuiView {
 
   private detectClients(): void {
     const paths = getDefaultPaths();
-    this.clients = [
-      {
-        id: "claude-code",
-        name: "Claude Code",
-        path: paths.claudeCode,
-        selected: false,
-        detected: fs.existsSync(paths.claudeCode),
-      },
-      {
-        id: "codex",
-        name: "OpenAI Codex",
-        path: paths.codex,
-        selected: false,
-        detected: fs.existsSync(paths.codex),
-      },
-      {
-        id: "opencode",
-        name: "OpenCode",
-        path: paths.openCode,
-        selected: false,
-        detected: fs.existsSync(paths.openCode),
-      },
-      {
-        id: "omp",
-        name: "OMP (Oh My Pi)",
-        path: paths.omp,
-        selected: false,
-        detected: fs.existsSync(paths.omp),
-      },
+    const defs: Array<{ id: "claude-code" | "codex" | "opencode" | "omp"; name: string; path: string }> = [
+      { id: "claude-code", name: "Claude Code", path: paths.claudeCode },
+      { id: "codex", name: "OpenAI Codex", path: paths.codex },
+      { id: "opencode", name: "OpenCode", path: paths.openCode },
+      { id: "omp", name: "OMP (Oh My Pi)", path: paths.omp },
     ];
+
+    this.clients = defs.map((d) => {
+      const status = inspectClientSyncStatus(d.id, d.path);
+      return {
+        id: d.id,
+        name: d.name,
+        path: d.path,
+        selected: false,
+        detected: status.installed,
+        synced: status.synced,
+        configuredModel: status.model,
+      };
+    });
   }
 
   public getShortcuts(): Array<{ key: string; label: string }> {
@@ -274,8 +263,8 @@ export class SyncView implements TuiView {
       this.actionLog.unshift(
         theme.green(`🎉 Concluído: ${successCount} cliente(s) sincronizado(s) com zero perdas!`),
       );
+      this.detectClients();
     } catch (err: any) {
-      this.actionLog.unshift(theme.red(`✗ Erro ao sincronizar: ${err?.message || String(err)}`));
     }
   }
 
@@ -286,6 +275,7 @@ export class SyncView implements TuiView {
       this.actionLog.unshift(
         theme.green(`✓ Rollback concluído: ${res.restoredCount} arquivo(s) restaurados com sucesso.`),
       );
+      this.detectClients();
     } catch (err: any) {
       this.actionLog.unshift(theme.red(`✗ Erro ao restaurar backups: ${err?.message || String(err)}`));
     }
@@ -308,10 +298,16 @@ export class SyncView implements TuiView {
       const isFocused = this.selectedRowIndex === idx;
       const pointer = isFocused ? theme.cyan(`${glyphs.pointer} `) : "  ";
       const check = c.selected ? theme.green(glyphs.checkOn) : theme.muted(glyphs.checkOff);
-      const name = pad(c.name, 18);
-      const status = c.detected
-        ? theme.green(`${glyphs.bullet} Detectado`)
-        : theme.muted(`${glyphs.circle} Criará novo`);
+      const name = pad(c.name, 16);
+
+      let status: string;
+      if (c.synced) {
+        status = theme.green(`${glyphs.check} Sincronizado`);
+      } else if (c.detected) {
+        status = theme.yellow(`${glyphs.bullet} Outro provedor`);
+      } else {
+        status = theme.muted(`${glyphs.circle} Não instalado`);
+      }
 
       const line = `${pointer}${check} ${name} ${status}`;
       leftContent.push(isFocused ? theme.bgSelected(line) : line);

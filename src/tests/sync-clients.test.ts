@@ -25,6 +25,7 @@ import {
   restoreAllClients,
   resolveApiKey,
   resolveBaseUrls,
+  inspectClientSyncStatus,
 } from "../sync/index.ts";
 
 function createTempDir(): string {
@@ -363,6 +364,40 @@ test("syncAllClients: respects targets filter to sync only selected clients", ()
   // Claude Code is updated, Codex remains untouched
   assert.ok(fs.readFileSync(claudePath, "utf-8").includes("qwen3.8-max"));
   assert.equal(fs.readFileSync(codexPath, "utf-8"), `model = "old"\n`);
+
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+test("inspectClientSyncStatus correctly determines installed and synced states", () => {
+  const tmp = createTempDir();
+  const claudePath = path.join(tmp, "claude-settings.json");
+  const codexPath = path.join(tmp, "codex-config.toml");
+
+  // Missing file
+  assert.deepEqual(inspectClientSyncStatus("claude-code", claudePath), {
+    id: "claude-code",
+    installed: false,
+    synced: false,
+  });
+
+  // Installed with other provider
+  fs.writeFileSync(claudePath, JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://api.anthropic.com" }, model: "claude-3" }), "utf-8");
+  const otherStatus = inspectClientSyncStatus("claude-code", claudePath);
+  assert.equal(otherStatus.installed, true);
+  assert.equal(otherStatus.synced, false);
+
+  // Synced with QwenProxy
+  fs.writeFileSync(claudePath, JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:7936", ANTHROPIC_MODEL: "qwen3.8-max" } }), "utf-8");
+  const syncedStatus = inspectClientSyncStatus("claude-code", claudePath);
+  assert.equal(syncedStatus.installed, true);
+  assert.equal(syncedStatus.synced, true);
+  assert.equal(syncedStatus.model, "qwen3.8-max");
+
+  // Codex synced
+  fs.writeFileSync(codexPath, `model = "qwen3.8-max"\nmodel_provider = "qwenproxy"\n\n[model_providers.qwenproxy]\n`, "utf-8");
+  const codexSynced = inspectClientSyncStatus("codex", codexPath);
+  assert.equal(codexSynced.installed, true);
+  assert.equal(codexSynced.synced, true);
+  assert.equal(codexSynced.model, "qwen3.8-max");
 
   fs.rmSync(tmp, { recursive: true, force: true });
 });

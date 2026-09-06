@@ -4,6 +4,7 @@ import {
   restoreAllClients,
   normalizeClientName,
   getDefaultPaths,
+  inspectClientSyncStatus,
 } from "./sync/index.ts";
 import fs from "node:fs";
 
@@ -95,16 +96,27 @@ async function main() {
     console.log("\n📁 Status de detecção dos clientes no seu computador:\n");
     const defaultPaths = getDefaultPaths();
     const clients = [
-      { id: "claude-code", name: "Claude Code", path: defaultPaths.claudeCode },
-      { id: "codex", name: "Codex CLI", path: defaultPaths.codex },
-      { id: "opencode", name: "OpenCode", path: defaultPaths.openCode },
-      { id: "omp", name: "OMP (Oh My Pi)", path: defaultPaths.omp },
+      { id: "claude-code" as const, name: "Claude Code", path: defaultPaths.claudeCode },
+      { id: "codex" as const, name: "Codex CLI", path: defaultPaths.codex },
+      { id: "opencode" as const, name: "OpenCode", path: defaultPaths.openCode },
+      { id: "omp" as const, name: "OMP (Oh My Pi)", path: defaultPaths.omp },
     ];
 
     for (const c of clients) {
-      const exists = fs.existsSync(c.path);
-      const icon = exists ? "✅" : "⚪";
-      console.log(`  ${icon} ${c.name.padEnd(16)} ${exists ? "[Encontrado]" : "[Não encontrado]"}`);
+      const status = inspectClientSyncStatus(c.id, c.path);
+      let badge = "";
+      let icon = "⚪";
+      if (status.synced) {
+        icon = "✅";
+        badge = status.model ? `[Sincronizado: ${status.model}]` : "[Sincronizado]";
+      } else if (status.installed) {
+        icon = "⚠️ ";
+        badge = "[Detectado - Outro provedor]";
+      } else {
+        icon = "⚪";
+        badge = "[Não instalado]";
+      }
+      console.log(`  ${icon} ${c.name.padEnd(16)} ${badge}`);
       console.log(`     ${c.path}`);
     }
     console.log("\nPara sincronizar um ou todos, execute:");
