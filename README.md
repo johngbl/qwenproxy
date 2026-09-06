@@ -249,23 +249,49 @@ curl http://localhost:7936/v1/responses \
 
 ---
 
-## Instalação
+## Instalação e Execução
 
-### Via npm
+O QwenProxy pode ser instalado globalmente, executado instantaneamente via `npx`/`bunx`, ou clonado localmente:
 
+### Opção 1: Instalação Global (Recomendado)
+Instale uma única vez para ter acesso ao comando rápido **`qpx`** de qualquer lugar do terminal:
+```bash
+# Via npm:
+npm install -g qwenproxy
+
+# Ou via pnpm:
+pnpm add -g qwenproxy
+
+# Ou via bun:
+bun add -g qwenproxy
+```
+Após instalar, basta abrir o terminal e digitar:
+```bash
+qpx
+# ou: qwenproxy
+```
+*(Abre diretamente o dashboard interativo da TUI com o servidor e proxy integrados).*
+
+### Opção 2: Execução Instantânea (Zero Instalação)
+Experimente ou execute pontualmente sem instalar nada permanentemente:
+```bash
+npx qwenproxy
+# ou: bunx qwenproxy
+```
+
+### Opção 3: Clonando o Código (Desenvolvimento)
 ```bash
 git clone https://github.com/johngbl/QwenProxy.git
 cd QwenProxy
 npm install
-npx playwright install chromium
+npm run tui      # Abre a TUI interativa
+# ou: npm start  # Inicia apenas o servidor HTTP headless
 ```
 
-### Via Docker
-
+### Opção 4: Via Docker
 ```bash
 docker-compose up -d
 ```
-
 ---
 
 ## Início rápido
