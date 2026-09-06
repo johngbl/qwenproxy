@@ -74,6 +74,18 @@ test("TUI Theme: drawBox always renders full-width horizontal borders with or wi
   assert.equal(stringWidth(stripAnsi(boxWithTitle[boxWithTitle.length - 1])), width);
   assert.ok(boxWithTitle[boxWithTitle.length - 1].includes("─".repeat(38)));
 });
+test("TUI Theme: wrapContentLine preserves indentation and ANSI colors across lines", async () => {
+  const { wrapContentLine, theme, stripAnsi } = await import("../tui/theme.ts");
+  const raw = theme.muted("  Pressione Enter para sincronizar os clientes selecionados com segurança.");
+  const wrapped = wrapContentLine(raw, 35);
+
+  assert.ok(wrapped.length >= 2, "Long text must wrap into multiple lines");
+  for (const line of wrapped) {
+    const clean = stripAnsi(line);
+    assert.ok(clean.startsWith("  "), "Every wrapped line must preserve the 2-space indentation");
+    assert.ok(line.includes("\x1b[38;2;121;123;137m"), "Every wrapped line must preserve the ANSI color code");
+  }
+});
 test("TUI Theme: pad handles left, right, and center alignments", () => {
   assert.equal(pad("test", 10, "left"), "test      ");
   assert.equal(pad("test", 10, "right"), "      test");

@@ -366,11 +366,12 @@ export class SyncView implements TuiView {
     if (this.actionLog.length === 0) {
       rightContent.push("");
       rightContent.push(theme.muted("  Nenhuma sincronização recente executada nesta sessão."));
+      rightContent.push("");
       rightContent.push(
-        theme.muted("  Pressione Enter para sincronizar os clientes selecionados com segurança."),
+        theme.muted("  Pressione [ Enter ] para sincronizar os clientes selecionados."),
       );
       rightContent.push(
-        theme.muted("  Backups timestamped (.bak) são criados automaticamente antes de cada alteração."),
+        theme.muted("  Backups (.bak) são criados automaticamente antes de cada alteração."),
       );
     } else {
       for (const log of this.actionLog.slice(0, contentH - 5)) {
@@ -378,7 +379,7 @@ export class SyncView implements TuiView {
       }
     }
     const rightBox = drawBox({
-      title: "Logs",
+      title: "Histórico & Backups",
       width: rightW,
       height: contentH,
       borderColor: theme.borderInactive,

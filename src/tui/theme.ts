@@ -284,24 +284,38 @@ export function pad(
 export function wrapContentLine(line: string, maxWidth: number): string[] {
   if (stringWidth(line) <= maxWidth) return [line];
 
-  const matchIndent = line.match(/^(\s+)/);
-  const indent = matchIndent ? matchIndent[1] : "  ";
+  const clean = stripAnsi(line);
+  if (stringWidth(clean) <= maxWidth) return [line];
 
-  const words = line.trim().split(" ");
+  // Preserve leading ANSI styling prefix (e.g. colors, dim) and reset on each wrapped line
+  const ansiMatch = line.match(/^(\x1b\[[0-9;]*m)+/);
+  const ansiPrefix = ansiMatch ? ansiMatch[0] : "";
+  const ansiSuffix = ansiPrefix ? "\x1b[0m" : "";
+
+  // Preserve leading indentation from clean text
+  const indentMatch = clean.match(/^(\s+)/);
+  const indent = indentMatch ? indentMatch[1] : "  ";
+
+  const words = clean.trim().split(/\s+/);
   const wrapped: string[] = [];
-  let current = indent;
+  let current = "";
 
   for (const word of words) {
-    const test = current.trim().length > 0 ? `${current} ${word}` : `${indent}${word}`;
+    const test = current.length > 0 ? `${current} ${word}` : `${indent}${word}`;
     if (stringWidth(test) <= maxWidth) {
       current = test;
     } else {
-      if (current.trim().length > 0) wrapped.push(current);
+      if (current.length > 0) {
+        wrapped.push(ansiPrefix ? `${ansiPrefix}${current}${ansiSuffix}` : current);
+      }
       current = `${indent}${word}`;
     }
   }
 
-  if (current.trim().length > 0) wrapped.push(current);
+  if (current.length > 0) {
+    wrapped.push(ansiPrefix ? `${ansiPrefix}${current}${ansiSuffix}` : current);
+  }
+
   return wrapped.length > 0 ? wrapped : [line];
 }
 
