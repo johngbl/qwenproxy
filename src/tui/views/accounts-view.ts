@@ -496,6 +496,8 @@ export class AccountsView implements TuiView {
         if (acc.onCooldown) {
           const mins = Math.max(1, Math.round(acc.remainingCooldownMs / 60000));
           status = theme.yellow(`⚠ ${mins}m cd   `);
+        } else if (!acc.headersReady) {
+          status = theme.yellow(`◐ Aquecendo...`);
         }
 
         const line = `${pointer}${num}${name}${status}`;

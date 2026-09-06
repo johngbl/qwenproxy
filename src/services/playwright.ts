@@ -32,6 +32,12 @@ import { setWafContextResetListener } from "../core/waf-isolation.ts";
 import { updateQwenWebVersion, getQwenWebVersion } from "./qwen-headers.ts";
 import { getAccountProfilePath, getProfilesDir } from "../core/paths.ts";
 
+type ContextInitHook = (context: BrowserContext) => Promise<void> | void;
+const contextInitHooks: ContextInitHook[] = [];
+
+export function onBrowserContextCreated(hook: ContextInitHook): void {
+  contextInitHooks.push(hook);
+}
 export type BrowserType = "chromium" | "chrome" | "edge";
 
 interface BrowserEngineConfig {
@@ -1063,6 +1069,9 @@ export async function initPlaywrightForAccount(
     try {
       // Comprehensive stealth scripts for anti-bot evasion
       await acctContext.addInitScript(getStealthScript(fingerprint));
+      for (const hook of contextInitHooks) {
+        await hook(acctContext);
+      }
 
       // Persistent contexts may already contain an initial about:blank tab.
       // Reuse it instead of creating a second tab. Prefer a tab already on the

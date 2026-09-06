@@ -26,9 +26,8 @@ import {
   replaceModelMetadata,
   syncModelMetadata,
 } from "../core/model-registry.ts";
-import { type Page } from "patchright";
-import { withAccountPage } from "./playwright.ts";
-import { assertAntiBotHeaders } from "./playwright.ts";
+import { type Page, type BrowserContext } from "patchright";
+import { withAccountPage, assertAntiBotHeaders, onBrowserContextCreated } from "./playwright.ts";
 import { recoverBaxiaCaptcha } from "./captcha-coordinator.ts";
 import { startBaxiaCaptchaWatcher } from "./captcha-solver.ts";
 import { isAccountBusy } from "../core/account-concurrency.ts";
@@ -122,6 +121,30 @@ interface BrowserStreamState {
 
 const browserStreamStates = new Map<string, BrowserStreamState>();
 const browserStreamBindingPages = new WeakSet<object>();
+const browserStreamBindingContexts = new WeakSet<object>();
+
+export async function registerBrowserContextStreamBinding(
+  context: BrowserContext,
+): Promise<void> {
+  if (browserStreamBindingContexts.has(context)) return;
+  browserStreamBindingContexts.add(context);
+  try {
+    await context.exposeFunction(
+      BROWSER_STREAM_BINDING,
+      (requestId: string, event: BrowserStreamEvent) => {
+        handleBrowserStreamEvent(requestId, event);
+      },
+    );
+  } catch (error) {
+    logger.warn("[Qwen] Failed to register stream binding on context", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+onBrowserContextCreated((context) => {
+  void registerBrowserContextStreamBinding(context);
+});
 
 function wakeBrowserStreamState(state: BrowserStreamState): void {
   const waiters = Array.from(state.waiters);
@@ -159,14 +182,21 @@ function handleBrowserStreamEvent(
 }
 
 async function ensureBrowserStreamBinding(page: Page): Promise<void> {
+  const context = page.context();
+  if (!browserStreamBindingContexts.has(context)) {
+    await registerBrowserContextStreamBinding(context);
+  }
   if (browserStreamBindingPages.has(page)) return;
-
-  await page.exposeFunction(
-    BROWSER_STREAM_BINDING,
-    (requestId: string, event: BrowserStreamEvent) => {
-      handleBrowserStreamEvent(requestId, event);
-    },
-  );
+  try {
+    await page.exposeFunction(
+      BROWSER_STREAM_BINDING,
+      (requestId: string, event: BrowserStreamEvent) => {
+        handleBrowserStreamEvent(requestId, event);
+      },
+    );
+  } catch {
+    // If context-level binding is already present, page-level expose may throw or no-op.
+  }
   browserStreamBindingPages.add(page);
 }
 
@@ -891,20 +921,16 @@ export async function requestQwenTextInBrowser(
       },
     );
   const recoverOnTimeout = !options.noMutexRecovery;
-  const response = options.settingsPage
-    ? await withQwenPersonalizationPage<BrowserTextResponse>(
-        accountId,
-        evaluateRequest,
-        options.timeoutMs,
-        recoverOnTimeout,
-      )
-    : await withQwenBrowserPage<BrowserTextResponse>(
-        accountId,
-        evaluateRequest,
-        undefined,
-        options.timeoutMs,
-        recoverOnTimeout,
-      );
+  // Settings and personalization requests run as same-origin in-browser fetch
+  // with appropriate Referer, keeping the page on the stable chat UI without
+  // expensive page.goto navigations that can time out under load.
+  const response = await withQwenBrowserPage<BrowserTextResponse>(
+    accountId,
+    evaluateRequest,
+    undefined,
+    options.timeoutMs,
+    recoverOnTimeout,
+  );
 
   return new Response(response.raw, {
     status: response.status,

@@ -157,7 +157,7 @@ export class StatusView implements TuiView {
 
     // Right Column: Accounts Pool Status
     const accounts = data?.accounts || [];
-    const readyCount = accounts.filter((a) => !a.onCooldown).length;
+    const readyCount = accounts.filter((a) => !a.onCooldown && a.headersReady).length;
     const rightContent: string[] = [
       "",
       `  ${theme.dim("#   Conta                 Status")}`,
@@ -174,6 +174,8 @@ export class StatusView implements TuiView {
         if (acc.onCooldown) {
           const mins = Math.max(1, Math.round(acc.remainingCooldownMs / 60000));
           status = theme.yellow(`⚠ Cooldown ${mins}m`);
+        } else if (!acc.headersReady) {
+          status = theme.yellow(`◐ Aquecendo...`);
         }
         rightContent.push(`  ${num} ${name} ${status}`);
       });
