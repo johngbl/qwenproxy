@@ -40,14 +40,19 @@ export class LogsView implements TuiView {
     let currentCol = 4 + stringWidth(titlePrefix);
     const chips: Array<{ id: "all" | "warn" | "error" | "copy" | "clear"; label: string; startCol: number; endCol: number }> = [];
 
-    for (const d of defs) {
+    for (let i = 0; i < defs.length; i++) {
+      const d = defs[i];
       const w = stringWidth(d.label);
       const startCol = currentCol;
       const endCol = startCol + w - 1;
-      chips.push({ id: d.id, label: d.label, startCol, endCol });
+      chips.push({
+        id: d.id,
+        label: d.label,
+        startCol: startCol - (i === 0 ? 1 : 0),
+        endCol: endCol + 1,
+      });
       currentCol += w;
     }
-
     return { titlePrefix, chips };
   }
 
@@ -66,8 +71,8 @@ export class LogsView implements TuiView {
     const rawEntries = ServerManager.getInstance().getLogEntries(this.filter);
     const { chips } = this.getChips(rawEntries.length);
 
-    // Mouse hover on chips in row 4
-    if (key.name === "hover" && key.mouse && key.mouse.row === 4) {
+    // Mouse hover on chips (accepts rows 3 to 5 for generous vertical target)
+    if (key.name === "hover" && key.mouse && key.mouse.row >= 3 && key.mouse.row <= 5) {
       const col = key.mouse.col;
       let target: "all" | "warn" | "error" | "copy" | "clear" | null = null;
       for (const c of chips) {
@@ -85,8 +90,8 @@ export class LogsView implements TuiView {
       return true;
     }
 
-    // Mouse click on chips in row 4
-    if (key.name === "click" && key.mouse && key.mouse.row === 4) {
+    // Mouse click on chips (accepts rows 3 to 5 for effortless immediate click matching tabs)
+    if (key.name === "click" && key.mouse && key.mouse.row >= 3 && key.mouse.row <= 5) {
       const col = key.mouse.col;
       for (const c of chips) {
         if (col >= c.startCol && col <= c.endCol) {
@@ -122,9 +127,9 @@ export class LogsView implements TuiView {
       }
     }
 
-    // Mouse click on log rows (terminal row 6+, accounting for 1-line top margin)
-    if (key.name === "click" && key.mouse && key.mouse.row >= 6) {
-      const rowOffset = key.mouse.row - 6;
+    // Mouse click on log rows (terminal row 7+, accounting for 2-line top margin)
+    if (key.name === "click" && key.mouse && key.mouse.row >= 7) {
+      const rowOffset = key.mouse.row - 7;
       if (rowOffset >= 0 && rowOffset < this.lastVisibleCount) {
         const clickedIdx = this.lastStartIndex + rowOffset;
         if (this.selectedLogIndex === clickedIdx) {
@@ -315,8 +320,8 @@ export class LogsView implements TuiView {
 
     this.lastTotalCount = formattedLines.length;
 
-    // Scroll Window with top margin breathing room (1 row reserved at the top)
-    const visibleCapacity = Math.max(1, contentH - 3);
+    // Scroll Window with top margin breathing room (2 rows reserved at the top)
+    const visibleCapacity = Math.max(1, contentH - 4);
     const total = formattedLines.length;
     const maxOffset = Math.max(0, total - visibleCapacity);
     const clampedOffset = Math.min(this.scrollOffset, maxOffset);
@@ -341,8 +346,8 @@ export class LogsView implements TuiView {
         )
       : 0;
 
-    // Line 0 is empty breathing margin between filter chips and logs
-    const finalRows: string[] = [""];
+    // Lines 0 and 1 are empty breathing margin between filter chips and logs
+    const finalRows: string[] = ["", ""];
 
     for (let r = 0; r < visibleCapacity; r++) {
       if (r < visibleSlice.length) {

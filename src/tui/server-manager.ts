@@ -171,6 +171,10 @@ export class ServerManager {
         return this.originalStdoutWrite(chunk, encoding, cb);
       }
       const str = typeof chunk === "string" ? chunk : chunk?.toString(encoding);
+      // Terminal escape sequences (OSC 52 clipboard, cursor codes) bypass log capture
+      if (typeof str === "string" && (str.startsWith("\x1b]") || str.startsWith("\x1b[") || str.startsWith("\x1b"))) {
+        return this.originalStdoutWrite(chunk, encoding, cb);
+      }
       this.appendLog("INFO", str);
       if (typeof cb === "function") cb();
       return true;

@@ -394,13 +394,13 @@ test("TUI LogsView: supports selecting log line, copying, and rendering scrollba
   const renderedText = rendered.join("\n");
   assert.ok(renderedText.includes("█"), "Must render vertical scrollbar thumb when logs exceed capacity");
 
-  // Select a line with click on row 6 (first log line after 1-line top margin)
+  // Select a line with click on row 7 (first log line after 2-line top margin)
   view.handleKey({
     name: "click",
     ctrl: false,
     shift: false,
     meta: false,
-    mouse: { type: "click", button: "left", col: 10, row: 6 },
+    mouse: { type: "click", button: "left", col: 10, row: 7 },
   });
   const selectedText = view.render(80, height).join("\n");
   assert.ok(selectedText.includes("▸"), "Selected log line must show selection pointer");
@@ -420,17 +420,19 @@ test("TUI LogsView: click bounds precisely match every filter chip without shift
   const view = new LogsView();
   const chipsInfo = (view as any).getChips(2);
 
-  // Click each chip exactly in the middle of its bounding box on row 4
-  for (const c of chipsInfo.chips) {
+  // Click each chip exactly in its bounding box across rows 3, 4, and 5 (generous vertical target)
+  for (const [idx, c] of chipsInfo.chips.entries()) {
     const midCol = Math.floor((c.startCol + c.endCol) / 2);
+    // Test across rows 3, 4, 5
+    const testRow = 3 + (idx % 3);
     const handled = await view.handleKey({
       name: "click",
       ctrl: false,
       shift: false,
       meta: false,
-      mouse: { type: "click", button: "left", col: midCol, row: 4 },
+      mouse: { type: "click", button: "left", col: midCol, row: testRow },
     });
-    assert.equal(handled, true, `Clicking chip ${c.id} at col ${midCol} must be handled`);
+    assert.equal(handled, true, `Clicking chip ${c.id} at col ${midCol} row ${testRow} must be handled`);
     if (c.id === "all" || c.id === "warn" || c.id === "error") {
       assert.equal((view as any).filter, c.id, `Filter must switch to ${c.id}`);
     }
