@@ -221,8 +221,18 @@ export class AccountsView implements TuiView {
           return true;
         }
       }
+      // Single Ctrl+C in active field clears current field (normal CLI function)
+      if (key.ctrl && key.name === "c") {
+        if (this.addActiveField === "email") {
+          this.addEmailInput = "";
+          this.addEmailCursor = 0;
+        } else {
+          this.addPasswordInput = "";
+          this.addPasswordCursor = 0;
+        }
+        return true;
+      }
 
-      // Backspace in active field
       // Backspace in active field at cursor
       if (key.name === "backspace") {
         if (this.addActiveField === "email") {

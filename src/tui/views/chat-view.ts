@@ -399,7 +399,15 @@ export class ChatView implements TuiView {
       return true;
     }
 
-    // 6. Backspace at cursor
+    // 6. Clear input line with single Ctrl+C (standard CLI behavior)
+    if (key.ctrl && key.name === "c" && this.inputBuffer.length > 0) {
+      this.inputBuffer = "";
+      this.cursorPos = 0;
+      this.onNeedsRender?.();
+      return true;
+    }
+
+    // 7. Backspace at cursor
     if (key.name === "backspace") {
       if (this.cursorPos > 0) {
         this.inputBuffer =

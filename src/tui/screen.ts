@@ -163,10 +163,6 @@ export class Screen {
 
   private dispatchKey(event: KeyEvent): void {
     if (!this.active) return;
-    if (event.ctrl && event.name === "c") {
-      this.stop();
-      process.exit(0);
-    }
     for (const listener of this.keyListeners) {
       listener(event);
     }
@@ -239,7 +235,7 @@ export class Screen {
         theme.muted(`  Tamanho atual: ${cols}x${rows} | Mínimo recomendado: 80x24`),
         theme.cyan("  Por favor, expanda a janela do seu terminal."),
         "",
-        theme.muted("  Pressione 'q' para sair."),
+        theme.muted("  Pressione Ctrl+C duas vezes para sair."),
       ];
       process.stdout.write(ANSI.cursorHome + warnLines.join("\n") + "\n");
       return;

@@ -642,3 +642,22 @@ test("TUI ChatView: displays friendly warning and blocks sending when 0 accounts
   const updatedRender = view.render(80, 24, emptySnapshot as any).join("\n");
   assert.ok(updatedRender.includes("Nenhuma conta configurada"));
 });
+test("TUI App & Chat: single Ctrl+C performs normal function (clears input); q does not exit", async () => {
+  const app = new TuiApp(2); // Start in Chat view
+  const chatView = (app as any).views[1] as ChatView;
+
+  // Type some text into input
+  await (app as any).handleKey({ name: "h", ctrl: false, shift: false, meta: false, char: "h" });
+  await (app as any).handleKey({ name: "e", ctrl: false, shift: false, meta: false, char: "e" });
+  assert.equal((chatView as any).inputBuffer, "he");
+
+  // Press 'q' - should NOT exit the app and should NOT quit
+  await (app as any).handleKey({ name: "q", ctrl: false, shift: false, meta: false, char: "q" });
+  // The app is still running and 'q' was typed into input
+  assert.ok((chatView as any).inputBuffer.includes("q"));
+
+  // Press single Ctrl+C - should clear the input buffer, not exit!
+  await (app as any).handleKey({ name: "c", ctrl: true, shift: false, meta: false });
+  assert.equal((chatView as any).inputBuffer, "");
+  assert.equal((app as any).isRunning, false); // start() wasn't called, but app didn't throw/exit
+});

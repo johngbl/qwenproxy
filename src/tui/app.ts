@@ -20,6 +20,7 @@ export class TuiApp {
   private activeViewIndex = 0;
   private hoveredTabIndex: number | null = null;
   private isRunning = false;
+  private lastCtrlCTime = 0;
   private pollInterval: NodeJS.Timeout | null = null;
   private statusSnapshot: ProxyStatusSnapshot | null = null;
   private renderScheduled = false;
@@ -149,24 +150,22 @@ export class TuiApp {
       this.requestRender();
     }
 
-    // 2. Global Quit with Ctrl+C always
+    // 2. Double Ctrl+C to exit cleanly (within 1.5 seconds)
     if (key.ctrl && key.name === "c") {
-      this.stop();
-      process.exit(0);
+      const now = Date.now();
+      if (now - this.lastCtrlCTime < 1500) {
+        this.stop();
+        process.exit(0);
+      }
+      this.lastCtrlCTime = now;
+
+      // First Ctrl+C: execute normal action in active view (cancel stream, clear input, etc.)
+      const handled = await activeView.handleKey(key);
+      if (handled) {
+        this.requestRender();
+      }
+      return;
     }
-
-    // 3. Determine if view is typing text / capturing input
-    const isTypingText =
-      activeView.id === "chat" ||
-      (typeof (activeView as any).isCapturingText === "function" &&
-        (activeView as any).isCapturingText());
-
-    // 'q' key quits ONLY when NOT typing text
-    if (key.name === "q" && !key.ctrl && !isTypingText) {
-      this.stop();
-      process.exit(0);
-    }
-
     // Modal check: if a modal dialog is open (in Accounts or Chat), don't cycle tabs with Tab
     const isModalOpen =
       (typeof (activeView as any).isCapturingText === "function" &&
@@ -185,8 +184,12 @@ export class TuiApp {
       this.requestRender();
       return;
     }
-
     // Direct tab switching with numbers 1..6 only when NOT typing text in an input
+    const isTypingText =
+      activeView.id === "chat" ||
+      (typeof (activeView as any).isCapturingText === "function" &&
+        (activeView as any).isCapturingText());
+
     if (!isTypingText) {
       if (!key.ctrl && !key.meta && ["1", "2", "3", "4", "5", "6"].includes(key.name)) {
         const newIdx = parseInt(key.name, 10) - 1;
@@ -262,11 +265,8 @@ export class TuiApp {
     const shortcutsText = shortcuts
       .map((s) => `${theme.cyan(s.key)}: ${s.label}`)
       .join("  ");
+    const tabShortcuts = `${theme.cyan("Tab")}: Abas`;
 
-    const tabShortcuts =
-      activeView.id === "chat"
-        ? `${theme.cyan("Tab")}: Abas`
-        : `${theme.cyan("Tab")}: Abas  ${theme.cyan("q")}: Sair`;
     const fullFooter = shortcutsText
       ? `  ${tabShortcuts}  •  ${shortcutsText}`
       : `  ${tabShortcuts}`;
