@@ -612,14 +612,13 @@ export async function processNonStreamingResponse(
           .join("\n  - ");
         errorMessage = `Your previous ${malformedCount} tool call(s) were malformed and could not be executed. The JSON was invalid or truncated. Please retry with valid JSON.\n\nFailed attempt(s):\n  - ${previews}${toolsHint}`;
       }
-
-      logger.warn("[chat] non-stream: auto-retrying malformed tool calls", {
-        malformedCount,
-        undeclaredNames,
-        completionId,
-      });
-
-      // Build retry prompt with error context
+      if (isToolcallDebugEnabled()) {
+        logger.debug("[chat] non-stream: auto-retrying malformed tool calls", {
+          malformedCount,
+          undeclaredNames,
+          completionId,
+        });
+      }
       const retryPrompt = `${midStreamRetry.fullPrompt}\n\n[SYSTEM CORRECTION]\n${errorMessage}\n\nPlease retry your tool call(s) with correct JSON and valid tool names from the available tools list above.`;
 
       // Release current stream and lease
@@ -2026,15 +2025,15 @@ export async function processStreamingResponse(
               .join("\n  - ");
             errorMessage = `Your previous ${malformedCount} tool call(s) were malformed and could not be executed. The JSON was invalid or truncated. Please retry with valid JSON.\n\nFailed attempt(s):\n  - ${previews}${toolsHint}`;
           }
-
-          logger.warn("[chat] stream: auto-retrying malformed tool calls", {
-            malformedCount,
-            undeclaredNames,
-            completionId,
-            retryAttempt: malformedRetryCount + 1,
-            maxRetries: maxMalformedRetries,
-          });
-
+          if (isToolcallDebugEnabled()) {
+            logger.debug("[chat] stream: auto-retrying malformed tool calls", {
+              malformedCount,
+              undeclaredNames,
+              completionId,
+              retryAttempt: malformedRetryCount + 1,
+              maxRetries: maxMalformedRetries,
+            });
+          }
           const retryPrompt = `${midStreamRetry.fullPrompt}\n\n[SYSTEM CORRECTION]\n${errorMessage}\n\nPlease retry your tool call(s) with correct JSON and valid tool names from the available tools list above.`;
 
           // Release the current stream (original or previous retry) and lease.

@@ -1372,13 +1372,15 @@ export class StreamingToolParser {
     // turn, e.g. repeating edit_file with identical edits. The client would
     // execute the duplicates and burn quota/tokens; collapse them here.
     if (this.emittedCallKeys.has(key)) {
-      logger.warn("[parser] Dropping duplicate tool call (already emitted this turn)", {
-        toolName: tc.name,
-        argumentsHash: key,
-        arguments: JSON.stringify(tc.arguments).substring(0, 500),
-        emittedSoFar: this.emittedToolCallCount,
-        note: "duplicate suppressed to prevent double-execution; no recovery needed",
-      });
+      if (isToolcallDebugEnabled()) {
+        logger.debug("[parser] duplicate tool call suppressed (already emitted this turn)", {
+          toolName: tc.name,
+          argumentsHash: key,
+          arguments: JSON.stringify(tc.arguments).substring(0, 500),
+          emittedSoFar: this.emittedToolCallCount,
+          note: "duplicate suppressed to prevent double-execution; no recovery needed",
+        });
+      }
       this.discardPendingToolCallDeltas();
       this.pendingLeadIn = "";
       this.emittedToolCallCount++;
@@ -1598,12 +1600,14 @@ export class StreamingToolParser {
     closed = true,
   ): void {
     const literalBlock = `${this.currentOpenTag}${content}${closed ? this.currentCloseTag : ""}`;
-    logger.warn("[parser] Preserving literal tool_call block as text", {
-      reason,
-      openTag: this.currentOpenTag,
-      contentPreview: content.trim().substring(0, 300),
-      closed,
-    });
+    if (isToolcallDebugEnabled()) {
+      logger.debug("[parser] preserving literal tool_call block as text", {
+        reason,
+        openTag: this.currentOpenTag,
+        contentPreview: content.trim().substring(0, 300),
+        closed,
+      });
+    }
 
     if (this.emittedToolCallCount === 0) {
       result.text += this.pendingLeadIn;
