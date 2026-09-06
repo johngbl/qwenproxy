@@ -665,7 +665,7 @@ export class ChatView implements TuiView {
       if (this.lastSnapshot && this.lastSnapshot.accounts.length === 0) {
         chatContent.push("");
         chatContent.push(`  ${theme.yellow("[!] Nenhuma conta Qwen configurada no servidor.")}`);
-        chatContent.push(`  ${theme.muted("   Pressione ")}${theme.cyan("Tab")}${theme.muted(" para ir até ")}${theme.bold(theme.white("[5] Contas"))}${theme.muted(" e pressione ")}${theme.bold(theme.white("'a'"))}${theme.muted(" para adicionar seu e-mail e senha.")}`);
+        chatContent.push(`  ${theme.muted("   Pressione ")}${theme.cyan("Tab")}${theme.muted(" para ir até ")}${theme.bold(theme.white("[5] Contas"))}${theme.muted(" e pressione ")}${theme.bold(theme.white("'A'"))}${theme.muted(" para adicionar seu e-mail e senha.")}`);
       } else if (this.messages.length === 0) {
         chatContent.push("");
         const serverState = ServerManager.getInstance().getState();

@@ -449,7 +449,7 @@ export class AccountsView implements TuiView {
     if (accounts.length === 0) {
       leftContent.push("");
       leftContent.push(`  ${theme.yellow("Nenhuma conta configurada ainda.")}`);
-      leftContent.push(`  ${theme.muted("Pressione ")}${theme.cyan("'a'")}${theme.muted(" ou use a opção ao lado para adicionar.")}`);
+      leftContent.push(`  ${theme.muted("Pressione ")}${theme.cyan("'A'")}${theme.muted(" ou use a opção ao lado para adicionar.")}`);
     } else {
       accounts.forEach((acc, idx) => {
         const isFocused = idx === this.selectedIndex;

@@ -208,7 +208,7 @@ export class StorageView implements TuiView {
     const unusedStatus =
       this.unusedBrowsersCount > 0
         ? theme.yellow(`${glyphs.bullet} ${formatBytes(this.reclaimableBrowserBytes)} (${this.unusedBrowsersCount} versões)`)
-        : theme.green("✓ Nenhum (SSD limpo)");
+        : theme.green("✓ Nenhum");
 
     const leftContent: string[] = [
       "",
@@ -216,7 +216,7 @@ export class StorageView implements TuiView {
       `    ${theme.dim("Perfis Qwen:")}         ${theme.cyan(formatBytes(this.profilesTotalBytes))} ${theme.muted(`(${this.profilesCount} conta${this.profilesCount === 1 ? "" : "s"})`)}`,
       `    ${theme.dim("Navegador Ativo:")}     ${theme.green(`${glyphs.bullet} ${this.activeBrowser}`)}`,
       `    ${theme.dim("Navegadores Antigos:")} ${unusedStatus}`,
-      `    ${theme.dim("Integridade:")}         ${theme.green("✓ Sessões e cookies salvos")}`,
+      `    ${theme.dim("Integridade:")}         ${theme.green("✓ Sessões salvas")}`,
       "",
       `  ${theme.bold(theme.white("Ações Rápidas:"))}`,
       `    ${this.hoveredActionRow === 13 ? theme.bgHover(` ${theme.cyan("[ P ] Podar Caches")} `) : `${theme.cyan("[ P ]")} Podar Caches`}`,
