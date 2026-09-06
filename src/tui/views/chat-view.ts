@@ -624,7 +624,7 @@ export class ChatView implements TuiView {
       modalLines.push("");
 
       const modalBox = drawBox({
-        title: `Selecionar Modelo [ Enter: ${glyphs.enter} Escolher  •  Esc: ${glyphs.cross} Fechar ]`,
+        title: "Selecionar Modelo [ Enter: Escolher  •  Esc: Fechar ]",
         width,
         height: chatHeight,
         borderColor: theme.borderActive,
@@ -651,7 +651,7 @@ export class ChatView implements TuiView {
       modalLines.push("");
 
       const modalBox = drawBox({
-        title: `Nível de Raciocínio / Effort [ Enter: ${glyphs.enter} Confirmar  •  Esc: ${glyphs.cross} Manter ]`,
+        title: "Nível de Raciocínio / Effort [ Enter: Confirmar  •  Esc: Manter ]",
         width,
         height: chatHeight,
         borderColor: theme.borderActive,

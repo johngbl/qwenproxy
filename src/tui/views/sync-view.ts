@@ -223,7 +223,7 @@ export class SyncView implements TuiView {
     }
 
     // Rollback with 'r'
-    if (key.name === "r" && !key.ctrl) {
+    if ((key.name === "r" || key.name === "R") && !key.ctrl) {
       this.executeRollback();
       return true;
     }
@@ -343,8 +343,8 @@ export class SyncView implements TuiView {
     // Row index 6: Buttons
     const isSyncButtonFocused = this.selectedRowIndex === 6;
     const actionLine = isSyncButtonFocused
-      ? `  ${theme.bgSelected(` [ Enter ] ${glyphs.zap} Sincronizar `)}   ${theme.dim(`[ r ] ${glyphs.backspace} Restaurar`)}`
-      : `  ${theme.blue(`[ Enter ] ${glyphs.zap} Sincronizar`)}   ${theme.yellow(`[ r ] ${glyphs.backspace} Restaurar`)}`;
+      ? `  ${theme.bgSelected(" [ Enter ] Sincronizar ")}   ${theme.dim("[ R ] Restaurar")}`
+      : `  ${theme.blue("[ Enter ] Sincronizar")}   ${theme.yellow("[ R ] Restaurar")}`;
     leftContent.push(actionLine);
 
     const leftBox = drawBox({

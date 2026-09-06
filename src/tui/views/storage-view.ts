@@ -134,7 +134,7 @@ export class StorageView implements TuiView {
     }
 
     // Reset cooldowns with 'z'
-    if (key.name === "z" && !key.ctrl) {
+    if ((key.name === "z" || key.name === "Z") && !key.ctrl) {
       const cleared = resetAllCooldowns();
       this.actionLogs.unshift(
         theme.green(`✓ Cooldowns zerados: ${cleared} conta(s) destravada(s)!`),
@@ -143,14 +143,14 @@ export class StorageView implements TuiView {
     }
 
     // Refresh storage stats
-    if (key.name === "r" && !key.ctrl) {
+    if ((key.name === "r" || key.name === "R") && !key.ctrl) {
       this.actionLogs.unshift(theme.cyan("⏳ Recalculando medições de disco..."));
       await this.refresh();
       this.actionLogs.unshift(theme.green("✓ Medições de disco atualizadas."));
       return true;
     }
     // Prune profile caches
-    if (key.name === "p" && !key.ctrl) {
+    if ((key.name === "p" || key.name === "P") && !key.ctrl) {
       this.actionLogs.unshift(theme.cyan("⏳ Limpando caches transitórios dos perfis..."));
       try {
         const res = pruneAllPlaywrightProfiles();
@@ -168,7 +168,7 @@ export class StorageView implements TuiView {
     }
 
     // Clean unused playwright browsers
-    if (key.name === "b" && !key.ctrl) {
+    if ((key.name === "b" || key.name === "B") && !key.ctrl) {
       this.actionLogs.unshift(
         theme.yellow("⏳ Removendo navegadores antigos do Playwright (~4GB)..."),
       );
@@ -219,10 +219,10 @@ export class StorageView implements TuiView {
       `    ${theme.dim("Integridade:")}         ${theme.green("✓ Sessões e cookies salvos")}`,
       "",
       `  ${theme.bold(theme.white("Ações Rápidas:"))}`,
-      `    ${this.hoveredActionRow === 13 ? theme.bgHover(` ${theme.cyan(`[ p ] ${glyphs.scissor} Podar Caches`)} `) : `${theme.cyan(`[ p ] ${glyphs.scissor}`)} Podar Caches`}`,
-      `    ${this.hoveredActionRow === 14 ? theme.bgHover(` ${theme.yellow(`[ b ] ${glyphs.backspace} Limpar Navegadores`)} `) : `${theme.yellow(`[ b ] ${glyphs.backspace}`)} Limpar Navegadores`}`,
-      `    ${this.hoveredActionRow === 15 ? theme.bgHover(` ${theme.green(`[ z ] ${glyphs.zap} Zerar Todos os Cooldowns`)} `) : `${theme.green(`[ z ] ${glyphs.zap}`)} Zerar Todos os Cooldowns`}`,
-      `    ${this.hoveredActionRow === 16 ? theme.bgHover(` ${theme.muted(`[ r ] ${glyphs.reload} Atualizar Disco`)} `) : `${theme.muted(`[ r ] ${glyphs.reload}`)} Atualizar Disco`}`,
+      `    ${this.hoveredActionRow === 13 ? theme.bgHover(` ${theme.cyan("[ P ] Podar Caches")} `) : `${theme.cyan("[ P ]")} Podar Caches`}`,
+      `    ${this.hoveredActionRow === 14 ? theme.bgHover(` ${theme.yellow("[ B ] Limpar Navegadores")} `) : `${theme.yellow("[ B ]")} Limpar Navegadores`}`,
+      `    ${this.hoveredActionRow === 15 ? theme.bgHover(` ${theme.green("[ Z ] Zerar Todos os Cooldowns")} `) : `${theme.green("[ Z ]")} Zerar Todos os Cooldowns`}`,
+      `    ${this.hoveredActionRow === 16 ? theme.bgHover(` ${theme.muted("[ R ] Atualizar Disco")} `) : `${theme.muted("[ R ]")} Atualizar Disco`}`,
       "",
     ];
 

@@ -372,6 +372,49 @@ test("TUI LogsView: renders exactly allocated height and switches filters", asyn
   const errLines = view.render(80, height);
   assert.equal(errLines.length, height);
 });
+test("TUI LogsView: supports selecting log line, copying, and rendering scrollbar", async () => {
+  const { LogsView } = await import("../tui/views/logs-view.ts");
+  const { ServerManager } = await import("../tui/server-manager.ts");
+  const view = new LogsView();
+
+  // Populate server logs
+  for (let i = 1; i <= 25; i++) {
+    (ServerManager.getInstance() as any).logEntries.push({
+      level: i % 3 === 0 ? "ERROR" : i % 2 === 0 ? "WARN" : "INFO",
+      time: "12:00:00",
+      message: `Test log message ${i}`,
+    });
+  }
+
+  const height = 15;
+  const rendered = view.render(80, height);
+  assert.equal(rendered.length, height);
+
+  // Check scrollbar thumb is rendered
+  const renderedText = rendered.join("\n");
+  assert.ok(renderedText.includes("█"), "Must render vertical scrollbar thumb when logs exceed capacity");
+
+  // Select a line with click on row 5
+  view.handleKey({
+    name: "click",
+    ctrl: false,
+    shift: false,
+    meta: false,
+    mouse: { type: "click", button: "left", col: 10, row: 5 },
+  });
+  const selectedText = view.render(80, height).join("\n");
+  assert.ok(selectedText.includes("▸"), "Selected log line must show selection pointer");
+
+  // Press 'y' to copy
+  view.handleKey({ name: "y", ctrl: false, shift: false, meta: false });
+  const copyText = view.render(80, height).join("\n");
+  assert.ok(copyText.includes("Copiado!"), "Copy chip must display feedback notification");
+
+  // Press 'Esc' to clear selection
+  view.handleKey({ name: "escape", ctrl: false, shift: false, meta: false });
+  const clearSelectionText = view.render(80, height).join("\n");
+  assert.ok(!clearSelectionText.includes("▸"), "Esc must clear selection pointer");
+});
 
 test("TUI ChatView: supports chat conversation scrolling with PageUp/PageDown", async () => {
   const view = new ChatView();

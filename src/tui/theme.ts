@@ -45,7 +45,42 @@ export const theme = {
   inverse: (s: string) => `\x1b[7m${s}\x1b[27m`,
 };
 
-import { execSync } from "node:child_process";
+import { execSync, spawnSync } from "node:child_process";
+
+/**
+ * Safely writes text to the system clipboard on Windows/macOS/Linux.
+ * Also emits OSC 52 to copy inside terminal emulators supporting it.
+ */
+export function setClipboardText(text: string): boolean {
+  try {
+    // 1. Emit OSC 52 sequence for terminal emulators supporting it natively
+    try {
+      const b64 = Buffer.from(text, "utf-8").toString("base64");
+      process.stdout.write(`\x1b]52;c;${b64}\x07`);
+    } catch {}
+
+    // 2. OS-level clipboard utility
+    if (process.platform === "win32") {
+      const p = spawnSync("clip.exe", {
+        input: text,
+        encoding: "utf-8",
+        windowsHide: true,
+      });
+      return p.status === 0;
+    } else if (process.platform === "darwin") {
+      const p = spawnSync("pbcopy", { input: text, encoding: "utf-8" });
+      return p.status === 0;
+    } else {
+      let p = spawnSync("wl-copy", { input: text, encoding: "utf-8" });
+      if (p.status !== 0) {
+        p = spawnSync("xclip", ["-selection", "clipboard"], { input: text, encoding: "utf-8" });
+      }
+      return p.status === 0;
+    }
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Safely reads the system clipboard text on Windows/macOS/Linux without throwing.
@@ -303,13 +338,15 @@ export function drawBox(options: BoxOptions): string[] {
   // Top border
   let topHeader = "";
   if (title) {
+    const hasAnsi = title.includes("\x1b[");
+    const rawTitle = ` ${title} `;
     const cleanTitle = ` ${stripAnsi(title)} `;
     const titleW = stringWidth(cleanTitle);
     if (titleW < innerW - 2) {
       const remainingH = innerW - titleW - 1;
       topHeader =
         borderColor(b.h) +
-        titleColor(cleanTitle) +
+        (hasAnsi ? rawTitle : titleColor(cleanTitle)) +
         borderColor(b.h.repeat(Math.max(0, remainingH)));
     } else if (innerW > 6) {
       const truncated = ` ${truncate(stripAnsi(title), innerW - 4)} `;
@@ -351,13 +388,15 @@ export function drawBox(options: BoxOptions): string[] {
   // Bottom border
   let bottomFooter = "";
   if (footer) {
+    const hasAnsi = footer.includes("\x1b[");
+    const rawFooter = ` ${footer} `;
     const cleanFooter = ` ${stripAnsi(footer)} `;
     const footerW = stringWidth(cleanFooter);
     if (footerW < innerW - 2) {
       const remainingH = innerW - footerW - 1;
       bottomFooter =
         borderColor(b.h) +
-        footerColor(cleanFooter) +
+        (hasAnsi ? rawFooter : footerColor(cleanFooter)) +
         borderColor(b.h.repeat(Math.max(0, remainingH)));
     } else if (innerW > 6) {
       const truncated = ` ${truncate(stripAnsi(footer), innerW - 4)} `;

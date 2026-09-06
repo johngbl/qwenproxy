@@ -299,8 +299,8 @@ export class AccountsView implements TuiView {
 
     const accounts = this.statusData?.accounts || [];
 
-    // Open Add Account modal with 'a'
-    if (key.name === "a" && !key.ctrl) {
+    // Open Add Account modal with 'a' or 'A'
+    if ((key.name === "a" || key.name === "A") && !key.ctrl) {
       this.isAddModalOpen = true;
       this.addEmailInput = "";
       this.addPasswordInput = "";
@@ -308,8 +308,8 @@ export class AccountsView implements TuiView {
       return true;
     }
 
-    // Delete selected account with 'd'
-    if (key.name === "d" && !key.ctrl) {
+    // Delete selected account with 'd' or 'D'
+    if ((key.name === "d" || key.name === "D") && !key.ctrl) {
       const selected = accounts[this.selectedIndex];
       if (!selected) {
         this.setStatusMessage(theme.yellow("⚠️ Nenhuma conta selecionada para remover"));
@@ -398,23 +398,23 @@ export class AccountsView implements TuiView {
       return true;
     }
 
-    // Refresh
-    if (key.name === "r" && !key.ctrl) {
+    // Refresh with 'r' or 'R'
+    if ((key.name === "r" || key.name === "R") && !key.ctrl) {
       await this.refresh();
       this.setStatusMessage(theme.green("✓ Lista de contas atualizada"));
       return true;
     }
 
-    // Clear cooldown of all accounts
-    if (key.name === "z" && !key.ctrl) {
+    // Clear cooldown of all accounts with 'z' or 'Z'
+    if ((key.name === "z" || key.name === "Z") && !key.ctrl) {
       const cleared = resetAllCooldowns();
       await this.refresh();
       this.setStatusMessage(theme.green(`✓ Cooldowns zerados: ${cleared} conta(s) liberada(s)`));
       return true;
     }
 
-    // Clear cooldown of selected account
-    if (key.name === "c" && !key.ctrl) {
+    // Clear cooldown of selected account with 'c' or 'C'
+    if ((key.name === "c" || key.name === "C") && !key.ctrl) {
       const selected = accounts[this.selectedIndex];
       if (!selected) {
         this.setStatusMessage(theme.yellow("⚠ Nenhuma conta selecionada"));
@@ -500,7 +500,7 @@ export class AccountsView implements TuiView {
       rightContent.push("");
       rightContent.push("");
       rightContent.push(`  ${theme.dim("─────────────────────────────────")}`);
-      rightContent.push(`  ${this.hoveredActionRow === 15 ? theme.bgHover(` ${theme.cyan(`[ a ] ${glyphs.plus} Adicionar Conta`)} `) : `${theme.cyan(`[ a ] ${glyphs.plus}`)} Adicionar Conta`}`);
+      rightContent.push(`  ${this.hoveredActionRow === 15 ? theme.bgHover(` ${theme.cyan("[ A ] Adicionar Conta")} `) : `${theme.cyan("[ A ]")} Adicionar Conta`}`);
     } else {
       const email = truncate(selected.emailOrName, 18);
       rightContent.push(`  ${theme.bold("Conta:")}      ${theme.cyan(email)}`);
@@ -518,10 +518,10 @@ export class AccountsView implements TuiView {
       rightContent.push(`  ${theme.bold("Headers:")}    ${hStatus}`);
       rightContent.push("");
       rightContent.push(`  ${theme.dim("─────────────────────────────────")}`);
-      rightContent.push(`  ${this.hoveredActionRow === 15 ? theme.bgHover(` ${theme.cyan(`[ a ] ${glyphs.plus} Adicionar Conta`)} `) : `${theme.cyan(`[ a ] ${glyphs.plus}`)} Adicionar Conta`}`);
-      rightContent.push(`  ${this.hoveredActionRow === 16 ? theme.bgHover(` ${theme.red(`[ d ] ${glyphs.remove} Remover Conta`)} `) : `${theme.red(`[ d ] ${glyphs.remove}`)} Remover Conta`}`);
-      rightContent.push(`  ${this.hoveredActionRow === 17 ? theme.bgHover(` ${theme.yellow(`[ c ] ${glyphs.zap} Zerar Cooldown`)} `) : `${theme.yellow(`[ c ] ${glyphs.zap}`)} Zerar Cooldown`}`);
-      rightContent.push(`  ${this.hoveredActionRow === 18 ? theme.bgHover(` ${theme.green(`[ z ] ${glyphs.zap} Zerar Todas`)} `) : `${theme.green(`[ z ] ${glyphs.zap}`)} Zerar Todas`}`);
+      rightContent.push(`  ${this.hoveredActionRow === 15 ? theme.bgHover(` ${theme.cyan("[ A ] Adicionar Conta")} `) : `${theme.cyan("[ A ]")} Adicionar Conta`}`);
+      rightContent.push(`  ${this.hoveredActionRow === 16 ? theme.bgHover(` ${theme.red("[ D ] Remover Conta")} `) : `${theme.red("[ D ]")} Remover Conta`}`);
+      rightContent.push(`  ${this.hoveredActionRow === 17 ? theme.bgHover(` ${theme.yellow("[ C ] Zerar Cooldown")} `) : `${theme.yellow("[ C ]")} Zerar Cooldown`}`);
+      rightContent.push(`  ${this.hoveredActionRow === 18 ? theme.bgHover(` ${theme.green("[ Z ] Zerar Todas")} `) : `${theme.green("[ Z ]")} Zerar Todas`}`);
     }
 
     const rightBox = drawBox({
@@ -587,13 +587,13 @@ export class AccountsView implements TuiView {
       }
       const saveBtn =
         this.modalHoveredField === "save"
-          ? theme.bgHover(theme.green(` [ Enter ] ${glyphs.enter} Salvar `))
-          : theme.green(`[ Enter ] ${glyphs.enter} Salvar`);
+          ? theme.bgHover(theme.green(" [ Enter ] Salvar "))
+          : theme.green("[ Enter ] Salvar");
 
       const cancelBtn =
         this.modalHoveredField === "cancel"
-          ? theme.bgHover(theme.red(` [ Esc ] ${glyphs.cross} Cancelar `))
-          : theme.muted(`[ Esc ] ${glyphs.cross} Cancelar`);
+          ? theme.bgHover(theme.red(" [ Esc ] Cancelar "))
+          : theme.muted("[ Esc ] Cancelar");
       const modalContent = [
         "",
         `  ${theme.bold("E-mail:")}  ${emailDisplay}`,

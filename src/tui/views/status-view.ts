@@ -83,13 +83,13 @@ export class StatusView implements TuiView {
       }
     }
 
-    if (key.name === "r" && !key.ctrl) {
+    if ((key.name === "r" || key.name === "R") && !key.ctrl) {
       await this.refresh();
       this.setMessage(theme.green("✓ Status atualizado"));
       return true;
     }
 
-    if (key.name === "z" && !key.ctrl) {
+    if ((key.name === "z" || key.name === "Z") && !key.ctrl) {
       const cleared = resetAllCooldowns();
       await this.refresh();
       this.setMessage(theme.green(`✓ Cooldowns zerados: ${cleared} conta(s) liberada(s)`));
@@ -134,8 +134,8 @@ export class StatusView implements TuiView {
       `  ${theme.bold("Conexões:")}   ${data?.activeStreams ? theme.yellow(String(data.activeStreams) + " ativas") : "0 ativas"}`,
       "",
       `  ${theme.bold("Ações:")}`,
-      `    ${this.hoveredActionRow === 13 ? theme.bgHover(` ${theme.cyan(`[ r ] ${glyphs.reload} Recarregar`)} `) : `${theme.cyan(`[ r ] ${glyphs.reload}`)} Recarregar`}`,
-      `    ${this.hoveredActionRow === 14 ? theme.bgHover(` ${theme.yellow(`[ z ] ${glyphs.zap} Zerar Cooldowns`)} `) : `${theme.yellow(`[ z ] ${glyphs.zap}`)} Zerar Cooldowns`}`,
+      `    ${this.hoveredActionRow === 13 ? theme.bgHover(` ${theme.cyan("[ R ] Recarregar")} `) : `${theme.cyan("[ R ]")} Recarregar`}`,
+      `    ${this.hoveredActionRow === 14 ? theme.bgHover(` ${theme.yellow("[ Z ] Zerar Cooldowns")} `) : `${theme.yellow("[ Z ]")} Zerar Cooldowns`}`,
       "",
       this.actionMessage ? `  ${this.actionMessage}` : "",
     ];
