@@ -261,16 +261,15 @@ export class StorageView implements TuiView {
     rightContent.push(`  ${theme.dim("──────────────────────────────────────────────────────────")}`);
 
     if (this.actionLogs.length === 0) {
-      rightContent.push(theme.muted("  Nenhuma ação de limpeza recente nesta sessão."));
-      rightContent.push(theme.muted("  [p] remove caches temporários sem deslogar."));
-      rightContent.push(theme.muted("  [b] remove navegadores velhos acumulados."));
+      rightContent.push(theme.muted("  Nenhuma otimização executada nesta sessão."));
+      rightContent.push(theme.muted("  Execute uma das Ações Rápidas ao lado para otimizar o disco."));
     } else {
       for (const log of this.actionLogs.slice(0, contentH - 12)) {
         rightContent.push(`  ${log}`);
       }
     }
     const rightBox = drawBox({
-      title: "Detalhamento & Logs",
+      title: "Perfis & Histórico",
       width: rightW,
       height: contentH,
       borderColor: theme.borderInactive,
