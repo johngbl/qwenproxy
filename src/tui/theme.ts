@@ -21,23 +21,23 @@ export const ANSI = {
 };
 
 export const theme = {
-  // Catppuccin Mocha / TokyoNight inspired TrueColor palette
-  cyan: (s: string) => `\x1b[38;2;137;220;235m${s}\x1b[39m`,
-  blue: (s: string) => `\x1b[38;2;137;180;250m${s}\x1b[39m`,
-  lavender: (s: string) => `\x1b[38;2;180;190;254m${s}\x1b[39m`,
-  green: (s: string) => `\x1b[38;2;166;227;161m${s}\x1b[39m`,
-  yellow: (s: string) => `\x1b[38;2;249;226;175m${s}\x1b[39m`,
-  peach: (s: string) => `\x1b[38;2;250;179;135m${s}\x1b[39m`,
+  // Official Qwen Web Dark Theme (100% matched to chat.qwen.ai CSS design system tokens)
+  cyan: (s: string) => `\x1b[38;2;145;234;242m${s}\x1b[39m`, // #91eaf2 (Qwen Ice Cyan Glow)
+  blue: (s: string) => `\x1b[38;2;66;110;255m${s}\x1b[39m`, // #426eff (Qwen Brand Primary / Theme)
+  lavender: (s: string) => `\x1b[38;2;169;195;255m${s}\x1b[39m`, // #a9c3ff (Qwen Iris Glow)
+  green: (s: string) => `\x1b[38;2;8;229;166m${s}\x1b[39m`, // #08e5a6 (Qwen Success Mint)
+  yellow: (s: string) => `\x1b[38;2;242;178;45m${s}\x1b[39m`, // #f2b22d (Qwen Caution Gold)
+  peach: (s: string) => `\x1b[38;2;247;142;75m${s}\x1b[39m`, // #f78e4b (Qwen Warning Orange)
 
-  red: (s: string) => `\x1b[38;2;243;139;168m${s}\x1b[39m`,
-  white: (s: string) => `\x1b[38;2;205;214;244m${s}\x1b[39m`,
-  gray: (s: string) => `\x1b[38;2;166;173;200m${s}\x1b[39m`,
-  muted: (s: string) => `\x1b[38;2;108;112;134m${s}\x1b[39m`,
-  dark: (s: string) => `\x1b[38;2;69;71;90m${s}\x1b[39m`,
-  borderActive: (s: string) => `\x1b[38;2;137;180;250m${s}\x1b[39m`,
-  borderInactive: (s: string) => `\x1b[38;2;69;71;90m${s}\x1b[39m`,
-  bgSelected: (s: string) => `\x1b[48;2;49;50;68m\x1b[38;2;137;220;235m${s}\x1b[49m\x1b[39m`,
-  bgHover: (s: string) => `\x1b[48;2;69;71;90m\x1b[38;2;205;214;244m${s}\x1b[49m\x1b[39m`,
+  red: (s: string) => `\x1b[38;2;252;109;109m${s}\x1b[39m`, // #fc6d6d (Qwen Danger Red)
+  white: (s: string) => `\x1b[38;2;247;248;252m${s}\x1b[39m`, // #f7f8fc (Qwen Character Primary Text)
+  gray: (s: string) => `\x1b[38;2;220;221;229m${s}\x1b[39m`, // #dcdde5 (Qwen Character Secondary Text)
+  muted: (s: string) => `\x1b[38;2;121;123;137m${s}\x1b[39m`, // #797b89 (Qwen Character Quaternary Text)
+  dark: (s: string) => `\x1b[38;2;53;53;61m${s}\x1b[39m`, // #35353d (Qwen Line Primary Border)
+  borderActive: (s: string) => `\x1b[38;2;66;110;255m${s}\x1b[39m`, // #426eff (Qwen Line Theme / Brand Primary)
+  borderInactive: (s: string) => `\x1b[38;2;53;53;61m${s}\x1b[39m`, // #35353d (Qwen Line Primary Border)
+  bgSelected: (s: string) => `\x1b[48;2;29;29;31m\x1b[38;2;145;234;242m${s}\x1b[49m\x1b[39m`, // #1d1d1f + #91eaf2
+  bgHover: (s: string) => `\x1b[48;2;53;53;61m\x1b[38;2;247;248;252m${s}\x1b[49m\x1b[39m`, // #35353d + #f7f8fc
   bold: (s: string) => `\x1b[1m${s}\x1b[22m`,
   italic: (s: string) => `\x1b[3m${s}\x1b[23m`,
   dim: (s: string) => `\x1b[2m${s}\x1b[22m`,
