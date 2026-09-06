@@ -9,11 +9,14 @@ export type ReasoningMode = "auto" | "thinking" | "fast";
 /**
  * Resolução de variantes de raciocínio dos modelos Qwen públicos.
  *
- * O contrato público é deliberadamente pequeno: o modelo base significa Auto
- * (o Qwen decide), `-fast` significa Fast (sem thinking) e `-thinking`
- * significa Thinking (forçado). Os sufixos antigos são aceitos apenas como
- * shim de compatibilidade interna para clientes existentes não enviarem
- * esses IDs ao upstream; nunca são publicados por `/v1/models`.
+ * Mapeamento padronizado de sufixos de esforço de raciocínio:
+ * - `-low`: força thinking OFF (Fast)
+ * - `-medium`: thinking AUTO (Qwen decide dinamicamente)
+ * - `-high`: força thinking ON (Thinking profundo)
+ *
+ * Sufixos legados (`-fast`, `-thinking`, `-no-thinking`) são mantidos
+ * para total compatibilidade regressiva. O modelo base limpo é sempre
+ * retornado para o upstream e publicado sem duplicatas em `/v1/models`.
  */
 export function stripThinkingSuffix(model: string): {
   baseModel: string;
@@ -22,25 +25,35 @@ export function stripThinkingSuffix(model: string): {
 } {
   const normalizedModel = model.trim();
 
-  if (normalizedModel.endsWith("-fast")) {
+  // Fast / Low path (thinking off)
+  if (
+    normalizedModel.endsWith("-low") ||
+    normalizedModel.endsWith("-fast") ||
+    normalizedModel.endsWith("-no-thinking")
+  ) {
     return {
-      baseModel: normalizedModel.slice(0, -"-fast".length),
+      baseModel: normalizedModel.replace(/-(?:low|fast|no-thinking)$/, ""),
       enableThinking: false,
       reasoningMode: "fast",
     };
   }
 
-  // Legacy client compatibility. These IDs are not public model variants.
-  if (normalizedModel.endsWith("-no-thinking")) {
+  // Medium path (auto thinking - Qwen decides dynamically)
+  if (normalizedModel.endsWith("-medium")) {
     return {
-      baseModel: normalizedModel.slice(0, -"-no-thinking".length),
-      enableThinking: false,
-      reasoningMode: "fast",
+      baseModel: normalizedModel.slice(0, -"-medium".length),
+      enableThinking: true,
+      reasoningMode: "auto",
     };
   }
-  if (normalizedModel.endsWith("-thinking")) {
+
+  // High / Thinking path (thinking on)
+  if (
+    normalizedModel.endsWith("-high") ||
+    normalizedModel.endsWith("-thinking")
+  ) {
     return {
-      baseModel: normalizedModel.slice(0, -"-thinking".length),
+      baseModel: normalizedModel.replace(/-(?:high|thinking)$/, ""),
       enableThinking: true,
       reasoningMode: "thinking",
     };

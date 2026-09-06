@@ -56,11 +56,10 @@ export type PublicModel = {
 };
 
 function baseModelId(modelId: string): string {
-  // Only `-fast` is public. Strip legacy suffixes as well so a stale or
-  // mixed upstream catalog cannot create duplicate public model entries.
-  return modelId.replace(/-(?:fast|no-thinking|thinking)$/, "");
+  // Strip any reasoning suffix (-low, -medium, -high, -fast, -thinking) so the
+  // public /v1/models catalog returns strictly canonical unique base models without duplicates.
+  return modelId.replace(/-(?:low|medium|high|fast|no-thinking|thinking)$/, "");
 }
-
 /**
  * Returns the public model catalog from the selected account's live
  * catalog. Suffixes (-fast/-thinking) are not synthesized; reasoning

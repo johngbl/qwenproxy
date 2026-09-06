@@ -83,7 +83,7 @@ export function applyEffortToModel(
   model: string,
   _effort: NormalizedEffort | undefined,
 ): string {
-  return stripFastSuffix(model);
+  return model.replace(/-(?:low|medium|high|fast|no-thinking|thinking)$/, "");
 }
 
 /**

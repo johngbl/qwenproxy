@@ -7,9 +7,13 @@ import {
 
 test("mapClientModelToQwen keeps qwen ids (stripping reasoning suffix)", () => {
   assert.equal(mapClientModelToQwen("qwen3.7-plus"), "qwen3.7-plus");
+  assert.equal(mapClientModelToQwen("qwen3.7-plus-low"), "qwen3.7-plus");
+  assert.equal(mapClientModelToQwen("qwen3.7-plus-medium"), "qwen3.7-plus");
+  assert.equal(mapClientModelToQwen("qwen3.7-plus-high"), "qwen3.7-plus");
   assert.equal(mapClientModelToQwen("qwen3.7-plus-fast"), "qwen3.7-plus");
   assert.equal(mapClientModelToQwen("qwen3.7-plus-thinking"), "qwen3.7-plus");
   assert.equal(mapClientModelToQwen("qwen3.8-max"), "qwen3.8-max");
+  assert.equal(mapClientModelToQwen("qwen3.8-max-high"), "qwen3.8-max");
 });
 
 test("mapClientModelToQwen passes through non-Qwen ids (no GPT/Claude aliases)", () => {
@@ -25,6 +29,21 @@ test("mapClientModelToQwen passes through non-Qwen ids (no GPT/Claude aliases)",
 });
 
 test("stripThinkingSuffix maps base and public Fast variants", () => {
+  assert.deepEqual(stripThinkingSuffix("qwen3.7-plus-low"), {
+    baseModel: "qwen3.7-plus",
+    enableThinking: false,
+    reasoningMode: "fast",
+  });
+  assert.deepEqual(stripThinkingSuffix("qwen3.7-plus-medium"), {
+    baseModel: "qwen3.7-plus",
+    enableThinking: true,
+    reasoningMode: "auto",
+  });
+  assert.deepEqual(stripThinkingSuffix("qwen3.7-plus-high"), {
+    baseModel: "qwen3.7-plus",
+    enableThinking: true,
+    reasoningMode: "thinking",
+  });
   assert.deepEqual(stripThinkingSuffix("qwen3.7-plus-fast"), {
     baseModel: "qwen3.7-plus",
     enableThinking: false,
