@@ -40,7 +40,7 @@
     "ali-oss": "^6.23.0",
     "better-sqlite3": "^13.0.3",
     "dotenv": "^17.4.2",
-    "hono": "^4.13.5",
+    "hono": "^4.13.7",
     "playwright": "^1.62.1",
     "playwright-extra": "^4.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
