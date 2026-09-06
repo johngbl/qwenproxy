@@ -25,6 +25,12 @@ export class StatusView implements TuiView {
 
   public async refresh(): Promise<void> {
     try {
+      if (process.stdout.isTTY && !process.env.NODE_TEST_CONTEXT) {
+        const sManager = ServerManager.getInstance();
+        if (sManager.getState() === "error") {
+          void sManager.ensureStarted();
+        }
+      }
       this.statusData = await fetchProxyStatus();
     } catch {}
   }

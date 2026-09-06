@@ -11,6 +11,8 @@ import {
   resetAccountCooldownById,
 } from "../proxy-client.ts";
 import { addAccount, removeAccount } from "../../core/accounts.ts";
+import { ServerManager } from "../server-manager.ts";
+import { config } from "../../core/config.ts";
 export class AccountsView implements TuiView {
   public readonly id = "accounts";
   public readonly title = "Contas";
@@ -85,14 +87,39 @@ export class AccountsView implements TuiView {
     }
 
     try {
-      addAccount(email, password);
+      const newAcc = addAccount(email, password);
       this.isAddModalOpen = false;
       this.addEmailInput = "";
       this.addPasswordInput = "";
       this.addEmailCursor = 0;
       this.addPasswordCursor = 0;
       await this.refresh();
-      this.setStatusMessage(theme.green(`✓ Conta ${email} salva com sucesso!`));
+      this.setStatusMessage(theme.green(`✓ Conta ${email} salva! Conectando...`));
+
+      if (process.stdout.isTTY && !process.env.NODE_TEST_CONTEXT) {
+        const sManager = ServerManager.getInstance();
+        const sState = sManager.getState();
+        if (sState !== "online" && sState !== "warming") {
+          void sManager.ensureStarted().then(() => this.refresh());
+        } else {
+          // Server already online: initialize session and headers in background for the new account
+          void (async () => {
+            try {
+              const { initPlaywrightForAccount } = await import("../../services/playwright.ts");
+              const { getAccountCredentials } = await import("../../core/accounts.ts");
+              const creds = getAccountCredentials(newAcc.id);
+              if (creds) {
+                await initPlaywrightForAccount(
+                  creds,
+                  config.playwright.headless,
+                  config.playwright.browser,
+                );
+                await this.refresh();
+              }
+            } catch {}
+          })();
+        }
+      }
     } catch (err: any) {
       this.setStatusMessage(theme.red(`✗ Erro ao salvar: ${err?.message || String(err)}`));
     }
@@ -316,10 +343,17 @@ export class AccountsView implements TuiView {
         return true;
       }
       removeAccount(selected.id);
+      void (async () => {
+        try {
+          const { closePlaywrightForAccount } = await import("../../services/playwright.ts");
+          await closePlaywrightForAccount(selected.id);
+        } catch {}
+      })();
       await this.refresh();
       this.setStatusMessage(theme.green(`✓ Conta ${selected.emailOrName} removida com sucesso`));
       return true;
     }
+
     // Mouse hover on account rows or right panel actions
     if (key.name === "hover" && key.mouse) {
       const { row, col } = key.mouse;
