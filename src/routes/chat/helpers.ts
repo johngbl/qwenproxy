@@ -1,9 +1,3 @@
-/*
- * File: helpers.ts
- * Project: QwenProxy
- * Description: Stable helper functions for chat completions processing
- */
-
 import { Usage } from "../../utils/types.ts";
 
 export interface DeltaResult {

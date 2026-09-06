@@ -1,7 +1,4 @@
-/*
- * File: index.ts
- * Project: QwenProxy
- *
+/**
  * Thin orchestrator for chat completions. Delegates to specialized modules:
  * - validation.ts: request parsing
  * - context.ts: prompt building and topic analysis

@@ -1,9 +1,3 @@
-/*
- * File: validation.ts
- * Project: QwenProxy
- * Description: Request parsing and validation for chat completions
- */
-
 import type { Context } from "hono";
 import type { OpenAIRequest, Message } from "../../utils/types.ts";
 import type { QwenFileEntry } from "../upload.ts";

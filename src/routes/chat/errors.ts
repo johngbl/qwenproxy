@@ -1,9 +1,3 @@
-/*
- * File: errors.ts
- * Project: QwenProxy
- * Description: Error handling utilities for chat completions
- */
-
 /**
  * Parse a non-SSE upstream body that may contain a Qwen error payload.
  * Returns null when the body is not a recognized error document.

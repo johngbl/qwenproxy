@@ -1,7 +1,4 @@
-/*
- * File: media.ts
- * Project: QwenProxy
- *
+/**
  * Native image/video generation over /v1/chat/completions. When the client
  * selects a generation-specific model (qwen-image-*, wan2.*), the request is
  * routed here instead of the text chat flow, mirroring how the Qwen web app
