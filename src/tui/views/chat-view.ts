@@ -7,7 +7,7 @@ import type { KeyEvent } from "../screen.ts";
 import { theme, glyphs, drawBox, stringWidth, truncate, stripAnsi, pad, wrapContentLine } from "../theme.ts";
 import { streamChatCompletions, fetchLiveModels } from "../proxy-client.ts";
 import { ServerManager } from "../server-manager.ts";
-import { formatMarkdown, formatMarkdownInline, formatReasoning } from "../markdown.ts";
+import { formatMarkdown, formatReasoning } from "../markdown.ts";
 
 interface ChatMessage {
   role: "user" | "assistant";

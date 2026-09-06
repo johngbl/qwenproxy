@@ -152,8 +152,6 @@ export class StatusView implements TuiView {
     // Right Column: Accounts Pool Status
     const accounts = data?.accounts || [];
     const readyCount = accounts.filter((a) => !a.onCooldown).length;
-    const cooldownCount = accounts.filter((a) => a.onCooldown).length;
-
     const rightContent: string[] = [
       "",
       `  ${theme.dim("#   Conta                 Status")}`,

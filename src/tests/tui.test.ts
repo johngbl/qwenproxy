@@ -272,6 +272,20 @@ test("TUI ChatView: past assistant messages preserve their generating model when
   // While the active selector header shows qwen3.7-plus
   assert.ok(rendered.includes("qwen3.7-plus"));
 });
+test("TUI ChatView: renders assistant message with reasoning container correctly", async () => {
+  const view = new ChatView();
+  (view as any).messages.push({
+    role: "assistant",
+    reasoning: "Passo 1: Analisando requisitos\nPasso 2: Sintetizando resposta",
+    content: "Aqui está o resultado final.",
+    model: "qwen3.8-max",
+  });
+
+  const rendered = view.render(80, 24).join("\n");
+  assert.ok(rendered.includes("Raciocínio"));
+  assert.ok(rendered.includes("Passo 1"));
+  assert.ok(rendered.includes("Aqui está o resultado final."));
+});
 test("TUI ChatView: selects model and its reasoning effort (F2/F3 and mouse)", async () => {
   const view = new ChatView();
 

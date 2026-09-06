@@ -30,7 +30,6 @@ export class AccountsView implements TuiView {
   private hoveredAccountIndex: number | null = null;
   private modalHoveredField: "email" | "password" | "save" | "cancel" | null = null;
   private lastModalLeftPad = 0;
-  private lastModalWidth = 66;
   private lastLeftW = 46;
   constructor() {
     this.refresh();
@@ -544,7 +543,6 @@ export class AccountsView implements TuiView {
     }
     if (this.isAddModalOpen) {
       const modalW = Math.min(width - 4, 66);
-      this.lastModalWidth = modalW;
       this.lastModalLeftPad = Math.max(0, Math.floor((width - modalW) / 2));
 
       const isEmail = this.addActiveField === "email";

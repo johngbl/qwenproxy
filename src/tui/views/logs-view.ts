@@ -6,7 +6,7 @@
 import type { TuiView } from "../types.ts";
 import type { KeyEvent } from "../screen.ts";
 import { theme, glyphs, drawBox, stringWidth, truncate } from "../theme.ts";
-import { ServerManager, type ServerLogEntry } from "../server-manager.ts";
+import { ServerManager } from "../server-manager.ts";
 
 export class LogsView implements TuiView {
   public readonly id = "logs";
@@ -15,7 +15,6 @@ export class LogsView implements TuiView {
 
   private filter: "all" | "warn" | "error" = "all";
   private scrollOffset = 0; // 0 = at the bottom (follow newest)
-  private autoScroll = true;
   private hoveredChip: "all" | "warn" | "error" | "clear" | null = null;
   public getShortcuts(): Array<{ key: string; label: string }> {
     return [
@@ -51,25 +50,21 @@ export class LogsView implements TuiView {
       if (col >= 12 && col <= 24) {
         this.filter = "all";
         this.scrollOffset = 0;
-        this.autoScroll = true;
         return true;
       }
       if (col >= 25 && col <= 39) {
         this.filter = "warn";
         this.scrollOffset = 0;
-        this.autoScroll = true;
         return true;
       }
       if (col >= 40 && col <= 53) {
         this.filter = "error";
         this.scrollOffset = 0;
-        this.autoScroll = true;
         return true;
       }
       if (col >= 54 && col <= 69) {
         ServerManager.getInstance().clearLogs();
         this.scrollOffset = 0;
-        this.autoScroll = true;
         return true;
       }
     }
@@ -78,19 +73,16 @@ export class LogsView implements TuiView {
     if (key.name === "t" && !key.ctrl) {
       this.filter = "all";
       this.scrollOffset = 0;
-      this.autoScroll = true;
       return true;
     }
     if (key.name === "w" && !key.ctrl) {
       this.filter = "warn";
       this.scrollOffset = 0;
-      this.autoScroll = true;
       return true;
     }
     if (key.name === "e" && !key.ctrl) {
       this.filter = "error";
       this.scrollOffset = 0;
-      this.autoScroll = true;
       return true;
     }
 
@@ -98,48 +90,37 @@ export class LogsView implements TuiView {
     if (key.name === "c" && !key.ctrl) {
       ServerManager.getInstance().clearLogs();
       this.scrollOffset = 0;
-      this.autoScroll = true;
       return true;
     }
 
     // Scroll up (Mouse wheel up: 2 lines, Up key: 1 line)
     if (key.name === "up" || key.name === "wheelup" || (key.name === "k" && !key.ctrl)) {
       this.scrollOffset += key.name === "wheelup" ? 2 : 1;
-      this.autoScroll = false;
       return true;
     }
 
     // Scroll down (Mouse wheel down: 2 lines, Down key: 1 line)
     if (key.name === "down" || key.name === "wheeldown" || (key.name === "j" && !key.ctrl)) {
       this.scrollOffset = Math.max(0, this.scrollOffset - (key.name === "wheeldown" ? 2 : 1));
-      if (this.scrollOffset === 0) {
-        this.autoScroll = true;
-      }
       return true;
     }
     // Page Up / Page Down
     if (key.name === "pageup") {
       this.scrollOffset += 10;
-      this.autoScroll = false;
       return true;
     }
     if (key.name === "pagedown") {
       this.scrollOffset = Math.max(0, this.scrollOffset - 10);
-      if (this.scrollOffset === 0) {
-        this.autoScroll = true;
-      }
       return true;
     }
 
     // Home / End
     if (key.name === "home") {
       this.scrollOffset = 500;
-      this.autoScroll = false;
       return true;
     }
     if (key.name === "end") {
       this.scrollOffset = 0;
-      this.autoScroll = true;
       return true;
     }
   }
@@ -210,7 +191,7 @@ export class LogsView implements TuiView {
       clampedOffset > 0 ? theme.yellow(` [ Rolar: +${clampedOffset} ] `) : "";
 
     const box = drawBox({
-      title: `Logs (${rawEntries.length})  ${allChip} ${warnChip} ${errChip} ${clearChip}`,
+      title: `Logs (${rawEntries.length})  ${allChip} ${warnChip} ${errChip} ${clearChip}${scrollIndicator}`,
       width,
       height: contentH,
       borderColor: theme.borderActive,
