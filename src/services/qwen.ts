@@ -538,35 +538,6 @@ export function buildCapturedQwenHeaders(
   });
 }
 
-/**
- * Open an isolated page in the same browser context for short-lived operations
- * (settings, models, etc.). The main chat page is never navigated away.
- */
-async function withIsolatedQwenPage<T>(
-  accountId: string,
-  fn: (page: Page) => Promise<T>,
-  targetUrl?: string,
-): Promise<T> {
-  return withAccountPage(
-    accountId,
-    async (mainPage) => {
-      const context = mainPage.context();
-      const page = await context.newPage();
-      try {
-        if (targetUrl) {
-          await page.goto(targetUrl, {
-            waitUntil: "domcontentloaded",
-            timeout: config.timeouts.navigation,
-          });
-        }
-        return await fn(page);
-      } finally {
-        await page.close().catch(() => {});
-      }
-    },
-    config.timeouts.page,
-  );
-}
 
 // Per-account stream slots: a counting semaphore capped by
 // config.concurrency.maxStreamsPerAccount (NOT a capacity-1 mutex). The browser
@@ -1048,10 +1019,8 @@ async function requestQwenPersonalizationInBrowser(
   headers: Record<string, string>,
   payload?: Record<string, unknown>,
 ): Promise<{ status: number; raw: string; json: any }> {
-  // Fast, stable primary path: direct Node fetch with the captured headers
-  // (cookie, bx-v, version, sec-ch-ua, source, referer). Falls back to the
-  // browser only when unavailable (circuit breaker / WAF block / network err).
-  if (!isAuthMockEnabled()) {
+  // If browser-only fetch is disabled, try direct Node fetch as fast-path
+  if (!config.qwen.browserOnlyFetch && !isAuthMockEnabled()) {
     const direct = await requestQwenSettingsDirectFetch(
       accountId,
       method,
@@ -1770,7 +1739,7 @@ export async function disableNativeTools(accountId?: string): Promise<void> {
     // Startup/idle operations should not open a visible extra tab.
     if (accountId && !isAuthMockEnabled() && isAccountBusy(accountId)) {
       try {
-        const result = await withIsolatedQwenPage(
+        const result = await withAccountPage(
           accountId,
           async (page) => {
             const response = await page.evaluate(
@@ -1802,9 +1771,7 @@ export async function disableNativeTools(accountId?: string): Promise<void> {
             );
             return response;
           },
-          qwenUrl("/"),
         );
-
         if (result.status < 400) {
           nativeToolsDisabled.add(cacheKey);
           return;
@@ -2008,7 +1975,7 @@ export async function fetchQwenModels(
   // Startup/idle operations should not open a visible extra tab.
   if (accountId && !isAuthMockEnabled() && isAccountBusy(accountId)) {
     try {
-      const result = await withIsolatedQwenPage(
+      const result = await withAccountPage(
         accountId,
         async (page) => {
           const response = await page.evaluate(async (timeoutMs: number) => {
@@ -2032,9 +1999,7 @@ export async function fetchQwenModels(
           }, config.timeouts.http);
           return response;
         },
-        qwenUrl("/"),
       );
-
       if (result.status < 400) {
         const json = JSON.parse(result.body);
         if (json.data && Array.isArray(json.data)) {
