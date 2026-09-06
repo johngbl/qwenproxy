@@ -192,8 +192,9 @@ export function stringWidth(str: string): number {
     if ((code >= 0xfe00 && code <= 0xfe0f) || (code >= 0x200b && code <= 0x200d)) {
       continue;
     }
-    // Specific BMP emojis that occupy 2 visual terminal cells (e.g. ✅, ❌, ✨, ⚠️, ☕, ⚡)
+    // Specific BMP emojis and symbols that occupy 2 visual terminal cells (e.g. ⚠️, ⚡, ✅, ❌, ✨, ☕)
     const isBmpEmoji =
+      code === 0x26a0 || // ⚠️ (WARNING SIGN)
       code === 0x2705 || // ✅
       code === 0x2728 || // ✨
       code === 0x274c || // ❌
@@ -208,7 +209,6 @@ export function stringWidth(str: string): number {
       code === 0x231b || // ⌛
       code === 0x23f0 || // ⏰
       code === 0x23f3;   // ⏳
-
     // Common emoji and CJK full-width ranges (SMP Emojis 0x1f300 - 0x1faff)
     if (
       isBmpEmoji ||

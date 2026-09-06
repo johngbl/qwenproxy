@@ -80,7 +80,7 @@ export class AccountsView implements TuiView {
     const email = this.addEmailInput.trim();
     const password = this.addPasswordInput.trim();
     if (!email || !password) {
-      this.setStatusMessage(theme.yellow("⚠️ E-mail e senha são obrigatórios"));
+      this.setStatusMessage(theme.yellow("[!] E-mail e senha são obrigatórios"));
       return;
     }
 
@@ -312,7 +312,7 @@ export class AccountsView implements TuiView {
     if ((key.name === "d" || key.name === "D") && !key.ctrl) {
       const selected = accounts[this.selectedIndex];
       if (!selected) {
-        this.setStatusMessage(theme.yellow("⚠️ Nenhuma conta selecionada para remover"));
+        this.setStatusMessage(theme.yellow("[!] Nenhuma conta selecionada para remover"));
         return true;
       }
       removeAccount(selected.id);
@@ -417,7 +417,7 @@ export class AccountsView implements TuiView {
     if ((key.name === "c" || key.name === "C") && !key.ctrl) {
       const selected = accounts[this.selectedIndex];
       if (!selected) {
-        this.setStatusMessage(theme.yellow("⚠ Nenhuma conta selecionada"));
+        this.setStatusMessage(theme.yellow("[!] Nenhuma conta selecionada"));
         return true;
       }
       resetAccountCooldownById(selected.id);
@@ -508,7 +508,7 @@ export class AccountsView implements TuiView {
       rightContent.push(`  ${theme.bold("Nível:")}      ${selected.priority}`);
 
       const cdStatus = selected.onCooldown
-        ? theme.yellow(`⚠ Cooldown ${Math.round(selected.remainingCooldownMs / 60000)}m`)
+        ? theme.yellow(`[!] Cooldown ${Math.round(selected.remainingCooldownMs / 60000)}m`)
         : theme.green(`${glyphs.check} Disponível`);
       rightContent.push(`  ${theme.bold("Estado:")}     ${cdStatus}`);
 

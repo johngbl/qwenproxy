@@ -221,9 +221,9 @@ export class TuiApp {
     if (this.statusSnapshot?.online || serverState === "online") {
       statusChip = theme.green(`[ ${glyphs.bullet} Online ]`);
     } else if (serverState === "warming") {
-      statusChip = theme.yellow(`[ 🟡 Iniciando... ]`);
+      statusChip = theme.yellow("[ ◐ Iniciando... ]");
     } else if (serverState === "error") {
-      statusChip = theme.red(`[ ✗ Erro ]`);
+      statusChip = theme.red("[ ✕ Erro ]");
     } else {
       statusChip = theme.muted(`[ ○ Offline ]`);
     }

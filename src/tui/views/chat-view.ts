@@ -433,7 +433,7 @@ export class ChatView implements TuiView {
 
       // Block submitting if there are 0 accounts configured
       if (this.lastSnapshot && this.lastSnapshot.accounts.length === 0) {
-        this.statusNote = theme.yellow("⚠️ Adicione uma conta na aba [5] Contas antes de iniciar o chat.");
+        this.statusNote = theme.yellow("[!] Adicione uma conta na aba [5] Contas antes de iniciar o chat.");
         this.onNeedsRender?.();
         return true;
       }
@@ -596,7 +596,7 @@ export class ChatView implements TuiView {
 
     const headerLine = hasAccounts
       ? `  ${theme.bold("Modelo:")} ${theme.cyan(`[ ${currentModel} ]`)}  ${currentInfo.badge}  ${isReasoning ? effortBadge : theme.muted(`• ${currentInfo.category}`)}   ${theme.yellow(`[ F2: Modelo${isReasoning ? " | F3: Effort" : ""} (${this.selectedModelIndex + 1}/${totalModels}) ]`)}`
-      : `  ${theme.bold("Modelo:")} ${theme.cyan(`[ ${currentModel} ]`)}  ${currentInfo.badge}   ${theme.yellow(`[ ⚠️ Sem Contas: Adicione em [5] Contas ]`)}`;
+      : `  ${theme.bold("Modelo:")} ${theme.cyan(`[ ${currentModel} ]`)}  ${currentInfo.badge}   ${theme.yellow("[ [!] Sem Contas: Adicione em [5] Contas ]")}`;
     const headerBox = drawBox({
       title: "Chat Tester",
       width,
@@ -664,13 +664,13 @@ export class ChatView implements TuiView {
 
       if (this.lastSnapshot && this.lastSnapshot.accounts.length === 0) {
         chatContent.push("");
-        chatContent.push(`  ${theme.yellow("⚠️  Nenhuma conta Qwen configurada no servidor.")}`);
+        chatContent.push(`  ${theme.yellow("[!] Nenhuma conta Qwen configurada no servidor.")}`);
         chatContent.push(`  ${theme.muted("   Pressione ")}${theme.cyan("Tab")}${theme.muted(" para ir até ")}${theme.bold(theme.white("[5] Contas"))}${theme.muted(" e pressione ")}${theme.bold(theme.white("'a'"))}${theme.muted(" para adicionar seu e-mail e senha.")}`);
       } else if (this.messages.length === 0) {
         chatContent.push("");
         const serverState = ServerManager.getInstance().getState();
         if (serverState === "warming") {
-          chatContent.push(theme.yellow("  🟡 Inicializando proxy..."));
+          chatContent.push(theme.yellow("  [!] Inicializando proxy..."));
         } else {
           chatContent.push(theme.muted("  Digite sua mensagem..."));
         }
@@ -796,7 +796,7 @@ export class ChatView implements TuiView {
 
     const inputContent = [`${theme.cyan(inputPrompt)}${displayInput}`];
     const actionLabel = !hasAccounts
-      ? "⚠️ Nenhuma conta configurada — adicione uma conta na aba [5] Contas"
+      ? "[!] Nenhuma conta configurada — adicione uma conta na aba [5] Contas"
       : currentInfo.category === "Geração de Imagem"
         ? "Prompt da Imagem"
         : currentInfo.category === "Geração de Vídeo"
