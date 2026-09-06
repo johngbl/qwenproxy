@@ -33,7 +33,7 @@
     "typecheck": "tsc --noEmit"
   },
   "keywords": [],
-  "author": "João Gabriel (johngbl) <jgct@proton.me>",
+  "author": "johngbl <147551701+johngbl@users.noreply.github.com>",
   "license": "ISC",
   "dependencies": {
     "@hono/node-server": "^2.1.1",

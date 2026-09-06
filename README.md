@@ -863,6 +863,11 @@ chmod +x scripts/*.sh
 
 ---
 
+## Créditos e Agradecimentos
+
+O **QwenProxy** é desenvolvido e mantido por **johngbl**, construído sobre as fundações de código aberto originalmente criadas por **Pedro Farias** sob a licença [ISC](LICENSE).
+
+---
 ## Disclaimer
 
 **Software fornecido *as is*, sem qualquer garantia (expressa ou implícita), incluindo as de comerciabilidade, adequação a um fim, funcionamento contínuo, correção de erros ou suporte.**
