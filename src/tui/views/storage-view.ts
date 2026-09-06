@@ -56,7 +56,7 @@ export class StorageView implements TuiView {
       const profilesDir = getProfilesDir();
       let totalBytes = 0;
       let count = 0;
-
+      this.profileStats = [];
       if (fs.existsSync(profilesDir)) {
         const entries = fs.readdirSync(profilesDir, { withFileTypes: true });
         for (const entry of entries) {

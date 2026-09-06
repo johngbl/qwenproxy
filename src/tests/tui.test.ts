@@ -571,6 +571,14 @@ test("TUI StorageView: mouse hover and click on quick action rows", async () => 
   render = view.render(80, 24).join("\n");
   assert.ok(render.includes("destravada"));
 });
+test("TUI StorageView: repeated refresh does not duplicate profile stats", async () => {
+  const view = new StorageView();
+  await view.refresh();
+  const countAfterFirst = (view as any).profileStats.length;
+  await view.refresh();
+  const countAfterSecond = (view as any).profileStats.length;
+  assert.equal(countAfterFirst, countAfterSecond, "profileStats length must stay constant across refreshes");
+});
 
 test("TUI SyncView: mouse click precisely toggles clients, model, and scope", async () => {
   const view = new SyncView();
