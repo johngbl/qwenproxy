@@ -201,7 +201,7 @@ export async function streamChatCompletions(
       throw fetchErr;
     }
     throw new Error(
-      `O servidor QwenProxy está offline (:7936). Inicie o proxy com 'npm start' em outro terminal para usar o chat.`,
+      `O servidor QwenProxy está iniciando ou indisponível (:7936). Verifique o status ou a aba [6] Logs.`,
     );
   }
 

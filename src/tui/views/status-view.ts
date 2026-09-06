@@ -120,7 +120,7 @@ export class StatusView implements TuiView {
     ];
 
     if (accounts.length === 0) {
-      rightContent.push(`  ${theme.muted("Nenhuma conta detectada.")}`);
+      rightContent.push(`  ${theme.muted("Nenhuma conta adicionada. (Vá em [5] Contas)")}`);
     } else {
       accounts.slice(0, contentH - 5).forEach((acc, idx) => {
         const num = pad(String(idx + 1), 3);

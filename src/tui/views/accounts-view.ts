@@ -440,8 +440,8 @@ export class AccountsView implements TuiView {
 
     if (accounts.length === 0) {
       leftContent.push("");
-      leftContent.push(`  ${theme.muted("Nenhuma conta configurada encontrada no banco SQLite.")}`);
-      leftContent.push(`  ${theme.muted("Execute 'npm run login' para adicionar uma conta.")}`);
+      leftContent.push(`  ${theme.yellow("Nenhuma conta configurada ainda.")}`);
+      leftContent.push(`  ${theme.muted("Pressione ")}${theme.cyan("'a'")}${theme.muted(" ou use a opção ao lado para adicionar.")}`);
     } else {
       accounts.forEach((acc, idx) => {
         const isFocused = idx === this.selectedIndex;
@@ -486,7 +486,13 @@ export class AccountsView implements TuiView {
 
     if (!selected) {
       rightContent.push("");
-      rightContent.push(theme.muted("  Nenhuma conta selecionada."));
+      rightContent.push(theme.muted("  Nenhuma conta configurada."));
+      rightContent.push("");
+      rightContent.push("");
+      rightContent.push("");
+      rightContent.push("");
+      rightContent.push(`  ${theme.dim("─────────────────────────────────")}`);
+      rightContent.push(`  ${this.hoveredActionRow === 15 ? theme.bgHover(` ${theme.cyan("[ a ]")} Adicionar Nova Conta `) : `${theme.cyan("[ a ]")} Adicionar Nova Conta`}`);
     } else {
       const email = truncate(selected.emailOrName, 18);
       rightContent.push(`  ${theme.bold("Conta:")}      ${theme.cyan(email)}`);

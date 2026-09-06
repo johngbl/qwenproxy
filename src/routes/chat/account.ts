@@ -268,7 +268,7 @@ export function resolveInitialAccount(
 	}
 
 	throw new ValidationError(
-		"Nenhuma conta Qwen configurada no servidor. Adicione uma conta na aba [5] Contas da TUI ou configure QWEN_ACCOUNTS no arquivo .env.",
+		"Nenhuma conta Qwen configurada no servidor. Adicione uma conta na aba [5] Contas da TUI.",
 	);
 }
 
