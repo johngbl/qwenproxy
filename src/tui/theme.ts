@@ -17,7 +17,7 @@ export const ANSI = {
   enterAltScreen: "\x1b[?1049h",
   exitAltScreen: "\x1b[?1049l",
   enableMouse: "\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h",
-  disableMouse: "\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l",
+  disableMouse: "\x1b[?1006l\x1b[?1005l\x1b[?1004l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1015l",
 };
 
 export const theme = {
@@ -53,10 +53,12 @@ import { execSync, spawnSync } from "node:child_process";
  */
 export function setClipboardText(text: string): boolean {
   try {
-    // 1. Emit OSC 52 sequence for terminal emulators supporting it natively
+    // 1. Emit OSC 52 sequence for terminal emulators supporting it natively (only when interactive TTY)
     try {
-      const b64 = Buffer.from(text, "utf-8").toString("base64");
-      process.stdout.write(`\x1b]52;c;${b64}\x07`);
+      if (process.stdout.isTTY && !process.env.NODE_TEST_CONTEXT) {
+        const b64 = Buffer.from(text, "utf-8").toString("base64");
+        process.stdout.write(`\x1b]52;c;${b64}\x07`);
+      }
     } catch {}
 
     // 2. OS-level clipboard utility

@@ -3,9 +3,9 @@
  */
 
 import readline from "node:readline";
+import fs from "node:fs";
 import { ANSI, theme, pad } from "./theme.ts";
 import { ServerManager } from "./server-manager.ts";
-
 export interface MouseInfo {
   type: "click" | "scroll-up" | "scroll-down" | "hover";
   button?: "left" | "right";
@@ -156,8 +156,8 @@ export class Screen {
     process.stdout.on("resize", this.resizeHandler);
     process.on("SIGINT", this.exitHandler!);
     process.on("SIGTERM", this.exitHandler!);
+    process.on("SIGBREAK", this.exitHandler!);
     process.on("exit", this.exitHandler!);
-
     return true;
   }
 
@@ -183,6 +183,7 @@ export class Screen {
     if (this.exitHandler) {
       process.removeListener("SIGINT", this.exitHandler);
       process.removeListener("SIGTERM", this.exitHandler);
+      process.removeListener("SIGBREAK", this.exitHandler);
       process.removeListener("exit", this.exitHandler);
       this.exitHandler = null;
     }
@@ -196,10 +197,17 @@ export class Screen {
       this.originalStdinEmit = null;
     }
 
-    // Restore original screen buffer, cursor, and disable mouse tracking
-    ServerManager.getInstance().withTuiRendering(() => {
-      process.stdout.write(ANSI.disableMouse + ANSI.exitAltScreen + ANSI.showCursor);
-    });
+    // Restore original screen buffer, cursor, and disable all mouse tracking modes synchronously
+    const restoreSeq = ANSI.disableMouse + ANSI.exitAltScreen + ANSI.showCursor + ANSI.reset;
+    try {
+      fs.writeSync(1, restoreSeq);
+    } catch {
+      try {
+        ServerManager.getInstance().withTuiRendering(() => {
+          process.stdout.write(restoreSeq);
+        });
+      } catch {}
+    }
   }
 
   public onKey(handler: KeyHandler): () => void {

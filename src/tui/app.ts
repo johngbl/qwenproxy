@@ -116,8 +116,8 @@ export class TuiApp {
     if (!this.isRunning) return;
     this.isRunning = false;
     clearInterval(this.pollInterval!);
-    await ServerManager.getInstance().stop();
     this.screen.stop();
+    await ServerManager.getInstance().stop();
     ServerManager.getInstance().restoreLogs();
   }
 
@@ -154,7 +154,7 @@ export class TuiApp {
     if (key.ctrl && key.name === "c") {
       const now = Date.now();
       if (now - this.lastCtrlCTime < 1500) {
-        this.stop();
+        await this.stop();
         process.exit(0);
       }
       this.lastCtrlCTime = now;

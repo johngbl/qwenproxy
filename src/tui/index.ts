@@ -36,9 +36,19 @@ async function main() {
   const initialTab = parseInitialTab();
   const app = new TuiApp(initialTab);
 
-  process.on("uncaughtException", (err) => {
-    app.stop();
+  process.on("uncaughtException", async (err) => {
+    try {
+      await app.stop();
+    } catch {}
     console.error("[QwenProxy TUI] Erro inesperado:", err);
+    process.exit(1);
+  });
+
+  process.on("unhandledRejection", async (err) => {
+    try {
+      await app.stop();
+    } catch {}
+    console.error("[QwenProxy TUI] Promessa rejeitada:", err);
     process.exit(1);
   });
 
