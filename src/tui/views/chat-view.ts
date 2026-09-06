@@ -152,7 +152,6 @@ export class ChatView implements TuiView {
       { key: "Enter", label: "Enviar" },
       { key: "F2", label: "Modelo" },
       ...(isReasoning ? [{ key: "F3", label: "Effort" }] : []),
-      { key: "PgUp/PgDn", label: "Rolar" },
       { key: "Esc", label: "Parar" },
       { key: "Ctrl+L", label: "Limpar" },
     ];

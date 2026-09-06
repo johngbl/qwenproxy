@@ -265,9 +265,8 @@ export class TuiApp {
 
     const tabShortcuts =
       activeView.id === "chat"
-        ? `${theme.cyan("Tab")}: Próxima Aba`
+        ? `${theme.cyan("Tab")}: Abas`
         : `${theme.cyan("Tab")}: Abas  ${theme.cyan("q")}: Sair`;
-
     const fullFooter = shortcutsText
       ? `  ${tabShortcuts}  •  ${shortcutsText}`
       : `  ${tabShortcuts}`;
