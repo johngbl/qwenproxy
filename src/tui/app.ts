@@ -254,30 +254,11 @@ export class TuiApp {
     });
     frame.push(...headerBox);
 
-    // 2. Active View Content
+    // 2. Active View Content (occupies all remaining rows below the header deck)
     const activeView = this.views[this.activeViewIndex];
-    const availableContentRows = Math.max(8, rows - 6);
+    const availableContentRows = Math.max(8, rows - 3);
     const viewLines = activeView.render(cols, availableContentRows, this.statusSnapshot);
     frame.push(...viewLines);
-
-    // 3. Footer Key Strip
-    const shortcuts = activeView.getShortcuts ? activeView.getShortcuts() : [];
-    const shortcutsText = shortcuts
-      .map((s) => `${theme.cyan(s.key)}: ${s.label}`)
-      .join("  ");
-
-    const fullFooter = shortcutsText
-      ? `  ${theme.cyan("Tab")}: Abas    ${theme.dim("•")}    ${shortcutsText}`
-      : `  ${theme.cyan("Tab")}: Abas [1..6]    ${theme.dim("•")}    ${theme.muted("2x Ctrl+C: Sair")}`;
-    const footerBox = drawBox({
-      width: cols,
-      height: 3,
-      borderColor: theme.borderInactive,
-      content: [fullFooter],
-    });
-    frame.push(...footerBox);
-
-    // Render atomically
     this.screen.render(frame);
   }
 }
