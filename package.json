@@ -33,7 +33,7 @@
     "typecheck": "tsc --noEmit"
   },
   "keywords": [],
-  "author": "Pedro Farias",
+  "author": "João Gabriel (johngbl) <jgct@proton.me>",
   "license": "ISC",
   "dependencies": {
     "@hono/node-server": "^2.1.1",
