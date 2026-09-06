@@ -3,7 +3,7 @@
  * Captures real browser headers (bx-ua, bx-umidtoken) per account.
  */
 
-import { chromium, type BrowserContext, type Page } from "playwright";
+import { chromium, type BrowserContext, type Page } from "patchright";
 import path from "path";
 import fs from "fs";
 import crypto from "crypto";
@@ -31,23 +31,6 @@ import { qwenOrigin, qwenUrl } from "./qwen-url.ts";
 import { setWafContextResetListener } from "../core/waf-isolation.ts";
 import { updateQwenWebVersion, getQwenWebVersion } from "./qwen-headers.ts";
 import { getAccountProfilePath, getProfilesDir } from "../core/paths.ts";
-// Try to import playwright-extra and stealth, fallback to regular playwright
-let chromiumWithStealth: typeof chromium | null = null;
-
-try {
-  const pwExtra = await import("playwright-extra");
-  const stealth = await import("puppeteer-extra-plugin-stealth");
-
-  if (pwExtra.chromium && stealth.default) {
-    const plugin = stealth.default();
-    pwExtra.chromium.use(plugin);
-    chromiumWithStealth = pwExtra.chromium;
-  }
-} catch {
-  console.warn(
-    "⚠️  [Playwright] playwright-extra/stealth not available, using regular playwright",
-  );
-}
 
 export type BrowserType = "chromium" | "chrome" | "edge";
 
@@ -1056,10 +1039,7 @@ export async function initPlaywrightForAccount(
     const fingerprint = getFingerprintProfile(account.id);
     const { engine, channel } = resolveBrowserEngine(browserType);
 
-    // Use playwright-extra with stealth if available, otherwise regular chromium
-    const engineToUse = chromiumWithStealth || engine;
-
-    const acctContext = await engineToUse.launchPersistentContext(profilePath, {
+    const acctContext = await engine.launchPersistentContext(profilePath, {
       headless,
       channel,
       userAgent: fingerprint.userAgent,
@@ -1219,9 +1199,7 @@ export async function validateAccountLogin(
     const profilePath = getAccountProfilePath(account.id);
     const fingerprint = getFingerprintProfile(account.id);
     const { engine, channel } = resolveBrowserEngine(browserType);
-    const engineToUse = chromiumWithStealth || engine;
-
-    const acctContext = await engineToUse.launchPersistentContext(profilePath, {
+    const acctContext = await engine.launchPersistentContext(profilePath, {
       headless,
       channel,
       userAgent: fingerprint.userAgent,

@@ -1,4 +1,4 @@
-import type { Locator, Page } from "playwright";
+import type { Locator, Page } from "patchright";
 import { humanDrag, sleep } from "./human-behavior.ts";
 
 

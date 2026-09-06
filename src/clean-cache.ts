@@ -2,7 +2,7 @@ import "dotenv/config";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { chromium } from "playwright";
+import { chromium } from "patchright";
 import { pruneAllPlaywrightProfiles } from "./services/playwright.ts";
 
 export function formatBytes(bytes: number): string {

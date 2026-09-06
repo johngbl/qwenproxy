@@ -26,7 +26,7 @@ import {
   replaceModelMetadata,
   syncModelMetadata,
 } from "../core/model-registry.ts";
-import { type Page } from "playwright";
+import { type Page } from "patchright";
 import { withAccountPage } from "./playwright.ts";
 import { assertAntiBotHeaders } from "./playwright.ts";
 import { recoverBaxiaCaptcha } from "./captcha-coordinator.ts";

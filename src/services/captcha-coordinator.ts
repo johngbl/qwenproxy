@@ -1,4 +1,4 @@
-import type { Page } from "playwright";
+import type { Page } from "patchright";
 import { metrics } from "../core/metrics.ts";
 import { config } from "../core/config.ts";
 import { withAccountPage } from "./playwright.ts";

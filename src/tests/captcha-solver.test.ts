@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { FrameLocator, Locator, Page } from "playwright";
+import type { FrameLocator, Locator, Page } from "patchright";
 import {
   extractBaxiaChallengeUrl,
   solveBaxiaCaptcha,

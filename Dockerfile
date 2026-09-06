@@ -29,8 +29,8 @@ RUN mkdir -p /app/data/db /app/data/qwen_profiles /tmp/playwright \
 VOLUME ["/app/data"]
 
 EXPOSE 7936
-ENV NODE_ENV=production
-
+ENV NODE_ENV=production \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 # Use dumb-init to avoid zombie processes from Playwright and ensure writable volumes at startup
 ENTRYPOINT ["/usr/bin/dumb-init", "--", "/app/docker-entrypoint.sh"]
 CMD ["npx", "tsx", "src/index.ts"]

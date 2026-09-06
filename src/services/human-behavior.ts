@@ -1,4 +1,4 @@
-import type { Page } from "playwright";
+import type { Page } from "patchright";
 
 export const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
