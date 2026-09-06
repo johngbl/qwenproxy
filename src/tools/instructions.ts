@@ -73,12 +73,20 @@ export function buildToolInstructions(
     (typeof firstTool?.name === "string" && firstTool.name) ||
     "tool_name";
 
-  const sampleArgs1 = sampleToolName === "read_file" || sampleToolName === "read"
-    ? '{"path": "file1.txt"}'
-    : '{"param": "value1"}';
-  const sampleArgs2 = sampleToolName === "read_file" || sampleToolName === "read"
-    ? '{"path": "file2.txt"}'
-    : '{"param": "value2"}';
+  const properties =
+    firstTool?.function?.parameters?.properties ||
+    firstTool?.parameters?.properties;
+  const firstPropKey =
+    properties && typeof properties === "object"
+      ? Object.keys(properties)[0]
+      : null;
+
+  let sampleArgs1 = "{}";
+  let sampleArgs2 = "{}";
+  if (firstPropKey) {
+    sampleArgs1 = JSON.stringify({ [firstPropKey]: "value1" });
+    sampleArgs2 = JSON.stringify({ [firstPropKey]: "value2" });
+  }
 
   let forcedInstruction = "";
   if (
