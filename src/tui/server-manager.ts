@@ -5,6 +5,7 @@
 
 import { config } from "../core/config.ts";
 import { startServer, stopServer } from "../api/server.ts";
+import { stripAnsi } from "./theme.ts";
 export type ServerLifecycleState = "offline" | "warming" | "online" | "error";
 
 export interface ServerLogEntry {
@@ -80,8 +81,8 @@ export class ServerManager {
 
   private appendLog(level: "INFO" | "WARN" | "ERROR", text: string): void {
     if (!text) return;
-    const clean = text.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "").trim();
-    if (!clean) return;
+    const clean = stripAnsi(text).trim();
+    if (!clean || clean.length === 0) return;
 
     const time = new Date().toLocaleTimeString("pt-BR", {
       hour: "2-digit",

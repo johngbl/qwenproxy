@@ -23,6 +23,34 @@ export class LogsView implements TuiView {
   private lastVisibleCount = 0;
   private lastTotalCount = 0;
 
+  private getChips(rawCount: number): {
+    titlePrefix: string;
+    chips: Array<{ id: "all" | "warn" | "error" | "copy" | "clear"; label: string; startCol: number; endCol: number }>;
+  } {
+    const titlePrefix = `Logs (${rawCount})  `;
+    const copyLabel = this.copyNotification ? " [ Y ] Copiado! " : " [ Y ] Copiar ";
+    const defs = [
+      { id: "all" as const, label: " [ T ] Todos " },
+      { id: "warn" as const, label: " [ W ] Avisos " },
+      { id: "error" as const, label: " [ E ] Erros " },
+      { id: "copy" as const, label: copyLabel },
+      { id: "clear" as const, label: " [ C ] Limpar " },
+    ];
+
+    let currentCol = 4 + stringWidth(titlePrefix);
+    const chips: Array<{ id: "all" | "warn" | "error" | "copy" | "clear"; label: string; startCol: number; endCol: number }> = [];
+
+    for (const d of defs) {
+      const w = stringWidth(d.label);
+      const startCol = currentCol;
+      const endCol = startCol + w - 1;
+      chips.push({ id: d.id, label: d.label, startCol, endCol });
+      currentCol += w;
+    }
+
+    return { titlePrefix, chips };
+  }
+
   public getShortcuts(): Array<{ key: string; label: string }> {
     return [
       { key: "T", label: "Todos" },
@@ -36,35 +64,18 @@ export class LogsView implements TuiView {
 
   public handleKey(key: KeyEvent): boolean | void {
     const rawEntries = ServerManager.getInstance().getLogEntries(this.filter);
-    const prefixW = stringWidth(`Logs (${rawEntries.length}) `) + 3;
-    const copyLabel = this.copyNotification ? " [ Y ] Copiado! " : " [ Y ] Copiar ";
-
-    const w1 = stringWidth(" [ T ] Todos ");
-    const w2 = stringWidth(" [ W ] Avisos ");
-    const w3 = stringWidth(" [ E ] Erros ");
-    const w4 = stringWidth(copyLabel);
-    const w5 = stringWidth(" [ C ] Limpar ");
-
-    const c1Start = prefixW;
-    const c1End = c1Start + w1;
-    const c2Start = c1End;
-    const c2End = c2Start + w2;
-    const c3Start = c2End;
-    const c3End = c3Start + w3;
-    const c4Start = c3End;
-    const c4End = c4Start + w4;
-    const c5Start = c4End;
-    const c5End = c5Start + w5;
+    const { chips } = this.getChips(rawEntries.length);
 
     // Mouse hover on chips in row 4
     if (key.name === "hover" && key.mouse && key.mouse.row === 4) {
       const col = key.mouse.col;
       let target: "all" | "warn" | "error" | "copy" | "clear" | null = null;
-      if (col >= c1Start && col < c1End) target = "all";
-      else if (col >= c2Start && col < c2End) target = "warn";
-      else if (col >= c3Start && col < c3End) target = "error";
-      else if (col >= c4Start && col < c4End) target = "copy";
-      else if (col >= c5Start && col < c5End) target = "clear";
+      for (const c of chips) {
+        if (col >= c.startCol && col <= c.endCol) {
+          target = c.id;
+          break;
+        }
+      }
       if (this.hoveredChip !== target) {
         this.hoveredChip = target;
         return true;
@@ -77,39 +88,43 @@ export class LogsView implements TuiView {
     // Mouse click on chips in row 4
     if (key.name === "click" && key.mouse && key.mouse.row === 4) {
       const col = key.mouse.col;
-      if (col >= c1Start && col < c1End) {
-        this.filter = "all";
-        this.scrollOffset = 0;
-        this.selectedLogIndex = null;
-        return true;
-      }
-      if (col >= c2Start && col < c2End) {
-        this.filter = "warn";
-        this.scrollOffset = 0;
-        this.selectedLogIndex = null;
-        return true;
-      }
-      if (col >= c3Start && col < c3End) {
-        this.filter = "error";
-        this.scrollOffset = 0;
-        this.selectedLogIndex = null;
-        return true;
-      }
-      if (col >= c4Start && col < c4End) {
-        this.copyLogs();
-        return true;
-      }
-      if (col >= c5Start && col < c5End) {
-        ServerManager.getInstance().clearLogs();
-        this.scrollOffset = 0;
-        this.selectedLogIndex = null;
-        return true;
+      for (const c of chips) {
+        if (col >= c.startCol && col <= c.endCol) {
+          if (c.id === "all") {
+            this.filter = "all";
+            this.scrollOffset = 0;
+            this.selectedLogIndex = null;
+            return true;
+          }
+          if (c.id === "warn") {
+            this.filter = "warn";
+            this.scrollOffset = 0;
+            this.selectedLogIndex = null;
+            return true;
+          }
+          if (c.id === "error") {
+            this.filter = "error";
+            this.scrollOffset = 0;
+            this.selectedLogIndex = null;
+            return true;
+          }
+          if (c.id === "copy") {
+            this.copyLogs();
+            return true;
+          }
+          if (c.id === "clear") {
+            ServerManager.getInstance().clearLogs();
+            this.scrollOffset = 0;
+            this.selectedLogIndex = null;
+            return true;
+          }
+        }
       }
     }
 
-    // Mouse click on log rows (rows 5+)
-    if (key.name === "click" && key.mouse && key.mouse.row >= 5) {
-      const rowOffset = key.mouse.row - 5;
+    // Mouse click on log rows (terminal row 6+, accounting for 1-line top margin)
+    if (key.name === "click" && key.mouse && key.mouse.row >= 6) {
+      const rowOffset = key.mouse.row - 6;
       if (rowOffset >= 0 && rowOffset < this.lastVisibleCount) {
         const clickedIdx = this.lastStartIndex + rowOffset;
         if (this.selectedLogIndex === clickedIdx) {
@@ -282,6 +297,7 @@ export class LogsView implements TuiView {
       );
     } else {
       for (const entry of rawEntries) {
+        if (!entry || !entry.message || !entry.message.trim()) continue;
         let tag = theme.dim("[INFO]");
         if (entry.level === "WARN") {
           tag = theme.yellow("[WARN]");
@@ -299,8 +315,8 @@ export class LogsView implements TuiView {
 
     this.lastTotalCount = formattedLines.length;
 
-    // Scroll Window
-    const visibleCapacity = Math.max(1, contentH - 2);
+    // Scroll Window with top margin breathing room (1 row reserved at the top)
+    const visibleCapacity = Math.max(1, contentH - 3);
     const total = formattedLines.length;
     const maxOffset = Math.max(0, total - visibleCapacity);
     const clampedOffset = Math.min(this.scrollOffset, maxOffset);
@@ -325,7 +341,9 @@ export class LogsView implements TuiView {
         )
       : 0;
 
-    const finalRows: string[] = [];
+    // Line 0 is empty breathing margin between filter chips and logs
+    const finalRows: string[] = [""];
+
     for (let r = 0; r < visibleCapacity; r++) {
       if (r < visibleSlice.length) {
         const actualIdx = startIndex + r;
@@ -353,8 +371,9 @@ export class LogsView implements TuiView {
     const scrollIndicator =
       clampedOffset > 0 ? theme.yellow(` [ Rolar: +${clampedOffset} ]`) : "";
 
+    const { titlePrefix } = this.getChips(rawEntries.length);
     const box = drawBox({
-      title: `Logs (${rawEntries.length}) ${allChip}${warnChip}${errChip}${copyChip}${clearChip}${scrollIndicator}`,
+      title: `${titlePrefix}${allChip}${warnChip}${errChip}${copyChip}${clearChip}${scrollIndicator}`,
       width,
       height: contentH,
       borderColor: theme.borderActive,
@@ -364,7 +383,9 @@ export class LogsView implements TuiView {
     return box;
   }
   private copyLogs(): void {
-    const rawEntries = ServerManager.getInstance().getLogEntries(this.filter);
+    const rawEntries = ServerManager.getInstance()
+      .getLogEntries(this.filter)
+      .filter((e) => e && e.message && e.message.trim().length > 0);
     if (rawEntries.length === 0) return;
 
     let text = "";
