@@ -141,6 +141,16 @@ export function classifyError(err: unknown): QwenProxyError {
     return new ValidationError(err.message);
   }
 
+  if (
+    err instanceof Error &&
+    (err.message.includes("Target page, context or browser has been closed") ||
+      err.message.includes("browserType.launchPersistentContext"))
+  ) {
+    return new ServiceUnavailable(
+      "Falha ao inicializar o navegador Playwright para a conta. O perfil pode estar travado por outro processo ou o navegador fechou inesperadamente. Execute 'npm run reset'.",
+    );
+  }
+
   logger.warn("Unclassified error mapped to InternalError", {
     error: err instanceof Error ? err.message : String(err),
   });

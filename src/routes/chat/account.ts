@@ -10,7 +10,7 @@ import { markAccountSuccessful, markAccountFailed, getAccountsByPriority } from 
 import { recordWafHardBlock, noteWafRecovery } from "../../core/waf-isolation.ts";
 import { loadAccounts, type QwenAccount } from "../../core/accounts.ts";
 import { config, type ChatMode } from "../../core/config.ts";
-import { ClientAbortedError, UpstreamRateLimit } from "../../core/errors.ts";
+import { ClientAbortedError, UpstreamRateLimit, ValidationError } from "../../core/errors.ts";
 import {
   assertPromptWithinLimits,
   truncatePromptToIntelligentLimit,
@@ -267,8 +267,8 @@ export function resolveInitialAccount(
 		return { account, configuredAccounts };
 	}
 
-	throw new Error(
-		"No Qwen accounts configured. Add accounts with npm run login.",
+	throw new ValidationError(
+		"Nenhuma conta Qwen configurada no servidor. Adicione uma conta na aba [5] Contas da TUI ou configure QWEN_ACCOUNTS no arquivo .env.",
 	);
 }
 

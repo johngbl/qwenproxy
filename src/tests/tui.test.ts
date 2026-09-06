@@ -617,3 +617,28 @@ test("TUI AccountsView: precision mouse click on right panel action buttons", as
   const render = view.render(80, 24, mockSnapshot as any).join("\n");
   assert.ok(render.includes("Cooldowns zerados"));
 });
+test("TUI ChatView: displays friendly warning and blocks sending when 0 accounts are configured", async () => {
+  const view = new ChatView();
+  const emptySnapshot = {
+    online: true,
+    port: 7936,
+    host: "127.0.0.1",
+    accounts: [],
+  };
+
+  // Render with 0 accounts
+  const render = view.render(80, 24, emptySnapshot as any).join("\n");
+  assert.ok(render.includes("Nenhuma conta Qwen configurada"));
+  assert.ok(render.includes("[5] Contas"));
+  assert.ok(render.includes("Sem Contas"));
+
+  // Try to type and submit message with 0 accounts
+  await view.handleKey({ name: "h", ctrl: false, shift: false, meta: false, char: "h" });
+  await view.handleKey({ name: "i", ctrl: false, shift: false, meta: false, char: "i" });
+  await view.handleKey({ name: "return", ctrl: false, shift: false, meta: false });
+
+  // Should have blocked sending without creating an assistant message
+  assert.equal((view as any).messages.length, 0);
+  const updatedRender = view.render(80, 24, emptySnapshot as any).join("\n");
+  assert.ok(updatedRender.includes("Nenhuma conta configurada"));
+});

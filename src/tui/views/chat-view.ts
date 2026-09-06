@@ -2,7 +2,7 @@
  * QwenProxy TUI - Interactive Chat Tester View (Tab 2)
  */
 
-import type { TuiView } from "../types.ts";
+import type { TuiView, ProxyStatusSnapshot } from "../types.ts";
 import type { KeyEvent } from "../screen.ts";
 import { theme, glyphs, drawBox, stringWidth, truncate, stripAnsi, pad, wrapContentLine } from "../theme.ts";
 import { streamChatCompletions, fetchLiveModels } from "../proxy-client.ts";
@@ -87,6 +87,7 @@ export class ChatView implements TuiView {
   private isGenerating = false;
   private currentAbortController: AbortController | null = null;
   private statusNote = "";
+  private lastSnapshot: ProxyStatusSnapshot | null = null;
   private onNeedsRender?: () => void;
   private renderThrottleTimer: NodeJS.Timeout | null = null;
   private spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -427,6 +428,13 @@ export class ChatView implements TuiView {
       const text = this.inputBuffer.trim();
       if (!text || this.isGenerating) return true;
 
+      // Block submitting if there are 0 accounts configured
+      if (this.lastSnapshot && this.lastSnapshot.accounts.length === 0) {
+        this.statusNote = theme.yellow("⚠️ Adicione uma conta na aba [5] Contas antes de iniciar o chat.");
+        this.onNeedsRender?.();
+        return true;
+      }
+
       const serverState = ServerManager.getInstance().getState();
       if (serverState === "warming") {
         this.statusNote = theme.yellow("Aguarde: inicializando proxy...");
@@ -438,7 +446,6 @@ export class ChatView implements TuiView {
         this.onNeedsRender?.();
         return true;
       }
-
       this.inputBuffer = "";
       this.cursorPos = 0;
       this.scrollOffset = 0;
@@ -532,11 +539,28 @@ export class ChatView implements TuiView {
       );
     } catch (err: any) {
       const current = this.messages[assistantMsgIndex];
-      const errorMsg = err?.message || String(err);
-      if (current) {
-        current.content = `\n  ${theme.red("❌ " + errorMsg)}`;
+      let rawMsg = err?.message || String(err);
+      try {
+        const jsonMatch = rawMsg.match(/\{.*"error"\s*:\s*\{.*\}\s*\}/s);
+        if (jsonMatch) {
+          const parsed = JSON.parse(jsonMatch[0]);
+          if (parsed?.error?.message) {
+            rawMsg = parsed.error.message;
+          }
+        }
+      } catch {}
+
+      if (
+        rawMsg.includes("Target page, context or browser has been closed") ||
+        rawMsg.includes("browserType.launchPersistentContext")
+      ) {
+        rawMsg = "Falha ao iniciar o navegador da conta. Feche outras instâncias do QwenProxy ou do Chrome e execute 'qpx reset'.";
       }
-      this.statusNote = theme.red(`✗ ${errorMsg}`);
+
+      if (current) {
+        current.content = `\n  ${theme.red("❌ " + rawMsg)}`;
+      }
+      this.statusNote = theme.red(`✗ ${rawMsg.slice(0, 80)}`);
     } finally {
       clearInterval(this.spinnerInterval!);
       this.spinnerInterval = null;
@@ -546,7 +570,11 @@ export class ChatView implements TuiView {
     }
   }
 
-  public render(width: number, height: number): string[] {
+  public render(width: number, height: number, snapshot?: ProxyStatusSnapshot | null): string[] {
+    if (snapshot !== undefined) {
+      this.lastSnapshot = snapshot ?? null;
+    }
+    const hasAccounts = !this.lastSnapshot || this.lastSnapshot.accounts.length > 0;
     const totalLines: string[] = [];
 
     // 1. Model Header with F2 Shortcut
@@ -563,7 +591,9 @@ export class ChatView implements TuiView {
           : theme.cyan(`[ Effort: Low (Fast) ]`)
       : "";
 
-    const headerLine = `  ${theme.bold("Modelo:")} ${theme.cyan(`[ ${currentModel} ]`)}  ${currentInfo.badge}  ${isReasoning ? effortBadge : theme.muted(`• ${currentInfo.category}`)}   ${theme.yellow(`[ F2: Modelo${isReasoning ? " | F3: Effort" : ""} (${this.selectedModelIndex + 1}/${totalModels}) ]`)}`;
+    const headerLine = hasAccounts
+      ? `  ${theme.bold("Modelo:")} ${theme.cyan(`[ ${currentModel} ]`)}  ${currentInfo.badge}  ${isReasoning ? effortBadge : theme.muted(`• ${currentInfo.category}`)}   ${theme.yellow(`[ F2: Modelo${isReasoning ? " | F3: Effort" : ""} (${this.selectedModelIndex + 1}/${totalModels}) ]`)}`
+      : `  ${theme.bold("Modelo:")} ${theme.cyan(`[ ${currentModel} ]`)}  ${currentInfo.badge}   ${theme.yellow(`[ ⚠️ Sem Contas: Adicione em [5] Contas ]`)}`;
     const headerBox = drawBox({
       title: "Chat Tester",
       width,
@@ -629,15 +659,21 @@ export class ChatView implements TuiView {
     } else {
       const chatContent: string[] = [];
 
-      if (this.messages.length === 0) {
+      if (this.lastSnapshot && this.lastSnapshot.accounts.length === 0) {
+        chatContent.push("");
+        chatContent.push(`  ${theme.yellow("⚠️  Nenhuma conta Qwen configurada no servidor.")}`);
+        chatContent.push(`  ${theme.muted("   Pressione ")}${theme.cyan("Tab")}${theme.muted(" para ir até ")}${theme.bold(theme.white("[5] Contas"))}${theme.muted(" e pressione ")}${theme.bold(theme.white("'a'"))}${theme.muted(" para adicionar seu e-mail e senha.")}`);
+        chatContent.push("");
+        chatContent.push(`  ${theme.dim("   (Ou adicione QWEN_ACCOUNTS=email:senha no seu arquivo .env)")}`);
+      } else if (this.messages.length === 0) {
         chatContent.push("");
         const serverState = ServerManager.getInstance().getState();
         if (serverState === "warming") {
-          chatContent.push(theme.yellow("  🟡 Inicializando..."));
+          chatContent.push(theme.yellow("  🟡 Inicializando proxy..."));
         } else {
           chatContent.push(theme.muted("  Digite sua mensagem..."));
         }
-      } else {
+      }
       for (const msg of this.messages) {
         chatContent.push("");
         if (msg.role === "user") {
@@ -712,7 +748,6 @@ export class ChatView implements TuiView {
           }
         }
       }
-    }
 
     // Flatten and pre-wrap chatContent to innerChatW so every element maps strictly 1:1 to terminal rows
     const flatChatContent: string[] = [];
@@ -759,8 +794,9 @@ export class ChatView implements TuiView {
     const spinner = this.spinnerFrames[this.spinnerIndex] || "⠋";
 
     const inputContent = [`${theme.cyan(inputPrompt)}${displayInput}`];
-    const actionLabel =
-      currentInfo.category === "Geração de Imagem"
+    const actionLabel = !hasAccounts
+      ? "⚠️ Nenhuma conta configurada — adicione uma conta na aba [5] Contas"
+      : currentInfo.category === "Geração de Imagem"
         ? "Prompt da Imagem"
         : currentInfo.category === "Geração de Vídeo"
           ? "Prompt do Vídeo"
