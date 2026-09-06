@@ -14,11 +14,13 @@
  *   qwenproxy login     -> Authenticates accounts via visible browser
  */
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { createRequire } from "node:module";
 import fs from "node:fs";
 
+const require = createRequire(import.meta.url);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const packageRoot = path.resolve(__dirname, "..");
 const packageJsonPath = path.join(packageRoot, "package.json");
@@ -102,7 +104,28 @@ if (firstArg === "start" || rawArgs.includes("--server")) {
 
 const targetPath = path.resolve(packageRoot, scriptFile);
 
-const child = spawn(process.execPath, ["--import", "tsx", targetPath, ...scriptArgs], {
+// Resolve tsx loader relative to the package installation rather than cwd
+let tsxLoaderArg = "tsx";
+try {
+  const tsxEntry = require.resolve("tsx");
+  tsxLoaderArg = pathToFileURL(tsxEntry).href;
+} catch {}
+
+// Ensure Playwright Chromium is installed for first-time global users
+try {
+  const { chromium } = await import("playwright");
+  const execPath = chromium.executablePath();
+  if (!fs.existsSync(execPath)) {
+    console.log("⏳ [QwenProxy] Instalando o navegador Chromium pela primeira vez (Playwright)...");
+    spawnSync("npx", ["playwright", "install", "chromium"], {
+      stdio: "inherit",
+      shell: true,
+    });
+    console.log("✓ [QwenProxy] Navegador instalado com sucesso!\n");
+  }
+} catch {}
+
+const child = spawn(process.execPath, ["--import", tsxLoaderArg, targetPath, ...scriptArgs], {
   stdio: "inherit",
   cwd: process.cwd(),
   env: process.env,

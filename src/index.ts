@@ -1,4 +1,17 @@
-import 'dotenv/config'
+import dotenv from 'dotenv'
+import fs from 'node:fs'
+import { getEnvFilePath, ensureDataDirs } from './core/paths.ts'
+
+// Ensure persistent user data directory exists
+ensureDataDirs()
+
+// Load .env from local directory or persistent global OS directory
+const envPath = getEnvFilePath()
+if (fs.existsSync(envPath)) {
+  dotenv.config({ path: envPath })
+} else {
+  dotenv.config()
+}
 import { startServer } from './api/server.js'
 const isTui = process.argv.includes('--tui') || process.env.QWEN_TUI === 'true'
 
