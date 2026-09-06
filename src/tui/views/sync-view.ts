@@ -70,7 +70,7 @@ export class SyncView implements TuiView {
       },
       {
         id: "codex",
-        name: "OpenAI Codex CLI",
+        name: "OpenAI Codex",
         path: paths.codex,
         selected: false,
         detected: fs.existsSync(paths.codex),
@@ -324,7 +324,12 @@ export class SyncView implements TuiView {
     const isModelFocused = this.selectedRowIndex === 4;
     const modelPointer = isModelFocused ? theme.cyan(`${glyphs.pointer} `) : "  ";
     const currentModel = this.availableModels[this.modelIndex] || "qwen3.8-max";
-    const modelLine = `${modelPointer}Modelo: ${theme.cyan(currentModel)} (${this.modelIndex + 1}/${this.availableModels.length})`;
+    const modelText = `${currentModel} (${this.modelIndex + 1}/${this.availableModels.length})`;
+
+    const modelLine = this.syncAllModels
+      ? `${modelPointer}${theme.dim(`${modelText}`)}`
+      : `${modelPointer}${theme.cyan(modelText)}`;
+
     leftContent.push(isModelFocused ? theme.bgSelected(modelLine) : modelLine);
 
     // Row index 5: Scope Selector
@@ -334,8 +339,7 @@ export class SyncView implements TuiView {
     const scopeLine = `${scopePointer}${scopeCheck} Registrar todos os modelos`;
     leftContent.push(isScopeFocused ? theme.bgSelected(scopeLine) : scopeLine);
     leftContent.push("");
-    leftContent.push(`  ${theme.bold("3. Ações:")}`);
-
+    leftContent.push(`  ${theme.bold("Ações:")}`);
     // Row index 6: Buttons
     const isSyncButtonFocused = this.selectedRowIndex === 6;
     const actionLine = isSyncButtonFocused
