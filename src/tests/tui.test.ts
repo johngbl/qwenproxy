@@ -696,6 +696,27 @@ test("TUI SyncView: mouse click precisely toggles clients, model, and scope", as
   assert.ok(render.includes(glyphs.radioOff));
   // Verify there is no duplicate "Modelo: Modelo:"
   assert.ok(!render.includes("Modelo: Modelo:"));
+  // Click row 18 ([ Enter ] Sincronizar)
+  await view.handleKey({
+    name: "click",
+    ctrl: false,
+    shift: false,
+    meta: false,
+    mouse: { type: "click", button: "left", col: 10, row: 18 },
+  });
+  render = view.render(80, 24).join("\n");
+  assert.equal((view as any).selectedRowIndex, 6);
+
+  // Click row 19 ([ R ] Restaurar)
+  await view.handleKey({
+    name: "click",
+    ctrl: false,
+    shift: false,
+    meta: false,
+    mouse: { type: "click", button: "left", col: 10, row: 19 },
+  });
+  render = view.render(80, 24).join("\n");
+  assert.equal((view as any).selectedRowIndex, 7);
 });
 
 test("TUI AccountsView: precision mouse click on right panel action buttons", async () => {

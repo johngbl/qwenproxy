@@ -26,9 +26,9 @@ export class SyncView implements TuiView {
   public readonly id = "sync";
   public readonly title = "Sync";
   public readonly tabNumber = 3;
-
   private clients: ClientOption[] = [];
-  private selectedRowIndex = 0; // 0..3 for clients, 4 for model, 5 for sync button, 6 for rollback button
+  private selectedRowIndex = 0; // 0..3 for clients, 4 for model, 5 for scope, 6 for sync, 7 for restore
+  private hoveredActionRow: number | null = null;
   private availableModels = [
     "qwen3.8-max",
     "qwen3.7-plus",
@@ -112,12 +112,18 @@ export class SyncView implements TuiView {
             this.selectedRowIndex = 5;
             return true;
           }
-        } else if (row === 18) {
-          if (this.selectedRowIndex !== 6) {
-            this.selectedRowIndex = 6;
+        } else if (row === 18 || row === 19) {
+          if (this.hoveredActionRow !== row) {
+            this.hoveredActionRow = row;
             return true;
           }
+        } else if (this.hoveredActionRow !== null) {
+          this.hoveredActionRow = null;
+          return true;
         }
+      } else if (this.hoveredActionRow !== null) {
+        this.hoveredActionRow = null;
+        return true;
       }
     }
 
@@ -147,16 +153,17 @@ export class SyncView implements TuiView {
           this.selectedRowIndex = 5;
           return true;
         }
-        // Row 18: Action buttons
+        // Row 18: Sincronizar button
         if (row === 18) {
-          if (col <= 26) {
-            this.selectedRowIndex = 6;
-            this.executeSync();
-            return true;
-          } else {
-            this.executeRollback();
-            return true;
-          }
+          this.selectedRowIndex = 6;
+          this.executeSync();
+          return true;
+        }
+        // Row 19: Restaurar button
+        if (row === 19) {
+          this.selectedRowIndex = 7;
+          this.executeRollback();
+          return true;
         }
       }
     }
@@ -167,7 +174,7 @@ export class SyncView implements TuiView {
       return true;
     }
     if (key.name === "down" || key.name === "wheeldown" || (key.name === "j" && !key.ctrl)) {
-      this.selectedRowIndex = Math.min(6, this.selectedRowIndex + 1);
+      this.selectedRowIndex = Math.min(7, this.selectedRowIndex + 1);
       return true;
     }
 
@@ -219,7 +226,7 @@ export class SyncView implements TuiView {
 
     // Confirm action on Enter
     if (key.name === "return") {
-      if (this.selectedRowIndex === 6) {
+      if (this.selectedRowIndex === 7) {
         this.executeRollback();
       } else {
         this.executeSync();
@@ -336,19 +343,24 @@ export class SyncView implements TuiView {
     leftContent.push(isScopeFocused ? theme.bgSelected(scopeLine) : scopeLine);
     leftContent.push("");
     leftContent.push(`  ${theme.bold("Ações:")}`);
-    // Row index 6: Buttons
-    const isSyncButtonFocused = this.selectedRowIndex === 6;
-    const actionLine = isSyncButtonFocused
-      ? `  ${theme.bgSelected(" [ Enter ] Sincronizar ")}   ${theme.dim("[ R ] Restaurar")}`
-      : `  ${theme.blue("[ Enter ] Sincronizar")}   ${theme.yellow("[ R ] Restaurar")}`;
-    leftContent.push(actionLine);
+    // Row 18: Sincronizar
+    const isSyncFocused = this.selectedRowIndex === 6;
+    const isSyncHovered = this.hoveredActionRow === 18;
+    const syncLine = `    ${isSyncHovered || isSyncFocused ? theme.bgHover(` ${theme.cyan("[ Enter ] Sincronizar")} `) : `${theme.cyan("[ Enter ]")} Sincronizar`}`;
+    leftContent.push(syncLine);
+
+    // Row 19: Restaurar
+    const isRestoreFocused = this.selectedRowIndex === 7;
+    const isRestoreHovered = this.hoveredActionRow === 19;
+    const restoreLine = `    ${isRestoreHovered || isRestoreFocused ? theme.bgHover(` ${theme.yellow("[ R ] Restaurar")} `) : `${theme.yellow("[ R ]")} Restaurar`}`;
+    leftContent.push(restoreLine);
 
     const leftBox = drawBox({
       title: "Configurar",
       width: leftW,
       height: contentH,
       borderColor: theme.borderActive,
-      titleColor: theme.blue,
+      titleColor: theme.cyan,
       content: leftContent,
     });
 
