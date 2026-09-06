@@ -41,7 +41,7 @@ export class StorageView implements TuiView {
   public getShortcuts(): Array<{ key: string; label: string }> {
     return [
       { key: "p", label: "Podar Caches" },
-      { key: "b", label: "Limpar Navegadores Antigos" },
+      { key: "b", label: "Limpar Navegadores" },
       { key: "z", label: "Zerar Cooldowns" },
       { key: "r", label: "Atualizar Disco" },
     ];
@@ -219,10 +219,10 @@ export class StorageView implements TuiView {
       `    ${theme.dim("Integridade:")}         ${theme.green("✓ Sessões e cookies salvos")}`,
       "",
       `  ${theme.bold(theme.white("Ações Rápidas:"))}`,
-      `    ${this.hoveredActionRow === 13 ? theme.bgHover(` ${theme.cyan("[ p ]")} ${theme.bold("Podar Caches de Perfis")} `) : `${theme.cyan("[ p ]")} ${theme.bold("Podar Caches de Perfis")}`}`,
-      `    ${this.hoveredActionRow === 14 ? theme.bgHover(` ${theme.yellow("[ b ]")} ${theme.bold("Limpar Navegadores Antigos")} `) : `${theme.yellow("[ b ]")} ${theme.bold("Limpar Navegadores Antigos")}`}`,
-      `    ${this.hoveredActionRow === 15 ? theme.bgHover(` ${theme.green("[ z ]")} ${theme.bold("Zerar Todos os Cooldowns")} `) : `${theme.green("[ z ]")} ${theme.bold("Zerar Todos os Cooldowns")}`}`,
-      `    ${this.hoveredActionRow === 16 ? theme.bgHover(` ${theme.muted("[ r ]")} ${theme.bold("Atualizar Disco")} `) : `${theme.muted("[ r ]")} ${theme.bold("Atualizar Disco")}`}`,
+      `    ${this.hoveredActionRow === 13 ? theme.bgHover(` ${theme.cyan(`[ p ] ${glyphs.scissor} Podar Caches`)} `) : `${theme.cyan(`[ p ] ${glyphs.scissor}`)} Podar Caches`}`,
+      `    ${this.hoveredActionRow === 14 ? theme.bgHover(` ${theme.yellow(`[ b ] ${glyphs.backspace} Limpar Navegadores`)} `) : `${theme.yellow(`[ b ] ${glyphs.backspace}`)} Limpar Navegadores`}`,
+      `    ${this.hoveredActionRow === 15 ? theme.bgHover(` ${theme.green(`[ z ] ${glyphs.zap} Zerar Todos os Cooldowns`)} `) : `${theme.green(`[ z ] ${glyphs.zap}`)} Zerar Todos os Cooldowns`}`,
+      `    ${this.hoveredActionRow === 16 ? theme.bgHover(` ${theme.muted(`[ r ] ${glyphs.reload} Atualizar Disco`)} `) : `${theme.muted(`[ r ] ${glyphs.reload}`)} Atualizar Disco`}`,
       "",
     ];
 

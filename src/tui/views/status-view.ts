@@ -16,6 +16,8 @@ export class StatusView implements TuiView {
   private statusData: ProxyStatusSnapshot | null = null;
   private actionMessage = "";
   private actionMessageTimeout: NodeJS.Timeout | null = null;
+  private hoveredActionRow: number | null = null;
+  private lastLeftW = 34;
 
   constructor() {
     this.refresh();
@@ -47,6 +49,40 @@ export class StatusView implements TuiView {
   }
 
   public async handleKey(key: KeyEvent): Promise<boolean | void> {
+    // Mouse hover over quick actions
+    if (key.name === "hover" && key.mouse) {
+      const { row, col } = key.mouse;
+      const leftW = this.lastLeftW || 34;
+      if (col >= 2 && col <= leftW - 1 && (row === 13 || row === 14)) {
+        if (this.hoveredActionRow !== row) {
+          this.hoveredActionRow = row;
+          return true;
+        }
+      } else if (this.hoveredActionRow !== null) {
+        this.hoveredActionRow = null;
+        return true;
+      }
+    }
+
+    // Mouse click interactions
+    if (key.name === "click" && key.mouse) {
+      const { row, col } = key.mouse;
+      const leftW = this.lastLeftW || 34;
+      if (col >= 2 && col <= leftW - 1) {
+        if (row === 13) {
+          await this.refresh();
+          this.setMessage(theme.green("✓ Status atualizado"));
+          return true;
+        }
+        if (row === 14) {
+          const cleared = resetAllCooldowns();
+          await this.refresh();
+          this.setMessage(theme.green(`✓ Cooldowns zerados: ${cleared} conta(s) liberada(s)`));
+          return true;
+        }
+      }
+    }
+
     if (key.name === "r" && !key.ctrl) {
       await this.refresh();
       this.setMessage(theme.green("✓ Status atualizado"));
@@ -68,6 +104,7 @@ export class StatusView implements TuiView {
 
     // Two-column layout
     const leftW = Math.max(34, Math.floor(width * 0.42));
+    this.lastLeftW = leftW;
     const rightW = Math.max(34, width - leftW - 1);
 
     // Left Column: System & Proxy Status
@@ -95,6 +132,10 @@ export class StatusView implements TuiView {
       `  ${theme.bold("Uptime:")}     ${theme.cyan(uptimeStr)}`,
       `  ${theme.bold("RAM:")}        ${theme.cyan(String(data?.rssMb || 0) + " MB")}`,
       `  ${theme.bold("Conexões:")}   ${data?.activeStreams ? theme.yellow(String(data.activeStreams) + " ativas") : "0 ativas"}`,
+      "",
+      `  ${theme.bold("Ações:")}`,
+      `    ${this.hoveredActionRow === 13 ? theme.bgHover(` ${theme.cyan(`[ r ] ${glyphs.reload} Recarregar`)} `) : `${theme.cyan(`[ r ] ${glyphs.reload}`)} Recarregar`}`,
+      `    ${this.hoveredActionRow === 14 ? theme.bgHover(` ${theme.yellow(`[ z ] ${glyphs.zap} Zerar Cooldowns`)} `) : `${theme.yellow(`[ z ] ${glyphs.zap}`)} Zerar Cooldowns`}`,
       "",
       this.actionMessage ? `  ${this.actionMessage}` : "",
     ];

@@ -43,11 +43,10 @@ export class AccountsView implements TuiView {
   public isCapturingText(): boolean {
     return this.isAddModalOpen;
   }
-
   public getShortcuts(): Array<{ key: string; label: string }> {
     if (this.isAddModalOpen) {
       return [
-        { key: "↑↓/Mouse", label: "Alternar Campo" },
+        { key: "↑↓/Mouse", label: "Alternar" },
         { key: "Enter", label: "Salvar" },
         { key: "Esc", label: "Cancelar" },
       ];
@@ -483,7 +482,7 @@ export class AccountsView implements TuiView {
       height: contentH,
       borderColor: theme.borderActive,
       titleColor: theme.blue,
-      footer: this.statusMessage || "a: Adicionar Conta  •  d: Remover  •  c: Zerar Conta  •  z: Zerar Todas",
+      footer: this.statusMessage || undefined,
       content: leftContent,
     });
 
@@ -502,7 +501,7 @@ export class AccountsView implements TuiView {
       rightContent.push("");
       rightContent.push("");
       rightContent.push(`  ${theme.dim("─────────────────────────────────")}`);
-      rightContent.push(`  ${this.hoveredActionRow === 15 ? theme.bgHover(` ${theme.cyan("[ a ]")} Adicionar Nova Conta `) : `${theme.cyan("[ a ]")} Adicionar Nova Conta`}`);
+      rightContent.push(`  ${this.hoveredActionRow === 15 ? theme.bgHover(` ${theme.cyan(`[ a ] ${glyphs.plus} Adicionar Conta`)} `) : `${theme.cyan(`[ a ] ${glyphs.plus}`)} Adicionar Conta`}`);
     } else {
       const email = truncate(selected.emailOrName, 18);
       rightContent.push(`  ${theme.bold("Conta:")}      ${theme.cyan(email)}`);
@@ -520,11 +519,12 @@ export class AccountsView implements TuiView {
       rightContent.push(`  ${theme.bold("Headers:")}    ${hStatus}`);
       rightContent.push("");
       rightContent.push(`  ${theme.dim("─────────────────────────────────")}`);
-      rightContent.push(`  ${this.hoveredActionRow === 15 ? theme.bgHover(` ${theme.cyan("[ a ]")} Adicionar Nova Conta `) : `${theme.cyan("[ a ]")} Adicionar Nova Conta`}`);
-      rightContent.push(`  ${this.hoveredActionRow === 16 ? theme.bgHover(` ${theme.red("[ d ]")} Remover Selecionada `) : `${theme.red("[ d ]")} Remover Selecionada`}`);
-      rightContent.push(`  ${this.hoveredActionRow === 17 ? theme.bgHover(` ${theme.yellow("[ c ]")} Zerar Cooldown `) : `${theme.yellow("[ c ]")} Zerar Cooldown`}`);
-      rightContent.push(`  ${this.hoveredActionRow === 18 ? theme.bgHover(` ${theme.green("[ z ]")} Zerar Todas `) : `${theme.green("[ z ]")} Zerar Todas`}`);
+      rightContent.push(`  ${this.hoveredActionRow === 15 ? theme.bgHover(` ${theme.cyan(`[ a ] ${glyphs.plus} Adicionar Conta`)} `) : `${theme.cyan(`[ a ] ${glyphs.plus}`)} Adicionar Conta`}`);
+      rightContent.push(`  ${this.hoveredActionRow === 16 ? theme.bgHover(` ${theme.red(`[ d ] ${glyphs.remove} Remover Conta`)} `) : `${theme.red(`[ d ] ${glyphs.remove}`)} Remover Conta`}`);
+      rightContent.push(`  ${this.hoveredActionRow === 17 ? theme.bgHover(` ${theme.yellow(`[ c ] ${glyphs.zap} Zerar Cooldown`)} `) : `${theme.yellow(`[ c ] ${glyphs.zap}`)} Zerar Cooldown`}`);
+      rightContent.push(`  ${this.hoveredActionRow === 18 ? theme.bgHover(` ${theme.green(`[ z ] ${glyphs.zap} Zerar Todas`)} `) : `${theme.green(`[ z ] ${glyphs.zap}`)} Zerar Todas`}`);
     }
+
     const rightBox = drawBox({
       title: "Inspeção de Conta",
       width: rightW,
@@ -589,14 +589,13 @@ export class AccountsView implements TuiView {
       }
       const saveBtn =
         this.modalHoveredField === "save"
-          ? theme.bgHover(theme.green(" [ Enter: Salvar ] "))
-          : theme.green("[ Enter: Salvar ]");
+          ? theme.bgHover(theme.green(` [ Enter ] ${glyphs.enter} Salvar `))
+          : theme.green(`[ Enter ] ${glyphs.enter} Salvar`);
 
       const cancelBtn =
         this.modalHoveredField === "cancel"
-          ? theme.bgHover(theme.red(" [ Esc: Cancelar ] "))
-          : theme.muted("[ Esc: Cancelar ]");
-
+          ? theme.bgHover(theme.red(` [ Esc ] ${glyphs.cross} Cancelar `))
+          : theme.muted(`[ Esc ] ${glyphs.cross} Cancelar`);
       const modalContent = [
         "",
         `  ${theme.bold("E-mail:")}  ${emailDisplay}`,

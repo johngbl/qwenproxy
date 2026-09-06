@@ -343,8 +343,8 @@ export class SyncView implements TuiView {
     // Row index 6: Buttons
     const isSyncButtonFocused = this.selectedRowIndex === 6;
     const actionLine = isSyncButtonFocused
-      ? `  ${theme.bgSelected(" [ Enter: Sincronizar ] ")}   ${theme.dim("[ r: Restaurar ]")}`
-      : `  ${theme.blue("[ Enter: Sincronizar ]")}   ${theme.yellow("[ r: Restaurar ]")}`;
+      ? `  ${theme.bgSelected(` [ Enter ] ${glyphs.zap} Sincronizar `)}   ${theme.dim(`[ r ] ${glyphs.backspace} Restaurar`)}`
+      : `  ${theme.blue(`[ Enter ] ${glyphs.zap} Sincronizar`)}   ${theme.yellow(`[ r ] ${glyphs.backspace} Restaurar`)}`;
     leftContent.push(actionLine);
 
     const leftBox = drawBox({

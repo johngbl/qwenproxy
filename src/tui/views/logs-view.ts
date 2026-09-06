@@ -5,7 +5,7 @@
 
 import type { TuiView } from "../types.ts";
 import type { KeyEvent } from "../screen.ts";
-import { theme, drawBox, stringWidth, truncate } from "../theme.ts";
+import { theme, glyphs, drawBox, stringWidth, truncate } from "../theme.ts";
 import { ServerManager, type ServerLogEntry } from "../server-manager.ts";
 
 export class LogsView implements TuiView {
@@ -16,7 +16,7 @@ export class LogsView implements TuiView {
   private filter: "all" | "warn" | "error" = "all";
   private scrollOffset = 0; // 0 = at the bottom (follow newest)
   private autoScroll = true;
-
+  private hoveredChip: "all" | "warn" | "error" | "clear" | null = null;
   public getShortcuts(): Array<{ key: string; label: string }> {
     return [
       { key: "t", label: "Todos" },
@@ -28,23 +28,46 @@ export class LogsView implements TuiView {
   }
 
   public handleKey(key: KeyEvent): boolean | void {
-    // Mouse click on filter chips in row 4
+    // Mouse hover on chips in row 4
+    if (key.name === "hover" && key.mouse && key.mouse.row === 4) {
+      const col = key.mouse.col;
+      let target: "all" | "warn" | "error" | "clear" | null = null;
+      if (col >= 12 && col <= 24) target = "all";
+      else if (col >= 25 && col <= 39) target = "warn";
+      else if (col >= 40 && col <= 53) target = "error";
+      else if (col >= 54 && col <= 69) target = "clear";
+      if (this.hoveredChip !== target) {
+        this.hoveredChip = target;
+        return true;
+      }
+    } else if (this.hoveredChip !== null && key.mouse) {
+      this.hoveredChip = null;
+      return true;
+    }
+
+    // Mouse click on chips in row 4
     if (key.name === "click" && key.mouse && key.mouse.row === 4) {
       const col = key.mouse.col;
-      if (col >= 6 && col <= 18) {
+      if (col >= 12 && col <= 24) {
         this.filter = "all";
         this.scrollOffset = 0;
         this.autoScroll = true;
         return true;
       }
-      if (col >= 19 && col <= 31) {
+      if (col >= 25 && col <= 39) {
         this.filter = "warn";
         this.scrollOffset = 0;
         this.autoScroll = true;
         return true;
       }
-      if (col >= 32 && col <= 44) {
+      if (col >= 40 && col <= 53) {
         this.filter = "error";
+        this.scrollOffset = 0;
+        this.autoScroll = true;
+        return true;
+      }
+      if (col >= 54 && col <= 69) {
+        ServerManager.getInstance().clearLogs();
         this.scrollOffset = 0;
         this.autoScroll = true;
         return true;
@@ -123,17 +146,32 @@ export class LogsView implements TuiView {
 
   public render(width: number, height: number): string[] {
     const rawEntries = ServerManager.getInstance().getLogEntries(this.filter);
-    const contentH = Math.max(8, height - 2);
+    const contentH = Math.max(8, height);
     const innerW = width - 4;
 
     // Filter Chips in Top Title
     const allChip =
-      this.filter === "all" ? theme.bgSelected(" [t] Todos ") : theme.dim(" [t] Todos ");
+      this.filter === "all"
+        ? theme.bgSelected(" [ t ] Todos ")
+        : this.hoveredChip === "all"
+          ? theme.bgHover(" [ t ] Todos ")
+          : theme.cyan(" [ t ] Todos ");
     const warnChip =
-      this.filter === "warn" ? theme.bgSelected(" [w] Avisos ") : theme.dim(" [w] Avisos ");
+      this.filter === "warn"
+        ? theme.bgSelected(` [ w ] ${glyphs.warn} Avisos `)
+        : this.hoveredChip === "warn"
+          ? theme.bgHover(` [ w ] ${glyphs.warn} Avisos `)
+          : theme.yellow(` [ w ] ${glyphs.warn} Avisos `);
     const errChip =
-      this.filter === "error" ? theme.bgSelected(" [e] Erros ") : theme.dim(" [e] Erros ");
-
+      this.filter === "error"
+        ? theme.bgSelected(` [ e ] ${glyphs.cross} Erros `)
+        : this.hoveredChip === "error"
+          ? theme.bgHover(` [ e ] ${glyphs.cross} Erros `)
+          : theme.red(` [ e ] ${glyphs.cross} Erros `);
+    const clearChip =
+      this.hoveredChip === "clear"
+        ? theme.bgHover(` [ c ] ${glyphs.broom} Limpar `)
+        : theme.muted(` [ c ] ${glyphs.broom} Limpar `);
     const formattedLines: string[] = [];
 
     if (rawEntries.length === 0) {
@@ -172,9 +210,9 @@ export class LogsView implements TuiView {
       clampedOffset > 0 ? theme.yellow(` [ Rolar: +${clampedOffset} ] `) : "";
 
     const box = drawBox({
-      title: `Logs ${allChip} ${warnChip} ${errChip} (${rawEntries.length})${scrollIndicator}`,
+      title: `Logs (${rawEntries.length})  ${allChip} ${warnChip} ${errChip} ${clearChip}`,
       width,
-      height,
+      height: contentH,
       borderColor: theme.borderActive,
       titleColor: theme.cyan,
       content: visibleLines,

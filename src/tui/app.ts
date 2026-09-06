@@ -265,11 +265,10 @@ export class TuiApp {
     const shortcutsText = shortcuts
       .map((s) => `${theme.cyan(s.key)}: ${s.label}`)
       .join("  ");
-    const tabShortcuts = `${theme.cyan("Tab")}: Abas`;
 
     const fullFooter = shortcutsText
-      ? `  ${tabShortcuts}  •  ${shortcutsText}`
-      : `  ${tabShortcuts}`;
+      ? `  ${theme.cyan("Tab")}: Abas    ${theme.dim("•")}    ${shortcutsText}`
+      : `  ${theme.cyan("Tab")}: Abas [1..6]    ${theme.dim("•")}    ${theme.muted("2x Ctrl+C: Sair")}`;
     const footerBox = drawBox({
       width: cols,
       height: 3,

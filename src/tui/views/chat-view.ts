@@ -136,24 +136,20 @@ export class ChatView implements TuiView {
   public getShortcuts(): Array<{ key: string; label: string }> {
     if (this.isModelModalOpen) {
       return [
-        { key: "Enter", label: "Escolher" },
-        { key: "Esc", label: "Fechar" },
+        { key: "Enter", label: `${glyphs.enter} Escolher` },
+        { key: "Esc", label: `${glyphs.cross} Fechar` },
       ];
     }
     if (this.isEffortModalOpen) {
       return [
-        { key: "Enter", label: "Confirmar Effort" },
-        { key: "Esc", label: "Manter Atual" },
+        { key: "Enter", label: `${glyphs.enter} Confirmar` },
+        { key: "Esc", label: `${glyphs.cross} Manter` },
       ];
     }
-    const currentModel = this.availableModels[this.selectedModelIndex] || "qwen3.8-max";
-    const isReasoning = classifyModel(currentModel).category === "Texto & Raciocínio";
     return [
-      { key: "Enter", label: "Enviar" },
-      { key: "F2", label: "Modelo" },
-      ...(isReasoning ? [{ key: "F3", label: "Effort" }] : []),
-      { key: "Esc", label: "Parar" },
-      { key: "Ctrl+L", label: "Limpar" },
+      { key: "Enter", label: `${glyphs.enter} Enviar` },
+      { key: "Esc", label: `${glyphs.cross} Parar` },
+      { key: "Ctrl+L", label: `${glyphs.broom} Limpar` },
     ];
   }
 
@@ -628,7 +624,7 @@ export class ChatView implements TuiView {
       modalLines.push("");
 
       const modalBox = drawBox({
-        title: "Selecionar Modelo (↑/↓ navegar | Enter escolher | Esc fechar)",
+        title: `Selecionar Modelo [ Enter: ${glyphs.enter} Escolher  •  Esc: ${glyphs.cross} Fechar ]`,
         width,
         height: chatHeight,
         borderColor: theme.borderActive,
@@ -655,7 +651,7 @@ export class ChatView implements TuiView {
       modalLines.push("");
 
       const modalBox = drawBox({
-        title: "Nível de Raciocínio / Effort (↑/↓ navegar | Enter escolher | Esc manter)",
+        title: `Nível de Raciocínio / Effort [ Enter: ${glyphs.enter} Confirmar  •  Esc: ${glyphs.cross} Manter ]`,
         width,
         height: chatHeight,
         borderColor: theme.borderActive,
