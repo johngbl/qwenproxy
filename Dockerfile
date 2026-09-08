@@ -16,6 +16,7 @@ WORKDIR /app
 # Install dependencies first for better caching
 COPY package*.json ./
 RUN npm ci --omit=dev && npm cache clean --force
+RUN npx patchright install --with-deps chromium
 
 # Copy the rest of the application
 COPY . .
