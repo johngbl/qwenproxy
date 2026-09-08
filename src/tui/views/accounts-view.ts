@@ -425,8 +425,10 @@ export class AccountsView implements TuiView {
         onConfirm: async () => {
           removeAccount(selected.id);
           try {
-            const { closePlaywrightForAccount } = await import("../../services/playwright.ts");
+            const { closePlaywrightForAccount, removePlaywrightProfile } = await import("../../services/playwright.ts");
+            const { getAccountProfilePath } = await import("../../core/paths.ts");
             await closePlaywrightForAccount(selected.id);
+            removePlaywrightProfile(getAccountProfilePath(selected.id));
           } catch {}
           await this.refresh();
           this.setStatusMessage(theme.green(`✓ Conta ${selected.emailOrName} removida com sucesso`));

@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { chromium } from "patchright";
-import { pruneAllPlaywrightProfiles } from "./services/playwright.ts";
+import { pruneAllPlaywrightProfiles, cleanupOrphanProfiles } from "./services/playwright.ts";
 
 export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -141,13 +141,19 @@ async function main() {
   // 1. Profile Transient Cache Pruning (V8 Code Cache, GPU Cache)
   console.log("1. Limpando caches transitórios dos perfis (data/qwen_profiles/)...");
   const profileResult = pruneAllPlaywrightProfiles();
-  if (profileResult.totalFreedFiles > 0) {
-    console.log(
-      `   [OK] Perfis limpos com sucesso!`,
-    );
-    console.log(
-      `   Espaço liberado: ${formatBytes(profileResult.totalFreedBytes)} em ${profileResult.totalFreedFiles} arquivos (${profileResult.profilesCleaned} perfil(is)).`,
-    );
+  const orphanResult = cleanupOrphanProfiles();
+  if (profileResult.totalFreedFiles > 0 || orphanResult.removedCount > 0) {
+    console.log(`   [OK] Perfis limpos com sucesso!`);
+    if (profileResult.totalFreedFiles > 0) {
+      console.log(
+        `   Espaço liberado: ${formatBytes(profileResult.totalFreedBytes)} em ${profileResult.totalFreedFiles} arquivos (${profileResult.profilesCleaned} perfil(is)).`,
+      );
+    }
+    if (orphanResult.removedCount > 0) {
+      console.log(
+        `   Perfis órfãos removidos: ${orphanResult.removedCount} (${formatBytes(orphanResult.freedBytes)} liberados).`,
+      );
+    }
     console.log(
       `   (Todos os cookies, sessões e logins foram 100% preservados!)`,
     );

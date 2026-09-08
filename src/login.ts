@@ -130,6 +130,11 @@ async function removeAccountFlow() {
   const confirm = await askQuestion(`\nRemove ${account.email}? (y/N): `);
   if (confirm.toLowerCase() === "y") {
     if (removeAccount(account.id)) {
+      try {
+        const { removePlaywrightProfile } = await import("./services/playwright.ts");
+        const { getAccountProfilePath } = await import("./core/paths.ts");
+        removePlaywrightProfile(getAccountProfilePath(account.id));
+      } catch {}
       console.log(`Account ${maskEmail(account.email)} removed.`);
     } else {
       console.log("Failed to remove account.");

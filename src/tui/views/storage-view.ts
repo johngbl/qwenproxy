@@ -7,7 +7,7 @@ import path from "node:path";
 import type { TuiView } from "../types.ts";
 import type { KeyEvent } from "../screen.ts";
 import { theme, glyphs, drawBox, pad } from "../theme.ts";
-import { pruneAllPlaywrightProfiles } from "../../services/playwright.ts";
+import { pruneAllPlaywrightProfiles, cleanupOrphanProfiles } from "../../services/playwright.ts";
 import { getProfilesDir } from "../../core/paths.ts";
 import {
   formatBytes,
@@ -79,6 +79,9 @@ export class StorageView implements TuiView {
     this.isScanning = true;
 
     try {
+      // 0. Auto-prune orphan directories from removed accounts
+      cleanupOrphanProfiles();
+
       // 1. Scan profiles
       const profilesDir = getProfilesDir();
       let totalBytes = 0;
@@ -241,11 +244,12 @@ export class StorageView implements TuiView {
     if ((key.name === "p" || key.name === "P") && !key.ctrl) {
       try {
         const res = pruneAllPlaywrightProfiles();
-        this.addLog(
-          theme.green(
-            `✓ Caches limpos: ${formatBytes(res.totalFreedBytes)} liberados em ${res.totalFreedFiles} arquivos (${res.profilesCleaned} perfis)`,
-          ),
-        );
+        const orphanRes = cleanupOrphanProfiles();
+        let logMsg = `✓ Caches limpos: ${formatBytes(res.totalFreedBytes)} liberados em ${res.totalFreedFiles} arquivos (${res.profilesCleaned} perfis)`;
+        if (orphanRes.removedCount > 0) {
+          logMsg += ` + ${orphanRes.removedCount} perfil(is) órfão(s) removido(s)`;
+        }
+        this.addLog(theme.green(logMsg));
         await this.refresh();
       } catch (err: any) {
         this.addLog(theme.red(`✗ Falha ao limpar perfis: ${err?.message || String(err)}`));

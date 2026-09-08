@@ -7,7 +7,7 @@ import { chromium, type Browser, type BrowserContext, type Page } from "patchrig
 import path from "path";
 import fs from "fs";
 import crypto from "crypto";
-import type { QwenAccount } from "../core/accounts.ts";
+import { loadAccounts, type QwenAccount } from "../core/accounts.ts";
 // Imported here rather than injected from session-keeper.ts: account-concurrency
 // only depends on config/logger, so playwright -> account-concurrency stays
 // acyclic, while the reverse direction would drag the browser layer into core.
@@ -2337,6 +2337,64 @@ export function pruneAllPlaywrightProfiles(baseDir = getProfilesDir()): {
   } catch {}
 
   return { totalFreedBytes, totalFreedFiles, profilesCleaned };
+}
+/**
+ * Removes profile directories in data/qwen_profiles that do not belong to any
+ * active account configured in the database or environment, plus any lingering
+ * .stale-* directories from previous lock renames.
+ */
+export function cleanupOrphanProfiles(
+  baseDir = getProfilesDir(),
+  activeAccountIds?: Set<string>,
+): {
+  removedCount: number;
+  freedBytes: number;
+} {
+  let removedCount = 0;
+  let freedBytes = 0;
+
+  try {
+    if (!fs.existsSync(baseDir)) {
+      return { removedCount, freedBytes };
+    }
+
+    const activeIds =
+      activeAccountIds ?? new Set(loadAccounts().map((a) => a.id));
+
+    const entries = fs.readdirSync(baseDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const isStale = entry.name.includes(".stale-");
+      const isOrphan = !isStale && !activeIds.has(entry.name);
+
+      if (isStale || isOrphan) {
+        const targetPath = path.join(baseDir, entry.name);
+        try {
+          let bytes = 0;
+          const countSize = (d: string) => {
+            try {
+              const subEntries = fs.readdirSync(d, { withFileTypes: true });
+              for (const e of subEntries) {
+                const full = path.join(d, e.name);
+                if (e.isDirectory()) countSize(full);
+                else if (e.isFile()) {
+                  try { bytes += fs.statSync(full).size; } catch {}
+                }
+              }
+            } catch {}
+          };
+          countSize(targetPath);
+          removePlaywrightProfile(targetPath);
+          if (!fs.existsSync(targetPath)) {
+            removedCount++;
+            freedBytes += bytes;
+          }
+        } catch {}
+      }
+    }
+  } catch {}
+
+  return { removedCount, freedBytes };
 }
 
 const PROFILE_RESET_TIMEOUT_MS = Math.max(90_000, config.timeouts.headers);
