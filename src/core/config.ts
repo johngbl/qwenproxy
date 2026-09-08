@@ -52,7 +52,7 @@ const envSchema = z
     // own context while serving. Accounts in cooldown (rate-limited) sit idle,
     // drop out of the warm set and get evicted.
     PLAYWRIGHT_MAX_ACTIVE_CONTEXTS: z.string().default("2"),
-    PLAYWRIGHT_PREPARE_ALL_ON_STARTUP: z.string().default("true"),
+    PLAYWRIGHT_PREPARE_ALL_ON_STARTUP: z.string().default("false"),
     CAPTCHA_SOLVER_ENABLED: z.string().default("true"),
     CAPTCHA_SOLVER_MAX_ATTEMPTS: z.string().default("3"),
     CAPTCHA_SOLVER_TIMEOUT_MS: z.string().default("15000"),
@@ -166,7 +166,7 @@ const envSchema = z
     // trust score and gets TMD-challenged on the next request. On by default;
     // the keeper skips accounts that are mid-stream or mutex-busy.
     SESSION_KEEP_ALIVE_ENABLED: z.string().default("true"),
-    SESSION_KEEP_ALIVE_INTERVAL_MS: z.string().default("30000"),
+    SESSION_KEEP_ALIVE_INTERVAL_MS: z.string().default("180000"),
     SESSION_KEEP_ALIVE_IDLE_MS: z.string().default("120000"),
     SESSION_KEEP_ALIVE_NAVIGATION_INTERVAL_MS: z.string().default("480000"),
     API_KEY: z.string().default(""),

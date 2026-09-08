@@ -91,11 +91,6 @@ export class TuiApp {
       if (!this.isRunning) return;
       try {
         this.statusSnapshot = await fetchProxyStatus();
-        // If the active view has a model refresher, keep it synchronized
-        const activeView = this.views[this.activeViewIndex];
-        if ("refreshModels" in activeView && typeof (activeView as any).refreshModels === "function") {
-          void (activeView as any).refreshModels();
-        }
         this.requestRender();
       } catch {}
     }, 1000);

@@ -6,6 +6,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  ANSI,
   stripAnsi,
   stringWidth,
   truncate,
@@ -94,6 +95,15 @@ test("TUI Theme: pad handles left, right, and center alignments", () => {
   assert.equal(pad("test", 10, "center"), "   test   ");
   assert.equal(stringWidth(pad("test", 10, "center")), 10);
 });
+test("TUI Theme: enableMouse excludes 1003h any-event tracking to prevent CPU flood while keeping click and drag", () => {
+  // Must contain 1000h (click), 1002h (button/drag), 1006h (SGR coords)
+  assert.ok(ANSI.enableMouse.includes("1000h"), "Must enable normal click tracking");
+  assert.ok(ANSI.enableMouse.includes("1002h"), "Must enable button-event / drag tracking");
+  assert.ok(ANSI.enableMouse.includes("1006h"), "Must enable SGR extended coordinate mode");
+  // Must NOT contain 1003h (any-event mouse move flood)
+  assert.equal(ANSI.enableMouse.includes("1003h"), false, "Must NOT enable 1003h any-event hover flood");
+});
+
 
 test("TUI Theme: drawBox creates properly bounded boxes with rounded corners", () => {
   const box = drawBox({
