@@ -883,7 +883,7 @@ test("TUI StorageView: repeated refresh does not duplicate profile stats", async
   const countAfterSecond = (view as any).profileStats.length;
   assert.equal(countAfterFirst, countAfterSecond, "profileStats length must stay constant across refreshes");
 });
-test("TUI StorageView: optimization logs are in chronological order, with timestamps and no hardcoded ~4GB", async () => {
+test("TUI StorageView: optimization logs are in chronological order without timestamps or hardcoded ~4GB", async () => {
   const view = new StorageView();
 
   // Execute Z (zerar cooldowns) then R (atualizar disco)
@@ -899,14 +899,15 @@ test("TUI StorageView: optimization logs are in chronological order, with timest
   assert.ok(logs[1].includes("Medições atualizadas"), "second action should be Medições atualizadas");
   assert.ok(logs[2].includes("Navegadores"), "third action should be Navegadores");
 
-  // Verify timestamp presence
+  // Verify no timestamp
   for (const l of logs) {
-    assert.match(stripAnsi(l), /\[\d{2}:\d{2}:\d{2}\]/, "every log must have a timestamp");
+    assert.equal(/\[\d{2}:\d{2}:\d{2}\]/.test(stripAnsi(l)), false, "logs must not have timestamps");
   }
 
-  // Verify no hardcoded ~4GB
+  // Verify no hardcoded ~4GB or (SSD já otimizado)
   const render = view.render(100, 24).join("\n");
   assert.ok(!render.includes("~4GB"), "must not contain hardcoded ~4GB");
+  assert.ok(!render.includes("(SSD já otimizado)"), "must not contain (SSD já otimizado)");
 });
 
 test("TUI SyncView: mouse click precisely toggles clients, model, and scope", async () => {

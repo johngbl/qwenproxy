@@ -34,8 +34,7 @@ export class StorageView implements TuiView {
   private isScanning = false;
 
   private addLog(message: string): void {
-    const time = new Date().toTimeString().slice(0, 8);
-    this.actionLogs.push(`${theme.dim(`[${time}]`)} ${message}`);
+    this.actionLogs.push(message);
     if (this.actionLogs.length > 50) {
       this.actionLogs.shift();
     }
@@ -187,7 +186,7 @@ export class StorageView implements TuiView {
         } else {
           this.addLog(
             theme.green(
-              `✓ Navegadores verificados: nenhum navegador antigo encontrado (SSD já otimizado)`,
+              `✓ Navegadores verificados: nenhum navegador antigo encontrado`,
             ),
           );
         }
