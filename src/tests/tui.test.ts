@@ -758,6 +758,31 @@ test("TUI StorageView: repeated refresh does not duplicate profile stats", async
   const countAfterSecond = (view as any).profileStats.length;
   assert.equal(countAfterFirst, countAfterSecond, "profileStats length must stay constant across refreshes");
 });
+test("TUI StorageView: optimization logs are in chronological order, with timestamps and no hardcoded ~4GB", async () => {
+  const view = new StorageView();
+
+  // Execute Z (zerar cooldowns) then R (atualizar disco)
+  await view.handleKey({ name: "z", ctrl: false, shift: false, meta: false });
+  await view.handleKey({ name: "r", ctrl: false, shift: false, meta: false });
+  await view.handleKey({ name: "b", ctrl: false, shift: false, meta: false });
+
+  const logs: string[] = (view as any).actionLogs;
+  assert.equal(logs.length, 3, "should record exactly 3 clean action entries");
+
+  // Verify chronological order: Z (first), R (second), B (third)
+  assert.ok(logs[0].includes("Cooldowns zerados"), "first action should be Cooldowns zerados");
+  assert.ok(logs[1].includes("Medições atualizadas"), "second action should be Medições atualizadas");
+  assert.ok(logs[2].includes("Navegadores"), "third action should be Navegadores");
+
+  // Verify timestamp presence
+  for (const l of logs) {
+    assert.match(stripAnsi(l), /\[\d{2}:\d{2}:\d{2}\]/, "every log must have a timestamp");
+  }
+
+  // Verify no hardcoded ~4GB
+  const render = view.render(100, 24).join("\n");
+  assert.ok(!render.includes("~4GB"), "must not contain hardcoded ~4GB");
+});
 
 test("TUI SyncView: mouse click precisely toggles clients, model, and scope", async () => {
   const view = new SyncView();

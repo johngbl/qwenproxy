@@ -33,6 +33,14 @@ export class StorageView implements TuiView {
   private actionLogs: string[] = [];
   private isScanning = false;
 
+  private addLog(message: string): void {
+    const time = new Date().toTimeString().slice(0, 8);
+    this.actionLogs.push(`${theme.dim(`[${time}]`)} ${message}`);
+    if (this.actionLogs.length > 50) {
+      this.actionLogs.shift();
+    }
+  }
+
   constructor() {
     this.refresh();
   }
@@ -85,7 +93,7 @@ export class StorageView implements TuiView {
         0,
       );
     } catch (err: any) {
-      this.actionLogs.unshift(
+      this.addLog(
         theme.red(`✗ Erro ao calcular armazenamento: ${err?.message || String(err)}`),
       );
     } finally {
@@ -136,59 +144,62 @@ export class StorageView implements TuiView {
     // Reset cooldowns with 'z'
     if ((key.name === "z" || key.name === "Z") && !key.ctrl) {
       const cleared = resetAllCooldowns();
-      this.actionLogs.unshift(
-        theme.green(`✓ Cooldowns zerados: ${cleared} conta(s) destravada(s)!`),
+      this.addLog(
+        theme.green(`✓ Cooldowns zerados: ${cleared} conta(s) destravada(s)`),
       );
       return true;
     }
 
     // Refresh storage stats
     if ((key.name === "r" || key.name === "R") && !key.ctrl) {
-      this.actionLogs.unshift(theme.cyan("⏳ Recalculando medições de disco..."));
       await this.refresh();
-      this.actionLogs.unshift(theme.green("✓ Medições de disco atualizadas."));
+      this.addLog(
+        theme.green(`✓ Medições atualizadas: ${formatBytes(this.profilesTotalBytes)} em ${this.profilesCount} perfil(is)`),
+      );
       return true;
     }
     // Prune profile caches
     if ((key.name === "p" || key.name === "P") && !key.ctrl) {
-      this.actionLogs.unshift(theme.cyan("⏳ Limpando caches transitórios dos perfis..."));
       try {
         const res = pruneAllPlaywrightProfiles();
-        this.actionLogs.unshift(
+        this.addLog(
           theme.green(
-            `✓ Caches limpos: ${formatBytes(res.totalFreedBytes)} liberados em ${res.totalFreedFiles} arquivos (${res.profilesCleaned} perfis).`,
+            `✓ Caches limpos: ${formatBytes(res.totalFreedBytes)} liberados em ${res.totalFreedFiles} arquivos (${res.profilesCleaned} perfis)`,
           ),
         );
-        this.actionLogs.unshift(theme.muted("  (Todos os cookies e logins foram 100% preservados!)"));
         await this.refresh();
       } catch (err: any) {
-        this.actionLogs.unshift(theme.red(`✗ Falha ao limpar perfis: ${err?.message || String(err)}`));
+        this.addLog(theme.red(`✗ Falha ao limpar perfis: ${err?.message || String(err)}`));
       }
       return true;
     }
 
     // Clean unused playwright browsers
     if ((key.name === "b" || key.name === "B") && !key.ctrl) {
-      this.actionLogs.unshift(
-        theme.yellow("⏳ Removendo navegadores antigos do Playwright (~4GB)..."),
-      );
       try {
         const res = await cleanPlaywrightBrowsers(true);
-        this.actionLogs.unshift(
-          theme.green(
-            `✓ Sucesso: ${formatBytes(res.freedBytes)} recuperados no SSD! (${res.unusedDirs.length} navegadores removidos)`,
-          ),
-        );
+        if (res.freedBytes > 0 || res.unusedDirs.length > 0) {
+          this.addLog(
+            theme.green(
+              `✓ Navegadores limpos: ${formatBytes(res.freedBytes)} recuperados no SSD (${res.unusedDirs.length} versões removidas)`,
+            ),
+          );
+        } else {
+          this.addLog(
+            theme.green(
+              `✓ Navegadores verificados: nenhum navegador antigo encontrado (SSD já otimizado)`,
+            ),
+          );
+        }
         await this.refresh();
       } catch (err: any) {
-        this.actionLogs.unshift(
+        this.addLog(
           theme.red(`✗ Falha ao remover navegadores: ${err?.message || String(err)}`),
         );
       }
       return true;
     }
   }
-
   public render(width: number, height: number): string[] {
     const contentH = Math.max(12, height);
     const leftW = Math.max(48, Math.floor(width * 0.48));
@@ -264,7 +275,9 @@ export class StorageView implements TuiView {
       rightContent.push(theme.muted("  Nenhuma otimização executada nesta sessão."));
       rightContent.push(theme.muted("  Execute uma das Ações Rápidas ao lado para otimizar o disco."));
     } else {
-      for (const log of this.actionLogs.slice(0, contentH - 12)) {
+      const maxLogs = Math.max(1, contentH - 12);
+      const visibleLogs = this.actionLogs.slice(-maxLogs);
+      for (const log of visibleLogs) {
         rightContent.push(`  ${log}`);
       }
     }
