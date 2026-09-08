@@ -635,12 +635,12 @@ export class AccountsView implements TuiView {
         const isHovered = idx === this.hoveredAccountIndex;
         const pointer = isFocused ? theme.cyan(`${glyphs.pointer} `) : "  ";
         const num = pad(String(idx + 1) + ".", 4);
-        const name = pad(acc.emailOrName, 22);
+        const name = pad(truncate(acc.emailOrName, 20), 22);
 
         let status = theme.green(`${glyphs.bullet} Pronto   `);
         if (acc.onCooldown) {
           const mins = Math.max(1, Math.round(acc.remainingCooldownMs / 60000));
-          status = theme.yellow(`⚠ ${mins}m cd   `);
+          status = theme.yellow(`⚠️ ${mins}m cd   `);
         } else if (!acc.headersReady) {
           status = acc.isInitialized
             ? theme.yellow(`◐ Aquecendo...`)

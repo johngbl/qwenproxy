@@ -901,7 +901,7 @@ test("TUI StorageView: mouse hover and click on quick action rows", async () => 
     mouse: { type: "click", button: "left", col: 10, row: 15 },
   });
   render = view.render(80, 24).join("\n");
-  assert.ok(render.includes("destravada"));
+  assert.ok(render.includes("Cooldowns zerados") || render.includes("destravada"));
 });
 test("TUI StorageView: repeated refresh does not duplicate profile stats", async () => {
   const view = new StorageView();

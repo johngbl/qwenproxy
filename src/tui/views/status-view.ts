@@ -4,7 +4,7 @@
 
 import type { TuiView, ProxyStatusSnapshot } from "../types.ts";
 import type { KeyEvent } from "../screen.ts";
-import { theme, glyphs, drawBox, pad } from "../theme.ts";
+import { theme, glyphs, drawBox, pad, truncate } from "../theme.ts";
 import { fetchProxyStatus, resetAllCooldowns, formatUptime } from "../proxy-client.ts";
 import { ServerManager } from "../server-manager.ts";
 
@@ -169,17 +169,17 @@ export class StatusView implements TuiView {
     } else {
       accounts.slice(0, contentH - 5).forEach((acc, idx) => {
         const num = pad(String(idx + 1), 3);
-        const name = pad(acc.emailOrName, 22);
+        const name = pad(truncate(acc.emailOrName, 20), 20);
         let status = theme.green(`${glyphs.bullet} Pronto`);
         if (acc.onCooldown) {
           const mins = Math.max(1, Math.round(acc.remainingCooldownMs / 60000));
-          status = theme.yellow(`⚠ Cooldown ${mins}m`);
+          status = theme.yellow(`⚠️ Cooldown ${mins}m`);
         } else if (!acc.headersReady) {
           status = acc.isInitialized
             ? theme.yellow(`◐ Aquecendo...`)
             : theme.muted(`○ Standby`);
         }
-        rightContent.push(`  ${num} ${name} ${status}`);
+        rightContent.push(`  ${num} ${name}  ${status}`);
       });
     }
 

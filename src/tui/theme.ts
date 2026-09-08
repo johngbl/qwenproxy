@@ -181,22 +181,39 @@ const ANSI_REGEX =
 export function stripAnsi(str: string): string {
   return str.replace(ANSI_REGEX, "");
 }
+const graphemeSegmenter = new Intl.Segmenter("en", { granularity: "grapheme" });
 
 /**
- * Computes visual display width of string, accounting for wide characters and emojis.
+ * Computes visual display width of string, accounting for wide characters,
+ * grapheme clusters, variation selectors (VS16), and terminal-wide emojis.
  */
 export function stringWidth(str: string): number {
   const clean = stripAnsi(str).replace(/\t/g, "  ").replace(/\r/g, "");
   let width = 0;
-  for (const char of clean) {
-    const code = char.codePointAt(0) || 0;
-    // Zero-width characters (variation selectors, zero-width space/joiner)
-    if ((code >= 0xfe00 && code <= 0xfe0f) || (code >= 0x200b && code <= 0x200d)) {
+  for (const { segment } of graphemeSegmenter.segment(clean)) {
+    const code = segment.codePointAt(0) || 0;
+    // Standalone zero-width characters (variation selectors, zero-width space/joiner)
+    if (
+      segment === "\u200b" ||
+      segment === "\u200c" ||
+      segment === "\u200d" ||
+      (code >= 0xfe00 && code <= 0xfe0f && segment.length === 1)
+    ) {
       continue;
     }
-    // Specific BMP emojis and symbols that occupy 2 visual terminal cells (e.g. ⚠️, ⚡, ✅, ❌, ✨, ☕)
+    // Graphemes containing variation selector 16 (emoji presentation)
+    if (segment.includes("\ufe0f")) {
+      width += 2;
+      continue;
+    }
+    // Specific BMP emojis and symbols that occupy 2 visual terminal cells (e.g. ⚠️, ⏱, ⚡, ✅, ❌, ✨, ☕, ⚙)
     const isBmpEmoji =
       code === 0x26a0 || // ⚠️ (WARNING SIGN)
+      code === 0x23f1 || // ⏱ (STOPWATCH)
+      code === 0x23f0 || // ⏰
+      code === 0x23f3 || // ⏳
+      code === 0x231a || // ⌚
+      code === 0x231b || // ⌛
       code === 0x2705 || // ✅
       code === 0x2728 || // ✨
       code === 0x274c || // ❌
@@ -207,10 +224,9 @@ export function stringWidth(str: string): number {
       code === 0x2b55 || // ⭕
       code === 0x26a1 || // ⚡
       code === 0x2615 || // ☕
-      code === 0x231a || // ⌚
-      code === 0x231b || // ⌛
-      code === 0x23f0 || // ⏰
-      code === 0x23f3;   // ⏳
+      code === 0x2699 || // ⚙
+      code === 0x2709;   // ✉
+
     // Common emoji and CJK full-width ranges (SMP Emojis 0x1f300 - 0x1faff)
     if (
       isBmpEmoji ||
@@ -244,15 +260,15 @@ export function truncate(str: string, maxWidth: number, ellipsis = "…"): strin
   const targetW = Math.max(0, maxWidth - ellipsisW);
 
   let currentW = 0;
-  let cutIndex = 0;
-  for (const char of clean) {
-    const charW = stringWidth(char);
-    if (currentW + charW > targetW) break;
-    currentW += charW;
-    cutIndex += char.length;
+  let result = "";
+  for (const { segment } of graphemeSegmenter.segment(clean)) {
+    const segW = stringWidth(segment);
+    if (currentW + segW > targetW) break;
+    currentW += segW;
+    result += segment;
   }
 
-  return clean.slice(0, cutIndex) + ellipsis;
+  return result + ellipsis;
 }
 
 /**
@@ -328,6 +344,7 @@ export interface BoxOptions {
   borderColor?: (s: string) => string;
   titleColor?: (s: string) => string;
   footerColor?: (s: string) => string;
+  wrap?: boolean;
   content: string[];
 }
 
@@ -379,16 +396,17 @@ export function drawBox(options: BoxOptions): string[] {
   }
   lines.push(borderColor(b.tl) + topHeader + borderColor(b.tr));
 
-  // Flatten and auto-wrap content lines so words are never cut off with ellipsis,
-  // and strictly prevent any embedded \n or \r from leaking into a terminal row!
+  // Flatten content lines and optionally wrap prose lines.
+  // Fixed-height boxes do not auto-wrap by default to preserve row and scrollbar alignment.
+  const shouldWrap = options.wrap === true || (!options.height && options.wrap !== false);
   const expandedContent: string[] = [];
   for (const item of content) {
     const subItems = String(item ?? "").split(/\r?\n/);
     for (const sub of subItems) {
-      if (stringWidth(sub) <= innerW) {
-        expandedContent.push(sub);
-      } else {
+      if (shouldWrap && stringWidth(sub) > innerW) {
         expandedContent.push(...wrapContentLine(sub, innerW));
+      } else {
+        expandedContent.push(sub);
       }
     }
   }
