@@ -3,7 +3,7 @@
  * Captures real browser headers (bx-ua, bx-umidtoken) per account.
  */
 
-import { chromium, type BrowserContext, type Page } from "patchright";
+import { chromium, type Browser, type BrowserContext, type Page } from "patchright";
 import path from "path";
 import fs from "fs";
 import crypto from "crypto";
@@ -182,6 +182,112 @@ async function acquireAccountMutex(
 const accountContexts = new Map<string, BrowserContext>();
 const accountPages = new Map<string, Page>();
 const cachedUserAgents = new Map<string, string>();
+
+let sharedBrowser: Browser | null = null;
+let sharedBrowserPromise: Promise<Browser> | null = null;
+
+export function getSharedBrowser(): Browser | null {
+  return sharedBrowser;
+}
+
+export function getStorageStatePath(accountId: string): string {
+  const profileDir = getAccountProfilePath(accountId);
+  return path.join(profileDir, "storage_state.json");
+}
+
+export function loadStorageState(accountId: string): string | undefined {
+  const p1 = getStorageStatePath(accountId);
+  const p2 = path.join(path.dirname(p1), `${accountId}_state.json`);
+  const chosenPath = fs.existsSync(p1) ? p1 : fs.existsSync(p2) ? p2 : undefined;
+  if (!chosenPath) return undefined;
+  try {
+    const raw = fs.readFileSync(chosenPath, "utf8");
+    const state = JSON.parse(raw);
+    if (!state || typeof state !== "object" || !Array.isArray(state.cookies)) {
+      return undefined;
+    }
+    return chosenPath;
+  } catch {
+    return undefined;
+  }
+}
+
+export async function saveStorageState(
+  context: BrowserContext,
+  accountId: string,
+): Promise<void> {
+  try {
+    const stateFile = getStorageStatePath(accountId);
+    const dir = path.dirname(stateFile);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    await context.storageState({ path: stateFile });
+  } catch (error) {
+    console.warn(
+      `[Playwright] Failed to save storage state for ${accountId}: ${getErrorMessage(error)}`,
+    );
+  }
+}
+
+async function hasValidAuthCookie(context: BrowserContext): Promise<boolean> {
+  try {
+    const cookies = await context.cookies();
+    return cookies.some(
+      (c) =>
+        (c.name.toLowerCase().includes("token") || c.name.toLowerCase().includes("session")) &&
+        (c.expires === undefined || c.expires === -1 || c.expires * 1000 > Date.now()),
+    );
+  } catch {
+    return false;
+  }
+}
+
+export async function getOrLaunchSharedBrowser(
+  browserType: BrowserType = "chromium",
+  headless = true,
+): Promise<Browser> {
+  if (sharedBrowser && sharedBrowser.isConnected()) {
+    return sharedBrowser;
+  }
+  if (sharedBrowserPromise) {
+    return sharedBrowserPromise;
+  }
+
+  sharedBrowserPromise = (async () => {
+    const { engine, channel } = resolveBrowserEngine(browserType);
+    const defaultViewport = { width: 1280, height: 800 };
+    const launchArgs = buildChromiumLaunchArgs(defaultViewport);
+
+    console.log(
+      `[Playwright] Launching single shared ${browserType} browser...`,
+    );
+
+    const browser = await engine.launch({
+      headless,
+      channel,
+      ignoreDefaultArgs: ["--enable-automation", "--enable-blink-features"],
+      args: launchArgs,
+    });
+
+    browser.on("disconnected", () => {
+      console.warn("[Playwright] Shared browser disconnected");
+      sharedBrowser = null;
+      for (const accountId of Array.from(accountPages.keys())) {
+        cleanupPlaywrightAccountState(accountId);
+      }
+    });
+
+    sharedBrowser = browser;
+    return browser;
+  })();
+
+  try {
+    return await sharedBrowserPromise;
+  } finally {
+    sharedBrowserPromise = null;
+  }
+}
 
 // Header cache per account
 interface AccountHeaderCache {
@@ -1041,13 +1147,12 @@ export async function initPlaywrightForAccount(
     // If a context limit is configured, make room by closing idle contexts.
     await evictIdlePlaywrightContextsToLimit().catch(() => {});
 
-    const profilePath = getAccountProfilePath(account.id);
     const fingerprint = getFingerprintProfile(account.id);
-    const { engine, channel } = resolveBrowserEngine(browserType);
+    const sharedBrowser = await getOrLaunchSharedBrowser(browserType, headless);
+    const storageState = loadStorageState(account.id);
 
-    const acctContext = await engine.launchPersistentContext(profilePath, {
-      headless,
-      channel,
+    const acctContext = await sharedBrowser.newContext({
+      ...(storageState ? { storageState } : {}),
       userAgent: fingerprint.userAgent,
       locale: fingerprint.locale,
       timezoneId: fingerprint.timezoneId,
@@ -1062,8 +1167,6 @@ export async function initPlaywrightForAccount(
         "sec-ch-ua-mobile": "?0",
         "sec-ch-ua-platform": '"Windows"',
       },
-      ignoreDefaultArgs: ["--enable-automation", "--enable-blink-features"],
-      args: buildChromiumLaunchArgs(fingerprint.viewport),
     });
 
     try {
@@ -1073,23 +1176,7 @@ export async function initPlaywrightForAccount(
         await hook(acctContext);
       }
 
-      // Persistent contexts may already contain an initial about:blank tab.
-      // Reuse it instead of creating a second tab. Prefer a tab already on the
-      // Qwen origin when one exists.
-      const existingPages = acctContext.pages().filter((p) => !p.isClosed());
-      const acctPage =
-        existingPages.find((p) => p.url().startsWith(qwenOrigin())) ??
-        existingPages[0] ??
-        (await acctContext.newPage());
-
-      // Close any extra blank tabs that may have been created by the browser
-      // profile/startup, but keep the primary page selected above.
-      for (const extraPage of existingPages.slice(1)) {
-        if (extraPage !== acctPage && extraPage.url() === "about:blank") {
-          await extraPage.close({ runBeforeUnload: false }).catch(() => {});
-        }
-      }
-
+      const acctPage = await acctContext.newPage();
       acctPage.setDefaultTimeout(config.timeouts.page);
       acctPage.setDefaultNavigationTimeout(config.timeouts.navigation);
       accountContexts.set(account.id, acctContext);
@@ -1205,12 +1292,12 @@ export async function validateAccountLogin(
   try {
     if (accountPages.has(account.id)) return true;
 
-    const profilePath = getAccountProfilePath(account.id);
     const fingerprint = getFingerprintProfile(account.id);
-    const { engine, channel } = resolveBrowserEngine(browserType);
-    const acctContext = await engine.launchPersistentContext(profilePath, {
-      headless,
-      channel,
+    const sharedBrowser = await getOrLaunchSharedBrowser(browserType, headless);
+    const storageState = loadStorageState(account.id);
+
+    const acctContext = await sharedBrowser.newContext({
+      ...(storageState ? { storageState } : {}),
       userAgent: fingerprint.userAgent,
       locale: fingerprint.locale,
       timezoneId: fingerprint.timezoneId,
@@ -1225,18 +1312,11 @@ export async function validateAccountLogin(
         "sec-ch-ua-mobile": "?0",
         "sec-ch-ua-platform": '"Windows"',
       },
-      ignoreDefaultArgs: ["--enable-automation", "--enable-blink-features"],
-      args: buildChromiumLaunchArgs(fingerprint.viewport),
     });
 
     try {
       await acctContext.addInitScript(getStealthScript(fingerprint));
-
-      const existingPages = acctContext.pages().filter((p) => !p.isClosed());
-      const acctPage =
-        existingPages.find((p) => p.url().startsWith(qwenOrigin())) ??
-        existingPages[0] ??
-        (await acctContext.newPage());
+      const acctPage = await acctContext.newPage();
 
       // Check if already logged in via cookies
       const cookies = await acctContext.cookies();
@@ -1306,12 +1386,14 @@ async function loginToQwen(
     // Try API login first
     const apiResult = await loginViaApi(page, email, password);
     if (apiResult) {
+      await saveStorageState(page.context(), accountId);
       return true;
     }
 
     // Fallback to UI login
     const uiResult = await loginViaUi(page, email, password);
     if (uiResult) {
+      await saveStorageState(page.context(), accountId);
       return true;
     }
 
@@ -2107,6 +2189,8 @@ async function resetPlaywrightProfileLocked(accountId: string): Promise<void> {
   await closePlaywrightForAccountLocked(accountId);
   const profilePath = getAccountProfilePath(accountId);
   removePlaywrightProfile(profilePath);
+  const stateFile2 = path.join(path.dirname(profilePath), `${accountId}_state.json`);
+  try { fs.rmSync(stateFile2, { force: true }); } catch {}
 }
 
 /**
@@ -2533,7 +2617,11 @@ async function closePlaywrightContextBestEffort(
   accountId: string,
   context: BrowserContext,
 ): Promise<void> {
-  const browserProcess = getBrowserProcess(context);
+  try {
+    if (await hasValidAuthCookie(context)) {
+      await saveStorageState(context, accountId);
+    }
+  } catch {}
 
   try {
     const pages = context.pages();
@@ -2557,19 +2645,6 @@ async function closePlaywrightContextBestEffort(
       console.warn(
         `[Playwright] Failed to close context for ${accountId}: ${getErrorMessage(error)}`,
       );
-    }
-
-    if (browserProcess && !browserProcess.killed) {
-      try {
-        browserProcess.kill("SIGKILL");
-        console.warn(
-          `[Playwright] Killed lingering browser process for ${accountId}`,
-        );
-      } catch (killError) {
-        console.warn(
-          `[Playwright] Failed to kill browser process for ${accountId}: ${getErrorMessage(killError)}`,
-        );
-      }
     }
   }
 }
@@ -2651,6 +2726,10 @@ export async function closeAllPlaywright(): Promise<void> {
     for (const accountId of accountIds) {
       await closePlaywrightForAccount(accountId);
     }
+    if (sharedBrowser && sharedBrowser.isConnected()) {
+      await sharedBrowser.close().catch(() => {});
+      sharedBrowser = null;
+    }
   } finally {
     closingAllPlaywright = false;
   }
@@ -2726,7 +2805,6 @@ export async function getTokenDiagnostics(
   const targetAccounts = accountId
     ? [accountId]
     : Array.from(accountContexts.keys());
-
   const allCookies: CookieDiagnostic[] = [];
   const headerDiags: HeaderDiagnostic[] = [];
 
