@@ -34,7 +34,7 @@ const envSchema = z
     // temp chat (chat_mode:"local") for every request and sends the full
     // history inline (OpenAI standard). Temp chats are ephemeral and never
     // appear in the account's chat list (live-probed).
-    QWEN_CHAT_MODE: z.enum(["thread", "temp"]).default("thread"),
+    QWEN_CHAT_MODE: z.enum(["thread", "temp", "temp-thread"]).default("thread"),
     PLAYWRIGHT_HEADLESS: z.string().default("true"),
     PLAYWRIGHT_BROWSER: z
       .enum(["chromium", "chrome", "edge"])
@@ -379,5 +379,5 @@ export const config = {
 
 export type Config = typeof config;
 
-/** Conversation mode: thread-native reuse vs ephemeral temp chat per request. */
-export type ChatMode = "thread" | "temp";
+/** Conversation mode: thread-native reuse vs ephemeral temp chat per request vs temp-thread (ephemeral continuous session). */
+export type ChatMode = "thread" | "temp" | "temp-thread";

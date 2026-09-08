@@ -2653,7 +2653,10 @@ async function createQwenStreamInternal(
     chatId: chatSessionId || null,
     parentId: actualParentId ?? "",
     chat_id: chatSessionId || null,
-    chat_mode: options?.chatMode === "temp" ? "local" : "normal",
+    chat_mode:
+      options?.chatMode === "temp" || options?.chatMode === "temp-thread"
+        ? "local"
+        : "normal",
     model: model,
     parent_id: actualParentId,
     messages: [

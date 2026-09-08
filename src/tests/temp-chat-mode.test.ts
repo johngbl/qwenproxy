@@ -48,9 +48,10 @@ test("temp mode: buildFinalContext never reuses a thread and always sends the fu
   );
 });
 
-test("buildChatNewBody: thread → normal, temp → local", () => {
+test("buildChatNewBody: thread → normal, temp → local, temp-thread → local", () => {
   assert.equal(buildChatNewBody("qwen3.7-plus").chat_mode, "normal");
   assert.equal(buildChatNewBody("qwen3.7-plus", "temp").chat_mode, "local");
+  assert.equal(buildChatNewBody("qwen3.7-plus", "temp-thread").chat_mode, "local");
   assert.equal(buildChatNewBody("qwen3.7-plus", "thread").chat_mode, "normal");
 });
 
@@ -172,6 +173,76 @@ test("default thread mode: completions payload uses chat_mode:normal", async () 
     assert.strictEqual(mock.completionCalls(), 1);
     const body = JSON.parse(mock.body());
     assert.equal(body.chat_mode, "normal", "thread mode must send chat_mode:normal");
+  } finally {
+    mock.restore();
+  }
+});
+test("temp-thread mode: buildFinalContext enables thread reuse and delta prompt", async () => {
+  const { updateLogicalThreadState } = await import("../services/qwen.ts");
+  const { deriveSessionId } = await import("../utils/session-id.ts");
+
+  const messages = [
+    { role: "user", content: "first" },
+    { role: "assistant", content: "hi" },
+    { role: "user", content: "continue" },
+  ] as any[];
+
+  const sessionId = deriveSessionId(messages, "", "explicit-session-id");
+  updateLogicalThreadState(sessionId, {
+    accountId: "mock-account",
+    chatSessionId: "chat-temp-123",
+    parentId: "parent-msg-1",
+  });
+
+  const ctx = await buildFinalContext({
+    messages,
+    systemPrompt: "",
+    toolInstructions: "",
+    prompt: "FULL_HISTORY",
+    currentPrompt: "DELTA",
+    modelId: "qwen3.7-plus",
+    enableThinking: false,
+    conversationKey: "explicit-session-id",
+    hasExplicitConversationKey: true,
+    chatMode: "temp-thread",
+  });
+
+  assert.equal(ctx.chatMode, "temp-thread");
+  assert.equal(ctx.isNewSession, false);
+  assert.equal(ctx.allowThreadReuse, true);
+  assert.notEqual(ctx.sessionId, null);
+  assert.equal(ctx.updateLogicalThread, true);
+  assert.equal(
+    ctx.finalPrompt,
+    "DELTA",
+    "temp-thread mode must send delta when continuing",
+  );
+});
+
+test("temp-thread mode header: completions payload uses chat_mode:local", async () => {
+  const mock = installCompletionCapture();
+  try {
+    const res = await app.fetch(
+      new Request("http://localhost/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-qwenproxy-chat-mode": "temp-thread",
+        },
+        body: JSON.stringify({
+          model: "qwen3.6-plus",
+          messages: [{ role: "user", content: "hello temp-thread" }],
+          stream: true,
+        }),
+      }),
+    );
+
+    assert.strictEqual(res.status, 200);
+    await res.text();
+
+    assert.strictEqual(mock.completionCalls(), 1);
+    const body = JSON.parse(mock.body());
+    assert.equal(body.chat_mode, "local", "temp-thread mode must send chat_mode:local");
   } finally {
     mock.restore();
   }

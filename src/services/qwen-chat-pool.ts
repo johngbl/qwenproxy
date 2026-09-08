@@ -83,8 +83,9 @@ export function buildChatNewBody(
     project_id: "",
     timestamp: Date.now(),
     chat_type: "t2t",
-    // thread → normal (persisted), temp → local (ephemeral, not listed).
-    chat_mode: chatMode === "temp" ? "local" : "normal",
+    // thread → normal (persisted), temp / temp-thread → local (ephemeral, not listed).
+    chat_mode:
+      chatMode === "temp" || chatMode === "temp-thread" ? "local" : "normal",
   };
 }
 

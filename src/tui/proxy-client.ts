@@ -2,7 +2,7 @@
  * QwenProxy TUI - Proxy Data Provider & Live State Client
  */
 
-import { config } from "../core/config.ts";
+import { config, type ChatMode } from "../core/config.ts";
 import { loadAccounts, type QwenAccount } from "../core/accounts.ts";
 import {
   getAccountCooldownInfo,
@@ -176,6 +176,7 @@ export interface StreamChatOptions {
   model: string;
   reasoning_effort?: "low" | "medium" | "high";
   messages: Array<{ role: "system" | "user" | "assistant"; content: string }>;
+  chatMode?: ChatMode;
   onToken: (text: string) => void;
   onReasoning?: (text: string) => void;
   signal?: AbortSignal;
@@ -197,11 +198,13 @@ export async function streamChatCompletions(
 
   let resp: Response;
   try {
+    const chatMode = options.chatMode ?? "temp-thread";
     resp = await fetch(`http://${host}:${port}/v1/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${apiKey}`,
+        "x-qwenproxy-chat-mode": chatMode,
       },
       body: JSON.stringify({
         model: options.model,
