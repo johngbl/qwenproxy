@@ -22,7 +22,10 @@ export class LogsView implements TuiView {
   private lastStartIndex = 0;
   private lastVisibleCount = 0;
   private lastTotalCount = 0;
-
+  private lastWidth = 80;
+  private lastHeight = 24;
+  private lastMaxOffset = 0;
+  private lastVisibleCapacity = 0;
   private getChips(rawCount: number): {
     titlePrefix: string;
     chips: Array<{ id: "all" | "warn" | "error" | "copy" | "clear"; label: string; startCol: number; endCol: number }>;
@@ -127,6 +130,25 @@ export class LogsView implements TuiView {
       }
     }
 
+    // Mouse click on scrollbar (accepts rows 4 to 7 + lastVisibleCapacity, cols width-3 to width)
+    if (
+      key.name === "click" &&
+      key.mouse &&
+      key.mouse.col >= this.lastWidth - 3 &&
+      key.mouse.col <= this.lastWidth &&
+      key.mouse.row >= 4 &&
+      key.mouse.row <= 7 + this.lastVisibleCapacity
+    ) {
+      if (this.lastMaxOffset > 0 && this.lastVisibleCapacity > 0) {
+        const r = key.mouse.row - 7;
+        const pct = Math.max(0, Math.min(1, r / Math.max(1, this.lastVisibleCapacity - 1)));
+        const targetScrollFromTop = Math.round(pct * this.lastMaxOffset);
+        this.scrollOffset = Math.max(0, Math.min(this.lastMaxOffset, this.lastMaxOffset - targetScrollFromTop));
+        this.selectedLogIndex = null;
+        return true;
+      }
+    }
+
     // Mouse click on log rows (terminal row 7+, accounting for 2-line top margin)
     if (key.name === "click" && key.mouse && key.mouse.row >= 7) {
       const rowOffset = key.mouse.row - 7;
@@ -196,20 +218,18 @@ export class LogsView implements TuiView {
       if (this.selectedLogIndex !== null) {
         this.selectedLogIndex = Math.max(0, this.selectedLogIndex - 1);
         if (this.selectedLogIndex < this.lastStartIndex) {
-          this.scrollOffset = Math.max(0, this.lastTotalCount - this.lastVisibleCount - this.selectedLogIndex);
+          this.scrollOffset = Math.max(0, Math.min(this.lastMaxOffset, this.lastTotalCount - this.lastVisibleCount - this.selectedLogIndex));
         }
       } else {
-        this.scrollOffset += 1;
+        this.scrollOffset = this.lastMaxOffset > 0 ? Math.min(this.lastMaxOffset, this.scrollOffset + 1) : this.scrollOffset + 1;
       }
       return true;
     }
-
     // Mouse wheel up
     if (key.name === "wheelup") {
-      this.scrollOffset += 2;
+      this.scrollOffset = this.lastMaxOffset > 0 ? Math.min(this.lastMaxOffset, this.scrollOffset + 2) : this.scrollOffset + 2;
       return true;
     }
-
     // Navigate or scroll down (Down key, j)
     if (key.name === "down" || (key.name === "j" && !key.ctrl)) {
       if (this.selectedLogIndex !== null) {
@@ -231,7 +251,7 @@ export class LogsView implements TuiView {
 
     // Page Up / Page Down
     if (key.name === "pageup") {
-      this.scrollOffset += 10;
+      this.scrollOffset = this.lastMaxOffset > 0 ? Math.min(this.lastMaxOffset, this.scrollOffset + 10) : this.scrollOffset + 10;
       return true;
     }
     if (key.name === "pagedown") {
@@ -241,7 +261,7 @@ export class LogsView implements TuiView {
 
     // Home / End
     if (key.name === "home") {
-      this.scrollOffset = 500;
+      this.scrollOffset = this.lastMaxOffset;
       return true;
     }
     if (key.name === "end") {
@@ -324,7 +344,12 @@ export class LogsView implements TuiView {
     const visibleCapacity = Math.max(1, contentH - 4);
     const total = formattedLines.length;
     const maxOffset = Math.max(0, total - visibleCapacity);
-    const clampedOffset = Math.min(this.scrollOffset, maxOffset);
+    this.lastWidth = width;
+    this.lastHeight = height;
+    this.lastMaxOffset = maxOffset;
+    this.lastVisibleCapacity = visibleCapacity;
+    this.scrollOffset = Math.max(0, Math.min(this.scrollOffset, maxOffset));
+    const clampedOffset = this.scrollOffset;
     const scrollFromTop = maxOffset - clampedOffset;
 
     const startIndex = Math.max(0, total - visibleCapacity - clampedOffset);
@@ -348,6 +373,7 @@ export class LogsView implements TuiView {
 
     // Lines 0 and 1 are empty breathing margin between filter chips and logs
     const finalRows: string[] = ["", ""];
+    const boxInnerW = Math.max(1, width - 2);
 
     for (let r = 0; r < visibleCapacity; r++) {
       if (r < visibleSlice.length) {
@@ -363,7 +389,7 @@ export class LogsView implements TuiView {
         if (hasScrollbar) {
           const isThumb = r >= thumbTop && r < thumbTop + thumbSize;
           const scrollChar = isThumb ? theme.cyan("█") : theme.dark("│");
-          const padded = pad(styledText, innerW - 1);
+          const padded = pad(styledText, boxInnerW - 1);
           finalRows.push(`${padded}${scrollChar}`);
         } else {
           finalRows.push(styledText);
@@ -373,12 +399,9 @@ export class LogsView implements TuiView {
       }
     }
 
-    const scrollIndicator =
-      clampedOffset > 0 ? theme.yellow(` [ Rolar: +${clampedOffset} ]`) : "";
-
     const { titlePrefix } = this.getChips(rawEntries.length);
     const box = drawBox({
-      title: `${titlePrefix}${allChip}${warnChip}${errChip}${copyChip}${clearChip}${scrollIndicator}`,
+      title: `${titlePrefix}${allChip}${warnChip}${errChip}${copyChip}${clearChip}`,
       width,
       height: contentH,
       borderColor: theme.borderActive,

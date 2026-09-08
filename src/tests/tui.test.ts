@@ -20,6 +20,8 @@ import { SyncView } from "../tui/views/sync-view.ts";
 import { AccountsView } from "../tui/views/accounts-view.ts";
 import { ChatView } from "../tui/views/chat-view.ts";
 import { StorageView } from "../tui/views/storage-view.ts";
+import { LogsView } from "../tui/views/logs-view.ts";
+import { ServerManager } from "../tui/server-manager.ts";
 import { TuiApp } from "../tui/app.ts";
 
 test("TUI Theme: stripAnsi removes all escape codes cleanly", () => {
@@ -467,12 +469,14 @@ test("TUI ChatView: supports chat conversation scrolling with PageUp/PageDown", 
   // Scroll up with PageUp
   await view.handleKey({ name: "pageup", ctrl: false, shift: false, meta: false });
   const scrolledRender = view.render(80, 20).join("\n");
-  assert.ok(scrolledRender.includes("Rolar:"));
+  assert.ok((view as any).scrollOffset > 0, "scrollOffset must increase on pageup");
+  assert.ok(scrolledRender.includes("█"), "lateral scrollbar thumb must be rendered");
 
   // Scroll down with PageDown
   await view.handleKey({ name: "pagedown", ctrl: false, shift: false, meta: false });
   const returnedRender = view.render(80, 20).join("\n");
-  assert.ok(!returnedRender.includes("Rolar:") || returnedRender.includes("+0"));
+  assert.strictEqual((view as any).scrollOffset, 0, "scrollOffset must return to 0 on pagedown");
+  assert.ok(returnedRender.includes("Mensagem de teste 10"), "must show bottom messages again");
 });
 
 test("TUI ChatView: supports mouse wheel scrolling with wheelup and wheeldown", async () => {
@@ -488,12 +492,109 @@ test("TUI ChatView: supports mouse wheel scrolling with wheelup and wheeldown", 
   // Mouse wheel up
   await view.handleKey({ name: "wheelup", ctrl: false, shift: false, meta: false });
   const scrolledRender = view.render(80, 20).join("\n");
-  assert.ok(scrolledRender.includes("Rolar:"));
+  assert.ok((view as any).scrollOffset > 0, "scrollOffset must increase on wheelup");
+  assert.ok(scrolledRender.includes("█"), "lateral scrollbar thumb must be rendered");
 
   // Mouse wheel down
   await view.handleKey({ name: "wheeldown", ctrl: false, shift: false, meta: false });
   const returnedRender = view.render(80, 20).join("\n");
-  assert.ok(!returnedRender.includes("Rolar:") || returnedRender.includes("+0"));
+  assert.strictEqual((view as any).scrollOffset, 0, "scrollOffset must return to 0 on wheeldown");
+  assert.ok(returnedRender.includes("Mensagem 10"), "must show bottom messages again");
+});
+test("TUI ChatView: scrollOffset does not exceed maxOffset and immediately decrements on scroll down", async () => {
+  const view = new ChatView();
+
+  for (let i = 1; i <= 15; i++) {
+    (view as any).messages.push({
+      role: i % 2 === 1 ? "user" : "assistant",
+      content: `Mensagem ${i}\nLinha extra ${i}`,
+    });
+  }
+
+  // Render once to establish layout and maxOffset
+  view.render(80, 20);
+  const maxOffset = (view as any).lastMaxOffset;
+  assert.ok(maxOffset > 0, "maxOffset should be greater than 0");
+
+  // Attempt to scroll up way past the top (e.g. 100 times)
+  for (let i = 0; i < 100; i++) {
+    await view.handleKey({ name: "wheelup", ctrl: false, shift: false, meta: false });
+  }
+  view.render(80, 20);
+  assert.strictEqual((view as any).scrollOffset, maxOffset, "scrollOffset must be strictly clamped to maxOffset");
+
+  // A single scroll down should IMMEDIATELY decrement from maxOffset without lag
+  await view.handleKey({ name: "wheeldown", ctrl: false, shift: false, meta: false });
+  assert.strictEqual((view as any).scrollOffset, maxOffset - 2, "scrollOffset must immediately decrease on the very first scroll down");
+});
+
+test("TUI ChatView: clicking on lateral scrollbar navigates history proportionally", async () => {
+  const view = new ChatView();
+
+  for (let i = 1; i <= 20; i++) {
+    (view as any).messages.push({
+      role: i % 2 === 1 ? "user" : "assistant",
+      content: `Mensagem ${i}\nLinha extra ${i}`,
+    });
+  }
+
+  view.render(80, 20);
+  const maxOffset = (view as any).lastMaxOffset;
+  assert.ok(maxOffset > 0, "maxOffset must be > 0");
+
+  // Click near the top of the scrollbar (row 8, col 79)
+  const topClicked = await view.handleKey({
+    name: "click",
+    ctrl: false,
+    shift: false,
+    meta: false,
+    mouse: { type: "click", button: "left", col: 79, row: 8 },
+  });
+  assert.strictEqual(topClicked, true);
+  assert.strictEqual((view as any).scrollOffset, maxOffset, "clicking top of scrollbar should scroll to top");
+
+  // Click near the bottom of the scrollbar (row 19, col 79)
+  const bottomClicked = await view.handleKey({
+    name: "click",
+    ctrl: false,
+    shift: false,
+    meta: false,
+    mouse: { type: "click", button: "left", col: 79, row: 19 },
+  });
+  assert.strictEqual(bottomClicked, true);
+  assert.strictEqual((view as any).scrollOffset, 0, "clicking bottom of scrollbar should scroll to bottom");
+});
+
+test("TUI LogsView: lateral scrollbar is clickable and clamps scrollOffset", async () => {
+  const view = new LogsView();
+
+  // Add dummy logs via server manager or simulate log entries
+  const sm = ServerManager.getInstance();
+  for (let i = 1; i <= 30; i++) {
+    (sm as any).appendLog("INFO", `Log entry ${i} for testing scrollbar`);
+  }
+
+  view.render(80, 20);
+  const maxOffset = (view as any).lastMaxOffset;
+  assert.ok(maxOffset > 0, "LogsView maxOffset must be > 0");
+
+  // Over-scroll up
+  for (let i = 0; i < 50; i++) {
+    await view.handleKey({ name: "wheelup", ctrl: false, shift: false, meta: false });
+  }
+  view.render(80, 20);
+  assert.strictEqual((view as any).scrollOffset, maxOffset, "LogsView scrollOffset must be clamped to maxOffset");
+
+  // Click bottom of scrollbar (row 22 or 23)
+  const clicked = await view.handleKey({
+    name: "click",
+    ctrl: false,
+    shift: false,
+    meta: false,
+    mouse: { type: "click", button: "left", col: 79, row: 22 },
+  });
+  assert.strictEqual(clicked, true);
+  assert.strictEqual((view as any).scrollOffset, 0, "clicking bottom of scrollbar in LogsView should scroll to bottom");
 });
 
 test("TUI AccountsView: opens Add Account modal with 'a', types credentials, and cancels with Esc", async () => {

@@ -54,6 +54,10 @@ export class ChatView implements TuiView {
   private inputBuffer = "";
   private cursorPos = 0;
   private scrollOffset = 0; // 0 = follow bottom (newest messages)
+  private lastWidth = 80;
+  private lastHeight = 24;
+  private lastMaxOffset = 0;
+  private lastVisibleCapacity = 0;
   private isModelModalOpen = false;
   private modalSelectedIndex = 0;
   private availableEfforts: Array<{
@@ -317,37 +321,76 @@ export class ChatView implements TuiView {
       this.onNeedsRender?.();
       return true;
     }
-    // 4. Chat history scrolling (Mouse wheel / PageUp / PageDown / Up / Down)
+    // 4. Mouse click on lateral scrollbar (Conversa history box)
+    if (
+      key.name === "click" &&
+      key.mouse &&
+      !this.isModelModalOpen &&
+      !this.isEffortModalOpen &&
+      key.mouse.col >= this.lastWidth - 3 &&
+      key.mouse.col <= this.lastWidth &&
+      key.mouse.row >= 7 &&
+      key.mouse.row <= 8 + this.lastVisibleCapacity
+    ) {
+      if (this.lastMaxOffset > 0 && this.lastVisibleCapacity > 0) {
+        const r = key.mouse.row - 8;
+        const pct = Math.max(0, Math.min(1, r / Math.max(1, this.lastVisibleCapacity - 1)));
+        const targetScrollFromTop = Math.round(pct * this.lastMaxOffset);
+        this.scrollOffset = Math.max(0, Math.min(this.lastMaxOffset, this.lastMaxOffset - targetScrollFromTop));
+        this.onNeedsRender?.();
+        return true;
+      }
+    }
+
+    // 5. Chat history scrolling (Mouse wheel / PageUp / PageDown / Up / Down)
     if (key.name === "wheelup") {
-      this.scrollOffset += 2;
+      this.scrollOffset = this.lastMaxOffset > 0 ? Math.min(this.lastMaxOffset, this.scrollOffset + 2) : this.scrollOffset + 2;
+      this.onNeedsRender?.();
       return true;
     }
     if (key.name === "wheeldown") {
       this.scrollOffset = Math.max(0, this.scrollOffset - 2);
+      this.onNeedsRender?.();
       return true;
     }
     if (key.name === "pageup") {
-      this.scrollOffset += 6;
+      this.scrollOffset = this.lastMaxOffset > 0 ? Math.min(this.lastMaxOffset, this.scrollOffset + 6) : this.scrollOffset + 6;
+      this.onNeedsRender?.();
       return true;
     }
     if (key.name === "pagedown") {
       this.scrollOffset = Math.max(0, this.scrollOffset - 6);
+      this.onNeedsRender?.();
       return true;
     }
     if ((key.ctrl || key.shift) && key.name === "up") {
-      this.scrollOffset += 2;
+      this.scrollOffset = this.lastMaxOffset > 0 ? Math.min(this.lastMaxOffset, this.scrollOffset + 2) : this.scrollOffset + 2;
+      this.onNeedsRender?.();
       return true;
     }
     if ((key.ctrl || key.shift) && key.name === "down") {
       this.scrollOffset = Math.max(0, this.scrollOffset - 2);
+      this.onNeedsRender?.();
       return true;
     }
     if (!this.isGenerating && this.inputBuffer.length === 0 && key.name === "up") {
-      this.scrollOffset += 1;
+      this.scrollOffset = this.lastMaxOffset > 0 ? Math.min(this.lastMaxOffset, this.scrollOffset + 1) : this.scrollOffset + 1;
+      this.onNeedsRender?.();
       return true;
     }
     if (!this.isGenerating && this.inputBuffer.length === 0 && key.name === "down") {
       this.scrollOffset = Math.max(0, this.scrollOffset - 1);
+      this.onNeedsRender?.();
+      return true;
+    }
+    if (key.name === "home") {
+      this.scrollOffset = this.lastMaxOffset;
+      this.onNeedsRender?.();
+      return true;
+    }
+    if (key.name === "end") {
+      this.scrollOffset = 0;
+      this.onNeedsRender?.();
       return true;
     }
 
@@ -574,6 +617,8 @@ export class ChatView implements TuiView {
   }
 
   public render(width: number, height: number, snapshot?: ProxyStatusSnapshot | null): string[] {
+    this.lastWidth = width;
+    this.lastHeight = height;
     if (snapshot !== undefined) {
       this.lastSnapshot = snapshot ?? null;
     }
@@ -765,20 +810,55 @@ export class ChatView implements TuiView {
 
     // Auto-scroll window calculation supporting 1:1 smooth and precise history scrolling
     const visibleCapacity = Math.max(1, chatHeight - 2);
-    const maxOffset = Math.max(0, flatChatContent.length - visibleCapacity);
-    const clampedOffset = Math.min(this.scrollOffset, maxOffset);
-    const startIndex = Math.max(0, flatChatContent.length - visibleCapacity - clampedOffset);
+    const total = flatChatContent.length;
+    const maxOffset = Math.max(0, total - visibleCapacity);
+    this.lastMaxOffset = maxOffset;
+    this.lastVisibleCapacity = visibleCapacity;
+    this.scrollOffset = Math.max(0, Math.min(this.scrollOffset, maxOffset));
+    const clampedOffset = this.scrollOffset;
+    const scrollFromTop = maxOffset - clampedOffset;
+
+    const startIndex = Math.max(0, total - visibleCapacity - clampedOffset);
     const visibleChatLines = flatChatContent.slice(startIndex, startIndex + visibleCapacity);
-    const scrollIndicator =
-      clampedOffset > 0 ? theme.yellow(` [▲ Rolar: +${clampedOffset}]`) : "";
+
+    // Lateral scrollbar calculation
+    const hasScrollbar = total > visibleCapacity;
+    const thumbSize = hasScrollbar
+      ? Math.max(1, Math.round((visibleCapacity / total) * visibleCapacity))
+      : 0;
+    const trackRange = Math.max(1, visibleCapacity - thumbSize);
+    const thumbTop = hasScrollbar
+      ? Math.min(
+          visibleCapacity - thumbSize,
+          Math.max(0, Math.round((scrollFromTop / maxOffset) * trackRange)),
+        )
+      : 0;
+
+    const boxInnerW = Math.max(1, width - 2);
+    const formattedChatRows: string[] = [];
+    for (let r = 0; r < visibleCapacity; r++) {
+      if (r < visibleChatLines.length) {
+        const line = visibleChatLines[r];
+        if (hasScrollbar) {
+          const isThumb = r >= thumbTop && r < thumbTop + thumbSize;
+          const scrollChar = isThumb ? theme.cyan("█") : theme.dark("│");
+          const padded = pad(line, boxInnerW - 1);
+          formattedChatRows.push(`${padded}${scrollChar}`);
+        } else {
+          formattedChatRows.push(line);
+        }
+      } else {
+        formattedChatRows.push("");
+      }
+    }
 
     const historyBox = drawBox({
-      title: `Conversa (${this.messages.length})${scrollIndicator}`,
+      title: `Conversa (${this.messages.length})`,
       width,
       height: chatHeight,
       borderColor: theme.borderInactive,
       titleColor: theme.lavender,
-      content: visibleChatLines,
+      content: formattedChatRows,
     });
     totalLines.push(...historyBox);
   }
