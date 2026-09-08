@@ -10,6 +10,7 @@ import {
   clearAccountCooldown,
   isAccountHeadersReady,
 } from "../core/account-manager.ts";
+import { isPlaywrightInitialized } from "../services/playwright.ts";
 import { getAccountConcurrencySnapshot } from "../core/account-concurrency.ts";
 import { getRssUsageSnapshot } from "../core/memory-usage.ts";
 import type { ProxyStatusSnapshot } from "./types.ts";
@@ -46,12 +47,14 @@ let cachedAccounts: Array<{
   onCooldown: boolean;
   remainingCooldownMs: number;
   headersReady: boolean;
+  isInitialized: boolean;
 }> = [];
 let lastAccountsFetch = 0;
 let isHealthCheckPending = false;
 let lastOnlineState = false;
 let lastOverallStatus = "offline";
 let lastServerReadyAccounts: Set<string> | null = null;
+let lastServerActiveAccounts: Set<string> | null = null;
 export async function fetchProxyStatus(): Promise<ProxyStatusSnapshot> {
   const port = config.server?.port || 7936;
   const configuredHost = config.server?.host;
@@ -73,9 +76,13 @@ export async function fetchProxyStatus(): Promise<ProxyStatusSnapshot> {
           if (Array.isArray(data.readyAccounts)) {
             lastServerReadyAccounts = new Set(data.readyAccounts);
           }
+          if (Array.isArray(data.activeAccounts)) {
+            lastServerActiveAccounts = new Set(data.activeAccounts);
+          }
         } else {
           lastOnlineState = false;
           lastServerReadyAccounts = null;
+          lastServerActiveAccounts = null;
         }
       })
       .catch(() => {
@@ -104,6 +111,9 @@ export async function fetchProxyStatus(): Promise<ProxyStatusSnapshot> {
       const headersReady = lastServerReadyAccounts !== null
         ? lastServerReadyAccounts.has(acc.id)
         : isAccountHeadersReady(acc.id);
+      const isInitialized = lastServerActiveAccounts !== null
+        ? lastServerActiveAccounts.has(acc.id)
+        : isPlaywrightInitialized(acc.id);
       return {
         id: acc.id,
         emailOrName: maskAccountIdentifier(acc.email || acc.id),
@@ -112,10 +122,10 @@ export async function fetchProxyStatus(): Promise<ProxyStatusSnapshot> {
         onCooldown,
         remainingCooldownMs,
         headersReady,
+        isInitialized,
       };
     });
   }
-
   const accounts = cachedAccounts;
   const online = lastOnlineState;
   const overallStatus = lastOverallStatus;

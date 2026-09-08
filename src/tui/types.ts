@@ -29,5 +29,6 @@ export interface ProxyStatusSnapshot {
     onCooldown: boolean;
     remainingCooldownMs: number;
     headersReady: boolean;
+    isInitialized?: boolean;
   }>;
 }

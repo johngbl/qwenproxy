@@ -175,7 +175,9 @@ export class StatusView implements TuiView {
           const mins = Math.max(1, Math.round(acc.remainingCooldownMs / 60000));
           status = theme.yellow(`⚠ Cooldown ${mins}m`);
         } else if (!acc.headersReady) {
-          status = theme.yellow(`◐ Aquecendo...`);
+          status = acc.isInitialized
+            ? theme.yellow(`◐ Aquecendo...`)
+            : theme.muted(`○ Standby`);
         }
         rightContent.push(`  ${num} ${name} ${status}`);
       });

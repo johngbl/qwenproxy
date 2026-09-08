@@ -7,7 +7,19 @@ import type { TuiView, ProxyStatusSnapshot } from "./types.ts";
 import { theme, glyphs, drawBox, stringWidth } from "./theme.ts";
 import { fetchProxyStatus } from "./proxy-client.ts";
 import { ServerManager } from "./server-manager.ts";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
+let cachedAppVersion = "v1.0.2";
+try {
+  const currentDir = path.dirname(fileURLToPath(import.meta.url));
+  const pkgPath = path.resolve(currentDir, "../../package.json");
+  if (fs.existsSync(pkgPath)) {
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
+    if (pkg.version) cachedAppVersion = `v${pkg.version}`;
+  }
+} catch {}
 import { StatusView } from "./views/status-view.ts";
 import { ChatView } from "./views/chat-view.ts";
 import { SyncView } from "./views/sync-view.ts";
@@ -240,7 +252,7 @@ export class TuiApp {
 
     const headerContent = [` ${tabsBar}`];
     const headerBox = drawBox({
-      title: `QwenProxy v1.0.0 ${statusChip}`,
+      title: `QwenProxy ${cachedAppVersion} ${statusChip}`,
       width: cols,
       height: 3,
       borderColor: theme.borderActive,

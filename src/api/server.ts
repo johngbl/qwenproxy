@@ -269,6 +269,7 @@ app.get("/health", async (c) => {
       : undefined,
     timestamp: Date.now(),
     readyAccounts: (await import("../core/account-manager.js")).getHeadersReadyAccountIds(),
+    activeAccounts: (await import("../services/playwright.js")).getActivePlaywrightAccountIds(),
     metrics: {
       cache: await cache?.getStats(),
     },

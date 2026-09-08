@@ -497,7 +497,9 @@ export class AccountsView implements TuiView {
           const mins = Math.max(1, Math.round(acc.remainingCooldownMs / 60000));
           status = theme.yellow(`⚠ ${mins}m cd   `);
         } else if (!acc.headersReady) {
-          status = theme.yellow(`◐ Aquecendo...`);
+          status = acc.isInitialized
+            ? theme.yellow(`◐ Aquecendo...`)
+            : theme.muted(`○ Standby     `);
         }
 
         const line = `${pointer}${num}${name}${status}`;
@@ -550,7 +552,9 @@ export class AccountsView implements TuiView {
 
       const hStatus = selected.headersReady
         ? theme.green(`${glyphs.check} Capturados`)
-        : theme.muted(`${glyphs.circle} Pendente`);
+        : selected.isInitialized
+          ? theme.yellow(`◐ Aquecendo...`)
+          : theme.muted(`${glyphs.circle} Standby (Sob Demanda)`);
       rightContent.push(`  ${theme.bold("Headers:")}    ${hStatus}`);
       rightContent.push("");
       rightContent.push(`  ${theme.dim("─────────────────────────────────")}`);

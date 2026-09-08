@@ -1035,3 +1035,27 @@ test("TUI App & Chat: single Ctrl+C performs normal function (clears input); q d
   assert.equal((chatView as any).inputBuffer, "");
   assert.equal((app as any).isRunning, false); // start() wasn't called, but app didn't throw/exit
 });
+
+test("TUI Views: uninitialized account shows Standby while initialized without headers shows Aquecendo", () => {
+  const statusView = new StatusView();
+  const accountsView = new AccountsView();
+
+  const snapshot: any = {
+    online: true,
+    accounts: [
+      { id: "ready-acc", emailOrName: "ready@test.com", priority: 1, onCooldown: false, remainingCooldownMs: 0, headersReady: true, isInitialized: true },
+      { id: "warming-acc", emailOrName: "warming@test.com", priority: 1, onCooldown: false, remainingCooldownMs: 0, headersReady: false, isInitialized: true },
+      { id: "standby-acc", emailOrName: "standby@test.com", priority: 1, onCooldown: false, remainingCooldownMs: 0, headersReady: false, isInitialized: false },
+    ],
+  };
+
+  const statusRender = statusView.render(100, 24, snapshot).join("\n");
+  assert.ok(statusRender.includes("Pronto"), "Ready account must show Pronto");
+  assert.ok(statusRender.includes("Aquecendo..."), "Warming account must show Aquecendo...");
+  assert.ok(statusRender.includes("Standby"), "Uninitialized account must show Standby");
+
+  const accountsRender = accountsView.render(100, 24, snapshot).join("\n");
+  assert.ok(accountsRender.includes("Pronto"), "AccountsView must show Pronto");
+  assert.ok(accountsRender.includes("Aquecendo..."), "AccountsView must show Aquecendo...");
+  assert.ok(accountsRender.includes("Standby"), "AccountsView must show Standby");
+});
