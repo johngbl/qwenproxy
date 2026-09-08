@@ -33,6 +33,10 @@ export class Screen {
   private exitHandler: (() => void) | null = null;
   private prevRenderedRows: string[] = [];
   private originalStdinEmit: typeof process.stdin.emit | null = null;
+  private lastHoverCol = -1;
+  private lastHoverRow = -1;
+  private lastHoverTime = 0;
+  private pendingHoverTimeout: NodeJS.Timeout | null = null;
 
   constructor() {
     this.exitHandler = () => this.stop();
@@ -116,13 +120,42 @@ export class Screen {
               mouse: { type: "drag", button: "left", col, row },
             });
           } else if (btn === 35) {
-            self.dispatchKey({
-              name: "hover",
-              ctrl: false,
-              shift: false,
-              meta: false,
-              mouse: { type: "hover", col, row },
-            });
+            if (col === self.lastHoverCol && row === self.lastHoverRow) {
+              continue;
+            }
+            const now = Date.now();
+            const timeSinceLast = now - self.lastHoverTime;
+            const emitHover = (c: number, r: number) => {
+              if (!self.active) return;
+              self.lastHoverCol = c;
+              self.lastHoverRow = r;
+              self.lastHoverTime = Date.now();
+              self.dispatchKey({
+                name: "hover",
+                ctrl: false,
+                shift: false,
+                meta: false,
+                mouse: { type: "hover", col: c, row: r },
+              });
+            };
+
+            if (timeSinceLast >= 30) {
+              if (self.pendingHoverTimeout) {
+                clearTimeout(self.pendingHoverTimeout);
+                self.pendingHoverTimeout = null;
+              }
+              emitHover(col, row);
+            } else {
+              if (self.pendingHoverTimeout) {
+                clearTimeout(self.pendingHoverTimeout);
+              }
+              self.pendingHoverTimeout = setTimeout(() => {
+                self.pendingHoverTimeout = null;
+                if (col !== self.lastHoverCol || row !== self.lastHoverRow) {
+                  emitHover(col, row);
+                }
+              }, 30 - timeSinceLast);
+            }
           }
         }
         if (handled) {
@@ -212,6 +245,13 @@ export class Screen {
       process.stdin.emit = this.originalStdinEmit;
       this.originalStdinEmit = null;
     }
+    if (this.pendingHoverTimeout) {
+      clearTimeout(this.pendingHoverTimeout);
+      this.pendingHoverTimeout = null;
+    }
+    this.lastHoverCol = -1;
+    this.lastHoverRow = -1;
+    this.lastHoverTime = 0;
 
     // Restore original screen buffer, cursor, and disable all mouse tracking modes synchronously
     const restoreSeq = ANSI.disableMouse + ANSI.exitAltScreen + ANSI.showCursor + ANSI.reset;

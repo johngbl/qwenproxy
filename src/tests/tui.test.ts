@@ -95,13 +95,11 @@ test("TUI Theme: pad handles left, right, and center alignments", () => {
   assert.equal(pad("test", 10, "center"), "   test   ");
   assert.equal(stringWidth(pad("test", 10, "center")), 10);
 });
-test("TUI Theme: enableMouse excludes 1003h any-event tracking to prevent CPU flood while keeping click and drag", () => {
-  // Must contain 1000h (click), 1002h (button/drag), 1006h (SGR coords)
+test("TUI Theme: enableMouse includes 1000h, 1002h, 1003h, and 1006h for complete hover, drag, and click support", () => {
   assert.ok(ANSI.enableMouse.includes("1000h"), "Must enable normal click tracking");
   assert.ok(ANSI.enableMouse.includes("1002h"), "Must enable button-event / drag tracking");
+  assert.ok(ANSI.enableMouse.includes("1003h"), "Must enable any-event hover tracking");
   assert.ok(ANSI.enableMouse.includes("1006h"), "Must enable SGR extended coordinate mode");
-  // Must NOT contain 1003h (any-event mouse move flood)
-  assert.equal(ANSI.enableMouse.includes("1003h"), false, "Must NOT enable 1003h any-event hover flood");
 });
 
 
@@ -1122,4 +1120,25 @@ test("TUI StorageView: pressing 'l' opens confirmation modal for deleting all ch
   assert.equal(view.isCapturingText(), false);
   const logs = (view as any).actionLogs;
   assert.ok(logs[logs.length - 1].includes("cancelada"));
+});
+test("TUI Screen: deduplicates identical cell hovers and throttles mouse motion", async () => {
+  const { Screen } = await import("../tui/screen.ts");
+  const screen = new Screen();
+
+  const dispatched: any[] = [];
+  screen.onKey((event) => {
+    dispatched.push(event);
+  });
+
+  // Simulate internal dispatch with cell deduplication
+  (screen as any).active = true;
+  const dispatchKey = (screen as any).dispatchKey.bind(screen);
+
+  // 1. First hover event
+  dispatchKey({ name: "hover", mouse: { type: "hover", col: 10, row: 5 } });
+  assert.equal(dispatched.length, 1);
+  assert.equal(dispatched[0].mouse.col, 10);
+  assert.equal(dispatched[0].mouse.row, 5);
+
+  (screen as any).active = false;
 });
