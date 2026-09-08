@@ -7,7 +7,7 @@ import fs from "node:fs";
 import { ANSI, theme, pad } from "./theme.ts";
 import { ServerManager } from "./server-manager.ts";
 export interface MouseInfo {
-  type: "click" | "scroll-up" | "scroll-down" | "hover";
+  type: "click" | "release" | "drag" | "scroll-up" | "scroll-down" | "hover";
   button?: "left" | "right";
   col: number;
   row: number;
@@ -91,6 +91,14 @@ export class Screen {
               meta: false,
               mouse: { type: "scroll-down", col, row },
             });
+          } else if (isRelease) {
+            self.dispatchKey({
+              name: "release",
+              ctrl: false,
+              shift: false,
+              meta: false,
+              mouse: { type: "release", button: btn === 0 ? "left" : "right", col, row },
+            });
           } else if (btn === 0 && !isRelease) {
             self.dispatchKey({
               name: "click",
@@ -98,6 +106,14 @@ export class Screen {
               shift: false,
               meta: false,
               mouse: { type: "click", button: "left", col, row },
+            });
+          } else if (btn === 32) {
+            self.dispatchKey({
+              name: "drag",
+              ctrl: false,
+              shift: false,
+              meta: false,
+              mouse: { type: "drag", button: "left", col, row },
             });
           } else if (btn === 35) {
             self.dispatchKey({

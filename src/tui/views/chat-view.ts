@@ -58,6 +58,15 @@ export class ChatView implements TuiView {
   private lastHeight = 24;
   private lastMaxOffset = 0;
   private lastVisibleCapacity = 0;
+  private hoveredHeaderBtn: "model" | "effort" | "shortcuts" | null = null;
+  private isScrollbarHovered = false;
+  private isDraggingScrollbar = false;
+  private modelBtnStartCol = 0;
+  private modelBtnEndCol = 0;
+  private effortBtnStartCol = 0;
+  private effortBtnEndCol = 0;
+  private shortcutsBtnStartCol = 0;
+  private shortcutsBtnEndCol = 0;
   private isModelModalOpen = false;
   private modalSelectedIndex = 0;
   private availableEfforts: Array<{
@@ -279,12 +288,65 @@ export class ChatView implements TuiView {
       return true;
     }
 
-    // 3. Open Model Modal with F2, Ctrl+O, Alt+M, or clicking on Model Header (left half)
+    // 3. Header button hover (rows 4 to 6: Model, Effort, Shortcuts)
+    if (key.name === "hover" && key.mouse) {
+      const { row, col } = key.mouse;
+      if (row >= 4 && row <= 6 && !this.isModelModalOpen && !this.isEffortModalOpen) {
+        let target: "model" | "effort" | "shortcuts" | null = null;
+        if (this.modelBtnStartCol > 0 && col >= this.modelBtnStartCol - 1 && col <= this.modelBtnEndCol + 1) {
+          target = "model";
+        } else if (this.effortBtnStartCol > 0 && col >= this.effortBtnStartCol - 1 && col <= this.effortBtnEndCol + 1) {
+          target = "effort";
+        } else if (this.shortcutsBtnStartCol > 0 && col >= this.shortcutsBtnStartCol - 1 && col <= this.shortcutsBtnEndCol + 1) {
+          target = "shortcuts";
+        }
+        if (this.hoveredHeaderBtn !== target) {
+          this.hoveredHeaderBtn = target;
+          this.onNeedsRender?.();
+          return true;
+        }
+      } else if (this.hoveredHeaderBtn !== null) {
+        this.hoveredHeaderBtn = null;
+        this.onNeedsRender?.();
+        return true;
+      }
+    }
+
+    // 4. Header button click (rows 4 to 6: Model, Effort, Shortcuts)
+    if (
+      key.name === "click" &&
+      key.mouse &&
+      key.mouse.row >= 4 &&
+      key.mouse.row <= 6 &&
+      !this.isModelModalOpen &&
+      !this.isEffortModalOpen
+    ) {
+      const col = key.mouse.col;
+      if (
+        (this.modelBtnStartCol > 0 && col >= this.modelBtnStartCol - 1 && col <= this.modelBtnEndCol + 1) ||
+        (this.shortcutsBtnStartCol > 0 && col >= this.shortcutsBtnStartCol - 1 && col <= this.shortcutsBtnEndCol + 1)
+      ) {
+        this.isModelModalOpen = true;
+        this.modalSelectedIndex = this.selectedModelIndex;
+        this.hoveredHeaderBtn = null;
+        this.onNeedsRender?.();
+        return true;
+      }
+      if (this.effortBtnStartCol > 0 && col >= this.effortBtnStartCol - 1 && col <= this.effortBtnEndCol + 1) {
+        this.isEffortModalOpen = true;
+        const idx = this.availableEfforts.findIndex((e) => e.id === this.selectedEffort);
+        this.effortSelectedIndex = idx !== -1 ? idx : 0;
+        this.hoveredHeaderBtn = null;
+        this.onNeedsRender?.();
+        return true;
+      }
+    }
+
+    // Keyboard shortcuts to open modals
     if (
       key.name === "f2" ||
       (key.ctrl && key.name === "o") ||
-      (key.meta && key.name === "m") ||
-      (key.name === "click" && key.mouse && key.mouse.row >= 4 && key.mouse.row <= 6 && key.mouse.col < 55)
+      (key.meta && key.name === "m")
     ) {
       this.isModelModalOpen = true;
       this.modalSelectedIndex = this.selectedModelIndex;
@@ -292,11 +354,7 @@ export class ChatView implements TuiView {
       return true;
     }
 
-    // 4. Open Effort Modal directly with F3 or clicking Effort badge on header (right half)
-    if (
-      key.name === "f3" ||
-      (key.name === "click" && key.mouse && key.mouse.row >= 4 && key.mouse.row <= 6 && key.mouse.col >= 55)
-    ) {
+    if (key.name === "f3") {
       const currentM = this.availableModels[this.selectedModelIndex] || "qwen3.8-max";
       const info = classifyModel(currentM);
       if (info.category === "Texto & Raciocínio") {
@@ -308,35 +366,53 @@ export class ChatView implements TuiView {
       }
     }
 
-    // 3. Abort streaming with Esc or Ctrl+C
-    if (this.isGenerating && (key.name === "escape" || (key.ctrl && key.name === "c"))) {
-      if (this.currentAbortController) {
-        this.currentAbortController.abort();
-        this.currentAbortController = null;
+    // 5. Scrollbar hover, click & drag
+    const isMouseOnScrollbar = (col: number, row: number) => {
+      return (
+        col >= this.lastWidth - 2 &&
+        col <= this.lastWidth &&
+        row >= 8 &&
+        row <= 7 + this.lastVisibleCapacity
+      );
+    };
+
+    if (key.name === "hover" && key.mouse && !this.isModelModalOpen && !this.isEffortModalOpen) {
+      const onScrollbar = isMouseOnScrollbar(key.mouse.col, key.mouse.row);
+      if (this.isScrollbarHovered !== onScrollbar) {
+        this.isScrollbarHovered = onScrollbar;
+        this.onNeedsRender?.();
+        return true;
       }
-      clearInterval(this.spinnerInterval!);
-      this.spinnerInterval = null;
-      this.isGenerating = false;
-      this.statusNote = theme.yellow("⚠ Geração cancelada pelo usuário");
-      this.onNeedsRender?.();
-      return true;
     }
-    // 4. Mouse click on lateral scrollbar (Conversa history box)
-    if (
-      key.name === "click" &&
-      key.mouse &&
-      !this.isModelModalOpen &&
-      !this.isEffortModalOpen &&
-      key.mouse.col >= this.lastWidth - 3 &&
-      key.mouse.col <= this.lastWidth &&
-      key.mouse.row >= 7 &&
-      key.mouse.row <= 8 + this.lastVisibleCapacity
-    ) {
-      if (this.lastMaxOffset > 0 && this.lastVisibleCapacity > 0) {
+
+    if (key.name === "click" && key.mouse && !this.isModelModalOpen && !this.isEffortModalOpen) {
+      if (isMouseOnScrollbar(key.mouse.col, key.mouse.row)) {
+        if (this.lastMaxOffset > 0 && this.lastVisibleCapacity > 0) {
+          this.isDraggingScrollbar = true;
+          const r = key.mouse.row - 8;
+          const pct = Math.max(0, Math.min(1, r / Math.max(1, this.lastVisibleCapacity - 1)));
+          const targetScrollFromTop = Math.round(pct * this.lastMaxOffset);
+          this.scrollOffset = Math.max(0, Math.min(this.lastMaxOffset, this.lastMaxOffset - targetScrollFromTop));
+          this.onNeedsRender?.();
+          return true;
+        }
+      }
+    }
+
+    if (key.name === "drag" && key.mouse && !this.isModelModalOpen && !this.isEffortModalOpen) {
+      if (this.isDraggingScrollbar && this.lastMaxOffset > 0 && this.lastVisibleCapacity > 0) {
         const r = key.mouse.row - 8;
         const pct = Math.max(0, Math.min(1, r / Math.max(1, this.lastVisibleCapacity - 1)));
         const targetScrollFromTop = Math.round(pct * this.lastMaxOffset);
         this.scrollOffset = Math.max(0, Math.min(this.lastMaxOffset, this.lastMaxOffset - targetScrollFromTop));
+        this.onNeedsRender?.();
+        return true;
+      }
+    }
+
+    if (key.name === "release") {
+      if (this.isDraggingScrollbar) {
+        this.isDraggingScrollbar = false;
         this.onNeedsRender?.();
         return true;
       }
@@ -631,17 +707,63 @@ export class ChatView implements TuiView {
     const totalModels = this.availableModels.length;
     const isReasoning = currentInfo.category === "Texto & Raciocínio";
 
-    const effortBadge = isReasoning
+    const modelLabel = `[ ${currentModel} ]`;
+    const styledModel = this.hoveredHeaderBtn === "model"
+      ? theme.bgHover(` ${theme.bold(theme.white(modelLabel))} `)
+      : theme.cyan(modelLabel);
+
+    const effortLabel = isReasoning
       ? this.selectedEffort === "high"
-        ? theme.green(`[ Effort: High (Thinking) ]`)
+        ? "[ Effort: High (Thinking) ]"
         : this.selectedEffort === "medium"
-          ? theme.yellow(`[ Effort: Medium (Auto) ]`)
-          : theme.cyan(`[ Effort: Low (Fast) ]`)
+          ? "[ Effort: Medium (Auto) ]"
+          : "[ Effort: Low (Fast) ]"
       : "";
 
+    let styledEffort = "";
+    if (isReasoning) {
+      styledEffort = this.hoveredHeaderBtn === "effort"
+        ? theme.bgHover(` ${theme.bold(theme.white(effortLabel))} `)
+        : this.selectedEffort === "high"
+          ? theme.green(effortLabel)
+          : this.selectedEffort === "medium"
+            ? theme.yellow(effortLabel)
+            : theme.cyan(effortLabel);
+    }
+
+    const shortcutsLabel = `[ F2: Modelo${isReasoning ? " | F3: Effort" : ""} (${this.selectedModelIndex + 1}/${totalModels}) ]`;
+    const styledShortcuts = this.hoveredHeaderBtn === "shortcuts"
+      ? theme.bgHover(` ${theme.bold(theme.white(shortcutsLabel))} `)
+      : theme.yellow(shortcutsLabel);
+
+    // Non-text models show their category badge ([Imagem] / [Vídeo]), while text models omit [Texto]
+    const nonTextBadge = !isReasoning && currentInfo.badge ? `${currentInfo.badge}  ` : "";
+    const nonTextCategory = !isReasoning ? theme.muted(`• ${currentInfo.category}`) : "";
+
     const headerLine = hasAccounts
-      ? `  ${theme.bold("Modelo:")} ${theme.cyan(`[ ${currentModel} ]`)}  ${currentInfo.badge}  ${isReasoning ? effortBadge : theme.muted(`• ${currentInfo.category}`)}   ${theme.yellow(`[ F2: Modelo${isReasoning ? " | F3: Effort" : ""} (${this.selectedModelIndex + 1}/${totalModels}) ]`)}`
-      : `  ${theme.bold("Modelo:")} ${theme.cyan(`[ ${currentModel} ]`)}  ${currentInfo.badge}   ${theme.yellow("[ [!] Sem Contas: Adicione em [5] Contas ]")}`;
+      ? `  ${theme.bold("Modelo:")} ${styledModel}  ${nonTextBadge}${isReasoning ? styledEffort : nonTextCategory}   ${styledShortcuts}`
+      : `  ${theme.bold("Modelo:")} ${styledModel}   ${theme.yellow("[ [!] Sem Contas: Adicione em [5] Contas ]")}`;
+
+    // Compute dynamic interactive column bounds:
+    const modelStart = 1 + stringWidth("  Modelo: ") + 1; // col 12
+    const modelEnd = modelStart + stringWidth(modelLabel) - 1;
+    this.modelBtnStartCol = modelStart;
+    this.modelBtnEndCol = modelEnd;
+
+    if (isReasoning) {
+      const effortStart = modelEnd + 3; // 2 spaces
+      const effortEnd = effortStart + stringWidth(effortLabel) - 1;
+      this.effortBtnStartCol = effortStart;
+      this.effortBtnEndCol = effortEnd;
+      this.shortcutsBtnStartCol = effortEnd + 4; // 3 spaces
+    } else {
+      this.effortBtnStartCol = 0;
+      this.effortBtnEndCol = 0;
+      const categoryTotalW = stringWidth(nonTextBadge) + stringWidth(`• ${currentInfo.category}`);
+      this.shortcutsBtnStartCol = modelEnd + 2 + categoryTotalW + 4;
+    }
+    this.shortcutsBtnEndCol = this.shortcutsBtnStartCol + stringWidth(shortcutsLabel) - 1;
+
     const headerBox = drawBox({
       title: "Chat Tester",
       width,
@@ -841,7 +963,13 @@ export class ChatView implements TuiView {
         const line = visibleChatLines[r];
         if (hasScrollbar) {
           const isThumb = r >= thumbTop && r < thumbTop + thumbSize;
-          const scrollChar = isThumb ? theme.cyan("█") : theme.dark("│");
+          const isHighlighted = this.isScrollbarHovered || this.isDraggingScrollbar;
+          let scrollChar: string;
+          if (isThumb) {
+            scrollChar = isHighlighted ? `\x1b[48;2;45;35;85m\x1b[38;2;0;255;255m\x1b[1m█\x1b[0m` : theme.cyan("█");
+          } else {
+            scrollChar = isHighlighted ? theme.cyan("│") : theme.dark("│");
+          }
           const padded = pad(line, boxInnerW - 1);
           formattedChatRows.push(`${padded}${scrollChar}`);
         } else {

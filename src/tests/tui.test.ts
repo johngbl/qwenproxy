@@ -593,6 +593,92 @@ test("TUI ChatView: clicking on lateral scrollbar navigates history proportional
   assert.strictEqual(bottomClicked, true);
   assert.strictEqual((view as any).scrollOffset, 0, "clicking bottom of scrollbar should scroll to bottom");
 });
+test("TUI ChatView: header removes [Texto] for text models and supports hover on Modelo and Effort buttons", async () => {
+  const view = new ChatView();
+  const rendered = view.render(100, 24).join("\n");
+  const headerLines = rendered.split("\n").slice(0, 3).join("\n");
+
+  // Assert [Texto] is NOT rendered in the header for text/reasoning models
+  assert.ok(!stripAnsi(headerLines).includes("[Texto]"), "Header must not display [Texto]");
+  assert.ok(stripAnsi(headerLines).includes("Modelo:"), "Header must have Modelo label");
+  assert.ok(stripAnsi(headerLines).includes("Effort:"), "Header must have Effort badge");
+
+  // Hover over Modelo button
+  const modelCol = (view as any).modelBtnStartCol + 2;
+  await view.handleKey({
+    name: "hover",
+    ctrl: false,
+    shift: false,
+    meta: false,
+    mouse: { type: "hover", col: modelCol, row: 5 },
+  });
+  assert.strictEqual((view as any).hoveredHeaderBtn, "model", "should highlight model button on hover");
+
+  // Hover over Effort button
+  const effortCol = (view as any).effortBtnStartCol + 2;
+  await view.handleKey({
+    name: "hover",
+    ctrl: false,
+    shift: false,
+    meta: false,
+    mouse: { type: "hover", col: effortCol, row: 5 },
+  });
+  assert.strictEqual((view as any).hoveredHeaderBtn, "effort", "should highlight effort button on hover");
+});
+
+test("TUI ChatView: supports dragging the lateral scrollbar with mouse drag events", async () => {
+  const view = new ChatView();
+  for (let i = 1; i <= 20; i++) {
+    (view as any).messages.push({
+      role: i % 2 === 1 ? "user" : "assistant",
+      content: `Mensagem ${i}\nLinha extra ${i}`,
+    });
+  }
+
+  view.render(80, 20);
+  const maxOffset = (view as any).lastMaxOffset;
+  assert.ok(maxOffset > 0);
+
+  // Hover on scrollbar
+  await view.handleKey({
+    name: "hover",
+    ctrl: false,
+    shift: false,
+    meta: false,
+    mouse: { type: "hover", col: 79, row: 10 },
+  });
+  assert.strictEqual((view as any).isScrollbarHovered, true, "scrollbar should report hovered");
+
+  // Press / click to start drag
+  await view.handleKey({
+    name: "click",
+    ctrl: false,
+    shift: false,
+    meta: false,
+    mouse: { type: "click", button: "left", col: 79, row: 8 },
+  });
+  assert.strictEqual((view as any).isDraggingScrollbar, true, "should be in dragging state");
+
+  // Drag to row 14
+  await view.handleKey({
+    name: "drag",
+    ctrl: false,
+    shift: false,
+    meta: false,
+    mouse: { type: "drag", button: "left", col: 79, row: 14 },
+  });
+  assert.ok((view as any).scrollOffset < maxOffset, "scrollOffset should have adjusted downwards on drag");
+
+  // Mouse release
+  await view.handleKey({
+    name: "release",
+    ctrl: false,
+    shift: false,
+    meta: false,
+    mouse: { type: "release", button: "left", col: 79, row: 14 },
+  });
+  assert.strictEqual((view as any).isDraggingScrollbar, false, "drag should terminate on release");
+});
 
 test("TUI LogsView: lateral scrollbar is clickable and clamps scrollOffset", async () => {
   const view = new LogsView();

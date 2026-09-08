@@ -26,6 +26,8 @@ export class LogsView implements TuiView {
   private lastHeight = 24;
   private lastMaxOffset = 0;
   private lastVisibleCapacity = 0;
+  private isScrollbarHovered = false;
+  private isDraggingScrollbar = false;
   private getChips(rawCount: number): {
     titlePrefix: string;
     chips: Array<{ id: "all" | "warn" | "error" | "copy" | "clear"; label: string; startCol: number; endCol: number }>;
@@ -132,21 +134,54 @@ export class LogsView implements TuiView {
       }
     }
 
-    // Mouse click on scrollbar (accepts rows 4 to 7 + lastVisibleCapacity, cols width-3 to width)
-    if (
-      key.name === "click" &&
-      key.mouse &&
-      key.mouse.col >= this.lastWidth - 3 &&
-      key.mouse.col <= this.lastWidth &&
-      key.mouse.row >= 4 &&
-      key.mouse.row <= 7 + this.lastVisibleCapacity
-    ) {
+    // Helper to detect scrollbar mouse coordinates
+    const isMouseOnScrollbar = (col: number, row: number) => {
+      return (
+        col >= this.lastWidth - 3 &&
+        col <= this.lastWidth &&
+        row >= 7 &&
+        row <= 6 + this.lastVisibleCapacity
+      );
+    };
+
+    // Scrollbar Hover
+    if (key.name === "hover" && key.mouse) {
+      const onScrollbar = isMouseOnScrollbar(key.mouse.col, key.mouse.row);
+      if (this.isScrollbarHovered !== onScrollbar) {
+        this.isScrollbarHovered = onScrollbar;
+        return true;
+      }
+    }
+
+    // Scrollbar Click (Press)
+    if (key.name === "click" && key.mouse && isMouseOnScrollbar(key.mouse.col, key.mouse.row)) {
       if (this.lastMaxOffset > 0 && this.lastVisibleCapacity > 0) {
+        this.isDraggingScrollbar = true;
         const r = key.mouse.row - 7;
         const pct = Math.max(0, Math.min(1, r / Math.max(1, this.lastVisibleCapacity - 1)));
         const targetScrollFromTop = Math.round(pct * this.lastMaxOffset);
         this.scrollOffset = Math.max(0, Math.min(this.lastMaxOffset, this.lastMaxOffset - targetScrollFromTop));
         this.selectedLogIndex = null;
+        return true;
+      }
+    }
+
+    // Scrollbar Drag (Hold and Move)
+    if (key.name === "drag" && key.mouse) {
+      if (this.isDraggingScrollbar && this.lastMaxOffset > 0 && this.lastVisibleCapacity > 0) {
+        const r = key.mouse.row - 7;
+        const pct = Math.max(0, Math.min(1, r / Math.max(1, this.lastVisibleCapacity - 1)));
+        const targetScrollFromTop = Math.round(pct * this.lastMaxOffset);
+        this.scrollOffset = Math.max(0, Math.min(this.lastMaxOffset, this.lastMaxOffset - targetScrollFromTop));
+        this.selectedLogIndex = null;
+        return true;
+      }
+    }
+
+    // Mouse Release
+    if (key.name === "release") {
+      if (this.isDraggingScrollbar) {
+        this.isDraggingScrollbar = false;
         return true;
       }
     }
@@ -390,7 +425,13 @@ export class LogsView implements TuiView {
 
         if (hasScrollbar) {
           const isThumb = r >= thumbTop && r < thumbTop + thumbSize;
-          const scrollChar = isThumb ? theme.cyan("█") : theme.dark("│");
+          const isHighlighted = this.isScrollbarHovered || this.isDraggingScrollbar;
+          let scrollChar: string;
+          if (isThumb) {
+            scrollChar = isHighlighted ? `\x1b[48;2;45;35;85m\x1b[38;2;0;255;255m\x1b[1m█\x1b[0m` : theme.cyan("█");
+          } else {
+            scrollChar = isHighlighted ? theme.cyan("│") : theme.dark("│");
+          }
           const padded = pad(styledText, boxInnerW - 1);
           finalRows.push(`${padded}${scrollChar}`);
         } else {
