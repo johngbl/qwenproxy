@@ -52,6 +52,7 @@ Usage:
 Commands:
   (default)     Launch interactive TUI management dashboard and proxy
   start         Run headless HTTP/SSE proxy server
+  update        Check for updates and automatically update (npm, pnpm, bun)
   login         Authenticate new accounts via visible browser
   sync          Synchronize AI clients (Claude Code, Codex, OpenCode, OMP)
   clean         Prune transient profile caches
@@ -94,10 +95,12 @@ if (firstArg === "start" || rawArgs.includes("--server")) {
 } else if (firstArg === "purge") {
   scriptFile = "src/delete-chats.ts";
   scriptArgs = rawArgs.slice(1);
+} else if (firstArg === "update") {
+  scriptFile = "src/update-cli.ts";
+  scriptArgs = rawArgs.slice(1);
 } else if (firstArg === "login") {
   scriptFile = "src/login.ts";
   scriptArgs = rawArgs.slice(1);
-} else {
   // Pass through remaining options to index.ts with default TUI flag
   scriptFile = "src/index.ts";
   scriptArgs = ["--tui", ...rawArgs];

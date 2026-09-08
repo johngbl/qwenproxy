@@ -833,7 +833,7 @@ QwenProxy/
 | `npm start`         | Iniciar o servidor QwenProxy                                            |
 | `npm run sync`      | Sincronizar clientes (Claude Code, Codex, OpenCode, OMP) com backup     |
 | `npm run clean`     | Limpar caches temporários dos perfis Chromium (~4.5MB por conta)        |
-| `npm run clean:all` | Limpar caches + remover navegadores órfãos do Playwright (+4GB no SSD)  |
+| `npm run clean:all` | Limpar caches + remover navegadores órfãos e versões antigas no SSD     |
 | `npm run reset`     | Zerar cooldowns de contas no banco de dados                             |
 | `npm run login`     | Adicionar/autenticar novas contas visualmente no navegador              |
 | `npm run purge`     | Limpar chats remotos do Qwen nas contas configuradas                    |
