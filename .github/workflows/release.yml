@@ -1,0 +1,61 @@
+name: Release & Publish
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release:
+    name: Auto Release & NPM Publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Check version and tag status
+        id: check_version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          TAG="v$VERSION"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "ℹ️ Tag $TAG already exists, skipping release."
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "🚀 New version $TAG detected! Proceeding with release."
+          fi
+
+      - name: Create Git Tag and GitHub Release
+        if: steps.check_version.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.check_version.outputs.tag }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+          gh release create "$TAG" --title "$TAG" --generate-notes
+
+      - name: Publish to NPM Registry
+        if: steps.check_version.outputs.exists == 'false' && env.NODE_AUTH_TOKEN != ''
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
