@@ -58,15 +58,13 @@ export class ChatView implements TuiView {
   private lastHeight = 24;
   private lastMaxOffset = 0;
   private lastVisibleCapacity = 0;
-  private hoveredHeaderBtn: "model" | "effort" | "shortcuts" | null = null;
+  private hoveredHeaderBtn: "model" | "effort" | null = null;
   private isScrollbarHovered = false;
   private isDraggingScrollbar = false;
   private modelBtnStartCol = 0;
   private modelBtnEndCol = 0;
   private effortBtnStartCol = 0;
   private effortBtnEndCol = 0;
-  private shortcutsBtnStartCol = 0;
-  private shortcutsBtnEndCol = 0;
   private isModelModalOpen = false;
   private modalSelectedIndex = 0;
   private availableEfforts: Array<{
@@ -288,17 +286,15 @@ export class ChatView implements TuiView {
       return true;
     }
 
-    // 3. Header button hover (rows 4 to 6: Model, Effort, Shortcuts)
+    // 3. Header button hover (rows 4 to 6: Model, Effort)
     if (key.name === "hover" && key.mouse) {
       const { row, col } = key.mouse;
       if (row >= 4 && row <= 6 && !this.isModelModalOpen && !this.isEffortModalOpen) {
-        let target: "model" | "effort" | "shortcuts" | null = null;
+        let target: "model" | "effort" | null = null;
         if (this.modelBtnStartCol > 0 && col >= this.modelBtnStartCol - 1 && col <= this.modelBtnEndCol + 1) {
           target = "model";
         } else if (this.effortBtnStartCol > 0 && col >= this.effortBtnStartCol - 1 && col <= this.effortBtnEndCol + 1) {
           target = "effort";
-        } else if (this.shortcutsBtnStartCol > 0 && col >= this.shortcutsBtnStartCol - 1 && col <= this.shortcutsBtnEndCol + 1) {
-          target = "shortcuts";
         }
         if (this.hoveredHeaderBtn !== target) {
           this.hoveredHeaderBtn = target;
@@ -312,7 +308,7 @@ export class ChatView implements TuiView {
       }
     }
 
-    // 4. Header button click (rows 4 to 6: Model, Effort, Shortcuts)
+    // 4. Header button click (rows 4 to 6: Model, Effort)
     if (
       key.name === "click" &&
       key.mouse &&
@@ -322,10 +318,7 @@ export class ChatView implements TuiView {
       !this.isEffortModalOpen
     ) {
       const col = key.mouse.col;
-      if (
-        (this.modelBtnStartCol > 0 && col >= this.modelBtnStartCol - 1 && col <= this.modelBtnEndCol + 1) ||
-        (this.shortcutsBtnStartCol > 0 && col >= this.shortcutsBtnStartCol - 1 && col <= this.shortcutsBtnEndCol + 1)
-      ) {
+      if (this.modelBtnStartCol > 0 && col >= this.modelBtnStartCol - 1 && col <= this.modelBtnEndCol + 1) {
         this.isModelModalOpen = true;
         this.modalSelectedIndex = this.selectedModelIndex;
         this.hoveredHeaderBtn = null;
@@ -732,9 +725,7 @@ export class ChatView implements TuiView {
     }
 
     const shortcutsLabel = `[ F2: Modelo${isReasoning ? " | F3: Effort" : ""} (${this.selectedModelIndex + 1}/${totalModels}) ]`;
-    const styledShortcuts = this.hoveredHeaderBtn === "shortcuts"
-      ? theme.bgHover(` ${theme.bold(theme.white(shortcutsLabel))} `)
-      : theme.yellow(shortcutsLabel);
+    const styledShortcuts = theme.yellow(shortcutsLabel);
 
     // Non-text models show their category badge ([Imagem] / [Vídeo]), while text models omit [Texto]
     const nonTextBadge = !isReasoning && currentInfo.badge ? `${currentInfo.badge}  ` : "";
@@ -755,14 +746,10 @@ export class ChatView implements TuiView {
       const effortEnd = effortStart + stringWidth(effortLabel) - 1;
       this.effortBtnStartCol = effortStart;
       this.effortBtnEndCol = effortEnd;
-      this.shortcutsBtnStartCol = effortEnd + 4; // 3 spaces
     } else {
       this.effortBtnStartCol = 0;
       this.effortBtnEndCol = 0;
-      const categoryTotalW = stringWidth(nonTextBadge) + stringWidth(`• ${currentInfo.category}`);
-      this.shortcutsBtnStartCol = modelEnd + 2 + categoryTotalW + 4;
     }
-    this.shortcutsBtnEndCol = this.shortcutsBtnStartCol + stringWidth(shortcutsLabel) - 1;
 
     const headerBox = drawBox({
       title: "Chat Tester",
