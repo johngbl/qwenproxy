@@ -13,6 +13,7 @@
  *   qwenproxy purge     -> Deletes remote chats across configured accounts
  *   qwenproxy login     -> Authenticates accounts via visible browser
  */
+process.env.DOTENV_CONFIG_QUIET = "true";
 
 import { spawn, spawnSync } from "node:child_process";
 import path from "node:path";

@@ -1,3 +1,4 @@
+process.env.DOTENV_CONFIG_QUIET = 'true'
 import dotenv from 'dotenv'
 import fs from 'node:fs'
 import { getEnvFilePath, ensureDataDirs } from './core/paths.ts'
@@ -8,9 +9,9 @@ ensureDataDirs()
 // Load .env from local directory or persistent global OS directory
 const envPath = getEnvFilePath()
 if (fs.existsSync(envPath)) {
-  dotenv.config({ path: envPath })
+  dotenv.config({ path: envPath, quiet: true })
 } else {
-  dotenv.config()
+  dotenv.config({ quiet: true })
 }
 // Prevent benign asynchronous driver/browser teardown exceptions from crashing the server
 process.on('uncaughtException', (error: unknown) => {
