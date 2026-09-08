@@ -172,13 +172,13 @@ async function main() {
       for (const d of browserResult.unusedDirs) {
         console.log(`     - ${d.name} (${d.size})`);
       }
-      console.log(`   Total recuperado no SSD: ${formatBytes(browserResult.freedBytes)}!`);
+      console.log(`   Total recuperado em disco: ${formatBytes(browserResult.freedBytes)}!`);
     } else {
-      console.log(`   [INFO] Encontrados ${browserResult.unusedDirs.length} navegador(es) legados/não utilizados no seu SSD:`);
+      console.log(`   [INFO] Encontrados ${browserResult.unusedDirs.length} navegador(es) legados/não utilizados em disco:`);
       for (const d of browserResult.unusedDirs) {
         console.log(`     - ${d.name} (${d.size})`);
       }
-      console.log(`   Espaço recuperável no SSD: ${formatBytes(totalReclaimable)}.`);
+      console.log(`   Espaço recuperável em disco: ${formatBytes(totalReclaimable)}.`);
       console.log(`   Para liberar esse espaço automaticamente, execute:`);
       console.log(`   npm run clean:all\n`);
     }

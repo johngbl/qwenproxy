@@ -260,7 +260,7 @@ export class StorageView implements TuiView {
         if (res.freedBytes > 0 || res.unusedDirs.length > 0) {
           this.addLog(
             theme.green(
-              `✓ Navegadores limpos: ${formatBytes(res.freedBytes)} recuperados no SSD (${res.unusedDirs.length} versões removidas)`,
+              `✓ Navegadores limpos: ${formatBytes(res.freedBytes)} recuperados em disco (${res.unusedDirs.length} versões removidas)`,
             ),
           );
         } else {

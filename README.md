@@ -284,7 +284,7 @@ qpx
 | `qpx login` | Abre navegador visível para autenticar novas contas interativamente |
 | `qpx sync` | Configura e sincroniza clientes (Claude Code, Codex, OpenCode, OMP) |
 | `qpx clean` | Limpa caches temporários dos perfis Chromium (~4.5MB por conta) |
-| `qpx clean:all` | Limpa caches e remove versões antigas de navegadores órfãos no SSD |
+| `qpx clean:all` | Limpa caches e remove versões antigas de navegadores órfãos em disco |
 | `qpx purge` | Limpa o histórico de conversas remotas no Qwen de todas as contas |
 | `qpx reset` | Reseta cooldowns e rate limits salvos no banco de dados |
 ### Opção 2: Execução Instantânea (Zero Instalação)
@@ -845,7 +845,7 @@ QwenProxy/
 | `npm start`         | Iniciar apenas o servidor QwenProxy em modo headless                    |
 | `npm run sync`      | Sincronizar clientes (Claude Code, Codex, OpenCode, OMP) com backup     |
 | `npm run clean`     | Limpar caches temporários dos perfis Chromium (~4.5MB por conta)        |
-| `npm run clean:all` | Limpar caches + remover navegadores órfãos e versões antigas no SSD     |
+| `npm run clean:all` | Limpar caches + remover navegadores órfãos e versões antigas em disco   |
 | `npm run reset`     | Zerar cooldowns de contas no banco de dados                             |
 | `npm run login`     | Adicionar/autenticar novas contas visualmente no navegador              |
 | `npm run purge`     | Limpar chats remotos do Qwen nas contas configuradas                    |

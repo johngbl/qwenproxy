@@ -904,10 +904,9 @@ test("TUI StorageView: optimization logs are in chronological order without time
     assert.equal(/\[\d{2}:\d{2}:\d{2}\]/.test(stripAnsi(l)), false, "logs must not have timestamps");
   }
 
-  // Verify no hardcoded ~4GB or (SSD já otimizado)
+  // Verify no hardcoded ~4GB
   const render = view.render(100, 24).join("\n");
   assert.ok(!render.includes("~4GB"), "must not contain hardcoded ~4GB");
-  assert.ok(!render.includes("(SSD já otimizado)"), "must not contain (SSD já otimizado)");
 });
 
 test("TUI SyncView: mouse click precisely toggles clients, model, and scope", async () => {

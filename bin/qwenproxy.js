@@ -121,10 +121,22 @@ try {
   const execPath = chromium.executablePath();
   if (!fs.existsSync(execPath)) {
     console.log("⏳ [QwenProxy] Instalando o navegador Chromium pela primeira vez...");
-    spawnSync("npx", ["patchright", "install", "chromium"], {
-      stdio: "inherit",
-      shell: true,
-    });
+    let cliPath = "";
+    try {
+      const patchrightPkg = require.resolve("patchright/package.json");
+      cliPath = path.join(path.dirname(patchrightPkg), "cli.js");
+    } catch {}
+
+    if (cliPath && fs.existsSync(cliPath)) {
+      spawnSync(process.execPath, [cliPath, "install", "chromium"], {
+        stdio: "inherit",
+      });
+    } else {
+      spawnSync("npx", ["--yes", "patchright", "install", "chromium"], {
+        stdio: "inherit",
+        shell: true,
+      });
+    }
     console.log("✓ [QwenProxy] Navegador instalado com sucesso!\n");
   }
 } catch {}
