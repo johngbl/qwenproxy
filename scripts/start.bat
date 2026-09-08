@@ -12,12 +12,14 @@ REM --- Verifica Node.js ---
 where node >nul 2>nul
 if errorlevel 1 (
   echo ❌ [ERRO] Node.js nao encontrado. Rode scripts\install.bat primeiro.
+  pause
   exit /b 1
 )
 
 REM --- Verifica se as dependências foram instaladas ---
 if not exist "node_modules" (
   echo ⚠️  node_modules nao encontrado. Rode scripts\install.bat primeiro.
+  pause
   exit /b 1
 )
 
@@ -30,4 +32,9 @@ if not exist ".env" (
 
 REM O servidor já exibe o próprio banner; --silent oculta o cabeçalho do npm.
 call npm start --silent
+if errorlevel 1 (
+  echo.
+  echo ❌ O servidor foi encerrado. Pressione qualquer tecla para fechar esta janela...
+  pause >nul
+)
 endlocal

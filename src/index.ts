@@ -55,7 +55,11 @@ if (isTui) {
     const message = error instanceof Error ? error.message : String(error)
     // Expected configuration errors are already formatted with an emoji and
     // actionable guidance; print only the message to avoid leaking stack traces.
-    if (message.includes('[Server]')) {
+    if (message.includes('No Qwen accounts configured')) {
+      console.error(message)
+      console.log('\n👉 Dica: Execute a interface interativa com "qpx" (ou "npm run tui") para gerenciar contas,')
+      console.log('   ou configure a variável QWEN_ACCOUNTS no seu arquivo .env.\n')
+    } else if (message.includes('[Server]')) {
       console.error(message)
     } else {
       console.error('❌ [Server] Failed to start:', message)
