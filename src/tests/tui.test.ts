@@ -437,6 +437,36 @@ test("TUI LogsView: supports selecting log line, copying, and rendering scrollba
   const clearSelectionText = view.render(80, height).join("\n");
   assert.ok(!clearSelectionText.includes("▸"), "Esc must clear selection pointer");
 });
+test("TUI ServerManager: filters out ASCII box borders and startup banner remnants from log buffer", async () => {
+  const { ServerManager } = await import("../tui/server-manager.ts");
+  const sm = ServerManager.getInstance();
+  sm.clearLogs();
+
+  // Simulate console logging of ASCII banner
+  const banner = `
+----------------------------------------------------------+
+|                                                          |
+|                        QwenProxy                         |
+|            OpenAI & Anthropic Compatible API             |
+|                                                          |
+----------------------------------------------------------+
+|                                                          |
+|  Endpoint    http://127.0.0.1:7936/v1                    |
+|  Port        7936                                        |
+|  Accounts    1/1 warm                                    |
+|  API Key     Not set                                     |
+|  Status      ● Online                                    |
+|                                                          |
+----------------------------------------------------------+
+`;
+  (sm as any).appendLog("INFO", banner);
+  // Normal log
+  (sm as any).appendLog("INFO", "📥 [Chat] Incoming | req=12345678");
+
+  const entries = sm.getLogEntries("all");
+  assert.equal(entries.length, 1, "Must filter out entire banner, keeping only real logs");
+  assert.ok(entries[0].message.includes("📥 [Chat] Incoming"));
+});
 test("TUI LogsView: click bounds precisely match every filter chip without shifting", async () => {
   const { LogsView } = await import("../tui/views/logs-view.ts");
   const view = new LogsView();

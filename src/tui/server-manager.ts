@@ -95,15 +95,23 @@ export class ServerManager {
       let line = raw.trim();
       if (!line) continue;
 
-      // Filter out raw ASCII box frames (like +-----+ or empty row | |)
+      // Filter out raw ASCII box frames and border rows entirely
       if (/^[+\-=#]{5,}$/.test(line)) continue;
       if (/^\|\s*\|$/.test(line)) continue;
+      if (line.startsWith("|") && line.endsWith("|")) continue;
 
-      // If line is an ASCII box row like "|  Endpoint   http://...  |", extract the text
-      if (line.startsWith("|") && line.endsWith("|")) {
-        line = line.slice(1, -1).trim();
+      // Filter out any box remnants (startup banner is for headless npm start only)
+      if (
+        line === "QwenProxy" ||
+        line === "OpenAI & Anthropic Compatible API" ||
+        /^Endpoint\s+http/i.test(line) ||
+        /^Port\s+\d+/i.test(line) ||
+        /^Accounts\s+\d+\/\d+/i.test(line) ||
+        /^API Key\s+/i.test(line) ||
+        /^Status\s+●/i.test(line)
+      ) {
+        continue;
       }
-
       if (!line) continue;
 
       // Prevent identical consecutive duplicate logs in the same second
@@ -224,7 +232,7 @@ export class ServerManager {
         this.state = "online";
         this.appendLog(
           "INFO",
-          `QwenProxy já está em execução na porta ${port}. Conectado com sucesso!`,
+          `✨ [Server] Conectado à instância em execução na porta ${port}`,
         );
         return;
       }
@@ -234,25 +242,25 @@ export class ServerManager {
     this.state = "warming";
     this.appendLog(
       "INFO",
-      `Iniciando servidor QwenProxy na porta ${port} e aquecendo Playwright...`,
+      `🚀 [Server] Iniciando servidor na porta ${port}...`,
     );
 
     this.interceptLogs();
 
     this.startPromise = (async () => {
       try {
-        await startServer({ installSignalHandlers: false });
+        await startServer({ installSignalHandlers: false, showBanner: false });
         this.state = "online";
         this.appendLog(
           "INFO",
-          `✓ Servidor QwenProxy pronto e online em http://${cleanHost}:${port}/v1`,
+          `✨ [Server] QwenProxy pronto e online em http://${cleanHost}:${port}/v1`,
         );
       } catch (err: any) {
         this.state = "error";
         this.lastError = err?.message || String(err);
         this.appendLog(
           "ERROR",
-          `✗ Falha ao iniciar servidor: ${this.lastError}`,
+          `❌ [Server] Falha ao iniciar servidor: ${this.lastError}`,
         );
       } finally {
         this.startPromise = null;

@@ -260,7 +260,7 @@ export async function getOrLaunchSharedBrowser(
     const launchArgs = buildChromiumLaunchArgs(defaultViewport);
 
     console.log(
-      `[Playwright] Launching single shared ${browserType} browser...`,
+      `🌐 [Playwright] Launching single shared ${browserType} browser...`,
     );
 
     const browser = await engine.launch({
