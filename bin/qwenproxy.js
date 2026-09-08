@@ -113,11 +113,11 @@ try {
 
 // Ensure Playwright Chromium is installed for first-time global users
 try {
-  const { chromium } = await import("playwright");
+  const { chromium } = await import("patchright");
   const execPath = chromium.executablePath();
   if (!fs.existsSync(execPath)) {
-    console.log("⏳ [QwenProxy] Instalando o navegador Chromium pela primeira vez (Playwright)...");
-    spawnSync("npx", ["playwright", "install", "chromium"], {
+    console.log("⏳ [QwenProxy] Instalando o navegador Chromium pela primeira vez...");
+    spawnSync("npx", ["patchright", "install", "chromium"], {
       stdio: "inherit",
       shell: true,
     });

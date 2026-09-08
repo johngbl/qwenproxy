@@ -49,7 +49,8 @@ test("Paths: resolveDataDir resolves to OS global user directory when not in loc
     platform: "win32",
     appData: "C:\\Users\\Test\\AppData\\Roaming",
   });
-  assert.equal(resolved, "C:\\Users\\Test\\AppData\\Roaming\\qwenproxy");
+  const expectedWin = (path.win32 || path).join("C:\\Users\\Test\\AppData\\Roaming", "qwenproxy");
+  assert.equal(resolved, expectedWin);
 
   const resolvedLinux = resolveDataDir({
     isNodeTest: false,

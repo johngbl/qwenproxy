@@ -52,11 +52,12 @@ export function getOsGlobalDataDir(options?: {
   const home = options?.homeDir || os.homedir();
 
   if (currentPlatform === "win32") {
+    const winPath = path.win32 || path;
     const appData =
       options?.appData ||
       process.env.APPDATA ||
-      path.join(home, "AppData", "Roaming");
-    return path.join(appData, "qwenproxy");
+      winPath.join(home, "AppData", "Roaming");
+    return winPath.join(appData, "qwenproxy");
   }
 
   if (currentPlatform === "darwin") {

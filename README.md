@@ -257,13 +257,13 @@ O QwenProxy pode ser instalado globalmente, executado instantaneamente via `npx`
 Instale uma única vez para ter acesso ao comando rápido **`qpx`** de qualquer lugar do terminal:
 ```bash
 # Via npm:
-npm install -g qwenproxy
+npm install -g qwenproxy-cli
 
 # Ou via pnpm:
-pnpm add -g qwenproxy
+pnpm add -g qwenproxy-cli
 
 # Ou via bun:
-bun add -g qwenproxy
+bun add -g qwenproxy-cli
 ```
 Após instalar, basta abrir o terminal e digitar:
 ```bash
@@ -275,14 +275,14 @@ qpx
 ### Opção 2: Execução Instantânea (Zero Instalação)
 Experimente ou execute pontualmente sem instalar nada permanentemente:
 ```bash
-npx qwenproxy
-# ou: bunx qwenproxy
+npx qwenproxy-cli
+# ou: bunx qwenproxy-cli
 ```
 
 ### Opção 3: Clonando o Código (Desenvolvimento)
 ```bash
-git clone https://github.com/johngbl/QwenProxy.git
-cd QwenProxy
+git clone https://github.com/johngbl/qwenproxy.git
+cd qwenproxy
 npm install
 npm run tui      # Abre a TUI interativa
 # ou: npm start  # Inicia apenas o servidor HTTP headless

@@ -1,11 +1,11 @@
 {
-  "name": "qwenproxy",
+  "name": "qwenproxy-cli",
   "version": "1.0.0",
   "description": "API compatível com OpenAI que conecta clientes ao Qwen via Playwright, com suporte a múltiplas contas, tool calling e sessões persistentes.",
   "main": "src/index.ts",
   "bin": {
-    "qwenproxy": "./bin/qwenproxy.js",
-    "qpx": "./bin/qwenproxy.js"
+    "qwenproxy": "bin/qwenproxy.js",
+    "qpx": "bin/qwenproxy.js"
   },
   "files": [
     "bin",
@@ -32,7 +32,27 @@
     "benchmark:proxy": "npx tsx src/benchmarks/proxy-baseline.ts",
     "typecheck": "tsc --noEmit"
   },
-  "keywords": [],
+  "keywords": [
+    "qwen",
+    "proxy",
+    "openai",
+    "anthropic",
+    "claude-code",
+    "codex",
+    "opencode",
+    "tui",
+    "patchright",
+    "playwright",
+    "llm"
+  ],
+  "homepage": "https://github.com/johngbl/qwenproxy#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/johngbl/qwenproxy.git"
+  },
+  "bugs": {
+    "url": "https://github.com/johngbl/qwenproxy/issues"
+  },
   "author": "johngbl <147551701+johngbl@users.noreply.github.com>",
   "license": "ISC",
   "dependencies": {
