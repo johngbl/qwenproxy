@@ -7,6 +7,30 @@ import { chromium, type Browser, type BrowserContext, type Page } from "patchrig
 import path from "path";
 import fs from "fs";
 import crypto from "crypto";
+import { spawnSync } from "child_process";
+import { createRequire } from "module";
+
+const requireLocal = createRequire(import.meta.url);
+
+function autoInstallPlaywrightChromium(): void {
+  try {
+    const patchrightPkg = requireLocal.resolve("patchright/package.json");
+    const cliPath = path.join(path.dirname(patchrightPkg), "cli.js");
+    if (fs.existsSync(cliPath)) {
+      console.log("⏳ [Playwright] Navegador Chromium não encontrado. Instalando automaticamente...");
+      spawnSync(process.execPath, [cliPath, "install", "chromium"], {
+        stdio: "inherit",
+      });
+      return;
+    }
+  } catch {}
+
+  console.log("⏳ [Playwright] Navegador Chromium não encontrado. Instalando via npx...");
+  spawnSync("npx", ["--yes", "patchright", "install", "chromium"], {
+    stdio: "inherit",
+    shell: true,
+  });
+}
 import { loadAccounts, type QwenAccount } from "../core/accounts.ts";
 // Imported here rather than injected from session-keeper.ts: account-concurrency
 // only depends on config/logger, so playwright -> account-concurrency stays
@@ -263,12 +287,27 @@ export async function getOrLaunchSharedBrowser(
       `🌐 [Playwright] Launching single shared ${browserType} browser...`,
     );
 
-    const browser = await engine.launch({
-      headless,
-      channel,
-      ignoreDefaultArgs: ["--enable-automation", "--enable-blink-features"],
-      args: launchArgs,
-    });
+    let browser: Browser;
+    try {
+      browser = await engine.launch({
+        headless,
+        channel,
+        ignoreDefaultArgs: ["--enable-automation", "--enable-blink-features"],
+        args: launchArgs,
+      });
+    } catch (launchErr: any) {
+      if (launchErr?.message?.includes("Executable doesn't exist")) {
+        autoInstallPlaywrightChromium();
+        browser = await engine.launch({
+          headless,
+          channel,
+          ignoreDefaultArgs: ["--enable-automation", "--enable-blink-features"],
+          args: launchArgs,
+        });
+      } else {
+        throw launchErr;
+      }
+    }
 
     browser.on("disconnected", () => {
       console.warn("[Playwright] Shared browser disconnected");
