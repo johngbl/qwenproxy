@@ -115,31 +115,40 @@ try {
   tsxLoaderArg = pathToFileURL(tsxEntry).href;
 } catch {}
 
-// Ensure Playwright Chromium is installed for first-time global users
-try {
-  const { chromium } = await import("patchright");
-  const execPath = chromium.executablePath();
-  if (!fs.existsSync(execPath)) {
-    console.log("⏳ [QwenProxy] Instalando o navegador Chromium pela primeira vez...");
-    let cliPath = "";
-    try {
-      const patchrightPkg = require.resolve("patchright/package.json");
-      cliPath = path.join(path.dirname(patchrightPkg), "cli.js");
-    } catch {}
+// Ensure Playwright Chromium is installed only for commands that need the browser
+const browserCommands = ["start", "tui", "login"];
+const isBrowserCommand =
+  !firstArg ||
+  browserCommands.includes(firstArg) ||
+  rawArgs.includes("--tui") ||
+  rawArgs.includes("--server");
 
-    if (cliPath && fs.existsSync(cliPath)) {
-      spawnSync(process.execPath, [cliPath, "install", "chromium"], {
-        stdio: "inherit",
-      });
-    } else {
-      spawnSync("npx", ["--yes", "patchright", "install", "chromium"], {
-        stdio: "inherit",
-        shell: true,
-      });
+if (isBrowserCommand) {
+  try {
+    const { chromium } = await import("patchright");
+    const execPath = chromium.executablePath();
+    if (!fs.existsSync(execPath)) {
+      console.log("⏳ [QwenProxy] Instalando o navegador Chromium pela primeira vez...");
+      let cliPath = "";
+      try {
+        const patchrightEntry = require.resolve("patchright");
+        cliPath = path.join(path.dirname(patchrightEntry), "cli.js");
+      } catch {}
+
+      if (cliPath && fs.existsSync(cliPath)) {
+        spawnSync(process.execPath, [cliPath, "install", "chromium"], {
+          stdio: "inherit",
+        });
+      } else {
+        const cmd = process.platform === "win32" ? "npx.cmd" : "npx";
+        spawnSync(cmd, ["--yes", "patchright", "install", "chromium"], {
+          stdio: "inherit",
+        });
+      }
+      console.log("✓ [QwenProxy] Navegador instalado com sucesso!\n");
     }
-    console.log("✓ [QwenProxy] Navegador instalado com sucesso!\n");
-  }
-} catch {}
+  } catch {}
+}
 
 const child = spawn(process.execPath, ["--import", tsxLoaderArg, targetPath, ...scriptArgs], {
   stdio: "inherit",

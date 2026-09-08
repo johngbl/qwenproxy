@@ -1,6 +1,6 @@
 {
   "name": "qwenproxy-cli",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "High-performance OpenAI & Anthropic compatible API gateway for Qwen with multi-account rotation, interactive TUI, and resilient tool calling.",
   "main": "src/index.ts",
   "bin": {
