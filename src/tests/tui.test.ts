@@ -453,6 +453,35 @@ test("TUI LogsView: click bounds precisely match every filter chip without shift
   }
 });
 
+test("TUI LogsView: single click activates chip immediately even when already hovered", async () => {
+  const view = new LogsView();
+  const chipsInfo = (view as any).getChips(5);
+  const warnChip = chipsInfo.chips.find((c: any) => c.id === "warn");
+  const midCol = Math.floor((warnChip.startCol + warnChip.endCol) / 2);
+
+  // 1. Mouse hover over warn chip
+  const hoverHandled = await view.handleKey({
+    name: "hover",
+    ctrl: false,
+    shift: false,
+    meta: false,
+    mouse: { type: "hover", col: midCol, row: 4 },
+  });
+  assert.equal(hoverHandled, true);
+  assert.equal((view as any).hoveredChip, "warn");
+
+  // 2. Click once on warn chip - must NOT be swallowed by hover logic
+  const clickHandled = await view.handleKey({
+    name: "click",
+    ctrl: false,
+    shift: false,
+    meta: false,
+    mouse: { type: "click", button: "left", col: midCol, row: 4 },
+  });
+  assert.equal(clickHandled, true);
+  assert.equal((view as any).filter, "warn", "filter must apply on the first click");
+});
+
 test("TUI ChatView: supports chat conversation scrolling with PageUp/PageDown", async () => {
   const view = new ChatView();
 

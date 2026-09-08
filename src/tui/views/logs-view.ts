@@ -74,27 +74,29 @@ export class LogsView implements TuiView {
     const rawEntries = ServerManager.getInstance().getLogEntries(this.filter);
     const { chips } = this.getChips(rawEntries.length);
 
-    // Mouse hover on chips (accepts rows 3 to 5 for generous vertical target)
-    if (key.name === "hover" && key.mouse && key.mouse.row >= 3 && key.mouse.row <= 5) {
-      const col = key.mouse.col;
-      let target: "all" | "warn" | "error" | "copy" | "clear" | null = null;
-      for (const c of chips) {
-        if (col >= c.startCol && col <= c.endCol) {
-          target = c.id;
-          break;
+    // Mouse hover on chips (accepts rows 3 to 6 for generous vertical target)
+    if (key.name === "hover" && key.mouse) {
+      if (key.mouse.row >= 3 && key.mouse.row <= 6) {
+        const col = key.mouse.col;
+        let target: "all" | "warn" | "error" | "copy" | "clear" | null = null;
+        for (const c of chips) {
+          if (col >= c.startCol && col <= c.endCol) {
+            target = c.id;
+            break;
+          }
         }
-      }
-      if (this.hoveredChip !== target) {
-        this.hoveredChip = target;
+        if (this.hoveredChip !== target) {
+          this.hoveredChip = target;
+          return true;
+        }
+      } else if (this.hoveredChip !== null) {
+        this.hoveredChip = null;
         return true;
       }
-    } else if (this.hoveredChip !== null && key.mouse) {
-      this.hoveredChip = null;
-      return true;
     }
 
-    // Mouse click on chips (accepts rows 3 to 5 for effortless immediate click matching tabs)
-    if (key.name === "click" && key.mouse && key.mouse.row >= 3 && key.mouse.row <= 5) {
+    // Mouse click on chips (accepts rows 3 to 6 for effortless immediate single-click)
+    if (key.name === "click" && key.mouse && key.mouse.row >= 3 && key.mouse.row <= 6) {
       const col = key.mouse.col;
       for (const c of chips) {
         if (col >= c.startCol && col <= c.endCol) {
