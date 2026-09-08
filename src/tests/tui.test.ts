@@ -1060,3 +1060,67 @@ test("TUI Views: uninitialized account shows Standby while initialized without h
   assert.ok(accountsRender.includes("Aquecendo..."), "AccountsView must show Aquecendo...");
   assert.ok(accountsRender.includes("Standby"), "AccountsView must show Standby");
 });
+test("TUI AccountsView: pressing 'd' opens confirmation modal, 'n' cancels without deleting", async () => {
+  const view = new AccountsView();
+  const snapshot: any = {
+    online: true,
+    accounts: [
+      { id: "keep-me", emailOrName: "keep@test.com", priority: 1, onCooldown: false, remainingCooldownMs: 0, headersReady: true },
+    ],
+  };
+  view.render(100, 24, snapshot);
+
+  // 1. Press 'd' - must open confirmation dialog, NOT delete immediately
+  await view.handleKey({ name: "d", ctrl: false, shift: false, meta: false });
+  assert.equal(view.isCapturingText(), true, "modal must be capturing text/input");
+  let render = view.render(100, 24, snapshot).join("\n");
+  assert.ok(render.includes("Confirmar Remoção de Conta"), "modal title must be displayed");
+  assert.ok(render.includes("keep@test.com"), "account email must be mentioned");
+  assert.ok(render.includes("Sim, Confirmar"), "confirm button must be present");
+
+  // 2. Press 'n' - cancels without deletion
+  await view.handleKey({ name: "n", ctrl: false, shift: false, meta: false });
+  assert.equal(view.isCapturingText(), false, "modal must be closed");
+  render = view.render(100, 24, snapshot).join("\n");
+  assert.ok(render.includes("cancelada"), "status message must indicate cancellation");
+});
+
+test("TUI AccountsView: pressing 'x' opens confirmation modal for account chat deletion", async () => {
+  const view = new AccountsView();
+  const snapshot: any = {
+    online: true,
+    accounts: [
+      { id: "chat-acc", emailOrName: "chat@test.com", priority: 1, onCooldown: false, remainingCooldownMs: 0, headersReady: true },
+    ],
+  };
+  view.render(100, 24, snapshot);
+
+  // Press 'x' to clear chats
+  await view.handleKey({ name: "x", ctrl: false, shift: false, meta: false });
+  assert.equal(view.isCapturingText(), true);
+  let render = view.render(100, 24, snapshot).join("\n");
+  assert.ok(render.includes("Apagar Chats"), "modal must prompt for chat deletion");
+  assert.ok(render.includes("chat@test.com"));
+
+  // Press 'Esc' to cancel
+  await view.handleKey({ name: "escape", ctrl: false, shift: false, meta: false });
+  assert.equal(view.isCapturingText(), false);
+});
+
+test("TUI StorageView: pressing 'l' opens confirmation modal for deleting all chats and 'n' cancels", async () => {
+  const view = new StorageView();
+  view.render(100, 24);
+
+  // Press 'l'
+  await view.handleKey({ name: "l", ctrl: false, shift: false, meta: false });
+  assert.equal(view.isCapturingText(), true);
+  let render = view.render(100, 24).join("\n");
+  assert.ok(render.includes("Confirmar Exclusão de Chats Remotos"));
+  assert.ok(render.includes("TODAS as contas"));
+
+  // Press 'n' to cancel
+  await view.handleKey({ name: "n", ctrl: false, shift: false, meta: false });
+  assert.equal(view.isCapturingText(), false);
+  const logs = (view as any).actionLogs;
+  assert.ok(logs[logs.length - 1].includes("cancelada"));
+});

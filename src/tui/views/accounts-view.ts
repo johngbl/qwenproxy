@@ -33,6 +33,16 @@ export class AccountsView implements TuiView {
   private modalHoveredField: "email" | "password" | "save" | "cancel" | null = null;
   private lastModalLeftPad = 0;
   private lastLeftW = 46;
+  private confirmDialog: {
+    type: "remove_account" | "delete_account_chats" | "delete_all_chats";
+    title: string;
+    message: string;
+    detail: string;
+    onConfirm: () => Promise<void>;
+  } | null = null;
+  private confirmDialogHovered: "confirm" | "cancel" | null = null;
+  private lastConfirmModalLeftPad = 0;
+  private lastConfirmModalStartRow = 0;
   constructor() {
     this.refresh();
   }
@@ -42,9 +52,15 @@ export class AccountsView implements TuiView {
   }
 
   public isCapturingText(): boolean {
-    return this.isAddModalOpen;
+    return this.isAddModalOpen || this.confirmDialog !== null;
   }
   public getShortcuts(): Array<{ key: string; label: string }> {
+    if (this.confirmDialog) {
+      return [
+        { key: "S / Enter", label: "Confirmar" },
+        { key: "N / Esc", label: "Cancelar" },
+      ];
+    }
     if (this.isAddModalOpen) {
       return [
         { key: "↑↓/Mouse", label: "Alternar" },
@@ -55,6 +71,8 @@ export class AccountsView implements TuiView {
     return [
       { key: "a", label: "Adicionar Conta" },
       { key: "d", label: "Remover Conta" },
+      { key: "x", label: "Limpar Chats" },
+      { key: "l", label: "Limpar Todos Chats" },
       { key: "c", label: "Zerar Cooldown" },
       { key: "z", label: "Zerar Todas" },
     ];
@@ -125,6 +143,63 @@ export class AccountsView implements TuiView {
     }
   }
   public async handleKey(key: KeyEvent): Promise<boolean | void> {
+    // 0. Confirm Dialog Active
+    if (this.confirmDialog) {
+      if (key.name === "s" || key.name === "S" || key.name === "enter" || key.name === "return") {
+        const dialog = this.confirmDialog;
+        this.confirmDialog = null;
+        this.confirmDialogHovered = null;
+        await dialog.onConfirm();
+        return true;
+      }
+      if (key.name === "escape" || key.name === "n" || key.name === "N") {
+        this.confirmDialog = null;
+        this.confirmDialogHovered = null;
+        this.setStatusMessage(theme.muted("Ação cancelada"));
+        return true;
+      }
+      if (key.name === "hover" && key.mouse) {
+        const { row, col } = key.mouse;
+        const btnRow = this.lastConfirmModalStartRow + 4;
+        if (row === btnRow) {
+          const startCol = this.lastConfirmModalLeftPad + 2;
+          if (col >= startCol && col <= startCol + 25) {
+            this.confirmDialogHovered = "confirm";
+            return true;
+          }
+          if (col >= startCol + 26 && col <= startCol + 50) {
+            this.confirmDialogHovered = "cancel";
+            return true;
+          }
+        }
+        if (this.confirmDialogHovered !== null) {
+          this.confirmDialogHovered = null;
+          return true;
+        }
+      }
+      if (key.name === "click" && key.mouse) {
+        const { row, col } = key.mouse;
+        const btnRow = this.lastConfirmModalStartRow + 4;
+        if (row === btnRow) {
+          const startCol = this.lastConfirmModalLeftPad + 2;
+          if (col >= startCol && col <= startCol + 25) {
+            const dialog = this.confirmDialog;
+            this.confirmDialog = null;
+            this.confirmDialogHovered = null;
+            await dialog.onConfirm();
+            return true;
+          }
+          if (col >= startCol + 26 && col <= startCol + 50) {
+            this.confirmDialog = null;
+            this.confirmDialogHovered = null;
+            this.setStatusMessage(theme.muted("Ação cancelada"));
+            return true;
+          }
+        }
+      }
+      return true;
+    }
+
     // 1. Add Account Modal Active
     if (this.isAddModalOpen) {
       if (key.name === "escape") {
@@ -335,22 +410,81 @@ export class AccountsView implements TuiView {
       return true;
     }
 
-    // Delete selected account with 'd' or 'D'
+    // Delete selected account with 'd' or 'D' (requires confirmation)
     if ((key.name === "d" || key.name === "D") && !key.ctrl) {
       const selected = accounts[this.selectedIndex];
       if (!selected) {
         this.setStatusMessage(theme.yellow("[!] Nenhuma conta selecionada para remover"));
         return true;
       }
-      removeAccount(selected.id);
-      void (async () => {
-        try {
-          const { closePlaywrightForAccount } = await import("../../services/playwright.ts");
-          await closePlaywrightForAccount(selected.id);
-        } catch {}
-      })();
-      await this.refresh();
-      this.setStatusMessage(theme.green(`✓ Conta ${selected.emailOrName} removida com sucesso`));
+      this.confirmDialog = {
+        type: "remove_account",
+        title: "⚠️  Confirmar Remoção de Conta",
+        message: `Deseja remover a conta ${selected.emailOrName}?`,
+        detail: "A conta será excluída do banco de dados e sua sessão encerrada.",
+        onConfirm: async () => {
+          removeAccount(selected.id);
+          try {
+            const { closePlaywrightForAccount } = await import("../../services/playwright.ts");
+            await closePlaywrightForAccount(selected.id);
+          } catch {}
+          await this.refresh();
+          this.setStatusMessage(theme.green(`✓ Conta ${selected.emailOrName} removida com sucesso`));
+        },
+      };
+      return true;
+    }
+
+    // Delete chats of selected account with 'x' or 'X' (requires confirmation)
+    if ((key.name === "x" || key.name === "X") && !key.ctrl) {
+      const selected = accounts[this.selectedIndex];
+      if (!selected) {
+        this.setStatusMessage(theme.yellow("[!] Nenhuma conta selecionada"));
+        return true;
+      }
+      this.confirmDialog = {
+        type: "delete_account_chats",
+        title: "⚠️  Apagar Chats Remotos no Qwen",
+        message: `Apagar TODOS os chats no Qwen da conta ${selected.emailOrName}?`,
+        detail: "Esta ação é irreversível e limpará todas as conversas em chat.qwen.ai.",
+        onConfirm: async () => {
+          this.setStatusMessage(theme.yellow(`⏳ Apagando chats no Qwen para ${selected.emailOrName}...`));
+          try {
+            const { deleteChatsForAccountId } = await import("../../services/chat-cleanup.ts");
+            await deleteChatsForAccountId(selected.id);
+            await this.refresh();
+            this.setStatusMessage(theme.green(`✓ Todos os chats de ${selected.emailOrName} foram apagados no Qwen!`));
+          } catch (err: any) {
+            this.setStatusMessage(theme.red(`✗ Falha ao apagar chats: ${err?.message || String(err)}`));
+          }
+        },
+      };
+      return true;
+    }
+
+    // Delete chats of all accounts with 'l' or 'L' (requires confirmation)
+    if ((key.name === "l" || key.name === "L") && !key.ctrl) {
+      if (accounts.length === 0) {
+        this.setStatusMessage(theme.yellow("[!] Nenhuma conta configurada"));
+        return true;
+      }
+      this.confirmDialog = {
+        type: "delete_all_chats",
+        title: "⚠️  Apagar Chats de TODAS as Contas",
+        message: `Apagar TODOS os chats remotos de TODAS as ${accounts.length} contas no Qwen?`,
+        detail: "Esta ação é irreversível e limpará o histórico no chat.qwen.ai.",
+        onConfirm: async () => {
+          this.setStatusMessage(theme.yellow(`⏳ Apagando chats no Qwen de todas as contas...`));
+          try {
+            const { deleteChatsForConfiguredAccounts } = await import("../../services/chat-cleanup.ts");
+            const res = await deleteChatsForConfiguredAccounts(true);
+            await this.refresh();
+            this.setStatusMessage(theme.green(`✓ Chats apagados no Qwen: ${res.succeeded}/${res.attempted} contas limpas!`));
+          } catch (err: any) {
+            this.setStatusMessage(theme.red(`✗ Falha ao apagar chats: ${err?.message || String(err)}`));
+          }
+        },
+      };
       return true;
     }
 
@@ -371,9 +505,9 @@ export class AccountsView implements TuiView {
         return true;
       }
 
-      // Right panel action buttons hover (rows 15 to 18)
+      // Right panel action buttons hover (rows 15 to 20)
       if (col >= leftW) {
-        if (row >= 15 && row <= 18) {
+        if (row >= 15 && row <= 20) {
           if (this.hoveredActionRow !== row) {
             this.hoveredActionRow = row;
             return true;
@@ -387,7 +521,6 @@ export class AccountsView implements TuiView {
         return true;
       }
     }
-
     // Mouse click on account rows or action buttons
     if (key.name === "click" && key.mouse) {
       const { row, col } = key.mouse;
@@ -416,9 +549,16 @@ export class AccountsView implements TuiView {
           await this.handleKey({ name: "z", ctrl: false, shift: false, meta: false });
           return true;
         }
+        if (row === 19) {
+          await this.handleKey({ name: "x", ctrl: false, shift: false, meta: false });
+          return true;
+        }
+        if (row === 20) {
+          await this.handleKey({ name: "l", ctrl: false, shift: false, meta: false });
+          return true;
+        }
       }
     }
-    // Navigate accounts list (Mouse wheel or Up/Down keys)
     if (key.name === "up" || key.name === "wheelup" || (key.name === "k" && !key.ctrl)) {
       if (accounts.length > 0) {
         this.selectedIndex = Math.max(0, this.selectedIndex - 1);
@@ -469,6 +609,9 @@ export class AccountsView implements TuiView {
     this.lastLeftW = leftW;
     const rightW = Math.max(30, width - leftW - 1);
 
+    if (snapshot) {
+      this.statusData = snapshot;
+    }
     const data = snapshot || this.statusData;
     const accounts = data?.accounts || [];
     const selected = accounts[this.selectedIndex];
@@ -562,8 +705,9 @@ export class AccountsView implements TuiView {
       rightContent.push(`  ${this.hoveredActionRow === 16 ? theme.bgHover(` ${theme.red("[ D ] Remover Conta")} `) : `${theme.red("[ D ]")} Remover Conta`}`);
       rightContent.push(`  ${this.hoveredActionRow === 17 ? theme.bgHover(` ${theme.yellow("[ C ] Zerar Cooldown")} `) : `${theme.yellow("[ C ]")} Zerar Cooldown`}`);
       rightContent.push(`  ${this.hoveredActionRow === 18 ? theme.bgHover(` ${theme.green("[ Z ] Zerar Todas")} `) : `${theme.green("[ Z ]")} Zerar Todas`}`);
+      rightContent.push(`  ${this.hoveredActionRow === 19 ? theme.bgHover(` ${theme.peach("[ X ] Limpar Chats (Conta)")} `) : `${theme.peach("[ X ]")} Limpar Chats (Conta)`}`);
+      rightContent.push(`  ${this.hoveredActionRow === 20 ? theme.bgHover(` ${theme.red("[ L ] Limpar Todos os Chats")} `) : `${theme.red("[ L ]")} Limpar Todos os Chats`}`);
     }
-
     const rightBox = drawBox({
       title: "Inspeção de Conta",
       width: rightW,
@@ -652,6 +796,39 @@ export class AccountsView implements TuiView {
       });
 
       const padStr = " ".repeat(this.lastModalLeftPad);
+      return modalBox.map((line) => padStr + line);
+    }
+
+    if (this.confirmDialog) {
+      const modalW = Math.min(width - 4, 66);
+      this.lastConfirmModalLeftPad = Math.max(0, Math.floor((width - modalW) / 2));
+      const confirmBtn =
+        this.confirmDialogHovered === "confirm"
+          ? theme.bgHover(theme.red(" [ S / Enter ] Sim, Confirmar "))
+          : theme.red("[ S / Enter ] Sim, Confirmar");
+      const cancelBtn =
+        this.confirmDialogHovered === "cancel"
+          ? theme.bgHover(theme.green(" [ N / Esc ] Cancelar "))
+          : theme.green("[ N / Esc ] Cancelar");
+
+      const modalContent = [
+        "",
+        `  ${theme.bold(this.confirmDialog.message)}`,
+        `  ${theme.muted(this.confirmDialog.detail)}`,
+        "",
+        `  ${confirmBtn}   ${cancelBtn}`,
+      ];
+
+      const modalBox = drawBox({
+        title: this.confirmDialog.title,
+        width: modalW,
+        height: Math.min(contentH, 8),
+        borderColor: theme.red,
+        titleColor: theme.red,
+        content: modalContent,
+      });
+
+      const padStr = " ".repeat(this.lastConfirmModalLeftPad);
       return modalBox.map((line) => padStr + line);
     }
 

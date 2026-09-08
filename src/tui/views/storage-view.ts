@@ -45,15 +45,35 @@ export class StorageView implements TuiView {
   }
   private hoveredActionRow: number | null = null;
   private lastLeftW = 48;
+  private confirmDialog: {
+    title: string;
+    message: string;
+    detail: string;
+    onConfirm: () => Promise<void>;
+  } | null = null;
+  private confirmDialogHovered: "confirm" | "cancel" | null = null;
+  private lastConfirmModalLeftPad = 0;
+  private lastConfirmModalStartRow = 0;
+
+  public isCapturingText(): boolean {
+    return this.confirmDialog !== null;
+  }
+
   public getShortcuts(): Array<{ key: string; label: string }> {
+    if (this.confirmDialog) {
+      return [
+        { key: "S / Enter", label: "Confirmar" },
+        { key: "N / Esc", label: "Cancelar" },
+      ];
+    }
     return [
       { key: "p", label: "Podar Caches" },
       { key: "b", label: "Limpar Navegadores" },
       { key: "z", label: "Zerar Cooldowns" },
+      { key: "l", label: "Limpar Chats Qwen" },
       { key: "r", label: "Atualizar Disco" },
     ];
   }
-
   public async refresh(): Promise<void> {
     if (this.isScanning) return;
     this.isScanning = true;
@@ -101,11 +121,68 @@ export class StorageView implements TuiView {
   }
 
   public async handleKey(key: KeyEvent): Promise<boolean | void> {
+    // 0. Confirm Dialog Active
+    if (this.confirmDialog) {
+      if (key.name === "s" || key.name === "S" || key.name === "enter" || key.name === "return") {
+        const dialog = this.confirmDialog;
+        this.confirmDialog = null;
+        this.confirmDialogHovered = null;
+        await dialog.onConfirm();
+        return true;
+      }
+      if (key.name === "escape" || key.name === "n" || key.name === "N") {
+        this.confirmDialog = null;
+        this.confirmDialogHovered = null;
+        this.addLog(theme.muted("Ação cancelada"));
+        return true;
+      }
+      if (key.name === "hover" && key.mouse) {
+        const { row, col } = key.mouse;
+        const btnRow = this.lastConfirmModalStartRow + 4;
+        if (row === btnRow) {
+          const startCol = this.lastConfirmModalLeftPad + 2;
+          if (col >= startCol && col <= startCol + 25) {
+            this.confirmDialogHovered = "confirm";
+            return true;
+          }
+          if (col >= startCol + 26 && col <= startCol + 50) {
+            this.confirmDialogHovered = "cancel";
+            return true;
+          }
+        }
+        if (this.confirmDialogHovered !== null) {
+          this.confirmDialogHovered = null;
+          return true;
+        }
+      }
+      if (key.name === "click" && key.mouse) {
+        const { row, col } = key.mouse;
+        const btnRow = this.lastConfirmModalStartRow + 4;
+        if (row === btnRow) {
+          const startCol = this.lastConfirmModalLeftPad + 2;
+          if (col >= startCol && col <= startCol + 25) {
+            const dialog = this.confirmDialog;
+            this.confirmDialog = null;
+            this.confirmDialogHovered = null;
+            await dialog.onConfirm();
+            return true;
+          }
+          if (col >= startCol + 26 && col <= startCol + 50) {
+            this.confirmDialog = null;
+            this.confirmDialogHovered = null;
+            this.addLog(theme.muted("Ação cancelada"));
+            return true;
+          }
+        }
+      }
+      return true;
+    }
+
     // Mouse hover over quick actions
     if (key.name === "hover" && key.mouse) {
       const { row, col } = key.mouse;
       const leftW = this.lastLeftW || 48;
-      if (col >= 2 && col <= leftW - 1 && row >= 13 && row <= 16) {
+      if (col >= 2 && col <= leftW - 1 && row >= 13 && row <= 17) {
         if (this.hoveredActionRow !== row) {
           this.hoveredActionRow = row;
           return true;
@@ -134,12 +211,15 @@ export class StorageView implements TuiView {
           return true;
         }
         if (row === 16) {
+          this.handleKey({ name: "l", ctrl: false, shift: false, meta: false });
+          return true;
+        }
+        if (row === 17) {
           this.handleKey({ name: "r", ctrl: false, shift: false, meta: false });
           return true;
         }
       }
     }
-
     // Reset cooldowns with 'z'
     if ((key.name === "z" || key.name === "Z") && !key.ctrl) {
       const cleared = resetAllCooldowns();
@@ -198,6 +278,29 @@ export class StorageView implements TuiView {
       }
       return true;
     }
+    // Delete all remote chats with 'l' or 'L' (requires confirmation)
+    if ((key.name === "l" || key.name === "L") && !key.ctrl) {
+      this.confirmDialog = {
+        title: "⚠️  Confirmar Exclusão de Chats Remotos",
+        message: "Apagar TODOS os chats remotos de TODAS as contas no Qwen?",
+        detail: "Esta ação apagará permanentemente todas as conversas em chat.qwen.ai.",
+        onConfirm: async () => {
+          this.addLog(theme.yellow("⏳ Apagando chats no Qwen de todas as contas..."));
+          try {
+            const { deleteChatsForConfiguredAccounts } = await import("../../services/chat-cleanup.ts");
+            const res = await deleteChatsForConfiguredAccounts(true);
+            this.addLog(
+              theme.green(
+                `✓ Todos os chats remotos foram apagados no Qwen (${res.succeeded}/${res.attempted} contas)`,
+              ),
+            );
+          } catch (err: any) {
+            this.addLog(theme.red(`✗ Falha ao apagar chats: ${err?.message || String(err)}`));
+          }
+        },
+      };
+      return true;
+    }
   }
   public render(width: number, height: number): string[] {
     const contentH = Math.max(12, height);
@@ -232,7 +335,8 @@ export class StorageView implements TuiView {
       `    ${this.hoveredActionRow === 13 ? theme.bgHover(` ${theme.cyan("[ P ] Podar Caches")} `) : `${theme.cyan("[ P ]")} Podar Caches`}`,
       `    ${this.hoveredActionRow === 14 ? theme.bgHover(` ${theme.yellow("[ B ] Limpar Navegadores")} `) : `${theme.yellow("[ B ]")} Limpar Navegadores`}`,
       `    ${this.hoveredActionRow === 15 ? theme.bgHover(` ${theme.green("[ Z ] Zerar Todos os Cooldowns")} `) : `${theme.green("[ Z ]")} Zerar Todos os Cooldowns`}`,
-      `    ${this.hoveredActionRow === 16 ? theme.bgHover(` ${theme.muted("[ R ] Atualizar Disco")} `) : `${theme.muted("[ R ]")} Atualizar Disco`}`,
+      `    ${this.hoveredActionRow === 16 ? theme.bgHover(` ${theme.red("[ L ] Limpar Todos os Chats (Qwen)")} `) : `${theme.red("[ L ]")} Limpar Todos os Chats (Qwen)`}`,
+      `    ${this.hoveredActionRow === 17 ? theme.bgHover(` ${theme.muted("[ R ] Atualizar Disco")} `) : `${theme.muted("[ R ]")} Atualizar Disco`}`,
       "",
     ];
 
@@ -298,6 +402,38 @@ export class StorageView implements TuiView {
       mergedLines.push(leftRow + " " + rightRow);
     }
 
+    if (this.confirmDialog) {
+      const modalW = Math.min(width - 4, 66);
+      this.lastConfirmModalLeftPad = Math.max(0, Math.floor((width - modalW) / 2));
+      const confirmBtn =
+        this.confirmDialogHovered === "confirm"
+          ? theme.bgHover(theme.red(" [ S / Enter ] Sim, Confirmar "))
+          : theme.red("[ S / Enter ] Sim, Confirmar");
+      const cancelBtn =
+        this.confirmDialogHovered === "cancel"
+          ? theme.bgHover(theme.green(" [ N / Esc ] Cancelar "))
+          : theme.green("[ N / Esc ] Cancelar");
+
+      const modalContent = [
+        "",
+        `  ${theme.bold(this.confirmDialog.message)}`,
+        `  ${theme.muted(this.confirmDialog.detail)}`,
+        "",
+        `  ${confirmBtn}   ${cancelBtn}`,
+      ];
+
+      const modalBox = drawBox({
+        title: this.confirmDialog.title,
+        width: modalW,
+        height: Math.min(contentH, 8),
+        borderColor: theme.red,
+        titleColor: theme.red,
+        content: modalContent,
+      });
+
+      const padStr = " ".repeat(this.lastConfirmModalLeftPad);
+      return modalBox.map((line) => padStr + line);
+    }
     return mergedLines;
   }
 }

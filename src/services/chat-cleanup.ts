@@ -9,7 +9,7 @@ import {
   isPlaywrightInitialized,
   closeAllPlaywright,
 } from "./playwright.ts";
-
+import { isAuthMockEnabled } from "./auth-playwright.ts";
 export interface DeleteChatsResult {
   attempted: number;
   succeeded: number;
@@ -17,7 +17,7 @@ export interface DeleteChatsResult {
 }
 
 async function ensurePlaywrightSession(account: QwenAccount): Promise<void> {
-  if (isPlaywrightInitialized(account.id)) return;
+  if (isPlaywrightInitialized(account.id) || isAuthMockEnabled()) return;
 
   const credentials = getAccountCredentials(account.id);
   if (!credentials) {
@@ -33,12 +33,25 @@ async function ensurePlaywrightSession(account: QwenAccount): Promise<void> {
   );
 }
 
-async function deleteChatsForAccount(account: QwenAccount): Promise<boolean> {
+export async function deleteChatsForAccount(account: QwenAccount): Promise<boolean> {
   await ensurePlaywrightSession(account);
   return deleteAllQwenChats(account.id);
 }
 
-export async function deleteChatsForConfiguredAccounts(): Promise<DeleteChatsResult> {
+export async function deleteChatsForAccountId(accountId: string): Promise<boolean> {
+  const accounts = loadAccounts();
+  const account = accounts.find((a) => a.id === accountId);
+  if (!account) {
+    throw new Error(`Conta ${accountId} não encontrada.`);
+  }
+  const credentials = getAccountCredentials(account.id);
+  if (!credentials) {
+    throw new Error(`Credenciais da conta ${account.email} não encontradas.`);
+  }
+  return deleteChatsForAccount(credentials);
+}
+
+export async function deleteChatsForConfiguredAccounts(keepBrowserOpen = false): Promise<DeleteChatsResult> {
   // Playwright requests are account-scoped. Use every account persisted in the
   // database, including accounts created through `npm run login`, instead of
   // falling back to a global request without an account context.
@@ -64,12 +77,14 @@ export async function deleteChatsForConfiguredAccounts(): Promise<DeleteChatsRes
       }
     }
   } finally {
-    await closeAllPlaywright().catch((error) => {
-      console.warn(
-        `[DeleteChats] Failed to close Playwright sessions:`,
-        error instanceof Error ? error.message : String(error),
-      );
-    });
+    if (!keepBrowserOpen) {
+      await closeAllPlaywright().catch((error) => {
+        console.warn(
+          `[DeleteChats] Failed to close Playwright sessions:`,
+          error instanceof Error ? error.message : String(error),
+        );
+      });
+    }
   }
 
   return {
