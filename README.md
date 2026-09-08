@@ -7,9 +7,10 @@
 Gateway e API de alta performance compatível com **OpenAI** e **Anthropic** que conecta clientes e agentes (Codex, Claude Code CLI, Grok, Cursor) ao **Qwen (`chat.qwen.ai`)** com suporte a múltiplas contas, failover inteligente, tool calling robusto, thread-native, geração de fotos e vídeos, **Responses API completa com memória persistente** e sessões persistentes. Inclui Playwright com stealth, retries para erros transitórios, variantes públicas base/`-fast`/`-thinking`, cache comprimido, registro de capabilities por modelo e observabilidade.
 
 [![CI](https://github.com/johngbl/QwenProxy/actions/workflows/ci.yml/badge.svg)](https://github.com/johngbl/QwenProxy/actions/workflows/ci.yml)
+[![npm version](https://img.shields.io/npm/v/qwenproxy-cli.svg)](https://www.npmjs.com/package/qwenproxy-cli)
 [![TypeScript](https://img.shields.io/badge/TypeScript-7.0-blue)](https://www.typescriptlang.org/)
 [![Hono](https://img.shields.io/badge/Hono-4.13-green)](https://hono.dev/)
-[![Playwright](https://img.shields.io/badge/Playwright-1.62-blueviolet)](https://playwright.dev/)
+[![Patchright](https://img.shields.io/badge/Patchright-Stealth-blueviolet)](https://github.com/kaliiiiiiiiii/patchright)
 [![License: ISC](https://img.shields.io/badge/License-ISC-yellow.svg)](LICENSE)
 [![GitHub Sponsors](https://img.shields.io/badge/sponsor-GitHub%20Sponsors-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/johngbl)
 [![Ko-fi](https://img.shields.io/badge/Donate-Ko--fi-ff5e5b?logo=kofi&logoColor=white)](https://ko-fi.com/johngbl)
@@ -29,10 +30,11 @@ Toda contribuição é muito bem-vinda e ajuda a cobrir custos de infraestrutura
 - **Compatibilidade OpenAI &amp; Anthropic** — `/v1/chat/completions`, `/v1/completions` (legado), `/v1/models`, `/v1/messages` (**Anthropic Messages API** nativa com suporte total a **Claude Code CLI** e `@anthropic-ai/sdk`), `/v1/messages/count_tokens` e **Responses API** `/v1/responses`.
 - **Responses API completa** — SSE com `event:` + `data:` + `sequence_number`, memória persistente via `previous_response_id` (SQLite durável), `last_response_id`, multimodal (`input_image`/`input_file`), reasoning effort normalization, lifecycle events de reasoning e usage real do upstream.
 - **Thread-native** — Reutiliza sessão/pai no Qwen; preservação de contexto entre turns
-- **Dois modos de conversa** — `thread` (default, reutiliza chat e envia delta) e `temp` (novo chat temporário `chat_mode:"local"` por request, envia histórico completo; zero `chat_in_progress` e zero chats órfãos)
-- **Playwright + stealth** — Headers reais (`bx-ua`, `bx-umidtoken`, `bx-v`) por conta; fingerprint estável e cleanup de processos.
-- **Transporte Qwen via Chromium** — No fluxo principal de chat, modelos, criação de sessão, personalização, completion e stop usam o contexto Playwright; o completion lê o `ReadableStream` incrementalmente e preserva o SSE sem bufferizar a resposta inteira.
-- **Startup rápido multi-conta** — Sobe com a **primeira conta pronta**; as demais continuam preparando em background.
+- **Três modos de conversa** — `thread` (default, encadeamento nativo e delta de turns), `temp-thread` (recomendado para chat/TUI, efêmero `chat_mode:"local"` com contexto contínuo, zero poluição no `chat.qwen.ai`), e `temp` (stateless padrão OpenAI, novo chat efêmero por requisição).
+- **Instância única de Chromium ultra-leve** — 1 único processo de navegador compartilhado para todas as contas com isolamento seguro de `BrowserContext` e `storageState` JSON, consumindo ~200MB de RAM (economia de >65%).
+- **Dashboard TUI completo & responsivo** — Interface visual interativa no terminal (`qpx`) com monitoramento em tempo real, abas dedicadas para Chat, Sincronização de Agentes, Diagnóstico de Armazenamento, Gerenciamento de Contas e Logs, com confirmações de segurança para ações irreversíveis.
+- **Atualizador inteligente embutido** — Comando `qpx update` que detecta automaticamente seu gerenciador de pacotes (`npm`, `pnpm`, `bun`, `yarn`) e atualiza com um único comando.
+- **Startup sob demanda e multi-conta** — Sobe instantaneamente com a **primeira conta pronta**; as contas reservas ficam em repouso (*Standby*) e inicializam sem esforço apenas sob demanda.
 - **Retries resilientes** — 502/503/504, erros de rede (`fetch failed`), anti-bot, quota e `invalid_input` com recriação de chat.
 - **Parser de tools robusto** — stream fragmentado, JSON malformado, fuzzy de nomes (`readFile` → `read_file`), JSON duplamente escapado e `</tool_call>` case-insensitive.
 - **Personalization sync** — system + tools completos são sincronizados em `/settings/personalization` via `POST /api/v2/users/user/settings/update`; o cache por conteúdo evita updates repetidos e instruções acima do limite seguem inline; aplica settings seguras (`largeTextAsFile=false`, memory off, tools internas off).
@@ -86,19 +88,19 @@ Se `API_KEY` estiver definido, as rotas `/v1/*` (e `/metrics`) exigem uma das fo
 - `Authorization: Bearer <API_KEY>` (OpenAI / Responses)
 - `x-api-key: <API_KEY>` (clients bearer-style)
 
-QwenProxy usa **Playwright por padrão**. Cada conta abre uma sessão real de browser para capturar cookies e headers anti-bot.
+QwenProxy utiliza **Patchright com arquitetura de navegador compartilhado**. Um único processo Chromium é mantido aberto com aceleração WebGL ativa, enquanto cada conta opera em um `BrowserContext` isolado com persistência leve em `storage_state.json` (~200MB de RAM para todas as contas).
 
 ```env
 PLAYWRIGHT_HEADLESS=true
 PLAYWRIGHT_BROWSER=chromium
 ```
 
-**Requisitos:**
+**Instalação do navegador:**
+O Chromium é instalado automaticamente na primeira execução de `qpx`. Se desejar instalar manualmente:
 
 ```bash
-npx playwright install chromium
+npx patchright install chromium
 ```
-
 Senhas das contas são armazenadas **criptografadas** no SQLite (`data/`).
 
 ### Transporte upstream e streaming
@@ -272,6 +274,19 @@ qpx
 ```
 *(Abre diretamente o dashboard interativo da TUI com o servidor e proxy integrados).*
 
+#### Comandos Rápidos do CLI (`qpx`)
+
+| Comando | Descrição |
+| :--- | :--- |
+| `qpx` *(ou `qwenproxy`)* | Abre o dashboard visual interativo da TUI com servidor proxy integrado |
+| `qpx start` *(ou `--server`)* | Inicia apenas o servidor HTTP/SSE em modo headless (sem interface gráfica) |
+| `qpx update` | Verifica e atualiza o QwenProxy automaticamente via npm/pnpm/bun |
+| `qpx login` | Abre navegador visível para autenticar novas contas interativamente |
+| `qpx sync` | Configura e sincroniza clientes (Claude Code, Codex, OpenCode, OMP) |
+| `qpx clean` | Limpa caches temporários dos perfis Chromium (~4.5MB por conta) |
+| `qpx clean:all` | Limpa caches e remove versões antigas de navegadores órfãos no SSD |
+| `qpx purge` | Limpa o histórico de conversas remotas no Qwen de todas as contas |
+| `qpx reset` | Reseta cooldowns e rate limits salvos no banco de dados |
 ### Opção 2: Execução Instantânea (Zero Instalação)
 Experimente ou execute pontualmente sem instalar nada permanentemente:
 ```bash
@@ -317,14 +332,10 @@ npm start
 
 > **Nota:** o servidor não inicia sem pelo menos uma conta configurada (via `.env`/`QWEN_ACCOUNTS`, `npm run login` ou banco de contas).
 
-### Startup multi-conta
-
-1. Prepara as contas em sequência, reutilizando o profile persistente quando ele já está autenticado.
-2. Se o profile não tiver uma sessão válida, autentica com as credenciais da conta e salva a sessão em `data/qwen_profiles/<accountId>`.
-3. O servidor sobe após a primeira conta ficar pronta e continua preparando as demais em background.
-4. Com `PLAYWRIGHT_MAX_ACTIVE_CONTEXTS=2` (padrão), 2 contextos ficam abertos após o warmup ({principal + reserva}, cobrindo o failover comum); contextos extras (uso simultâneo ou failover) fecham ao ficar idle. O watchdog RSS fecha contextos idle sob pressão de RAM.
-5. Use `PLAYWRIGHT_PREPARE_ALL_ON_STARTUP=false` para voltar ao modo econômico, preparando as contas adicionais somente quando forem necessárias.
-
+1. O servidor inicia instantaneamente com a **primeira conta pronta** para responder requisições imediatamente.
+2. Com `PLAYWRIGHT_PREPARE_ALL_ON_STARTUP=false` (padrão econômico), as contas adicionais permanecem em **Standby**, com credenciais validadas no banco, sendo inicializadas apenas sob demanda (failover ou rotação), poupando RAM e CPU.
+3. Todas as contas ativas compartilham a mesma instância Chromium única, mantendo sessões isoladas via `BrowserContext` e arquivos leves de estado `storage_state.json`.
+4. O watchdog RSS do sistema monitora a pressão de memória e fecha contextos ociosos automaticamente.
 Exemplo de log:
 
 ```text
@@ -379,7 +390,7 @@ npm run typecheck  # tipos
 | `QWEN_MAX_PERSONALIZATION_BYTES`    | `200000`       | Teto UTF-8 para personalization por request; acima disso as instruções seguem inline                                                                                                                                                                             |
 | `QWEN_CHAT_POOL_SIZE`               | `1`            | Warm pool de chats por modelo; fica desativado quando personalization por request está ativa                                                                                                                                                                     |
 | `QWEN_CHAT_POOL_MODELS`             | `qwen3.7-plus` | Modelos aquecidos no warm pool                                                                                                                                                                                                                                   |
-| `QWEN_CHAT_MODE`                    | `thread`       | Modo de conversa: `thread` (reutiliza o chat upstream via `parent_id` e envia o delta) ou `temp` (cria um chat temporário `chat_mode:"local"` a cada request e envia o histórico completo). Override por request via header `X-QwenProxy-Chat-Mode: thread/temp` |
+| `QWEN_CHAT_MODE`                    | `thread`       | Modo de conversa: `thread` (reutiliza o chat upstream via `parent_id` e envia o delta), `temp-thread` (chat efêmero `chat_mode:"local"` com contexto contínuo, zero poluição no Qwen Web) ou `temp` (stateless padrão OpenAI, novo chat efêmero por requisição). Override por request via header `X-QwenProxy-Chat-Mode: thread/temp/temp-thread` |
 
 
 ### Playwright / processos
@@ -390,14 +401,14 @@ npm run typecheck  # tipos
 | `PLAYWRIGHT_HEADLESS`                       | `true`     | Browser sem janela                                                                                                                                                               |
 | `PLAYWRIGHT_BROWSER`                        | `chromium` | `chromium` / `chrome` / `edge`                                                                                                                                                   |
 | `PLAYWRIGHT_INIT_BATCH_SIZE`                | `1`        | Contas em paralelo no background init                                                                                                                                            |
-| `PLAYWRIGHT_PREPARE_ALL_ON_STARTUP`         | `true`     | Prepara todas as contas no boot (`false` = só quando necessárias)                                                                                                                |
+| `PLAYWRIGHT_PREPARE_ALL_ON_STARTUP`         | `false`    | Prepara somente a primeira conta no boot (`false` = modo econômico sob demanda; `true` = aquece todas)                                                                           |
 | `PLAYWRIGHT_MAX_ACTIVE_CONTEXTS`            | `2`        | Contextos idle mantidos quentes ({principal + reserva}); streams ativos nunca são fechados; uso simultâneo abre mais. Contas em cooldown (rate limit) ficam idle e são evictadas |
 | `PLAYWRIGHT_CONTEXT_CLOSE_TIMEOUT_MS`       | `10000`    | Timeout de close antes do kill                                                                                                                                                   |
 | `PLAYWRIGHT_IDLE_CONTEXT_TTL_MS`            | `60000`    | Fecha contextos idle acima do cap (`0` desativa)                                                                                                                                 |
 | `PLAYWRIGHT_JS_HEAP_MB`                     | `256`      | Cap V8 do Chromium (`--max-old-space-size`)                                                                                                                                      |
 | `PLAYWRIGHT_LOW_MEMORY_FLAGS`               | `true`     | Flags de baixa RAM (heap cap, cache mínimo, renderer limit)                                                                                                                      |
 | `OSS_MULTIPART_THRESHOLD_MB`                | `5`        | Acima disso usa multipart OSS; abaixo `putStream`                                                                                                                                |
-| `SESSION_KEEP_ALIVE_ENABLED`                | `false`    | Keep-alive opt-in (evita Chromes permanentes)                                                                                                                                    |
+| `SESSION_KEEP_ALIVE_ENABLED`                | `true`     | Simula navegações leves periódicas a cada 3min para manter sessões ativas sem desconectar                                                                                        |
 | `SESSION_KEEP_ALIVE_INTERVAL_MS`            | `180000`   | Intervalo do ciclo de keep-alive/cleanup                                                                                                                                         |
 | `SESSION_KEEP_ALIVE_IDLE_MS`                | `120000`   | Idle mínimo para keep-alive                                                                                                                                                      |
 | `SESSION_KEEP_ALIVE_NAVIGATION_INTERVAL_MS` | `480000`   | Intervalo de navegação leve                                                                                                                                                      |
@@ -830,7 +841,8 @@ QwenProxy/
 
 | Comando             | Descrição                                                               |
 | ------------------- | ----------------------------------------------------------------------- |
-| `npm start`         | Iniciar o servidor QwenProxy                                            |
+| `npm run tui`       | Abrir o dashboard interativo da TUI com proxy embutido                  |
+| `npm start`         | Iniciar apenas o servidor QwenProxy em modo headless                    |
 | `npm run sync`      | Sincronizar clientes (Claude Code, Codex, OpenCode, OMP) com backup     |
 | `npm run clean`     | Limpar caches temporários dos perfis Chromium (~4.5MB por conta)        |
 | `npm run clean:all` | Limpar caches + remover navegadores órfãos e versões antigas no SSD     |
@@ -839,7 +851,6 @@ QwenProxy/
 | `npm run purge`     | Limpar chats remotos do Qwen nas contas configuradas                    |
 | `npm test`          | Executar suíte de testes completa                                       |
 | `npm run typecheck` | Checagem estrita de tipos do TypeScript                                 |
-
 ---
 
 ## Scripts de instalação, início e atualização
