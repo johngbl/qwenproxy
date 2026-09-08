@@ -12,6 +12,36 @@ if (fs.existsSync(envPath)) {
 } else {
   dotenv.config()
 }
+// Prevent benign asynchronous driver/browser teardown exceptions from crashing the server
+process.on('uncaughtException', (error: unknown) => {
+  const msg = error instanceof Error ? error.message : String(error)
+  if (
+    msg.includes('Cannot find parent object') ||
+    msg.includes('Target page, context or browser has been closed') ||
+    msg.includes('Browser has been closed') ||
+    msg.includes('Target closed') ||
+    msg.includes('Connection closed')
+  ) {
+    console.warn(`⚠️  [Playwright] Handled benign driver teardown exception: ${msg}`)
+    return
+  }
+  console.error('❌ [Process] Uncaught Exception:', error)
+})
+
+process.on('unhandledRejection', (reason: unknown) => {
+  const msg = reason instanceof Error ? reason.message : String(reason)
+  if (
+    msg.includes('Cannot find parent object') ||
+    msg.includes('Target page, context or browser has been closed') ||
+    msg.includes('Browser has been closed') ||
+    msg.includes('Target closed') ||
+    msg.includes('Connection closed')
+  ) {
+    console.warn(`⚠️  [Playwright] Handled benign driver teardown rejection: ${msg}`)
+    return
+  }
+  console.error('❌ [Process] Unhandled Rejection:', reason)
+})
 import { startServer } from './api/server.js'
 const isTui = process.argv.includes('--tui') || process.env.QWEN_TUI === 'true'
 

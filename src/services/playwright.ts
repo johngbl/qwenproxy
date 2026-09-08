@@ -2601,7 +2601,9 @@ export function isPlaywrightAlreadyClosedError(error: unknown): boolean {
   return (
     message.includes("Target page, context or browser has been closed") ||
     message.includes("Browser has been closed") ||
-    message.includes("Target closed")
+    message.includes("Target closed") ||
+    message.includes("Cannot find parent object") ||
+    message.includes("Connection closed")
   );
 }
 
