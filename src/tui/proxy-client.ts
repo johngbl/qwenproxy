@@ -51,7 +51,7 @@ let lastAccountsFetch = 0;
 let isHealthCheckPending = false;
 let lastOnlineState = false;
 let lastOverallStatus = "offline";
-
+let lastServerReadyAccounts: Set<string> | null = null;
 export async function fetchProxyStatus(): Promise<ProxyStatusSnapshot> {
   const port = config.server?.port || 7936;
   const configuredHost = config.server?.host;
@@ -70,8 +70,12 @@ export async function fetchProxyStatus(): Promise<ProxyStatusSnapshot> {
           lastOnlineState = true;
           const data = (await resp.json()) as any;
           lastOverallStatus = data.status || "healthy";
+          if (Array.isArray(data.readyAccounts)) {
+            lastServerReadyAccounts = new Set(data.readyAccounts);
+          }
         } else {
           lastOnlineState = false;
+          lastServerReadyAccounts = null;
         }
       })
       .catch(() => {
@@ -97,8 +101,9 @@ export async function fetchProxyStatus(): Promise<ProxyStatusSnapshot> {
       const cooldownInfo = getAccountCooldownInfo(acc.id);
       const onCooldown = Boolean(cooldownInfo?.onCooldown);
       const remainingCooldownMs = cooldownInfo?.remainingMs || 0;
-      const headersReady = isAccountHeadersReady(acc.id);
-
+      const headersReady = lastServerReadyAccounts !== null
+        ? lastServerReadyAccounts.has(acc.id)
+        : isAccountHeadersReady(acc.id);
       return {
         id: acc.id,
         emailOrName: maskAccountIdentifier(acc.email || acc.id),

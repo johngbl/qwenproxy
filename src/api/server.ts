@@ -268,6 +268,7 @@ app.get("/health", async (c) => {
         }
       : undefined,
     timestamp: Date.now(),
+    readyAccounts: (await import("../core/account-manager.js")).getHeadersReadyAccountIds(),
     metrics: {
       cache: await cache?.getStats(),
     },
