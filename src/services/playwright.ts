@@ -2922,7 +2922,7 @@ export async function keepAlivePlaywrightAccount(
     if (shouldNavigate) {
       await page.goto(qwenUrl("/"), {
         waitUntil: "domcontentloaded",
-        timeout: Math.min(config.timeouts.navigation, 15_000),
+        timeout: Math.min(config.timeouts.navigation, 30_000),
       });
       lastKeepAliveNavigation.set(accountId, now);
     } else {
