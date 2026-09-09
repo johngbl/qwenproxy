@@ -750,9 +750,13 @@ export async function startServer(options?: {
             }
           }
 
-          if (validated > 0 || failed > 0) {
+          if (failed > 0) {
+            console.warn(
+              `⚠️  [Server] Standby validation finished: ${validated} ok, ${failed} failed`,
+            );
+          } else if (validated > 0) {
             console.log(
-              `🪶 [Server] Standby validation complete: ${validated} ok, ${failed} failed`,
+              `✅ [Server] Standby validation complete: all ${validated} account(s) ready`,
             );
           }
         })().catch((error) => {
