@@ -740,12 +740,6 @@ export async function startServer(options?: {
                 console.warn(
                   `⚠️  [Server] Standby account login failed: ${maskEmail(account.email)} (quarantined)`,
                 );
-                const { markAccountRateLimited } = await import("../core/account-manager.ts");
-                markAccountRateLimited(
-                  account.id,
-                  24 * 3600 * 1000,
-                  "AuthFailed: Standby validation failed",
-                );
               }
             } catch (error) {
               failed++;
