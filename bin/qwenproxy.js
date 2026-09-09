@@ -196,11 +196,37 @@ const child = spawn(process.execPath, ["--import", tsxLoaderArg, targetPath, ...
   env: process.env,
 });
 
+const restoreTerminal = () => {
+  try {
+    const RESET_SEQ = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1049l\x1b[?25h\x1b[0m";
+    fs.writeSync(1, RESET_SEQ);
+  } catch {}
+  if (process.stdin.setRawMode) {
+    try {
+      process.stdin.setRawMode(false);
+    } catch {}
+  }
+};
+
 child.on("exit", (code, signal) => {
+  restoreTerminal();
   process.exit(code ?? (signal ? 1 : 0));
 });
 
 child.on("error", (err) => {
+  restoreTerminal();
   console.error("❌ [QwenProxy] Failed to execute CLI script:", err.message);
   process.exit(1);
 });
+
+process.on("SIGINT", () => {
+  restoreTerminal();
+  process.exit(130);
+});
+
+process.on("SIGTERM", () => {
+  restoreTerminal();
+  process.exit(143);
+});
+
+process.on("exit", restoreTerminal);

@@ -81,13 +81,19 @@ export class TuiApp {
     // Listen for key events
     // Listen for key and mouse events with microtask coalescing
     this.screen.onKey(async (key) => {
-      await this.handleKey(key);
-      this.requestRender();
+      try {
+        await this.handleKey(key);
+        this.requestRender();
+      } catch (err: any) {
+        console.error(`[TUI] Erro ao processar tecla: ${err?.message || String(err)}`);
+      }
     });
 
     // Listen for terminal resize
     this.screen.onResize(() => {
-      this.render();
+      try {
+        this.render();
+      } catch {}
     });
 
     // Start server in-process together with TUI ("tudo junto uma coisa só")
@@ -219,8 +225,9 @@ export class TuiApp {
   }
   private render(): void {
     if (!this.isRunning) return;
-    const { cols, rows } = this.screen.getSize();
-    const frame: string[] = [];
+    try {
+      const { cols, rows } = this.screen.getSize();
+      const frame: string[] = [];
 
     // 1. Header Deck (Tabs & Title)
     const serverState = ServerManager.getInstance().getState();
@@ -266,6 +273,9 @@ export class TuiApp {
     const availableContentRows = Math.max(8, rows - 3);
     const viewLines = activeView.render(cols, availableContentRows, this.statusSnapshot);
     frame.push(...viewLines);
-    this.screen.render(frame);
+      this.screen.render(frame);
+    } catch (err: any) {
+      console.error(`[TUI] Erro na renderização: ${err?.message || String(err)}`);
+    }
   }
 }

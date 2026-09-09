@@ -207,6 +207,7 @@ export class Screen {
     process.on("SIGTERM", this.exitHandler!);
     process.on("SIGBREAK", this.exitHandler!);
     process.on("exit", this.exitHandler!);
+    process.on("uncaughtException", this.exitHandler!);
     return true;
   }
 
@@ -234,6 +235,7 @@ export class Screen {
       process.removeListener("SIGTERM", this.exitHandler);
       process.removeListener("SIGBREAK", this.exitHandler);
       process.removeListener("exit", this.exitHandler);
+      process.removeListener("uncaughtException", this.exitHandler);
       this.exitHandler = null;
     }
 
