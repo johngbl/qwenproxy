@@ -11,7 +11,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-let cachedAppVersion = "v1.0.5";
+let cachedAppVersion = "";
 try {
   const currentDir = path.dirname(fileURLToPath(import.meta.url));
   const pkgPath = path.resolve(currentDir, "../../package.json");

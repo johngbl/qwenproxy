@@ -27,17 +27,32 @@ export function detectPackageManager(): PackageManager {
 
   return "npm";
 }
-export function getUpdateArgs(pm: PackageManager, packageName: string): { cmd: string; args: string[] } {
+export function getUpdateArgs(
+  pm: PackageManager,
+  packageName: string,
+  targetVersion?: string,
+): { cmd: string; args: string[] } {
+  const versionTag = targetVersion ? `@${targetVersion}` : "@latest";
   switch (pm) {
     case "bun":
-      return { cmd: "bun", args: ["add", "-g", `${packageName}@latest`] };
+      return { cmd: "bun", args: ["add", "-g", `${packageName}${versionTag}`] };
     case "pnpm":
-      return { cmd: "pnpm", args: ["update", "-g", packageName] };
+      return {
+        cmd: "pnpm",
+        args: targetVersion
+          ? ["add", "-g", `${packageName}@${targetVersion}`]
+          : ["update", "-g", packageName],
+      };
     case "yarn":
-      return { cmd: "yarn", args: ["global", "upgrade", packageName] };
+      return {
+        cmd: "yarn",
+        args: targetVersion
+          ? ["global", "add", `${packageName}@${targetVersion}`]
+          : ["global", "upgrade", packageName],
+      };
     case "npm":
     default:
-      return { cmd: "npm", args: ["install", "-g", `${packageName}@latest`] };
+      return { cmd: "npm", args: ["install", "-g", `${packageName}${versionTag}`] };
   }
 }
 
@@ -93,7 +108,7 @@ export async function runUpdateCommand(): Promise<void> {
   }
 
   console.log(`\n🚀 Nova versão disponível: v${currentVersion} ➔ v${latestVersion}`);
-  const { cmd, args } = getUpdateArgs(pm, packageName);
+  const { cmd, args } = getUpdateArgs(pm, packageName, latestVersion);
   console.log(`⏳ Atualizando globalmente via ${pm} (${cmd} ${args.join(" ")})...`);
   const fullUpdateCmd = `${cmd} ${args.join(" ")}`;
   const updateProc = spawnSync(fullUpdateCmd, {
