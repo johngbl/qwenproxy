@@ -3,7 +3,36 @@ import path from "node:path";
 import type { ClientSyncResult, SyncOptions } from "./types.ts";
 import { createTimestampBackup, restoreFromBackup } from "./utils.ts";
 
-function buildOpenCodeProviderObject(baseUrl: string, apiKey: string): Record<string, any> {
+function buildOpenCodeProviderObject(
+  baseUrl: string,
+  apiKey: string,
+  primaryModel: string = "qwen3.8-max",
+): Record<string, any> {
+  const modelsObj: Record<string, any> = {};
+  const modelList = [primaryModel];
+  if (primaryModel !== "qwen3.7-plus") {
+    modelList.push("qwen3.7-plus");
+  }
+
+  for (const m of modelList) {
+    modelsObj[m] = {
+      name:
+        m === "qwen3.8-max"
+          ? "Qwen 3.8 Max"
+          : m === "qwen3.7-plus"
+            ? "Qwen 3.7 Plus"
+            : m,
+      limit: { context: 1048576, output: 65536 },
+      modalities: { input: ["text", "image"], output: ["text"] },
+      reasoning: true,
+      variants: {
+        low: { effort: "low" },
+        medium: { effort: "medium" },
+        high: { effort: "high" },
+      },
+    };
+  }
+
   return {
     npm: "@ai-sdk/openai-compatible",
     name: "QwenProxy",
@@ -11,30 +40,7 @@ function buildOpenCodeProviderObject(baseUrl: string, apiKey: string): Record<st
       baseURL: baseUrl,
       apiKey: apiKey,
     },
-    models: {
-      "qwen3.8-max": {
-        name: "Qwen 3.8 Max",
-        limit: { context: 1048576, output: 65536 },
-        modalities: { input: ["text", "image"], output: ["text"] },
-        reasoning: true,
-        variants: {
-          low: { effort: "low" },
-          medium: { effort: "medium" },
-          high: { effort: "high" },
-        },
-      },
-      "qwen3.7-plus": {
-        name: "Qwen 3.7 Plus",
-        limit: { context: 1048576, output: 65536 },
-        modalities: { input: ["text", "image"], output: ["text"] },
-        reasoning: true,
-        variants: {
-          low: { effort: "low" },
-          medium: { effort: "medium" },
-          high: { effort: "high" },
-        },
-      },
-    },
+    models: modelsObj,
   };
 }
 function findKeyObjectSpan(content: string, key: string): { start: number; end: number; hasTrailingComma: boolean } | null {
@@ -121,10 +127,8 @@ function findKeyObjectSpan(content: string, key: string): { start: number; end: 
 }
 
 export function syncOpenCode(options: SyncOptions): ClientSyncResult {
-  const { filePath, apiKey, baseUrl } = options;
+  const { filePath, apiKey, baseUrl, model = "qwen3.8-max" } = options;
   try {
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
-
     let backupPath: string | undefined;
     let content = "";
 
@@ -133,10 +137,10 @@ export function syncOpenCode(options: SyncOptions): ClientSyncResult {
       content = fs.readFileSync(filePath, "utf-8");
     }
 
-    const providerObj = buildOpenCodeProviderObject(baseUrl, apiKey);
+    const providerObj = buildOpenCodeProviderObject(baseUrl, apiKey, model);
     const providerJson = JSON.stringify(providerObj, null, 6)
       .split("\n")
-      .map((line, idx) => (idx === 0 ? line : "    " + line))
+      .map((line, idx) => (idx === 0 ? line : `    ${line}`))
       .join("\n");
 
     const qwenEntry = `    "qwenproxy": ${providerJson}`;

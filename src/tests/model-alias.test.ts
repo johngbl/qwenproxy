@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   mapClientModelToQwen,
+  mapKnownModelAlias,
   stripThinkingSuffix,
 } from "../core/model-alias.ts";
 
@@ -16,16 +17,30 @@ test("mapClientModelToQwen keeps qwen ids (stripping reasoning suffix)", () => {
   assert.equal(mapClientModelToQwen("qwen3.8-max-high"), "qwen3.8-max");
 });
 
-test("mapClientModelToQwen passes through non-Qwen ids (no GPT/Claude aliases)", () => {
-  // Codex/Grok custom provider sends the real Qwen id. Any other id must reach
-  // the upstream unchanged so it responds with a clear model-not-found error
-  // instead of silently mapping to an unrelated tier.
-  assert.equal(mapClientModelToQwen("gpt-5"), "gpt-5");
-  assert.equal(mapClientModelToQwen("gpt-5-mini"), "gpt-5-mini");
-  assert.equal(mapClientModelToQwen("gpt-4o-mini"), "gpt-4o-mini");
-  assert.equal(mapClientModelToQwen("claude-sonnet-4-6"), "claude-sonnet-4-6");
-  assert.equal(mapClientModelToQwen("totally-custom"), "totally-custom");
-  assert.equal(mapClientModelToQwen(""), "");
+test("mapKnownModelAlias maps popular OpenAI/Anthropic models to Qwen tiers", () => {
+  assert.equal(mapKnownModelAlias("gpt-4o"), "qwen3.8-max");
+  assert.equal(mapKnownModelAlias("gpt-4o-mini"), "qwen3.7-plus");
+  assert.equal(mapKnownModelAlias("gpt-4-turbo"), "qwen3.8-max");
+  assert.equal(mapKnownModelAlias("gpt-3.5-turbo"), "qwen3.7-plus");
+  assert.equal(mapKnownModelAlias("o1"), "qwen3.8-max");
+  assert.equal(mapKnownModelAlias("o1-mini"), "qwen3.7-plus");
+  assert.equal(mapKnownModelAlias("o3-mini"), "qwen3.7-plus");
+  assert.equal(mapKnownModelAlias("chatgpt-4o-latest"), "qwen3.8-max");
+  assert.equal(mapKnownModelAlias("claude-3-7-sonnet"), "qwen3.8-max");
+  assert.equal(mapKnownModelAlias("claude-3-5-haiku"), "qwen3.7-plus");
+  assert.equal(mapKnownModelAlias("totally-custom"), "totally-custom");
+  assert.equal(mapKnownModelAlias(""), "");
+});
+
+test("mapClientModelToQwen respects enableAliases parameter", () => {
+  // When enabled (default), maps known aliases
+  assert.equal(mapClientModelToQwen("gpt-4o", true), "qwen3.8-max");
+  assert.equal(mapClientModelToQwen("gpt-4o-mini", true), "qwen3.7-plus");
+  assert.equal(mapClientModelToQwen("o1-preview", true), "qwen3.8-max");
+  // When disabled, preserves raw name
+  assert.equal(mapClientModelToQwen("gpt-5", false), "gpt-5");
+  assert.equal(mapClientModelToQwen("gpt-5-mini", false), "gpt-5-mini");
+  assert.equal(mapClientModelToQwen("totally-custom", false), "totally-custom");
 });
 
 test("stripThinkingSuffix maps base and public Fast variants", () => {

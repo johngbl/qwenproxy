@@ -153,10 +153,10 @@ const WARM_POOL_LOW_WATER = 3;
 
 function warmChatKey(
   accountId: string | undefined,
-  model: string,
+  _model: string,
   chatId: string,
 ) {
-  return `${accountId || "global"}:${model}:${chatId}`;
+  return `${accountId || "global"}:${chatId}`;
 }
 
 function markWarmChatInFlight(
@@ -183,8 +183,8 @@ function isWarmChatInFlight(
   return inFlightWarmChats.has(warmChatKey(accountId, model, chatId));
 }
 
-function chatPoolKey(accountId: string | undefined, model: string): string {
-  return `${accountId || "global"}:${model}`;
+function chatPoolKey(accountId: string | undefined, _model?: string): string {
+  return accountId || "global";
 }
 
 function isQwenChatPoolEnabled(): boolean {

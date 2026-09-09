@@ -70,7 +70,7 @@ export async function parseRequestBody(c: Context): Promise<ParsedRequest> {
 
   // Thinking suffixes → base model + reasoning mode
   const { baseModel, enableThinking, reasoningMode } = stripThinkingSuffix(body.model);
-  const modelId = mapClientModelToQwen(baseModel);
+  const modelId = mapClientModelToQwen(baseModel, config.qwen.mapOpenAiModels);
 
   // OpenAI `reasoning_effort` (none|minimal|low|medium|high|xhigh|max).
   // Precedence: an explicit model suffix wins — effort only acts on unsuffixed

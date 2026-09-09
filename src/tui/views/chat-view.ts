@@ -341,6 +341,7 @@ export class ChatView implements TuiView {
       (key.ctrl && key.name === "o") ||
       (key.meta && key.name === "m")
     ) {
+      void this.refreshModels();
       this.isModelModalOpen = true;
       this.modalSelectedIndex = this.selectedModelIndex;
       this.onNeedsRender?.();

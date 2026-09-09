@@ -47,6 +47,7 @@ import { getAccountsByPriority } from "../core/account-priority.ts";
 import {
   clearFingerprintCache,
   getFingerprintProfile,
+  updateChromeMajor,
   type FingerprintProfile,
 } from "./fingerprint.ts";
 import { subtlePageActivity } from "./human-behavior.ts";
@@ -309,6 +310,13 @@ export async function getOrLaunchSharedBrowser(
       }
     }
 
+    try {
+      const v = browser.version();
+      const major = parseInt(v.split(".")[0], 10);
+      if (major >= 100) {
+        updateChromeMajor(major);
+      }
+    } catch {}
     browser.on("disconnected", () => {
       console.warn("[Playwright] Shared browser disconnected");
       sharedBrowser = null;

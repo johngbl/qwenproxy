@@ -64,14 +64,54 @@ export function stripThinkingSuffix(model: string): {
 }
 
 /**
- * Mapeia o id de modelo para o Qwen upstream.
- * Ids `qwen*` passam direto (após remover o sufixo de raciocínio); ids de
- * outros provedores (gpt-*, grok-*, etc.) também passam “as-is” — o Codex/Custom
- * provider envia o id Qwen correto, e qualquer id desconhecido deve chegar ao
- * upstream para que este responda um erro claro de modelo, em vez de ser
- * silenciosamente roteado para um tier qualquer.
+ * Mapeia modelos populares de terceiros (OpenAI / Anthropic) para o tier Qwen equivalente:
+ * - mini / haiku / 3.5 -> qwen3.7-plus
+ * - gpt-4* / o1* / o3* / opus / sonnet / claude-* -> qwen3.8-max
+ * Modelos que já começam com "qwen" passam intactos.
  */
-export function mapClientModelToQwen(model: string): string {
+export function mapKnownModelAlias(model: string): string {
   if (!model) return model;
-  return stripThinkingSuffix(model.trim()).baseModel;
+  const lower = model.toLowerCase();
+  if (lower.startsWith("qwen")) return model;
+
+  // Lightweight / mini models
+  if (
+    lower.includes("mini") ||
+    lower.includes("haiku") ||
+    lower.includes("3.5-turbo")
+  ) {
+    return "qwen3.7-plus";
+  }
+
+  // Flagship reasoning / chat models
+  if (
+    lower.startsWith("gpt-") ||
+    lower.startsWith("chatgpt-") ||
+    lower.startsWith("o1") ||
+    lower.startsWith("o3") ||
+    lower.includes("sonnet") ||
+    lower.includes("opus") ||
+    lower.startsWith("claude")
+  ) {
+    return "qwen3.8-max";
+  }
+
+  return model;
+}
+
+/**
+ * Mapeia o id de modelo para o Qwen upstream.
+ * Quando enableAliases é verdadeiro (padrão via QWEN_MAP_OPENAI_MODELS),
+ * converte gpt-* / o1* / claude-* para os tiers correspondentes do Qwen.
+ */
+export function mapClientModelToQwen(
+  model: string,
+  enableAliases = true,
+): string {
+  if (!model) return model;
+  const base = stripThinkingSuffix(model.trim()).baseModel;
+  if (enableAliases) {
+    return mapKnownModelAlias(base);
+  }
+  return base;
 }

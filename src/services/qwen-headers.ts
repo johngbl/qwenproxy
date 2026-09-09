@@ -1,6 +1,24 @@
 import { v4 as uuidv4 } from "uuid";
 import { qwenUrl, qwenOrigin } from "./qwen-url.ts";
 import { config } from "../core/config.js";
+import { getChromeMajor, getSystemLocale } from "./fingerprint.ts";
+
+export function getSystemAcceptLanguage(customLocale?: string): string {
+  const locale = customLocale || getSystemLocale();
+  const primary = locale.split("-")[0];
+  if (locale.toLowerCase() === "en-us" || locale.toLowerCase() === "en") {
+    return "en-US,en;q=0.9";
+  }
+  if (locale.toLowerCase().startsWith("pt")) {
+    return "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7";
+  }
+  return `${locale},${primary};q=0.9,en-US;q=0.8,en;q=0.7`;
+}
+
+export function getDefaultQwenUserAgent(major = getChromeMajor()): string {
+  return `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
+}
+
 let dynamicWebVersion: string | null = null;
 
 export function updateQwenWebVersion(version?: string | null): void {
@@ -14,13 +32,12 @@ export function getQwenWebVersion(): string {
 }
 
 export const QWEN_WEB_VERSION = config.qwen.webVersion;
-export const DEFAULT_QWEN_USER_AGENT =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36";
+export const DEFAULT_QWEN_USER_AGENT = getDefaultQwenUserAgent(151);
 const QWEN_TIMEZONE_HEADER = new Date().toString().split(" (")[0];
-
 export interface BuildQwenHeadersOptions {
   cookie: string;
   userAgent?: string;
+  acceptLanguage?: string;
   bxUa?: string;
   bxUmidtoken?: string;
   bxV?: string;
@@ -40,7 +57,10 @@ export function buildQwenRequestHeaders(
   const headers: Record<string, string> = {
     ...(opts.extra ?? {}),
     Accept: "application/json",
-    "Accept-Language": "pt-BR,pt;q=0.9",
+    "Accept-Language":
+      opts.extra?.["Accept-Language"] ||
+      opts.acceptLanguage ||
+      getSystemAcceptLanguage(),
     "Accept-Encoding": "gzip, deflate, br, zstd",
     "Content-Type": "application/json",
     Cookie: opts.cookie,
@@ -54,7 +74,7 @@ export function buildQwenRequestHeaders(
     "Sec-Fetch-Mode": "cors",
     "Sec-Fetch-Site": "same-origin",
     Connection: "keep-alive",
-    "User-Agent": opts.userAgent || DEFAULT_QWEN_USER_AGENT,
+    "User-Agent": opts.userAgent || getDefaultQwenUserAgent(),
     "X-Request-Id": uuidv4(),
     "bx-v": opts.bxV || "2.5.37",
     source: "web",
@@ -62,7 +82,9 @@ export function buildQwenRequestHeaders(
     timezone: opts.extra?.timezone || new Date().toString().split(" (")[0],
     // Use the real browser client-hints when captured (anti-hardcoded); fall
     // back to the static fingerprint otherwise.
-    "sec-ch-ua": opts.secChUa || '"Google Chrome";v="150", "Chromium";v="150", "Not.A/Brand";v="99"',
+    "sec-ch-ua":
+      opts.secChUa ||
+      `"Google Chrome";v="${getChromeMajor()}", "Chromium";v="${getChromeMajor()}", "Not.A/Brand";v="99"`,
     "sec-ch-ua-mobile": opts.secChUaMobile || "?0",
     "sec-ch-ua-platform": opts.secChUaPlatform || '"Windows"',
   };

@@ -23,9 +23,48 @@ function pick<T>(rng: () => number, values: readonly T[]): T {
 function randInt(rng: () => number, min: number, max: number): number {
   return Math.floor(rng() * (max - min + 1)) + min;
 }
+let dynamicChromeMajor = 151;
 
-const CHROME_MAJOR = 149;
+export function updateChromeMajor(major: number): void {
+  if (typeof major === "number" && major >= 100) {
+    dynamicChromeMajor = major;
+  }
+}
 
+export function getChromeMajor(): number {
+  return dynamicChromeMajor;
+}
+
+export function getSystemLocale(): string {
+  return (
+    process.env.QWEN_LOCALE ||
+    (typeof Intl !== "undefined" && Intl.DateTimeFormat
+      ? Intl.DateTimeFormat().resolvedOptions().locale
+      : "") ||
+    "pt-BR"
+  );
+}
+
+function getLanguageProfiles(locale = getSystemLocale()): readonly (readonly string[])[] {
+  const primary = locale.split("-")[0];
+  if (primary === "en") {
+    return [
+      ["en-US", "en"],
+      ["en-US", "en", "es"],
+      ["en", "en-US"],
+      ["en-US", "en;q=0.9"],
+    ] as const;
+  }
+  return [
+    [locale, primary, "en-US", "en"],
+    [locale, primary, "en-US", "en", "es"],
+    [locale, "en-US", "en", primary],
+    [locale, primary, "en"],
+    [locale, `${primary};q=0.9`, "en-US;q=0.8", "en;q=0.7"],
+  ] as const;
+}
+
+const CHROME_MAJOR = 151;
 const VIEWPORTS = [
   { width: 1366, height: 768 },
   { width: 1440, height: 900 },
@@ -176,20 +215,21 @@ export function getFingerprintProfile(accountId: string): FingerprintProfile {
   const rng = mulberry32(seed);
   const viewport = pick(rng, VIEWPORTS);
   const webgl = pick(rng, WEBGL_PROFILES);
-  const languages = [...pick(rng, LANGUAGE_PROFILES)];
+  const languages = [...pick(rng, getLanguageProfiles())];
   const hardwareConcurrency = pick(rng, HARDWARE_CONCURRENCIES);
   const deviceMemory = pick(rng, DEVICE_MEMORIES);
   const platformInfo = pick(rng, PLATFORM_VERSIONS);
   const notABrand = pick(rng, NOT_A_BRAND_VARIANTS);
 
+  const major = dynamicChromeMajor;
   const build = randInt(rng, 7300, 7600);
   const patch = randInt(rng, 0, 160);
-  const chromeVersion = `${CHROME_MAJOR}.0.${build}.${patch}`;
+  const chromeVersion = `${major}.0.${build}.${patch}`;
 
   const brands = [
     { brand: notABrand.brand, version: notABrand.version },
-    { brand: "Google Chrome", version: String(CHROME_MAJOR) },
-    { brand: "Chromium", version: String(CHROME_MAJOR) },
+    { brand: "Google Chrome", version: String(major) },
+    { brand: "Chromium", version: String(major) },
   ];
   const fullVersionList = [
     { brand: notABrand.brand, version: chromeVersion },

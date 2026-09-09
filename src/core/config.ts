@@ -154,6 +154,7 @@ const envSchema = z
     QWEN_PERSONALIZATION_FROM_REQUEST: z.string().default("true"),
     QWEN_PERSONALIZATION_VERIFY_GET: z.string().default("true"),
     QWEN_BROWSER_ONLY_FETCH: z.string().default("true"),
+    QWEN_MAP_OPENAI_MODELS: z.string().default("true"),
     QWEN_MAX_PROMPT_BYTES: z.string().default("0"),
     QWEN_MAX_PERSONALIZATION_BYTES: z.string().default("200000"),
     CONTEXT_METER_ENABLED: z.string().default("true"),
@@ -358,6 +359,7 @@ export const config = {
     /** "thread" (reuse upstream chat) or "temp" (new ephemeral chat per request). */
     /** When true, all requests (personalization, models, media, chat) route exclusively through the browser page (no direct Node fetch). */
     browserOnlyFetch: env.QWEN_BROWSER_ONLY_FETCH !== "false",
+    mapOpenAiModels: env.QWEN_MAP_OPENAI_MODELS !== "false",
     chatMode: env.QWEN_CHAT_MODE,
     maxPromptBytes: Math.max(0, parseInt(env.QWEN_MAX_PROMPT_BYTES)),
     maxPersonalizationBytes: Math.max(

@@ -279,11 +279,28 @@ export async function streamChatCompletions(
  * Fetches all live models dynamically from the running proxy /v1/models catalog.
  */
 let cachedLiveModels: string[] | null = null;
-let isFetchingLiveModels = false;
+let liveModelsPromise: Promise<string[]> | null = null;
 
-export async function fetchLiveModels(): Promise<string[]> {
-  if (cachedLiveModels && cachedLiveModels.length > 0) {
+const DEFAULT_FALLBACK_MODELS = [
+  "qwen3.8-max",
+  "qwen3.7-plus",
+  "qwen3.7-max",
+  "z-image-turbo",
+  "qwen-image-3.0-pro",
+  "qwen-image-3.0",
+  "wan2.7-image-pro",
+  "wan2.7-image",
+  "wan3.0-video",
+  "wan2.7-t2v",
+];
+
+export async function fetchLiveModels(forceRefresh = false): Promise<string[]> {
+  if (!forceRefresh && cachedLiveModels && cachedLiveModels.length > 0) {
     return cachedLiveModels;
+  }
+
+  if (liveModelsPromise) {
+    return liveModelsPromise;
   }
 
   const port = config.server?.port || 7936;
@@ -291,54 +308,38 @@ export async function fetchLiveModels(): Promise<string[]> {
   const host = configuredHost && configuredHost !== "0.0.0.0" ? configuredHost : "127.0.0.1";
   const apiKey = config.apiKey || "sk-qwenproxy-local";
 
-  if (!isFetchingLiveModels) {
-    isFetchingLiveModels = true;
+  liveModelsPromise = (async () => {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 2500);
-    fetch(`http://${host}:${port}/v1/models`, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-      signal: controller.signal,
-    })
-      .then(async (resp) => {
-        clearTimeout(timeout);
-        if (resp.ok) {
-          const json = (await resp.json()) as any;
-          if (Array.isArray(json?.data)) {
-            const models = json.data
-              .map((m: any) => m.id)
-              .filter((id: any): id is string => typeof id === "string" && id.trim().length > 0)
-              .filter(
-                (id: string) =>
-                  !id.endsWith("-fast") &&
-                  !id.endsWith("-thinking") &&
-                  !id.endsWith("-no-thinking"),
-              );
-            if (models.length > 0) {
-              cachedLiveModels = Array.from(new Set(models));
-            }
+    const timeout = setTimeout(() => controller.abort(), 3000);
+    try {
+      const resp = await fetch(`http://${host}:${port}/v1/models`, {
+        headers: { Authorization: `Bearer ${apiKey}` },
+        signal: controller.signal,
+      });
+      if (resp.ok) {
+        const json = (await resp.json()) as any;
+        if (Array.isArray(json?.data)) {
+          const models = json.data
+            .map((m: any) => m.id)
+            .filter((id: any): id is string => typeof id === "string" && id.trim().length > 0)
+            .filter(
+              (id: string) =>
+                !id.endsWith("-fast") &&
+                !id.endsWith("-thinking") &&
+                !id.endsWith("-no-thinking"),
+            );
+          if (models.length > 0) {
+            cachedLiveModels = Array.from(new Set(models));
+            return cachedLiveModels;
           }
         }
-      })
-      .catch(() => {
-        clearTimeout(timeout);
-      })
-      .finally(() => {
-        isFetchingLiveModels = false;
-      });
-  }
+      }
+    } catch {} finally {
+      clearTimeout(timeout);
+      liveModelsPromise = null;
+    }
+    return cachedLiveModels || DEFAULT_FALLBACK_MODELS;
+  })();
 
-  return (
-    cachedLiveModels || [
-      "qwen3.8-max",
-      "qwen3.7-plus",
-      "qwen3.7-max",
-      "z-image-turbo",
-      "qwen-image-3.0-pro",
-      "qwen-image-3.0",
-      "wan2.7-image-pro",
-      "wan2.7-image",
-      "wan3.0-video",
-      "wan2.7-t2v",
-    ]
-  );
+  return liveModelsPromise;
 }

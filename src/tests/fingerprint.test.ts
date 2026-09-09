@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   clearFingerprintCache,
   getFingerprintProfile,
+  updateChromeMajor,
 } from "../services/fingerprint.ts";
 
 test("fingerprint profile is deterministic per account", () => {
@@ -12,7 +13,7 @@ test("fingerprint profile is deterministic per account", () => {
 
   assert.deepEqual(second, first);
   assert.equal(first.accountId, "account-a");
-  assert.match(first.userAgent, /Chrome\/149\.0\.\d+\.\d+/);
+  assert.match(first.userAgent, /Chrome\/\d+\.0\.\d+\.\d+/);
   assert.equal(first.platform, "Win32");
   assert.equal(first.locale, first.languages[0]);
   assert.equal(first.colorDepth, 24);

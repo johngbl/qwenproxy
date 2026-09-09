@@ -3,7 +3,30 @@ import path from "node:path";
 import type { ClientSyncResult, SyncOptions } from "./types.ts";
 import { createTimestampBackup, restoreFromBackup } from "./utils.ts";
 
-function buildOmpProviderYaml(baseUrl: string, apiKey: string): string {
+function buildOmpProviderYaml(
+  baseUrl: string,
+  apiKey: string,
+  primaryModel: string = "qwen3.8-max",
+): string {
+  const modelList = [primaryModel];
+  if (primaryModel !== "qwen3.7-plus") {
+    modelList.push("qwen3.7-plus");
+  }
+
+  const formattedModels = modelList
+    .map(
+      (m) => `      - id: ${m}
+        name: ${m === "qwen3.8-max" ? "Qwen3.8-Max" : m === "qwen3.7-plus" ? "Qwen3.7-Plus" : m}
+        input: [text, image]
+        contextWindow: 1000000
+        maxTokens: 131072
+        reasoning: true
+        thinking:
+          mode: effort
+          efforts: [low, medium, high]`,
+    )
+    .join("\n");
+
   return `  qwenproxy:
     baseUrl: ${baseUrl}
     api: openai-completions
@@ -13,29 +36,12 @@ function buildOmpProviderYaml(baseUrl: string, apiKey: string): string {
       supportsReasoningEffort: true
       maxTokensField: max_completion_tokens
     models:
-      - id: qwen3.8-max
-        name: Qwen3.8-Max
-        input: [text, image]
-        contextWindow: 1000000
-        maxTokens: 131072
-        reasoning: true
-        thinking:
-          mode: effort
-          efforts: [low, medium, high]
-      - id: qwen3.7-plus
-        name: Qwen3.7-Plus
-        input: [text, image]
-        contextWindow: 1000000
-        maxTokens: 131072
-        reasoning: true
-        thinking:
-          mode: effort
-          efforts: [low, medium, high]
+${formattedModels}
 `;
 }
 
 export function syncOmp(options: SyncOptions): ClientSyncResult {
-  const { filePath, apiKey, baseUrl } = options;
+  const { filePath, apiKey, baseUrl, model = "qwen3.8-max" } = options;
   try {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
 
@@ -47,7 +53,7 @@ export function syncOmp(options: SyncOptions): ClientSyncResult {
       content = fs.readFileSync(filePath, "utf-8");
     }
 
-    const providerBlock = buildOmpProviderYaml(baseUrl, apiKey);
+    const providerBlock = buildOmpProviderYaml(baseUrl, apiKey, model);
 
     if (!content.trim()) {
       content = `providers:\n${providerBlock}`;
