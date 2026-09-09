@@ -134,15 +134,22 @@ if (isBrowserCommand) {
         const patchrightEntry = require.resolve("patchright");
         cliPath = path.join(path.dirname(patchrightEntry), "cli.js");
       } catch {}
+      const installEnv = {
+        ...process.env,
+        PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT:
+          process.env.PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT || "300000",
+      };
 
       if (cliPath && fs.existsSync(cliPath)) {
         spawnSync(process.execPath, [cliPath, "install", "chromium"], {
           stdio: "inherit",
+          env: installEnv,
         });
       } else {
         const cmd = process.platform === "win32" ? "npx.cmd" : "npx";
         spawnSync(cmd, ["--yes", "patchright", "install", "chromium"], {
           stdio: "inherit",
+          env: installEnv,
         });
       }
       console.log("✓ [QwenProxy] Navegador instalado com sucesso!\n");

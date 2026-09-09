@@ -13,6 +13,11 @@ import { createRequire } from "module";
 const requireLocal = createRequire(import.meta.url);
 
 function autoInstallPlaywrightChromium(): void {
+  const installEnv = {
+    ...process.env,
+    PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT:
+      process.env.PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT || "300000",
+  };
   try {
     const patchrightEntry = requireLocal.resolve("patchright");
     const cliPath = path.join(path.dirname(patchrightEntry), "cli.js");
@@ -20,6 +25,7 @@ function autoInstallPlaywrightChromium(): void {
       console.log("⏳ [Playwright] Navegador Chromium não encontrado. Instalando automaticamente...");
       spawnSync(process.execPath, [cliPath, "install", "chromium"], {
         stdio: "inherit",
+        env: installEnv,
       });
       return;
     }
@@ -29,6 +35,7 @@ function autoInstallPlaywrightChromium(): void {
   const cmd = process.platform === "win32" ? "npx.cmd" : "npx";
   spawnSync(cmd, ["--yes", "patchright", "install", "chromium"], {
     stdio: "inherit",
+    env: installEnv,
   });
 }
 import { loadAccounts, type QwenAccount } from "../core/accounts.ts";
