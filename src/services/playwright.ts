@@ -66,6 +66,7 @@ import { Mutex } from "../core/mutex.ts";
 import {
   markAccountHeadersReady,
   unmarkAccountHeadersReady,
+  markAccountRateLimited,
 } from "../core/account-manager.ts";
 import { getAccountsByPriority } from "../core/account-priority.ts";
 import {
@@ -160,7 +161,7 @@ export function buildChromiumLaunchArgs(viewport: {
 // to the pool quickly (the 2026-08-22 log showed a lock held for 154s before
 // the waiter's recovery path finally ran). The chat lock keeps its own longer
 // hold budget (see acquireChatLock).
-const ACCOUNT_MUTEX_MAX_HOLD_MS = 60_000;
+const ACCOUNT_MUTEX_MAX_HOLD_MS = 180_000;
 const accountMutexes = new Map<string, Mutex>();
 
 function getAccountMutex(accountId: string): Mutex {
@@ -1529,8 +1530,66 @@ export async function validateAccountLogin(
     release();
   }
 }
-
 // ─── Login ────────────────────────────────────────────────────────────────────
+
+export interface LoginAttemptResult {
+  success: boolean;
+  permanentFailure?: boolean;
+  reason?: string;
+}
+
+export function classifyQwenAuthError(
+  code?: string,
+  details?: string,
+): { isPermanent: boolean; reason: string } {
+  const c = (code || "").trim().toLowerCase();
+  const d = (details || "").trim().toLowerCase();
+  const combined = `${c} ${d}`;
+
+  if (
+    combined.includes("frozen") ||
+    combined.includes("blocked") ||
+    combined.includes("suspend") ||
+    combined.includes("bloquead")
+  ) {
+    return {
+      isPermanent: true,
+      reason: `Conta bloqueada ou suspensa (${details || code || "AccountSuspended"})`,
+    };
+  }
+
+  if (
+    combined.includes("password") ||
+    combined.includes("senha") ||
+    combined.includes("credential")
+  ) {
+    return {
+      isPermanent: true,
+      reason: `Senha incorreta (${details || code || "PasswordError"})`,
+    };
+  }
+
+  if (
+    combined.includes("user") ||
+    combined.includes("email") ||
+    combined.includes("account") ||
+    combined.includes("not exist") ||
+    combined.includes("not found") ||
+    combined.includes("not registered") ||
+    combined.includes("não encontrado") ||
+    combined.includes("não existe")
+  ) {
+    return {
+      isPermanent: true,
+      reason: `E-mail/usuário não encontrado (${details || code || "UserNotExist"})`,
+    };
+  }
+
+  return {
+    isPermanent: false,
+    reason: details || code || "Falha desconhecida no login",
+  };
+}
 
 async function loginToQwen(
   accountId: string,
@@ -1544,22 +1603,46 @@ async function loginToQwen(
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     // Try API login first
     const apiResult = await loginViaApi(page, email, password);
-    if (apiResult) {
+    if (apiResult.success) {
       await saveStorageState(page.context(), accountId);
       return true;
     }
 
+    if (apiResult.permanentFailure) {
+      console.error(
+        `❌ [Playwright] Falha irrecuperável de autenticação para ${maskEmail(email)}: ${apiResult.reason}`,
+      );
+      markAccountRateLimited(
+        accountId,
+        24 * 3600 * 1000,
+        `AuthPermanentFailure: ${apiResult.reason}`,
+      );
+      return false;
+    }
+
     // Fallback to UI login
     const uiResult = await loginViaUi(page, email, password);
-    if (uiResult) {
+    if (uiResult.success) {
       await saveStorageState(page.context(), accountId);
       return true;
+    }
+
+    if (uiResult.permanentFailure) {
+      console.error(
+        `❌ [Playwright] Falha irrecuperável de autenticação para ${maskEmail(email)}: ${uiResult.reason}`,
+      );
+      markAccountRateLimited(
+        accountId,
+        24 * 3600 * 1000,
+        `AuthPermanentFailure: ${uiResult.reason}`,
+      );
+      return false;
     }
 
     if (attempt < maxAttempts) {
       const backoffMs = attempt * 5_000;
       console.warn(
-        `⚠️  [Playwright] Login attempt ${attempt}/${maxAttempts} failed for ${maskEmail(email)}, retrying in ${backoffMs / 1000}s`,
+        `⚠️  [Playwright] Login attempt ${attempt}/${maxAttempts} failed for ${maskEmail(email)} (${apiResult.reason || uiResult.reason || "falha temporária"}), retrying in ${backoffMs / 1000}s`,
       );
       await sleep(backoffMs);
     }
@@ -1568,6 +1651,11 @@ async function loginToQwen(
   console.error(
     `❌ [Playwright] All login methods failed for ${maskEmail(email)}`,
   );
+  markAccountRateLimited(
+    accountId,
+    24 * 3600 * 1000,
+    "AuthFailed: All login methods exhausted",
+  );
   return false;
 }
 
@@ -1575,7 +1663,7 @@ async function loginViaApi(
   page: Page,
   email: string,
   password: string,
-): Promise<boolean> {
+): Promise<LoginAttemptResult> {
   try {
     await page.goto(qwenUrl("/auth"), {
       waitUntil: "domcontentloaded",
@@ -1585,7 +1673,7 @@ async function loginViaApi(
 
     // Check if already logged in
     if (!page.url().includes("/auth")) {
-      return true;
+      return { success: true };
     }
 
     const hashedPassword = crypto
@@ -1597,22 +1685,20 @@ async function loginViaApi(
     const result = await page.evaluate(
       async ({ email, password, signinUrl }) => {
         try {
-          const response = await fetch(signinUrl,
-            {
-              method: "POST",
-              signal: AbortSignal.timeout(10_000),
-              headers: {
-                accept: "application/json, text/plain, */*",
-                "content-type": "application/json",
-                source: "web",
-                timezone: new Date().toString().split(" (")[0],
-                "x-request-id": crypto.randomUUID(),
-              },
-              body: JSON.stringify({ email, password, login_type: "email" }),
+          const response = await fetch(signinUrl, {
+            method: "POST",
+            signal: AbortSignal.timeout(10_000),
+            headers: {
+              accept: "application/json, text/plain, */*",
+              "content-type": "application/json",
+              source: "web",
+              timezone: new Date().toString().split(" (")[0],
+              "x-request-id": crypto.randomUUID(),
             },
-          );
-          const data = await response.json();
-          return { ok: response.ok, data };
+            body: JSON.stringify({ email, password, login_type: "email" }),
+          });
+          const data = await response.json().catch(() => null);
+          return { ok: response.ok, status: response.status, data };
         } catch (e: any) {
           return { ok: false, error: e.message };
         }
@@ -1620,18 +1706,48 @@ async function loginViaApi(
       { email, password: hashedPassword, signinUrl },
     );
 
+    if (result.data) {
+      if (result.data.success === true) {
+        await page.goto(qwenUrl("/"), {
+          waitUntil: "domcontentloaded",
+          timeout: config.timeouts.navigation,
+        });
+        const loggedIn = !page.url().includes("auth") && !page.url().includes("login");
+        if (loggedIn) {
+          return { success: true };
+        }
+      } else if (result.data.success === false) {
+        const code = result.data?.data?.code || result.data?.code;
+        const details =
+          result.data?.data?.details || result.data?.details || result.data?.message;
+        const classified = classifyQwenAuthError(code, details);
+        return {
+          success: false,
+          permanentFailure: classified.isPermanent,
+          reason: classified.reason,
+        };
+      }
+    }
+
     if (result.ok) {
       await page.goto(qwenUrl("/"), {
         waitUntil: "domcontentloaded",
         timeout: config.timeouts.navigation,
       });
-      return !page.url().includes("auth") && !page.url().includes("login");
+      const loggedIn = !page.url().includes("auth") && !page.url().includes("login");
+      return {
+        success: loggedIn,
+        reason: loggedIn ? undefined : "Redirecionado de volta para /auth após signin",
+      };
     }
 
-    return false;
-  } catch (err) {
-    console.warn(`⚠️  [Playwright] API login error: ${err}`);
-    return false;
+    return {
+      success: false,
+      reason: result.error || `HTTP ${result.status || "desconhecido"} sem corpo JSON válido`,
+    };
+  } catch (err: any) {
+    console.warn(`⚠️  [Playwright] API login error: ${err?.message || err}`);
+    return { success: false, reason: err?.message || String(err) };
   }
 }
 
@@ -1639,7 +1755,7 @@ async function loginViaUi(
   page: Page,
   email: string,
   password: string,
-): Promise<boolean> {
+): Promise<LoginAttemptResult> {
   try {
     await page.goto(qwenUrl("/auth"), {
       waitUntil: "domcontentloaded",
@@ -1649,7 +1765,7 @@ async function loginViaUi(
 
     // Check if already logged in
     if (!page.url().includes("/auth")) {
-      return true;
+      return { success: true };
     }
 
     // Wait for email input
@@ -1665,11 +1781,11 @@ async function loginViaUi(
         timeout: config.timeouts.page,
       });
     } catch {
-      if (!page.url().includes("/auth")) return true;
+      if (!page.url().includes("/auth")) return { success: true };
       console.warn(
         `⚠️  [Playwright] Email input not found on ${page.url()} (possible captcha or anti-bot challenge)`,
       );
-      throw new Error("Email input not found");
+      return { success: false, reason: "Campo de e-mail não encontrado (possível captcha)" };
     }
 
     // Fill email
@@ -1711,6 +1827,28 @@ async function loginViaUi(
     }
     await sleep(3000);
 
+    // Check for UI error elements in DOM (Ant Design errors, alerts, toasts)
+    const errorSelector = [
+      ".ant-form-item-explain-error",
+      ".ant-message-error",
+      ".ant-message-notice",
+      '[role="alert"]',
+      ".qwenchat-auth-error",
+      ".auth-error-message",
+    ].join(", ");
+    const errorEl = page.locator(errorSelector).first();
+    if (await errorEl.isVisible().catch(() => false)) {
+      const errorText = (await errorEl.innerText().catch(() => "")).trim();
+      if (errorText) {
+        const classified = classifyQwenAuthError(undefined, errorText);
+        return {
+          success: false,
+          permanentFailure: classified.isPermanent,
+          reason: `Formulário: ${classified.reason}`,
+        };
+      }
+    }
+
     // Check if login was successful
     const isLoggedIn =
       !page.url().includes("auth") && !page.url().includes("login");
@@ -1720,12 +1858,16 @@ async function loginViaUi(
         waitUntil: "domcontentloaded",
         timeout: config.timeouts.navigation,
       });
+      return { success: true };
     }
 
-    return isLoggedIn;
-  } catch (err) {
-    console.warn(`⚠️  [Playwright] UI login error: ${err}`);
-    return false;
+    return {
+      success: false,
+      reason: "A página permaneceu na tela de autenticação após envio do formulário",
+    };
+  } catch (err: any) {
+    console.warn(`⚠️  [Playwright] UI login error: ${err?.message || err}`);
+    return { success: false, reason: err?.message || String(err) };
   }
 }
 

@@ -721,9 +721,6 @@ export async function startServer(options?: {
 
           for (const account of remainingAccounts) {
             try {
-              // Add to priority list first (initial priority based on config order)
-              ensureAccountInPriority(account.id);
-
               // Validate login in background
               const ok = await validateAccountLogin(
                 account,
@@ -732,6 +729,8 @@ export async function startServer(options?: {
               );
 
               if (ok) {
+                // Add to priority list only once validated
+                ensureAccountInPriority(account.id);
                 validated++;
                 console.log(
                   `✅ [Server] Standby account validated: ${maskEmail(account.email)}`,
@@ -739,17 +738,28 @@ export async function startServer(options?: {
               } else {
                 failed++;
                 console.warn(
-                  `⚠️  [Server] Standby account login failed: ${maskEmail(account.email)}`,
+                  `⚠️  [Server] Standby account login failed: ${maskEmail(account.email)} (quarantined)`,
+                );
+                const { markAccountRateLimited } = await import("../core/account-manager.ts");
+                markAccountRateLimited(
+                  account.id,
+                  24 * 3600 * 1000,
+                  "AuthFailed: Standby validation failed",
                 );
               }
             } catch (error) {
               failed++;
               console.warn(
-                `⚠️  [Server] Standby account validation error: ${maskEmail(account.email)}: ${getErrorMessage(error)}`,
+                `⚠️  [Server] Standby account validation error: ${maskEmail(account.email)}: ${getErrorMessage(error)} (quarantined)`,
+              );
+              const { markAccountRateLimited } = await import("../core/account-manager.ts");
+              markAccountRateLimited(
+                account.id,
+                24 * 3600 * 1000,
+                `AuthFailed: ${getErrorMessage(error)}`,
               );
             }
           }
-
           if (failed > 0) {
             console.warn(
               `⚠️  [Server] Standby validation finished: ${validated} ok, ${failed} failed`,

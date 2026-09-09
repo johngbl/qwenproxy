@@ -75,7 +75,7 @@ const envSchema = z
     // Deadline for the FIRST upstream chunk on thinking models (the reasoning
     // idle of 600s is for gaps AFTER data flows; a stream that produced
     // nothing in this window is dead and should fail fast, retryable).
-    QWEN_FIRST_CHUNK_TIMEOUT: z.string().default("180000"),
+    QWEN_FIRST_CHUNK_TIMEOUT: z.string().default("60000"),
     TOTAL_REQUEST_TIMEOUT: z.string().default("600000"),
     // Mid-stream silence window for thinking models: 3 min with ZERO upstream
     // bytes is a dead stream (WAF swallow / dropped connection) — fail fast and

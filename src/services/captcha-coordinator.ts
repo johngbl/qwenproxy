@@ -10,7 +10,7 @@ import {
   solveBaxiaCaptcha,
 } from "./captcha-solver.ts";
 
-const CHALLENGE_NAVIGATION_TIMEOUT_MS = 20_000;
+const CHALLENGE_NAVIGATION_TIMEOUT_MS = 8_000;
 const CHALLENGE_PATH_MARKER = "_____tmd_____";
 
 /**
@@ -114,13 +114,15 @@ export async function recoverBaxiaCaptcha(
   // cannot be mistaken for a stuck browser and reset the account context.
   // Two navigations (open the challenge, return to the chat page) are part of
   // the recovery, so their budget belongs in the same total.
-  const solverOperationTimeoutMs = Math.max(
+  const solverOperationTimeoutMs = Math.min(
     config.timeouts.page,
-    config.captcha.timeoutMs +
-      config.captcha.maxAttempts *
-        (5_000 + config.captcha.retryDelayMs + config.captcha.settleMs) +
-      2 * CHALLENGE_NAVIGATION_TIMEOUT_MS +
-      5_000,
+    Math.max(
+      15_000,
+      config.captcha.timeoutMs +
+        config.captcha.maxAttempts *
+          (3_000 + config.captcha.retryDelayMs + config.captcha.settleMs) +
+        2 * CHALLENGE_NAVIGATION_TIMEOUT_MS,
+    ),
   );
 
   try {

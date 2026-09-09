@@ -44,7 +44,7 @@ test("config exposes only Playwright/thread-native current auth and context sett
   // Must not exceed the first-chunk deadline — flowing reasoning chunks reset
   // this timer, so only total silence is cut.
   assert.equal(config.timeouts.reasoningModelTimeout, 180_000);
-  assert.equal(config.timeouts.firstChunkTimeout, 180_000);
+  assert.equal(config.timeouts.firstChunkTimeout, 60_000);
   // chat_in_progress busy window: production default is 4s (short enough that
   // the sticky owner's next turn is not pushed to a cold account; measured
   // settle ~1-2s). .env.test overrides it to 100ms for suite speed.
