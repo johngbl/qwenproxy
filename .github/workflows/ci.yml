@@ -70,5 +70,6 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - run: echo "Docker skipped (no secrets)"
+      - name: Build Docker image (smoke test)
         if: steps.secrets.outputs.available != 'true'
+        run: docker build --tag qwenproxy:test .
