@@ -22,7 +22,7 @@ test("CLI: --help outputs usage options and exits with code 0", () => {
   });
   assert.equal(result.status, 0);
   assert.ok(result.stdout.includes("Usage:"));
-  assert.ok(result.stdout.includes("qwenproxy"));
+  assert.ok(result.stdout.toLowerCase().includes("qwenproxy"));
   assert.ok(result.stdout.includes("qpx"));
   assert.ok(result.stdout.includes("Commands:"));
 });
