@@ -474,13 +474,17 @@ export async function acquireUpstreamStream(
 		if (
 			isAccountTemporarilyBusy(accountId) &&
 			params.allowTemporarilyBusyAccountId !== accountId &&
-			accountId !== stickyThreadAccountId
+			accountId !== stickyThreadAccountId &&
+			hasFreeAlternateAccount(configuredAccounts, accountId, triedAccountIds)
 		) {
 			console.log(
 				`⏭️  [Chat] Skipping account ${accountEmail} (${accountId}) temporarily busy (chat in progress)`,
 			);
-			account = getNextAvailableAccount(triedAccountIds);
-			continue;
+			const nextCandidate = getNextAvailableAccount(triedAccountIds);
+			if (nextCandidate && !getAccountCooldownInfo(nextCandidate.id)) {
+				account = nextCandidate;
+				continue;
+			}
 		}
 
 		// Do not wait 30 seconds on a saturated account when another account is
