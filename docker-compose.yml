@@ -8,7 +8,15 @@ services:
       - .env
     volumes:
       - ./data:/app/data
+    # Chromium shared memory: prevents tab crashes (SIGBUS) under load (Docker default is only 64MB)
+    shm_size: '2gb'
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:' + (process.env.PORT || 7936) + '/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
     logging:
       driver: "json-file"
       options:

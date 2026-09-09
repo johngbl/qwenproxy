@@ -2,6 +2,8 @@
 # Compile native addons (better-sqlite3) in a throwaway container
 FROM node:22-slim AS builder
 
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+
 RUN apt-get update \
   && apt-get install -y --no-install-recommends build-essential python3 \
   && rm -rf /var/lib/apt/lists/*
@@ -13,11 +15,12 @@ RUN npm ci --omit=dev && npm cache clean --force
 # ---- Runtime Stage ----
 FROM node:22-slim
 
-# Process helpers (dumb-init for zombie reaping, gosu for user switching)
+# Process helpers (dumb-init for zombie reaping, gosu for user switching) + essential fonts for Qwen rendering
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends dumb-init gosu \
+  && apt-get install -y --no-install-recommends \
+       dumb-init gosu \
+       fonts-liberation fonts-noto-color-emoji fonts-wqy-zenhei \
   && rm -rf /var/lib/apt/lists/*
-
 # Non-root user
 RUN groupadd -r pwuser && useradd -r -g pwuser -m pwuser
 
