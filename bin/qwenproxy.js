@@ -180,6 +180,11 @@ if (isBrowserCommand) {
 
       if (res.status === 0) {
         console.log("✓ [QwenProxy] Navegador instalado com sucesso!\n");
+        // Automatically prune older, unused browser builds to free up disk space
+        try {
+          const { cleanPlaywrightBrowsers } = await import("../src/clean-cache.ts");
+          await cleanPlaywrightBrowsers(true);
+        } catch {}
       }
     }
   } catch {}

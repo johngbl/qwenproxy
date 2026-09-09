@@ -47,6 +47,13 @@ function autoInstallPlaywrightChromium(): void {
     console.log("\n⚠️ [Playwright] Falha no CDN primário. Tentando espelho global de alta velocidade...");
     tryInstall("https://npmmirror.com/mirrors/playwright");
   }
+
+  try {
+    void (async () => {
+      const { cleanPlaywrightBrowsers } = await import("../clean-cache.ts");
+      await cleanPlaywrightBrowsers(true);
+    })();
+  } catch {}
 }
 import { loadAccounts, type QwenAccount } from "../core/accounts.ts";
 // Imported here rather than injected from session-keeper.ts: account-concurrency
