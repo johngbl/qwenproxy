@@ -46,6 +46,12 @@ coverage/
 .DS_Store
 Thumbs.db
 
+
+# Temp analysis scripts
+.tmp-*
+
+# TypeScript config (not needed at runtime with tsx)
+tsconfig.json
 # Tests
 src/tests/
 src/benchmarks/

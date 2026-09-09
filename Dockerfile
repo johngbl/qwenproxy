@@ -1,37 +1,50 @@
-FROM mcr.microsoft.com/playwright:v1.62.1-jammy
+# ---- Build Stage ----
+# Compile native addons (better-sqlite3) in a throwaway container
+FROM node:22-slim AS builder
 
-# Upgrade Node.js to v24 (base image ships with Node 22)
-RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
-  && apt-get install -y --no-install-recommends nodejs \
-  && rm -rf /var/lib/apt/lists/*
-
-# Install native build tools for better-sqlite3, plus process helpers.
-# better-sqlite3 may compile from source on ARM64 when no prebuilt binary exists.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends build-essential python3 dumb-init gosu \
+  && apt-get install -y --no-install-recommends build-essential python3 \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-
-# Install dependencies first for better caching
 COPY package*.json ./
 RUN npm ci --omit=dev && npm cache clean --force
-RUN npx patchright install --with-deps chromium
 
-# Copy the rest of the application
-COPY . .
+# ---- Runtime Stage ----
+FROM node:22-slim
 
-# Prepare persistent directories and entrypoint
+# Process helpers (dumb-init for zombie reaping, gosu for user switching)
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends dumb-init gosu \
+  && rm -rf /var/lib/apt/lists/*
+
+# Non-root user
+RUN groupadd -r pwuser && useradd -r -g pwuser -m pwuser
+
+WORKDIR /app
+
+# Production deps with pre-compiled native modules from builder
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/package.json ./package.json
+
+# Install Chromium + all its system deps via patchright (no Firefox/WebKit bloat)
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN npx patchright install --with-deps chromium \
+  && chown -R pwuser:pwuser /ms-playwright
+
+# Application source and entrypoint
+COPY docker-entrypoint.sh ./
+COPY bin ./bin
+COPY src ./src
+
+# Prepare persistent directories
 RUN mkdir -p /app/data/db /app/data/qwen_profiles /tmp/playwright \
   && chown -R pwuser:pwuser /app /tmp/playwright \
   && chmod +x /app/docker-entrypoint.sh
 
-# Declare volume for persistent data (database, encryption key and browser profiles)
 VOLUME ["/app/data"]
-
 EXPOSE 7936
-ENV NODE_ENV=production \
-    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-# Use dumb-init to avoid zombie processes from Playwright and ensure writable volumes at startup
+ENV NODE_ENV=production
+
 ENTRYPOINT ["/usr/bin/dumb-init", "--", "/app/docker-entrypoint.sh"]
 CMD ["npx", "tsx", "src/index.ts"]
