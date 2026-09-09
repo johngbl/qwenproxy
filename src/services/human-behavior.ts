@@ -147,27 +147,43 @@ export async function subtlePageActivity(page: Page): Promise<void> {
   const viewport = page.viewportSize();
   if (!viewport) return;
 
-  const x = Math.floor(viewport.width * (0.25 + Math.random() * 0.5));
-  const y = Math.floor(viewport.height * (0.25 + Math.random() * 0.5));
-  await page.mouse.move(x, y, { steps: 6 + Math.floor(Math.random() * 8) });
+  try {
+    const x = Math.floor(viewport.width * (0.25 + Math.random() * 0.5));
+    const y = Math.floor(viewport.height * (0.25 + Math.random() * 0.5));
+    await page.mouse.move(x, y, { steps: 6 + Math.floor(Math.random() * 8) });
 
-  if (Math.random() < 0.35) {
-    await page.mouse.wheel(0, Math.random() < 0.5 ? 60 : -60).catch(() => {});
-  }
+    if (Math.random() < 0.35) {
+      await page.mouse.wheel(0, Math.random() < 0.5 ? 60 : -60).catch(() => {});
+    }
 
-  await page
-    .evaluate(() => {
-      try {
-        const target = document.querySelector(
-          '[data-testid="sidebar"], .sidebar, nav, aside, main',
-        );
-        if (target) {
-          target.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true }));
-          target.dispatchEvent(new MouseEvent("mouseleave", { bubbles: true }));
+    await page
+      .evaluate(() => {
+        try {
+          const target = document.querySelector(
+            '[data-testid="sidebar"], .sidebar, nav, aside, main',
+          );
+          if (target) {
+            target.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true }));
+            target.dispatchEvent(new MouseEvent("mouseleave", { bubbles: true }));
+          }
+        } catch {
+          // Best-effort keep-alive only.
         }
-      } catch {
-        // Best-effort keep-alive only.
-      }
-    })
-    .catch(() => {});
+      })
+      .catch(() => {});
+  } catch (err: any) {
+    if (page.isClosed()) return;
+    const msg = err instanceof Error ? err.message : String(err);
+    if (
+      msg.includes("Target page, context or browser has been closed") ||
+      msg.includes("Browser has been closed") ||
+      msg.includes("Target closed") ||
+      msg.includes("Target crashed") ||
+      msg.includes("Page crashed") ||
+      msg.includes("Connection closed")
+    ) {
+      return;
+    }
+    throw err;
+  }
 }

@@ -21,6 +21,9 @@ process.on('uncaughtException', (error: unknown) => {
     msg.includes('Target page, context or browser has been closed') ||
     msg.includes('Browser has been closed') ||
     msg.includes('Target closed') ||
+    msg.includes('Target crashed') ||
+    msg.includes('Page crashed') ||
+    msg.includes('Assertion error') ||
     msg.includes('Connection closed')
   ) {
     console.warn(`⚠️  [Playwright] Handled benign driver teardown exception: ${msg}`)
@@ -36,6 +39,9 @@ process.on('unhandledRejection', (reason: unknown) => {
     msg.includes('Target page, context or browser has been closed') ||
     msg.includes('Browser has been closed') ||
     msg.includes('Target closed') ||
+    msg.includes('Target crashed') ||
+    msg.includes('Page crashed') ||
+    msg.includes('Assertion error') ||
     msg.includes('Connection closed')
   ) {
     console.warn(`⚠️  [Playwright] Handled benign driver teardown rejection: ${msg}`)

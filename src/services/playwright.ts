@@ -1201,12 +1201,13 @@ export async function initPlaywrightForAccount(
     // If a context limit is configured, make room by closing idle contexts.
     await evictIdlePlaywrightContextsToLimit().catch(() => {});
 
+    const profilePath = getAccountProfilePath(account.id);
     const fingerprint = getFingerprintProfile(account.id);
-    const sharedBrowser = await getOrLaunchSharedBrowser(browserType, headless);
-    const storageState = loadStorageState(account.id);
+    const { engine, channel } = resolveBrowserEngine(browserType);
 
-    const acctContext = await sharedBrowser.newContext({
-      ...(storageState ? { storageState } : {}),
+    const launchOptions = {
+      headless,
+      channel,
       userAgent: fingerprint.userAgent,
       locale: fingerprint.locale,
       timezoneId: fingerprint.timezoneId,
@@ -1215,13 +1216,37 @@ export async function initPlaywrightForAccount(
       deviceScaleFactor: 1,
       isMobile: false,
       hasTouch: false,
-      colorScheme: "light",
+      colorScheme: "light" as const,
       extraHTTPHeaders: {
         "sec-ch-ua": fingerprint.secChUa,
         "sec-ch-ua-mobile": "?0",
         "sec-ch-ua-platform": '"Windows"',
       },
-    });
+      ignoreDefaultArgs: ["--enable-automation", "--enable-blink-features"],
+      args: buildChromiumLaunchArgs(fingerprint.viewport),
+    };
+
+    let acctContext: BrowserContext;
+    try {
+      acctContext = await engine.launchPersistentContext(profilePath, launchOptions);
+    } catch (launchErr: any) {
+      if (launchErr?.message?.includes("Executable doesn't exist")) {
+        autoInstallPlaywrightChromium();
+        acctContext = await engine.launchPersistentContext(profilePath, launchOptions);
+      } else {
+        throw launchErr;
+      }
+    }
+
+    try {
+      const v = acctContext.browser()?.version();
+      if (v) {
+        const major = parseInt(v.split(".")[0], 10);
+        if (major >= 100) {
+          updateChromeMajor(major);
+        }
+      }
+    } catch {}
 
     try {
       // Comprehensive stealth scripts for anti-bot evasion
@@ -1230,7 +1255,38 @@ export async function initPlaywrightForAccount(
         await hook(acctContext);
       }
 
-      const acctPage = await acctContext.newPage();
+      // If native profile cookies are empty but a backup storage_state.json exists, restore cookies
+      const storageState = loadStorageState(account.id);
+      if (storageState) {
+        try {
+          const raw = fs.readFileSync(storageState, "utf8");
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed.cookies) && parsed.cookies.length > 0) {
+            const currentCookies = await acctContext.cookies();
+            if (currentCookies.length === 0) {
+              await acctContext.addCookies(parsed.cookies).catch(() => {});
+            }
+          }
+        } catch {}
+      }
+
+      // Persistent contexts may already contain an initial about:blank tab.
+      // Reuse it instead of creating a second tab. Prefer a tab already on the
+      // Qwen origin when one exists.
+      const existingPages = acctContext.pages().filter((p) => !p.isClosed());
+      const acctPage =
+        existingPages.find((p) => p.url().startsWith(qwenOrigin())) ??
+        existingPages[0] ??
+        (await acctContext.newPage());
+
+      // Close any extra blank tabs that may have been created by the browser
+      // profile/startup, but keep the primary page selected above.
+      for (const extraPage of existingPages.slice(1)) {
+        if (extraPage !== acctPage && extraPage.url() === "about:blank") {
+          await extraPage.close({ runBeforeUnload: false }).catch(() => {});
+        }
+      }
+
       acctPage.setDefaultTimeout(config.timeouts.page);
       acctPage.setDefaultNavigationTimeout(config.timeouts.navigation);
       accountContexts.set(account.id, acctContext);
@@ -1345,13 +1401,12 @@ export async function validateAccountLogin(
   );
   try {
     if (accountPages.has(account.id)) return true;
-
+    const profilePath = getAccountProfilePath(account.id);
     const fingerprint = getFingerprintProfile(account.id);
-    const sharedBrowser = await getOrLaunchSharedBrowser(browserType, headless);
-    const storageState = loadStorageState(account.id);
-
-    const acctContext = await sharedBrowser.newContext({
-      ...(storageState ? { storageState } : {}),
+    const { engine, channel } = resolveBrowserEngine(browserType);
+    const launchOptions = {
+      headless,
+      channel,
       userAgent: fingerprint.userAgent,
       locale: fingerprint.locale,
       timezoneId: fingerprint.timezoneId,
@@ -1360,18 +1415,51 @@ export async function validateAccountLogin(
       deviceScaleFactor: 1,
       isMobile: false,
       hasTouch: false,
-      colorScheme: "light",
+      colorScheme: "light" as const,
       extraHTTPHeaders: {
         "sec-ch-ua": fingerprint.secChUa,
         "sec-ch-ua-mobile": "?0",
         "sec-ch-ua-platform": '"Windows"',
       },
-    });
+      ignoreDefaultArgs: ["--enable-automation", "--enable-blink-features"],
+      args: buildChromiumLaunchArgs(fingerprint.viewport),
+    };
+
+    let acctContext: BrowserContext;
+    try {
+      acctContext = await engine.launchPersistentContext(profilePath, launchOptions);
+    } catch (launchErr: any) {
+      if (launchErr?.message?.includes("Executable doesn't exist")) {
+        autoInstallPlaywrightChromium();
+        acctContext = await engine.launchPersistentContext(profilePath, launchOptions);
+      } else {
+        throw launchErr;
+      }
+    }
 
     try {
       await acctContext.addInitScript(getStealthScript(fingerprint));
-      const acctPage = await acctContext.newPage();
 
+      // If native profile cookies are empty but a backup storage_state.json exists, restore cookies
+      const storageState = loadStorageState(account.id);
+      if (storageState) {
+        try {
+          const raw = fs.readFileSync(storageState, "utf8");
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed.cookies) && parsed.cookies.length > 0) {
+            const currentCookies = await acctContext.cookies();
+            if (currentCookies.length === 0) {
+              await acctContext.addCookies(parsed.cookies).catch(() => {});
+            }
+          }
+        } catch {}
+      }
+
+      const existingPages = acctContext.pages().filter((p) => !p.isClosed());
+      const acctPage =
+        existingPages.find((p) => p.url().startsWith(qwenOrigin())) ??
+        existingPages[0] ??
+        (await acctContext.newPage());
       // Check if already logged in via cookies
       const cookies = await acctContext.cookies();
       const hasAuthCookie = cookies.some(
@@ -2789,6 +2877,9 @@ export function isPlaywrightAlreadyClosedError(error: unknown): boolean {
     message.includes("Target page, context or browser has been closed") ||
     message.includes("Browser has been closed") ||
     message.includes("Target closed") ||
+    message.includes("Target crashed") ||
+    message.includes("Page crashed") ||
+    message.includes("Assertion error") ||
     message.includes("Cannot find parent object") ||
     message.includes("Connection closed")
   );
