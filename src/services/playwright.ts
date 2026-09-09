@@ -13,30 +13,40 @@ import { createRequire } from "module";
 const requireLocal = createRequire(import.meta.url);
 
 function autoInstallPlaywrightChromium(): void {
-  const installEnv = {
-    ...process.env,
-    PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT:
-      process.env.PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT || "300000",
-  };
-  try {
-    const patchrightEntry = requireLocal.resolve("patchright");
-    const cliPath = path.join(path.dirname(patchrightEntry), "cli.js");
-    if (fs.existsSync(cliPath)) {
-      console.log("⏳ [Playwright] Navegador Chromium não encontrado. Instalando automaticamente...");
-      spawnSync(process.execPath, [cliPath, "install", "chromium"], {
-        stdio: "inherit",
-        env: installEnv,
-      });
-      return;
-    }
-  } catch {}
+  const tryInstall = (mirror?: string): number | null => {
+    const installEnv = {
+      ...process.env,
+      PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT:
+        process.env.PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT || "120000",
+      ...(mirror ? { PLAYWRIGHT_DOWNLOAD_HOST: mirror } : {}),
+    };
+    try {
+      const patchrightEntry = requireLocal.resolve("patchright");
+      const cliPath = path.join(path.dirname(patchrightEntry), "cli.js");
+      if (fs.existsSync(cliPath)) {
+        console.log("⏳ [Playwright] Navegador Chromium não encontrado. Instalando automaticamente...");
+        const res = spawnSync(process.execPath, [cliPath, "install", "chromium"], {
+          stdio: "inherit",
+          env: installEnv,
+        });
+        return res.status;
+      }
+    } catch {}
 
-  console.log("⏳ [Playwright] Navegador Chromium não encontrado. Instalando via npx...");
-  const cmd = process.platform === "win32" ? "npx.cmd" : "npx";
-  spawnSync(cmd, ["--yes", "patchright", "install", "chromium"], {
-    stdio: "inherit",
-    env: installEnv,
-  });
+    console.log("⏳ [Playwright] Navegador Chromium não encontrado. Instalando via npx...");
+    const cmd = process.platform === "win32" ? "npx.cmd" : "npx";
+    const res = spawnSync(cmd, ["--yes", "patchright", "install", "chromium"], {
+      stdio: "inherit",
+      env: installEnv,
+    });
+    return res.status;
+  };
+
+  const status = tryInstall(process.env.PLAYWRIGHT_DOWNLOAD_HOST);
+  if (status !== 0 && !process.env.PLAYWRIGHT_DOWNLOAD_HOST) {
+    console.log("\n⚠️ [Playwright] Falha no CDN primário. Tentando espelho global de alta velocidade...");
+    tryInstall("https://npmmirror.com/mirrors/playwright");
+  }
 }
 import { loadAccounts, type QwenAccount } from "../core/accounts.ts";
 // Imported here rather than injected from session-keeper.ts: account-concurrency

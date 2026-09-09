@@ -134,25 +134,53 @@ if (isBrowserCommand) {
         const patchrightEntry = require.resolve("patchright");
         cliPath = path.join(path.dirname(patchrightEntry), "cli.js");
       } catch {}
-      const installEnv = {
-        ...process.env,
-        PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT:
-          process.env.PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT || "300000",
+
+      const runInstall = (mirrorHost) => {
+        const installEnv = {
+          ...process.env,
+          PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT:
+            process.env.PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT || "120000",
+          ...(mirrorHost ? { PLAYWRIGHT_DOWNLOAD_HOST: mirrorHost } : {}),
+        };
+
+        if (cliPath && fs.existsSync(cliPath)) {
+          return spawnSync(process.execPath, [cliPath, "install", "chromium"], {
+            stdio: "inherit",
+            env: installEnv,
+          });
+        }
+        const cmd = process.platform === "win32" ? "npx.cmd" : "npx";
+        return spawnSync(cmd, ["--yes", "patchright", "install", "chromium"], {
+          stdio: "inherit",
+          env: installEnv,
+        });
       };
 
-      if (cliPath && fs.existsSync(cliPath)) {
-        spawnSync(process.execPath, [cliPath, "install", "chromium"], {
-          stdio: "inherit",
-          env: installEnv,
-        });
-      } else {
-        const cmd = process.platform === "win32" ? "npx.cmd" : "npx";
-        spawnSync(cmd, ["--yes", "patchright", "install", "chromium"], {
-          stdio: "inherit",
-          env: installEnv,
-        });
+      let chosenHost = process.env.PLAYWRIGHT_DOWNLOAD_HOST;
+      if (!chosenHost) {
+        // Probe official CDN; if unresponsive within 2s, switch to global mirror immediately
+        const controller = new AbortController();
+        const probeTimer = setTimeout(() => controller.abort(), 2000);
+        try {
+          const probe = await fetch("https://cdn.playwright.dev", { method: "HEAD", signal: controller.signal });
+          clearTimeout(probeTimer);
+          if (probe.status >= 500) chosenHost = "https://npmmirror.com/mirrors/playwright";
+        } catch {
+          clearTimeout(probeTimer);
+          chosenHost = "https://npmmirror.com/mirrors/playwright";
+          console.log("🌐 [QwenProxy] CDN oficial indisponível na sua região. Usando espelho global de alta velocidade...");
+        }
       }
-      console.log("✓ [QwenProxy] Navegador instalado com sucesso!\n");
+
+      let res = runInstall(chosenHost);
+      if (res.status !== 0 && !chosenHost) {
+        console.log("\n⚠️ [QwenProxy] Falha no CDN primário. Tentando espelho global de alta velocidade...");
+        res = runInstall("https://npmmirror.com/mirrors/playwright");
+      }
+
+      if (res.status === 0) {
+        console.log("✓ [QwenProxy] Navegador instalado com sucesso!\n");
+      }
     }
   } catch {}
 }
