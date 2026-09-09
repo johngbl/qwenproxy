@@ -46,9 +46,7 @@ if (rawArgs.includes("-h") || rawArgs.includes("--help") || firstArg === "help")
 QwenProxy — High-performance AI Coding Gateway & Management TUI
 
 Usage:
-  qwenproxy [options] [command]
   qpx [options] [command]
-
 Commands:
   (default)     Launch interactive TUI management dashboard and proxy
   start         Run headless HTTP/SSE proxy server

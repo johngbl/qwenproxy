@@ -4,7 +4,6 @@
   "description": "High-performance OpenAI & Anthropic compatible API gateway for Qwen with multi-account rotation, interactive TUI, and resilient tool calling.",
   "main": "src/index.ts",
   "bin": {
-    "qwenproxy": "bin/qwenproxy.js",
     "qpx": "bin/qwenproxy.js"
   },
   "files": [
