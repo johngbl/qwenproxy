@@ -1194,11 +1194,26 @@ export async function getBasicHeaders(accountId: string): Promise<{
   }
 }
 
+async function resolveAccountCredentials(account: QwenAccount): Promise<QwenAccount> {
+  if (account.password && account.password !== "***") {
+    return account;
+  }
+  try {
+    const { getAccountCredentials } = await import("../core/accounts.ts");
+    const creds = getAccountCredentials(account.id);
+    if (creds && creds.password && creds.password !== "***") {
+      return creds;
+    }
+  } catch {}
+  return account;
+}
+
 export async function initPlaywrightForAccount(
-  account: QwenAccount,
+  rawAccount: QwenAccount,
   headless = true,
   browserType: BrowserType = "chromium",
 ): Promise<void> {
+  const account = await resolveAccountCredentials(rawAccount);
   if (accountPages.has(account.id)) {
     console.log(
       `[Playwright] Already initialized for ${maskEmail(account.email)}`,
@@ -1404,10 +1419,11 @@ export async function initPlaywrightForAccount(
  * This is much lighter than full initPlaywrightForAccount (no header capture).
  */
 export async function validateAccountLogin(
-  account: QwenAccount,
+  rawAccount: QwenAccount,
   headless = true,
   browserType: BrowserType = "chromium",
 ): Promise<boolean> {
+  const account = await resolveAccountCredentials(rawAccount);
   if (accountPages.has(account.id)) {
     // Already initialized, no need to validate
     return true;
@@ -1596,6 +1612,22 @@ async function loginToQwen(
   email: string,
   password: string,
 ): Promise<boolean> {
+  if (!password || password === "***") {
+    try {
+      const { getAccountCredentials } = await import("../core/accounts.ts");
+      const creds = getAccountCredentials(accountId);
+      if (creds && creds.password && creds.password !== "***") {
+        password = creds.password;
+      } else {
+        console.error(
+          `❌ [Playwright] Cannot login for ${maskEmail(email)}: password is masked ('***') and real credentials not found in store`,
+        );
+        return false;
+      }
+    } catch {
+      return false;
+    }
+  }
   const page = accountPages.get(accountId);
   if (!page) return false;
 
@@ -1827,6 +1859,12 @@ async function loginViaUi(
     }
     await sleep(3000);
 
+    // If a slider puzzle captcha appeared after submit, solve it automatically
+    await solveBaxiaCaptcha(page, {
+      waitForMs: 2000,
+      maxAttempts: config.captcha.maxAttempts,
+      retryDelayMs: config.captcha.retryDelayMs,
+    }).catch(() => {});
     // Check for UI error elements in DOM (Ant Design errors, alerts, toasts)
     const errorSelector = [
       ".ant-form-item-explain-error",

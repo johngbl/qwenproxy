@@ -721,13 +721,13 @@ export async function startServer(options?: {
 
           for (const account of remainingAccounts) {
             try {
-              // Validate login in background
+              const creds = getAccountCredentials(account.id) ?? account;
+              // Validate login in background with real unmasked credentials
               const ok = await validateAccountLogin(
-                account,
+                creds,
                 config.playwright.headless,
                 config.playwright.browser,
               );
-
               if (ok) {
                 // Add to priority list only once validated
                 ensureAccountInPriority(account.id);

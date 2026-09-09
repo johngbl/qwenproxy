@@ -81,3 +81,18 @@ test("QWEN_FIRST_CHUNK_TIMEOUT is 60s for fast dead-stream failover", async () =
   const { config } = await import("../core/config.ts");
   assert.equal(config.timeouts.firstChunkTimeout, 60_000);
 });
+
+test("masked password ('***') is intercepted and never treated as actual password", async () => {
+  const { addAccount, loadAccounts, getAccountCredentials, removeAccount } = await import("../core/accounts.ts");
+  const testId = "test-mask-guard-account";
+  try {
+    addAccount("maskguard@example.com", "real-password-12345", testId);
+    const loaded = loadAccounts().find((a) => a.id === testId);
+    assert.equal(loaded?.password, "***");
+
+    const real = getAccountCredentials(testId);
+    assert.equal(real?.password, "real-password-12345");
+  } finally {
+    removeAccount(testId);
+  }
+});
