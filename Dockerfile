@@ -35,6 +35,8 @@ VOLUME ["/app/data"]
 EXPOSE 7936
 
 ENV NODE_ENV=production
+# Containers must bind all interfaces; startServer then requires API_KEY.
+ENV HOST=0.0.0.0
 
 # Use dumb-init to avoid zombie processes from Playwright child processes
 ENTRYPOINT ["/usr/bin/dumb-init", "--", "/app/docker-entrypoint.sh"]

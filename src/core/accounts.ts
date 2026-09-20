@@ -1,7 +1,10 @@
 import "dotenv/config";
 import crypto from "crypto";
+import fs from "node:fs";
+import path from "node:path";
 import { getDatabase } from "./database.ts";
 import { decrypt, encrypt } from "./crypto-utils.ts";
+import { getAccountProfilePath, getProfilesDir } from "./paths.ts";
 
 export interface QwenAccount {
   id: string;
@@ -121,10 +124,15 @@ function getCachedAccounts(): QwenAccount[] {
     )
     .all() as QwenAccount[];
 
-  accountsCache = rows.map((row) => ({
-    ...row,
-    password: decrypt(row.password),
-  }));
+  accountsCache = rows.map((row) => {
+    let password = "";
+    try {
+      password = decrypt(row.password);
+    } catch {
+      password = "";
+    }
+    return { ...row, password };
+  });
   accountsCacheTime = now;
   return accountsCache;
 }
@@ -308,9 +316,23 @@ export function addAccount(
   return newAccount;
 }
 
+function wipeAccountSessionFiles(id: string): void {
+  const profilePath = getAccountProfilePath(id);
+  try {
+    fs.rmSync(profilePath, { recursive: true, force: true });
+  } catch {}
+  const siblingState = path.join(getProfilesDir(), `${id}_state.json`);
+  try {
+    fs.rmSync(siblingState, { force: true });
+  } catch {}
+}
+
 export function removeAccount(id: string): boolean {
   const db = getDatabase();
   const result = db.prepare("DELETE FROM accounts WHERE id = ?").run(id);
+  if (result.changes > 0) {
+    wipeAccountSessionFiles(id);
+  }
   invalidateAccountsCache();
   return result.changes > 0;
 }

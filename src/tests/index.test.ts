@@ -650,6 +650,20 @@ test("API Key protection", async () => {
       "Should return 401 Unauthorized with wrong API Key",
     );
 
+    const logsDenied = await app.fetch(new Request("http://localhost/logs"));
+    assert.strictEqual(logsDenied.status, 401, "logs require API key");
+    const logsOk = await app.fetch(
+      new Request("http://localhost/logs", {
+        headers: { Authorization: "Bearer test-api-key" },
+      }),
+    );
+    assert.strictEqual(logsOk.status, 200, "logs accept valid API key");
+
+    const healthPublic = await app.fetch(new Request("http://localhost/health"));
+    const healthPublicBody = await healthPublic.json();
+    assert.strictEqual(healthPublic.status, 200);
+    assert.equal(healthPublicBody.readyAccounts, undefined);
+
     // 3. Test request with correct API Key
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async () =>

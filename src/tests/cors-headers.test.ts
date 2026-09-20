@@ -6,7 +6,7 @@ process.env.API_KEY = "";
 
 import { app } from "../api/server.js";
 
-test("OPTIONS preflight returns 204 with CORS headers (no auth required)", async () => {
+test("OPTIONS preflight has no CORS headers by default", async () => {
   const res = await app.fetch(
     new Request("http://localhost/v1/chat/completions", {
       method: "OPTIONS",
@@ -15,15 +15,32 @@ test("OPTIONS preflight returns 204 with CORS headers (no auth required)", async
   );
 
   assert.strictEqual(res.status, 204);
-  assert.strictEqual(res.headers.get("access-control-allow-origin"), "*");
-  assert.ok(
-    res.headers
-      .get("access-control-allow-methods")
-      ?.includes("POST"),
-  );
-  assert.ok(
-    res.headers.get("access-control-allow-headers")?.includes("Authorization"),
-  );
+  assert.strictEqual(res.headers.get("access-control-allow-origin"), null);
+});
+
+test("OPTIONS preflight reflects CORS_ORIGIN when configured", async () => {
+  const previous = process.env.CORS_ORIGIN;
+  process.env.CORS_ORIGIN = "http://localhost:5173";
+  try {
+    const res = await app.fetch(
+      new Request("http://localhost/v1/chat/completions", {
+        method: "OPTIONS",
+        headers: { Origin: "http://localhost:5173" },
+      }),
+    );
+    assert.strictEqual(res.status, 204);
+    assert.strictEqual(
+      res.headers.get("access-control-allow-origin"),
+      "http://localhost:5173",
+    );
+    assert.ok(res.headers.get("access-control-allow-methods")?.includes("POST"));
+    assert.ok(
+      res.headers.get("access-control-allow-headers")?.includes("Authorization"),
+    );
+  } finally {
+    if (previous === undefined) delete process.env.CORS_ORIGIN;
+    else process.env.CORS_ORIGIN = previous;
+  }
 });
 
 test("every response carries OpenAI-shaped headers (doc §5.2)", async () => {
@@ -42,7 +59,7 @@ test("every response carries OpenAI-shaped headers (doc §5.2)", async () => {
   assert.strictEqual(res.headers.get("x-ratelimit-limit-tokens"), "200000");
   assert.strictEqual(res.headers.get("x-ratelimit-remaining-tokens"), "199999");
   assert.strictEqual(res.headers.get("x-ratelimit-reset-tokens"), "0");
-  assert.strictEqual(res.headers.get("access-control-allow-origin"), "*");
+  assert.strictEqual(res.headers.get("access-control-allow-origin"), null);
 });
 
 test("paths without /v1 redirect (308, preserves method) to the /v1 routes", async () => {

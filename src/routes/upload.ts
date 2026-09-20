@@ -10,6 +10,11 @@ import { sendOpenAIError } from "../api/error-helpers.js";
 import { buildQwenRequestHeaders } from "../services/qwen-headers.ts";
 import { qwenUrl } from "../services/qwen-url.ts";
 import { config } from "../core/config.ts";
+import {
+  UnsafeRemoteUrlError,
+  assertSafeRemoteMediaUrl,
+  readResponseWithByteCap,
+} from "../core/safe-remote-url.ts";
 
 // Cache the heavy ali-oss module so we import it once, not on every upload.
 let cachedOSSModule: any = null;
@@ -288,11 +293,15 @@ async function downloadRemoteMedia(url: string): Promise<{
   filename: string;
   mime: string;
 }> {
+  await assertSafeRemoteMediaUrl(url);
+  const headMimeGuess = detectFileType(getFilenameFromUrl(url)).mime;
+  const maxSize = getMaxUploadSize(headMimeGuess);
   const response = await fetch(url, {
     headers: {
       "User-Agent": config.auth.userAgent,
       Accept: "image/*,*/*;q=0.8",
     },
+    redirect: "error",
   });
   if (!response.ok) {
     throw new Error(`Remote media download failed: ${response.status}`);
@@ -312,11 +321,10 @@ async function downloadRemoteMedia(url: string): Promise<{
     );
   }
 
-  const buffer = Buffer.from(await response.arrayBuffer());
-  const maxSize = getMaxUploadSize(detectedMime);
-  if (buffer.length > maxSize) {
-    throw new Error(`Remote media too large: ${buffer.length}`);
-  }
+  const buffer = await readResponseWithByteCap(
+    response,
+    getMaxUploadSize(detectedMime) || maxSize,
+  );
 
   return {
     buffer,
@@ -650,12 +658,14 @@ export async function processImagesForQwen(
           fileUrl = await uploadToOSS(remoteMedia.buffer, stsData, filename);
           fileId = stsData.file_id;
         } catch (err: any) {
+          if (err instanceof UnsafeRemoteUrlError) {
+            console.warn(`[Upload] Blocked unsafe remote media URL: ${err.message}`);
+            continue;
+          }
           console.warn(
-            `[Upload] Failed to re-upload remote media, falling back to source URL: ${err.message}`,
+            `[Upload] Failed to re-upload remote media, skipping attachment: ${err.message}`,
           );
-          fileUrl = mediaUrl;
-          filename = getFilenameFromUrl(mediaUrl);
-          fileId = uuidv4();
+          continue;
         }
       } else if (mediaUrl.startsWith("data:")) {
         try {

@@ -67,7 +67,7 @@ export function decrypt(ciphertext: string): string {
     decipher.setAuthTag(authTag);
     return decipher.update(encrypted).toString("utf-8") + decipher.final("utf-8");
   } catch {
-    return ciphertext;
+    throw new Error("Failed to decrypt stored secret");
   }
 }
 

@@ -32,7 +32,7 @@ function createTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "qwenproxy-sync-test-"));
 }
 
-test("sync: resolveApiKey returns configured key, env API_KEY, or falls back to sk-qwenproxy-local", () => {
+test("sync: resolveApiKey returns configured key or env API_KEY and rejects placeholder", () => {
   assert.equal(resolveApiKey("custom-key", ""), "custom-key");
   assert.equal(resolveApiKey(undefined, "env-admin-key"), "env-admin-key");
 
@@ -48,8 +48,14 @@ test("sync: resolveApiKey returns configured key, env API_KEY, or falls back to 
     }
   }
 
-  assert.equal(resolveApiKey(undefined, ""), "sk-qwenproxy-local");
-  assert.equal(resolveApiKey(undefined, undefined), "sk-qwenproxy-local");
+  assert.throws(
+    () => resolveApiKey(undefined, ""),
+    /placeholder API key/,
+  );
+  assert.throws(
+    () => resolveApiKey("sk-qwenproxy-local", ""),
+    /placeholder API key/,
+  );
 });
 
 test("sync: resolveBaseUrls computes correct URLs for Anthropic and OpenAI protocols", () => {
@@ -484,6 +490,7 @@ test("restoreAllClients: merges state across multiple syncAllClients and support
     targets: ["claude-code"],
     customPaths: { claudeCode: claudePath, codex: codexPath } as any,
     stateFilePath,
+    apiKey: "sk-test-sync",
   });
 
   // Sync 2: Codex only (must merge into stateFilePath, not overwrite Claude!)
@@ -491,6 +498,7 @@ test("restoreAllClients: merges state across multiple syncAllClients and support
     targets: ["codex"],
     customPaths: { claudeCode: claudePath, codex: codexPath } as any,
     stateFilePath,
+    apiKey: "sk-test-sync",
   });
 
   const state = JSON.parse(fs.readFileSync(stateFilePath, "utf-8"));
@@ -552,6 +560,7 @@ test("syncAllClients: respects custom model parameter across multiple clients", 
   const syncResult = syncAllClients({
     model: "qwen3.8-omni-flash",
     targets: ["claude-code", "codex", "opencode"],
+    apiKey: "sk-test-sync",
     customPaths: {
       claudeCode: claudePath,
       codex: codexPath,

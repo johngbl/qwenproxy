@@ -6,6 +6,10 @@ import Database from "better-sqlite3";
 
 import { config } from "../core/config.ts";
 import { getSyncStatePath } from "../core/paths.ts";
+import {
+  PLACEHOLDER_API_KEY,
+  isPlaceholderApiKey,
+} from "../core/local-auth.ts";
 import type {
   ClientSyncResult,
   SyncAllOptions,
@@ -48,13 +52,20 @@ export {
 };
 export function resolveApiKey(overrideKey?: string, configKey?: string): string {
   if (overrideKey && overrideKey.trim().length > 0) {
+    if (isPlaceholderApiKey(overrideKey)) {
+      throw new Error(
+        `Refusing to sync clients with placeholder API key ${PLACEHOLDER_API_KEY}. Set API_KEY first.`,
+      );
+    }
     return overrideKey.trim();
   }
   const envKey = process.env.API_KEY || process.env.ADMIN_PASSWORD || configKey;
-  if (envKey && envKey.trim().length > 0) {
+  if (envKey && !isPlaceholderApiKey(envKey)) {
     return envKey.trim();
   }
-  return "sk-qwenproxy-local";
+  throw new Error(
+    `Refusing to sync clients with placeholder API key ${PLACEHOLDER_API_KEY}. Set API_KEY or start the proxy once to generate one.`,
+  );
 }
 
 export function normalizeClientName(name: string): SyncClientName | null {

@@ -82,7 +82,7 @@ Exemplos:
 Opções:
   --client <nome>    Nome do cliente (hermes, opencode, claude, openclaw, kilo, cline, omp, codex, zed, aider)
   --model <modelo>   Modelo padrão a configurar (padrão: qwen3.8-max)
-  --api-key <chave>  Sobrescrever chave de API (padrão: lê do .env ou usa sk-qwenproxy-local)
+  --api-key <chave>  Sobrescrever chave de API (obrigatória; não usa placeholder)
   --port <porta>     Sobrescrever porta do servidor (padrão: lê do .env ou usa 7936)
   --host <host>      Sobrescrever host do servidor (padrão: 127.0.0.1)
   --no-active        Não definir o modelo ativo como padrão (apenas adiciona o provider)

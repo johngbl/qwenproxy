@@ -10,7 +10,7 @@ const envSchema = z
         return port >= 1 && port <= 65535;
       }, "PORT must be between 1 and 65535")
       .default("7936"),
-    HOST: z.string().default("0.0.0.0"),
+    HOST: z.string().default("127.0.0.1"),
     INTERNAL_HOST: z.string().default("127.0.0.1"),
     USER_AGENT: z
       .string()

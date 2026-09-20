@@ -3,6 +3,7 @@
  */
 
 import { config, type ChatMode } from "../core/config.ts";
+import { localApiAuthHeaders } from "../core/local-auth.ts";
 import { loadAccounts, type QwenAccount } from "../core/accounts.ts";
 import {
   getAccountCooldownInfo,
@@ -68,7 +69,10 @@ export async function fetchProxyStatus(): Promise<ProxyStatusSnapshot> {
     isHealthCheckPending = true;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 350);
-    fetch(`http://${host}:${port}/health`, { signal: controller.signal })
+    fetch(`http://${host}:${port}/health`, {
+      signal: controller.signal,
+      headers: localApiAuthHeaders(),
+    })
       .then(async (resp) => {
         clearTimeout(timeout);
         if (resp.ok) {
@@ -246,7 +250,7 @@ export async function streamChatCompletions(
   const port = config.server?.port || 7936;
   const configuredHost = config.server?.host;
   const host = configuredHost && configuredHost !== "0.0.0.0" ? configuredHost : "127.0.0.1";
-  const apiKey = config.apiKey || "sk-qwenproxy-local";
+  const apiKeyHeaders = localApiAuthHeaders();
 
   const startTime = Date.now();
   let ttfbMs = 0;
@@ -258,7 +262,7 @@ export async function streamChatCompletions(
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
+        ...apiKeyHeaders,
         "x-qwenproxy-chat-mode": chatMode,
       },
       body: JSON.stringify({
@@ -360,7 +364,6 @@ export async function fetchLiveModels(forceRefresh = false): Promise<string[]> {
   const port = config.server?.port || 7936;
   const configuredHost = config.server?.host;
   const host = configuredHost && configuredHost !== "0.0.0.0" ? configuredHost : "127.0.0.1";
-  const apiKey = config.apiKey || "sk-qwenproxy-local";
 
   liveModelsPromise = (async () => {
     const controller = new AbortController();
@@ -369,7 +372,7 @@ export async function fetchLiveModels(forceRefresh = false): Promise<string[]> {
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const resp = await fetch(`http://${host}:${port}/v1/models`, {
-        headers: { Authorization: `Bearer ${apiKey}` },
+        headers: { ...localApiAuthHeaders() },
         signal: controller.signal,
       });
       if (resp.ok) {
