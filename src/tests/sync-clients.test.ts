@@ -204,6 +204,7 @@ test("sync OpenCode: preserves comments and sibling providers, adds qwenproxy, a
     filePath,
     apiKey: "sk-test",
     baseUrl: "http://127.0.0.1:3000/v1",
+    setActive: false,
   });
 
   assert.equal(res.success, true);
@@ -226,6 +227,55 @@ test("sync OpenCode: preserves comments and sibling providers, adds qwenproxy, a
   const restored = restoreOpenCode(filePath, res.backupPath);
   assert.equal(restored.success, true);
   assert.equal(fs.readFileSync(filePath, "utf-8"), originalJsonc);
+
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test("sync OpenCode: sets qwenproxy/model as default unless --no-active", () => {
+  const tmp = createTempDir();
+  const createdPath = path.join(tmp, "created.json");
+  const existingPath = path.join(tmp, "existing.jsonc");
+
+  const created = syncOpenCode({
+    filePath: createdPath,
+    apiKey: "sk-test",
+    baseUrl: "http://127.0.0.1:7936/v1",
+    model: "qwen3.8-max",
+  });
+  assert.equal(created.success, true);
+  const createdBody = fs.readFileSync(createdPath, "utf-8");
+  assert.ok(createdBody.includes('"model": "qwenproxy/qwen3.8-max"'));
+
+  fs.writeFileSync(
+    existingPath,
+    `{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "anthropic/claude-sonnet-4",
+  "provider": {}
+}
+`,
+    "utf-8",
+  );
+  const updated = syncOpenCode({
+    filePath: existingPath,
+    apiKey: "sk-test",
+    baseUrl: "http://127.0.0.1:7936/v1",
+    model: "qwen3.8-max",
+  });
+  assert.equal(updated.success, true);
+  const updatedBody = fs.readFileSync(existingPath, "utf-8");
+  assert.ok(updatedBody.includes('"model": "qwenproxy/qwen3.8-max"'));
+  assert.ok(!updatedBody.includes("anthropic/claude-sonnet-4"));
+
+  const inactivePath = path.join(tmp, "inactive.json");
+  const inactive = syncOpenCode({
+    filePath: inactivePath,
+    apiKey: "sk-test",
+    baseUrl: "http://127.0.0.1:7936/v1",
+    setActive: false,
+  });
+  assert.equal(inactive.success, true);
+  assert.ok(!fs.readFileSync(inactivePath, "utf-8").includes('"model"'));
 
   fs.rmSync(tmp, { recursive: true, force: true });
 });

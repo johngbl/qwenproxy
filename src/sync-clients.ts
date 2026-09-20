@@ -1,4 +1,7 @@
-import "dotenv/config";
+process.env.DOTENV_CONFIG_QUIET = "true";
+import fs from "node:fs";
+import dotenv from "dotenv";
+import { ensureDataDirs, getEnvFilePath } from "./core/paths.ts";
 import {
   syncAllClients,
   restoreAllClients,
@@ -7,6 +10,14 @@ import {
   inspectClientSyncStatus,
 } from "./sync/index.ts";
 import type { SyncClientName } from "./sync/types.ts";
+
+ensureDataDirs();
+const envPath = getEnvFilePath();
+if (fs.existsSync(envPath)) {
+  dotenv.config({ path: envPath, quiet: true });
+} else {
+  dotenv.config({ quiet: true });
+}
 
 function parseArgs() {
   const args = process.argv.slice(2);

@@ -121,8 +121,32 @@ function findKeyObjectSpan(content: string, key: string): { start: number; end: 
   return null;
 }
 
+function openCodeModelId(model: string): string {
+  return `qwenproxy/${model}`;
+}
+
+function applyOpenCodeActiveModel(
+  content: string,
+  model: string,
+  setActive: boolean,
+): string {
+  if (!setActive) return content;
+  const id = openCodeModelId(model);
+  if (/"model"\s*:/.test(content)) {
+    return content.replace(/"model"\s*:\s*("[^"]*"|'[^']*')/, `"model": "${id}"`);
+  }
+  return content.replace(/\{/, `{\n  "model": "${id}",`);
+}
+
 export function syncOpenCode(options: SyncOptions): ClientSyncResult {
-  const { filePath, apiKey, baseUrl, model = "qwen3.8-max", models } = options;
+  const {
+    filePath,
+    apiKey,
+    baseUrl,
+    model = "qwen3.8-max",
+    models,
+    setActive = true,
+  } = options;
   try {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     let backupPath: string | undefined;
@@ -142,11 +166,14 @@ export function syncOpenCode(options: SyncOptions): ClientSyncResult {
     const qwenEntry = `    "qwenproxy": ${providerJson}`;
 
     if (!content.trim()) {
-      const initial = {
+      const initial: Record<string, unknown> = {
         $schema: "https://opencode.ai/config.json",
-        provider: {
-          qwenproxy: providerObj,
-        },
+      };
+      if (setActive) {
+        initial.model = openCodeModelId(model);
+      }
+      initial.provider = {
+        qwenproxy: providerObj,
       };
       fs.writeFileSync(filePath, JSON.stringify(initial, null, 2) + "\n", "utf-8");
     } else {
@@ -179,7 +206,11 @@ export function syncOpenCode(options: SyncOptions): ClientSyncResult {
           }
         }
       }
-      fs.writeFileSync(filePath, content, "utf-8");
+      fs.writeFileSync(
+        filePath,
+        applyOpenCodeActiveModel(content, model, setActive),
+        "utf-8",
+      );
     }
 
     return {

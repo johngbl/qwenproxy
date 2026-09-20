@@ -540,6 +540,7 @@ export function syncAllClients(options: SyncAllOptions = {}): SyncAllResult {
       baseUrl: openaiBaseUrl,
       model: selectedModel,
       models: syncModels,
+      setActive: options.setActive ?? true,
     });
     results.clients.openCode = openCodeRes;
     if (openCodeRes.success && openCodeRes.backupPath) {
