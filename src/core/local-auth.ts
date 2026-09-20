@@ -43,18 +43,35 @@ export function assertBindAllowed(host: string, apiKey: string): void {
   );
 }
 
-function persistApiKey(apiKey: string): void {
-  const envPath = getEnvFilePath();
+export function persistApiKey(
+  apiKey: string,
+  envPath = getEnvFilePath(),
+): void {
   try {
     const existing = fs.existsSync(envPath)
       ? fs.readFileSync(envPath, "utf-8")
       : "";
-    if (/(^|\n)API_KEY\s*=/.test(existing)) return;
-    const prefix =
-      existing.length === 0 || existing.endsWith("\n") ? "" : "\n";
-    fs.appendFileSync(
+    const assignment = /^([ \t]*)API_KEY[ \t]*=[ \t]*(.*)$/m.exec(existing);
+    if (assignment?.[2].trim()) return;
+
+    let updated: string;
+    if (assignment) {
+      const start = assignment.index;
+      const end = start + assignment[0].length;
+      updated =
+        existing.slice(0, start) +
+        `${assignment[1]}API_KEY=${apiKey}` +
+        existing.slice(end);
+    } else {
+      const lineEnding = existing.includes("\r\n") ? "\r\n" : "\n";
+      const prefix =
+        existing.length === 0 || existing.endsWith("\n") ? "" : lineEnding;
+      updated = `${existing}${prefix}API_KEY=${apiKey}${lineEnding}`;
+    }
+
+    fs.writeFileSync(
       envPath,
-      `${prefix}API_KEY=${apiKey}\n`,
+      updated,
       { encoding: "utf-8", mode: 0o600 },
     );
   } catch (err) {
@@ -65,9 +82,10 @@ function persistApiKey(apiKey: string): void {
   }
 }
 
-export function ensureRuntimeApiKey(): string {
+export function ensureRuntimeApiKey(host = "127.0.0.1"): string {
   const existing = getRuntimeApiKey();
   if (!isPlaceholderApiKey(existing)) return existing;
+  if (isLoopbackHost(host)) return existing;
   if (isRunningUnderNodeTest()) return existing;
 
   const generated = `sk-qpx-${crypto.randomBytes(24).toString("base64url")}`;

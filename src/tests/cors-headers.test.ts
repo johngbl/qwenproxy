@@ -6,11 +6,30 @@ process.env.API_KEY = "";
 
 import { app } from "../api/server.js";
 
-test("OPTIONS preflight has no CORS headers by default", async () => {
+test("OPTIONS preflight allows loopback browser origins by default", async () => {
   const res = await app.fetch(
     new Request("http://localhost/v1/chat/completions", {
       method: "OPTIONS",
       headers: { Origin: "http://localhost:5173" },
+    }),
+  );
+
+  assert.strictEqual(res.status, 204);
+  assert.strictEqual(
+    res.headers.get("access-control-allow-origin"),
+    "http://localhost:5173",
+  );
+  assert.ok(res.headers.get("access-control-allow-methods")?.includes("POST"));
+  assert.ok(
+    res.headers.get("access-control-allow-headers")?.includes("Authorization"),
+  );
+});
+
+test("OPTIONS preflight rejects non-loopback browser origins by default", async () => {
+  const res = await app.fetch(
+    new Request("http://localhost/v1/chat/completions", {
+      method: "OPTIONS",
+      headers: { Origin: "https://example.com" },
     }),
   );
 
@@ -60,6 +79,30 @@ test("every response carries OpenAI-shaped headers (doc §5.2)", async () => {
   assert.strictEqual(res.headers.get("x-ratelimit-remaining-tokens"), "199999");
   assert.strictEqual(res.headers.get("x-ratelimit-reset-tokens"), "0");
   assert.strictEqual(res.headers.get("access-control-allow-origin"), null);
+});
+
+test("loopback placeholder API key keeps local endpoints authentication-optional", async () => {
+  const previous = process.env.API_KEY;
+  process.env.API_KEY = "sk-qwenproxy-local";
+  try {
+    const res = await app.fetch(new Request("http://localhost/logs"));
+    assert.strictEqual(res.status, 200);
+  } finally {
+    if (previous === undefined) delete process.env.API_KEY;
+    else process.env.API_KEY = previous;
+  }
+});
+
+test("a real API key is still enforced on loopback", async () => {
+  const previous = process.env.API_KEY;
+  process.env.API_KEY = "sk-real-key";
+  try {
+    const res = await app.fetch(new Request("http://localhost/logs"));
+    assert.strictEqual(res.status, 401);
+  } finally {
+    if (previous === undefined) delete process.env.API_KEY;
+    else process.env.API_KEY = previous;
+  }
 });
 
 test("paths without /v1 redirect (308, preserves method) to the /v1 routes", async () => {

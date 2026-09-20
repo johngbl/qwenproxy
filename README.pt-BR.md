@@ -82,7 +82,9 @@ flowchart TD
 
 ### Autenticação
 
-Se `API_KEY` estiver definido, as rotas `/v1/*` (e `/metrics`) exigem uma das formas:
+Em loopback, a autenticação é opcional e o token legado
+`sk-qwenproxy-local` continua aceito. Se uma `API_KEY` real estiver definida,
+as rotas protegidas exigem uma das formas:
 
 - `Authorization: Bearer <API_KEY>` (OpenAI / Responses)
 - `x-api-key: <API_KEY>` (clients bearer-style)
@@ -483,11 +485,12 @@ npm run typecheck  # tipos
 ### Rede e segurança
 
 
-| Variável  | Default   | Descrição                        |
-| --------- | --------- | -------------------------------- |
-| `PORT`    | `7936`    | Porta HTTP (padrão QWEN: 7936). Configurável via .env |
-| `HOST`    | `0.0.0.0` | Bind host. Local: `127.0.0.1`    |
-| `API_KEY` | vazio     | Protege `/v1/*` com Bearer token |
+| Variável     | Default     | Descrição |
+| ------------ | ----------- | --------- |
+| `PORT`       | `7936`      | Porta HTTP (padrão QWEN: 7936). Configurável via .env |
+| `HOST`       | `127.0.0.1` | Bind host. Fora de loopback exige uma chave forte |
+| `API_KEY`    | vazio       | Opcional em loopback; protege as rotas com Bearer token |
+| `CORS_ORIGIN`| vazio       | Sem valor, permite apenas origens web de loopback |
 
 
 ### Contas e sessão

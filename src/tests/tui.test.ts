@@ -1669,7 +1669,11 @@ test("TUI StatusView: mouse click and 'c' shortcut copy Base URL to clipboard wi
 
   // Verify clipboard has the baseUrl
   const inClipboard = getClipboardText();
-  assert.equal(inClipboard, baseUrl, "Clipboard must receive the exact base URL");
+  assert.equal(
+    inClipboard,
+    (view as any).lastBaseUrl,
+    "Clipboard must receive the exact current base URL",
+  );
 
   // 3. Test keyboard 'c' shortcut
   (view as any).copiedRecently = false;

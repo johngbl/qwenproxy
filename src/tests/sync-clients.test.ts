@@ -32,7 +32,7 @@ function createTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "qwenproxy-sync-test-"));
 }
 
-test("sync: resolveApiKey returns configured key or env API_KEY and rejects placeholder", () => {
+test("sync: resolveApiKey uses a configured key and preserves loopback compatibility", () => {
   assert.equal(resolveApiKey("custom-key", ""), "custom-key");
   assert.equal(resolveApiKey(undefined, "env-admin-key"), "env-admin-key");
 
@@ -48,12 +48,20 @@ test("sync: resolveApiKey returns configured key or env API_KEY and rejects plac
     }
   }
 
+  assert.equal(resolveApiKey(undefined, ""), "sk-qwenproxy-local");
+  assert.equal(
+    resolveApiKey("sk-qwenproxy-local", ""),
+    "sk-qwenproxy-local",
+  );
+});
+
+test("sync: resolveApiKey rejects a placeholder for non-loopback servers", () => {
   assert.throws(
-    () => resolveApiKey(undefined, ""),
+    () => resolveApiKey(undefined, "", "0.0.0.0"),
     /placeholder API key/,
   );
   assert.throws(
-    () => resolveApiKey("sk-qwenproxy-local", ""),
+    () => resolveApiKey("sk-qwenproxy-local", "", "192.168.1.10"),
     /placeholder API key/,
   );
 });

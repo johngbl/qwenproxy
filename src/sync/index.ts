@@ -8,6 +8,7 @@ import { config } from "../core/config.ts";
 import { getSyncStatePath } from "../core/paths.ts";
 import {
   PLACEHOLDER_API_KEY,
+  isLoopbackHost,
   isPlaceholderApiKey,
 } from "../core/local-auth.ts";
 import type {
@@ -50,9 +51,13 @@ export {
   syncAider,
   restoreAider,
 };
-export function resolveApiKey(overrideKey?: string, configKey?: string): string {
+export function resolveApiKey(
+  overrideKey?: string,
+  configKey?: string,
+  host = "127.0.0.1",
+): string {
   if (overrideKey && overrideKey.trim().length > 0) {
-    if (isPlaceholderApiKey(overrideKey)) {
+    if (isPlaceholderApiKey(overrideKey) && !isLoopbackHost(host)) {
       throw new Error(
         `Refusing to sync clients with placeholder API key ${PLACEHOLDER_API_KEY}. Set API_KEY first.`,
       );
@@ -63,6 +68,7 @@ export function resolveApiKey(overrideKey?: string, configKey?: string): string 
   if (envKey && !isPlaceholderApiKey(envKey)) {
     return envKey.trim();
   }
+  if (isLoopbackHost(host)) return PLACEHOLDER_API_KEY;
   throw new Error(
     `Refusing to sync clients with placeholder API key ${PLACEHOLDER_API_KEY}. Set API_KEY or start the proxy once to generate one.`,
   );
@@ -470,7 +476,8 @@ export function syncAllClients(options: SyncAllOptions = {}): SyncAllResult {
   const port = options.port ?? (config.server?.port || 7936);
   const configuredHost = config.server?.host;
   const host = options.host ?? (configuredHost && configuredHost !== "0.0.0.0" ? configuredHost : "127.0.0.1");
-  const apiKey = resolveApiKey(options.apiKey, config.apiKey);
+  const authHost = options.host ?? configuredHost ?? host;
+  const apiKey = resolveApiKey(options.apiKey, config.apiKey, authHost);
   const { anthropicBaseUrl, openaiBaseUrl } = resolveBaseUrls(port, host);
   const stateFilePath = options.stateFilePath || getDefaultStateFilePath();
   const selectedModel = options.model || "qwen3.8-max";

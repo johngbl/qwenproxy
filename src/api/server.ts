@@ -26,6 +26,8 @@ import {
   assertBindAllowed,
   ensureRuntimeApiKey,
   getRuntimeApiKey,
+  isLoopbackHost,
+  isPlaceholderApiKey,
 } from "../core/local-auth.ts";
 
 import {
@@ -84,16 +86,32 @@ export function setCacheForTesting(nextCache: MemoryCache | undefined): void {
 
 // Middleware must be registered BEFORE routes
 
-// CORS is off unless CORS_ORIGIN is set (e.g. http://localhost:5173).
-// A wildcard default let browser pages drive-by the local API.
-function getCorsOrigin(): string {
-  return (process.env.CORS_ORIGIN || "").trim();
+// Explicit CORS configuration wins. Without it, browser clients running on a
+// loopback origin are allowed while arbitrary pages cannot drive the local API.
+function getCorsOrigin(requestOrigin?: string): string {
+  const configured = (process.env.CORS_ORIGIN || "").trim();
+  if (configured) return configured;
+  if (!requestOrigin) return "";
+
+  try {
+    const origin = new URL(requestOrigin);
+    if (
+      (origin.protocol === "http:" || origin.protocol === "https:") &&
+      isLoopbackHost(origin.hostname)
+    ) {
+      return requestOrigin;
+    }
+  } catch {
+    return "";
+  }
+  return "";
 }
 
 app.use("*", async (c, next) => {
-  const corsOrigin = getCorsOrigin();
+  const corsOrigin = getCorsOrigin(c.req.header("Origin"));
   if (corsOrigin) {
     c.header("Access-Control-Allow-Origin", corsOrigin);
+    c.header("Vary", "Origin");
     c.header(
       "Access-Control-Allow-Methods",
       "GET, POST, PUT, PATCH, DELETE, OPTIONS",
@@ -115,6 +133,7 @@ app.use("*", async (c, next) => {
       status: 204,
       headers: {
         "Access-Control-Allow-Origin": corsOrigin,
+        Vary: "Origin",
         "Access-Control-Allow-Methods":
           "GET, POST, PUT, PATCH, DELETE, OPTIONS",
         "Access-Control-Allow-Headers":
@@ -197,7 +216,10 @@ function extractProvidedApiKeys(c: Context): string[] {
 }
 
 function verifyApiKey(c: Context): Response | null {
-  const apiKey = process.env.API_KEY || config.apiKey;
+  const apiKey = (process.env.API_KEY || config.apiKey || "").trim();
+  if (isLoopbackHost(config.server.host) && isPlaceholderApiKey(apiKey)) {
+    return null;
+  }
   if (!apiKey) return null;
 
   const candidates = extractProvidedApiKeys(c);
@@ -732,7 +754,7 @@ export async function startServer(options?: {
     cache = new MemoryCache();
     await cache.connect();
 
-    ensureRuntimeApiKey();
+    ensureRuntimeApiKey(config.server.host);
     assertBindAllowed(config.server.host, getRuntimeApiKey() || config.apiKey);
 
     const { loadAccounts, getAccountCredentials } =

@@ -6,14 +6,14 @@ import { invalidateAccountsCache } from "../core/accounts.ts";
 import { startServer, stopServer } from "../api/server.ts";
 import { config } from "../core/config.ts";
 
-function isPortAvailable(port: number): Promise<boolean> {
+function isPortAvailable(port: number, host = config.server.host): Promise<boolean> {
   return new Promise((resolve) => {
     const server = net.createServer();
     server.once("error", () => resolve(false));
     server.once("listening", () => {
       server.close(() => resolve(true));
     });
-    server.listen(port, "0.0.0.0");
+    server.listen(port, host);
   });
 }
 
