@@ -36,6 +36,7 @@ coverage/
 Thumbs.db
 
 # IDE / Editor
+MapSource.md
 AGENTS.md
 .serena/
 message*.txt
