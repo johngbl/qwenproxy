@@ -367,7 +367,7 @@ async function attemptRelogin(
 	accountEmail: string,
 ): Promise<boolean> {
 	try {
-		await refreshHeaders(accountId);
+		await refreshHeaders(accountId, undefined, true);
 		console.log(
 			`✅ [Chat] Playwright headers refreshed for ${maskEmail(accountEmail)}. Retrying...`,
 		);

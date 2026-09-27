@@ -82,6 +82,7 @@ import { setWafContextResetListener } from "../core/waf-isolation.ts";
 import { updateQwenWebVersion, getQwenWebVersion } from "./qwen-headers.ts";
 import { getAccountProfilePath, getProfilesDir } from "../core/paths.ts";
 import { parseJwtExpiry, isTokenExpiringSoon } from "../utils/jwt.ts";
+import { QwenSessionExpiredError } from "./qwen-errors.ts";
 
 type ContextInitHook = (context: BrowserContext) => Promise<void> | void;
 const contextInitHooks: ContextInitHook[] = [];
@@ -3399,7 +3400,6 @@ async function refreshHeadersInternal(
           cookieCaches.delete(accountId);
           if (!ok || !(await isPageLoggedIn(page, 5_000))) {
             unmarkAccountHeadersReady(accountId);
-            const { QwenSessionExpiredError } = await import("./qwen-errors.ts");
             throw new QwenSessionExpiredError(
               `Re-login for ${accountId} did not restore an authenticated session`,
               accountId,
@@ -3408,7 +3408,6 @@ async function refreshHeadersInternal(
           reauthExecuted = true;
         } else {
           unmarkAccountHeadersReady(accountId);
-          const { QwenSessionExpiredError } = await import("./qwen-errors.ts");
           throw new QwenSessionExpiredError(
             `No credentials available for re-login of ${accountId}`,
             accountId,
