@@ -101,6 +101,7 @@ function parseEnvAccounts(): QwenAccount[] {
 }
 
 let lastSyncedEnv = "";
+let lastSyncedFileHash = "";
 let lastSyncTime = 0;
 const SYNC_INTERVAL = 30_000;
 
@@ -117,15 +118,36 @@ function syncEnvAccounts(): void {
   } catch {}
 
   const envAccounts = process.env.QWEN_ACCOUNTS || "";
+  const txtFilePath = process.env.SENHAS_FILE || (!isRunningUnderNodeTest() ? path.join(process.cwd(), "senhas.txt") : "");
+  let fileContent = "";
+  if (txtFilePath && fs.existsSync(txtFilePath)) {
+    try {
+      fileContent = fs.readFileSync(txtFilePath, "utf-8");
+    } catch {}
+  }
+
   const now = Date.now();
-  if (envAccounts === lastSyncedEnv && now - lastSyncTime < SYNC_INTERVAL)
+  if (
+    envAccounts === lastSyncedEnv &&
+    fileContent === lastSyncedFileHash &&
+    now - lastSyncTime < SYNC_INTERVAL
+  ) {
     return;
+  }
 
   lastSyncedEnv = envAccounts;
+  lastSyncedFileHash = fileContent;
   lastSyncTime = now;
 
-  const accounts = parseEnvAccounts();
-  if (accounts.length === 0) return;
+  const accountsFromEnv = parseEnvAccounts();
+  const accountsFromFile = fileContent ? parseBatchAccounts(fileContent).entries.map((e) => ({
+    id: generateId(e.email),
+    email: e.email,
+    password: e.password,
+  })) : [];
+
+  const combinedAccounts = [...accountsFromEnv, ...accountsFromFile];
+  if (combinedAccounts.length === 0) return;
 
   const upsert = db.prepare(`
     INSERT INTO accounts (id, email, password) VALUES (?, ?, ?)
@@ -133,8 +155,10 @@ function syncEnvAccounts(): void {
   `);
 
   const sync = db.transaction(() => {
-    for (const acc of accounts) {
-      upsert.run(acc.id, acc.email, encrypt(acc.password));
+    for (const acc of combinedAccounts) {
+      if (!isPlaceholderAccountEmail(acc.email, acc.password)) {
+        upsert.run(acc.id, acc.email, encrypt(acc.password));
+      }
     }
   });
 

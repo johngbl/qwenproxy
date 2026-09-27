@@ -3400,6 +3400,7 @@ async function refreshHeadersInternal(
           cookieCaches.delete(accountId);
           if (!ok || !(await isPageLoggedIn(page, 5_000))) {
             unmarkAccountHeadersReady(accountId);
+
             throw new QwenSessionExpiredError(
               `Re-login for ${accountId} did not restore an authenticated session`,
               accountId,
@@ -3408,6 +3409,7 @@ async function refreshHeadersInternal(
           reauthExecuted = true;
         } else {
           unmarkAccountHeadersReady(accountId);
+
           throw new QwenSessionExpiredError(
             `No credentials available for re-login of ${accountId}`,
             accountId,

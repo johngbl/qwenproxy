@@ -1,8 +1,12 @@
 import crypto from "crypto";
+import fs from "node:fs";
+import path from "node:path";
 import {
   addAccount,
   removeAccount,
   listAccounts,
+  parseBatchAccounts,
+  addAccountsBatch,
   type QwenAccount,
 } from "./core/accounts.ts";
 
@@ -48,7 +52,8 @@ async function showMenu() {
     }
 
     console.log("\nOptions:");
-    console.log("  [A] Add account");
+    console.log("  [A] Add single account (with verification)");
+    console.log("  [I] Import accounts from TXT file (e.g. senhas.txt)");
     if (accounts.length > 0) {
       console.log("  [R] Remove an account");
     }
@@ -66,10 +71,56 @@ async function showMenu() {
       continue;
     }
 
+    if (choice === "I") {
+      await importFileFlow();
+      continue;
+    }
+
     if (choice === "R" && accounts.length > 0) {
       await removeAccountFlow();
       continue;
     }
+  }
+}
+
+async function importFileFlow(filePathInput?: string) {
+  clear();
+  console.log("=== Import Accounts from TXT File ===\n");
+
+  const defaultFile = fs.existsSync("senhas.txt") ? "senhas.txt" : "accounts.txt";
+  const targetPath = filePathInput || (await askQuestion(`File path (default: ${defaultFile}): `)) || defaultFile;
+
+  const resolvedPath = path.resolve(targetPath);
+  if (!fs.existsSync(resolvedPath)) {
+    console.log(`\n❌ Error: File not found at "${resolvedPath}".`);
+    if (!filePathInput) await askQuestion("\nPress Enter to continue...");
+    return;
+  }
+
+  try {
+    const content = fs.readFileSync(resolvedPath, "utf-8");
+    const { entries, invalid } = parseBatchAccounts(content);
+
+    if (entries.length === 0) {
+      console.log(`\n⚠️ No valid accounts found in "${targetPath}".`);
+      if (invalid.length > 0) {
+        console.log(`Invalid lines (${invalid.length}):`, invalid.slice(0, 5));
+      }
+    } else {
+      const result = addAccountsBatch(entries);
+      console.log(`\n✅ Import summary for "${targetPath}":`);
+      console.log(`   - Added:   ${result.added.length} account(s)`);
+      console.log(`   - Skipped: ${result.skipped.length} duplicate(s)`);
+      if (invalid.length > 0) {
+        console.log(`   - Invalid: ${invalid.length} line(s)`);
+      }
+    }
+  } catch (err: any) {
+    console.log(`\n❌ Error reading file: ${err?.message || String(err)}`);
+  }
+
+  if (!filePathInput) {
+    await askQuestion("\nPress Enter to continue...");
   }
 }
 
@@ -193,7 +244,18 @@ async function removeAccountFlow() {
   await askQuestion("Press Enter to continue...");
 }
 
-showMenu().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+const argFile = process.argv[2];
+if (argFile) {
+  importFileFlow(argFile).then(() => {
+    rl.close();
+    process.exit(0);
+  }).catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+} else {
+  showMenu().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}
