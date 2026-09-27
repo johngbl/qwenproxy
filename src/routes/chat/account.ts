@@ -1198,6 +1198,12 @@ async function tryCreateStreamWithRetry(
 							},
 							(error) => {
 								syncSettled = true;
+								if (
+									error instanceof QwenSessionExpiredError ||
+									(error as Error)?.name === "QwenSessionExpiredError"
+								) {
+									throw error;
+								}
 								syncFailure =
 									error instanceof Error ? error.message : String(error);
 								return false;
@@ -1222,6 +1228,12 @@ async function tryCreateStreamWithRetry(
 							clearTimeout(personalizationDeadlineTimer);
 						}
 					} catch (error) {
+						if (
+							error instanceof QwenSessionExpiredError ||
+							(error as Error)?.name === "QwenSessionExpiredError"
+						) {
+							throw error;
+						}
 						syncFailure =
 							error instanceof Error ? error.message : String(error);
 					}

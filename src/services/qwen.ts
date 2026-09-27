@@ -1720,6 +1720,12 @@ export async function syncQwenRequestPersonalization(
       });
       ({ raw, json } = await attemptPost(requestHeaders));
     } catch (retryErr) {
+      if (
+        retryErr instanceof QwenSessionExpiredError ||
+        (retryErr as Error)?.name === "QwenSessionExpiredError"
+      ) {
+        throw retryErr;
+      }
       // Layer 3: Retry failed → non-fatal, continue without personalization
       console.warn(
         `[Qwen] Personalization retry failed, continuing without it | account=${cacheKey} | error=${(retryErr as Error).message?.substring(0, 150)}`,
@@ -1728,8 +1734,19 @@ export async function syncQwenRequestPersonalization(
     }
   }
 
-  // Layer 3: Check final result — non-fatal on failure
+  // Layer 3: Check final result
   if (json?.success === false) {
+    const isStillUnauthorized =
+      json?.data?.code === "Unauthorized" ||
+      json?.data?.code === "unauthorized" ||
+      (typeof json?.data?.details === "string" &&
+        json.data.details.includes("401"));
+    if (isStillUnauthorized) {
+      throw new QwenSessionExpiredError(
+        `Personalization sync failed with 401 Unauthorized for account ${cacheKey}`,
+        cacheKey,
+      );
+    }
     console.warn(
       `[Qwen] Personalization sync failed (non-fatal) | account=${cacheKey} | response=${raw.slice(0, 200)}`,
     );

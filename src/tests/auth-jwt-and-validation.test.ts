@@ -102,11 +102,13 @@ test("isAuthTokenValidFrom: decodes JWT exp and rejects expired token even if co
   );
 });
 
-test("hasValidAuthToken: verifies that cookie contains non-empty token", () => {
+test("hasValidAuthToken: verifies that cookie contains non-empty token and checks expiration", () => {
   const nowSec = Math.floor(Date.now() / 1000);
-  const jwt = makeJwt(nowSec + 3600);
+  const freshJwt = makeJwt(nowSec + 3600);
+  const expiredJwt = makeJwt(nowSec - 600);
 
-  assert.equal(hasValidAuthToken(`token=${jwt}; path=/`), true);
+  assert.equal(hasValidAuthToken(`token=${freshJwt}; path=/`), true);
+  assert.equal(hasValidAuthToken(`token=${expiredJwt}; path=/`), false);
   assert.equal(hasValidAuthToken("token=opaque_valid; other=1"), true);
   assert.equal(hasValidAuthToken("token=; other=1"), false);
   assert.equal(hasValidAuthToken('token=""; other=1'), false);

@@ -3286,6 +3286,9 @@ export function hasValidAuthToken(cookieHeader?: string): boolean {
   ) {
     return false;
   }
+  if (isTokenExpiringSoon(cookieHeader, 0)) {
+    return false;
+  }
   return true;
 }
 
@@ -3396,25 +3399,30 @@ async function refreshHeadersInternal(
           cookieCaches.delete(accountId);
           if (!ok || !(await isPageLoggedIn(page, 5_000))) {
             unmarkAccountHeadersReady(accountId);
-            throw new Error(
+            const { QwenSessionExpiredError } = await import("./qwen-errors.ts");
+            throw new QwenSessionExpiredError(
               `Re-login for ${accountId} did not restore an authenticated session`,
+              accountId,
             );
           }
           reauthExecuted = true;
         } else {
           unmarkAccountHeadersReady(accountId);
-          throw new Error(
+          const { QwenSessionExpiredError } = await import("./qwen-errors.ts");
+          throw new QwenSessionExpiredError(
             `No credentials available for re-login of ${accountId}`,
+            accountId,
           );
         }
       };
 
       if (forceReauth) {
-        // If the page is already logged in, do NOT execute destructive password re-login!
+        // If the page is already logged in with a valid token, do NOT execute destructive password re-login!
         const alreadyIn = await isPageLoggedIn(page, 2000).catch(() => false);
         if (alreadyIn) {
           const liveCookies = await page.context().cookies();
-          if (liveCookies.some((c) => c.name === "token")) {
+          const tokenCookie = liveCookies.find((c) => c.name === "token");
+          if (tokenCookie && hasValidAuthToken(`token=${tokenCookie.value}`)) {
             const cookieStr = liveCookies.map((c) => `${c.name}=${c.value}`).join("; ");
             cache.headers.cookie = cookieStr;
             cache.lastRefresh = Date.now();
