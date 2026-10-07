@@ -50,7 +50,8 @@ async function showMenu() {
     }
 
     console.log("\nOptions:");
-    console.log("  [A] Add account");
+    console.log("  [A] Add account (Password)");
+    console.log("  [O] Add account (Passwordless / Email OTP)");
     if (accounts.length > 0) {
       console.log("  [R] Remove an account");
     }
@@ -64,7 +65,22 @@ async function showMenu() {
     }
 
     if (choice === "A") {
-      await addAccountFlow();
+      clear();
+      console.log("=== Add New Account ===\n");
+      console.log("Authentication method:");
+      console.log("  [1] Traditional Password (Email + Password)");
+      console.log("  [2] Passwordless (Email Verification Code / OTP)\n");
+      const method = (await askQuestion("Select method [1/2] (default 1): ")).trim();
+      if (method === "2") {
+        await addAccountOtpFlow();
+      } else {
+        await addAccountPasswordFlow();
+      }
+      continue;
+    }
+
+    if (choice === "O") {
+      await addAccountOtpFlow();
       continue;
     }
 
@@ -75,9 +91,9 @@ async function showMenu() {
   }
 }
 
-async function addAccountFlow() {
+async function addAccountPasswordFlow() {
   clear();
-  console.log("=== Add New Account ===\n");
+  console.log("=== Add New Account (Password Login) ===\n");
   const email = await askQuestion("Email: ");
   if (!email || !email.trim()) {
     console.log("Email is required.");
@@ -149,6 +165,76 @@ async function addAccountFlow() {
   }
 
   await askQuestion("\nPress Enter to continue...");
+}
+
+async function addAccountOtpFlow() {
+  clear();
+  console.log("=== Add New Account (Passwordless / Email OTP) ===\n");
+  const email = await askQuestion("Email: ");
+  if (!email || !email.trim()) {
+    console.log("Email is required.");
+    await askQuestion("Press Enter to continue...");
+    return;
+  }
+
+  const trimmedEmail = email.trim();
+  const existingAccounts = listAccounts();
+  if (
+    existingAccounts.some(
+      (a) => a.email.toLowerCase() === trimmedEmail.toLowerCase(),
+    )
+  ) {
+    console.log(
+      `\n❌ Error: An account with email "${trimmedEmail}" already exists.`,
+    );
+    await askQuestion("Press Enter to continue...");
+    return;
+  }
+
+  console.log(
+    `\n⏳ Requesting OTP verification code for ${maskEmail(trimmedEmail)}...`,
+  );
+
+  const { startEmailOtpLogin, verifyEmailOtpLogin, cancelEmailOtpLogin } =
+    await import("./services/playwright.ts");
+
+  const startRes = await startEmailOtpLogin(trimmedEmail, { headless: false });
+  if (!startRes.success || !startRes.sessionId) {
+    console.log(
+      `\n❌ Failed to request code: ${startRes.error || "Unknown error"}`,
+    );
+    await askQuestion("Press Enter to continue...");
+    return;
+  }
+
+  console.log(`\n✉️  Verification code sent to ${trimmedEmail}!`);
+  console.log("Check your email inbox (and spam folder).\n");
+
+  while (true) {
+    const code = await askQuestion("Enter 6-digit code (or 'C' to cancel): ");
+    if (!code || !code.trim()) continue;
+
+    if (code.trim().toUpperCase() === "C") {
+      await cancelEmailOtpLogin(startRes.sessionId);
+      console.log("\nLogin cancelled.");
+      await askQuestion("Press Enter to continue...");
+      return;
+    }
+
+    console.log("\n⏳ Verifying code and establishing 30-day session...");
+    const verifyRes = await verifyEmailOtpLogin(startRes.sessionId, code.trim());
+    if (verifyRes.success && verifyRes.account) {
+      console.log(
+        `\n✅ Account verified and saved: ${maskEmail(verifyRes.account.email)} (${verifyRes.account.id})`,
+      );
+      console.log("Passwordless 30-day session active.");
+      await askQuestion("\nPress Enter to continue...");
+      return;
+    } else {
+      console.log(`\n❌ ${verifyRes.error || "Invalid code"}`);
+      console.log("Please try again or enter 'C' to cancel.\n");
+    }
+  }
 }
 
 async function removeAccountFlow() {

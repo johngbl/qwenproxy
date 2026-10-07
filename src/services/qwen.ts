@@ -27,7 +27,7 @@ import {
   syncModelMetadata,
 } from "../core/model-registry.ts";
 import { type Page, type BrowserContext } from "patchright";
-import { withAccountPage, assertAntiBotHeaders, onBrowserContextCreated, isPlaywrightInitializing } from "./playwright.ts";
+import { withAccountPage, assertAntiBotHeaders, onBrowserContextCreated, isPlaywrightInitializing, isPlaywrightInitialized } from "./playwright.ts";
 import { recoverBaxiaCaptcha } from "./captcha-coordinator.ts";
 import { startBaxiaCaptchaWatcher } from "./captcha-solver.ts";
 import { isAccountBusy } from "../core/account-concurrency.ts";
@@ -1139,6 +1139,7 @@ async function requestQwenPersonalizationInBrowser(
     {
       settingsPage: true,
       referrer: qwenUrl("/settings/personalization"),
+      noMutexRecovery: true,
     },
   );
   const { raw, json } = await readJsonTextResponse(response);
@@ -1831,8 +1832,13 @@ async function syncQwenRequestPersonalizationInternal(
     typeof textSize
   >;
 
+  const matchReturned =
+    (isEmptyInstruction && (!returnedInstruction || returned.chars === 0)) ||
+    (returned.hash !== null && returned.hash === sent.hash);
+
   let verifyData: any = null;
-  if (config.qwen.personalizationVerifyGet) {
+  // If the update response already confirmed the exact instruction, skip the redundant GET round-trip
+  if (config.qwen.personalizationVerifyGet && !matchReturned) {
     const { json: verifyJson } =
       await requestQwenPersonalizationInBrowser(
         accountId,
@@ -1843,10 +1849,6 @@ async function syncQwenRequestPersonalizationInternal(
     verifyData = verifyJson?.data?.personalization;
     stored = textSize(verifyData?.instruction);
   }
-
-  const matchReturned =
-    (isEmptyInstruction && (!returnedInstruction || returned.chars === 0)) ||
-    (returned.hash !== null && returned.hash === sent.hash);
   const matchStored =
     stored.hash === null
       ? null
@@ -2329,6 +2331,20 @@ export async function fetchQwenModels(
       accountId,
     );
     return cached.models;
+  }
+
+  // For accounts that are not initialized yet, avoid cold-booting Playwright just for model metadata.
+  // Reuse existing models from any active cache entry (models catalog is identical across accounts).
+  if (accountId && !isAuthMockEnabled() && !isPlaywrightInitialized(accountId)) {
+    for (const [, entry] of modelsCache.entries()) {
+      if (entry && now - entry.fetchedAt < MODEL_CACHE_TTL_MS * 4) {
+        syncModelMetadata(
+          entry.models as unknown as Array<Record<string, unknown> & { id: string }>,
+          accountId,
+        );
+        return entry.models;
+      }
+    }
   }
 
   // Use an isolated page only when the main page is actively serving a stream.

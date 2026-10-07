@@ -538,14 +538,14 @@ const ACCOUNT_PAGE_OPERATION_TIMEOUT_MS = config.timeouts.page;
  */
 const SESSION_PROBE_NAVIGATION_TIMEOUT_MS = 15_000;
 /** Grace period for the intercepted completion request after the send is triggered. */
-const HEADER_CAPTURE_TRIGGER_GRACE_MS = 15_000;
+const HEADER_CAPTURE_TRIGGER_GRACE_MS = 20_000;
 /**
  * First-send grace is short: the page is cold and the bx SDK has not computed
  * its tokens yet, so a cold page almost never produces a request from the first
  * send. Fail it fast and let the retry loop reload + re-send against the warm
  * SDK instead of stalling the boot for the full 15s.
  */
-const FIRST_TRIGGER_GRACE_MS = 8_000;
+const FIRST_TRIGGER_GRACE_MS = 12_000;
 /**
  * Sends (the initial one plus re-triggers) header capture may spend on getting a
  * completion request that actually carries the bx headers. The in-page SDK can
@@ -1989,7 +1989,376 @@ export async function validateAccountLogin(
     release();
   }
 }
-// ─── Login ────────────────────────────────────────────────────────────────────
+
+// ─── Passwordless Email OTP Login ──────────────────────────────────────────
+
+export interface OtpStartResult {
+  success: boolean;
+  sessionId?: string;
+  error?: string;
+}
+
+export interface OtpVerifyResult {
+  success: boolean;
+  error?: string;
+  account?: QwenAccount;
+}
+
+interface ActiveOtpSession {
+  sessionId: string;
+  accountId: string;
+  email: string;
+  context: BrowserContext;
+  page: Page;
+  fingerprint: FingerprintProfile;
+  createdAt: number;
+  timer: NodeJS.Timeout;
+}
+
+const activeOtpSessions = new Map<string, ActiveOtpSession>();
+const mockOtpSessions = new Map<string, string>();
+
+/**
+ * Initiates passwordless email OTP login:
+ * Launches an account Playwright context, visits /auth?mode=register,
+ * and requests a 6-digit verification code from auth.qwen.ai.
+ */
+export async function startEmailOtpLogin(
+  email: string,
+  options: {
+    headless?: boolean;
+    browserType?: BrowserType;
+  } = {},
+): Promise<OtpStartResult> {
+  const normalizedEmail = email.trim().toLowerCase();
+  if (!normalizedEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+    return { success: false, error: "Formato de e-mail inválido" };
+  }
+
+  const { listAccounts } = await import("../core/accounts.ts");
+  if (listAccounts().some((a) => a.email.toLowerCase() === normalizedEmail)) {
+    return {
+      success: false,
+      error: `Uma conta com o e-mail "${normalizedEmail}" já está cadastrada.`,
+    };
+  }
+
+  if (process.env.TEST_MOCK_QWEN_AUTH === "true" && process.env.NODE_ENV !== "production") {
+    const mockSessionId = "mock-otp-" + Date.now();
+    mockOtpSessions.set(mockSessionId, normalizedEmail);
+    return { success: true, sessionId: mockSessionId };
+  }
+
+  const accountId = crypto.randomUUID();
+  const sessionId = accountId;
+
+  const profilePath = getAccountProfilePath(accountId);
+  const fingerprint = getFingerprintProfile(accountId);
+  const browserType = options.browserType ?? config.playwright.browser;
+  const { engine, channel } = resolveBrowserEngine(browserType);
+  const headless = options.headless ?? config.playwright.headless;
+
+  const launchOptions = {
+    headless,
+    channel,
+    userAgent: fingerprint.userAgent,
+    locale: fingerprint.locale,
+    timezoneId: fingerprint.timezoneId,
+    viewport: fingerprint.viewport,
+    screen: fingerprint.viewport,
+    deviceScaleFactor: 1,
+    isMobile: false,
+    hasTouch: false,
+    colorScheme: "light" as const,
+    extraHTTPHeaders: {
+      "sec-ch-ua": fingerprint.secChUa,
+      "sec-ch-ua-mobile": "?0",
+      "sec-ch-ua-platform": '"Windows"',
+    },
+    ignoreDefaultArgs: ["--enable-automation", "--enable-blink-features"],
+    args: buildChromiumLaunchArgs(fingerprint.viewport),
+  };
+
+  let acctContext: BrowserContext;
+  try {
+    acctContext = await withTimeout(
+      engine.launchPersistentContext(profilePath, launchOptions),
+      30_000,
+      `O navegador não iniciou em 30s para a conta ${maskEmail(normalizedEmail)}.`,
+    );
+  } catch (launchErr: any) {
+    if (launchErr?.message?.includes("Executable doesn't exist")) {
+      autoInstallPlaywrightChromium();
+      acctContext = await withTimeout(
+        engine.launchPersistentContext(profilePath, launchOptions),
+        30_000,
+        `O navegador não iniciou em 30s para a conta ${maskEmail(normalizedEmail)}.`,
+      );
+    } else {
+      return { success: false, error: launchErr?.message || String(launchErr) };
+    }
+  }
+
+  try {
+    await acctContext.addInitScript(getStealthScript(fingerprint));
+
+    const existingPages = acctContext.pages().filter((p) => !p.isClosed());
+    const acctPage =
+      existingPages.find((p) => p.url().startsWith(qwenOrigin())) ??
+      existingPages[0] ??
+      (await acctContext.newPage());
+
+    await acctPage.goto(qwenUrl("/auth?mode=register"), {
+      waitUntil: "domcontentloaded",
+      timeout: Math.min(config.timeouts.navigation, 20_000),
+    }).catch(() => {});
+    await sleep(1000);
+
+    await clearVisibleChallenge(acctPage);
+
+    const requestId = crypto.randomUUID();
+    const evalRes: any = await acctPage.evaluate(
+      async ({ email, requestId, version, timezone }) => {
+        try {
+          const response = await fetch("https://auth.qwen.ai/api/v2/auths/otp/email/request", {
+            method: "POST",
+            credentials: "include",
+            headers: {
+              accept: "application/json, text/plain, */*",
+              "content-type": "application/json",
+              source: "web",
+              version,
+              "x-request-origin": "https://chat.qwen.ai",
+              timezone,
+              "x-request-id": requestId,
+            },
+            body: JSON.stringify({
+              identifier: email,
+              accept_terms: true,
+              language: "pt-BR",
+            }),
+          });
+          const json = await response.json().catch(() => null);
+          return { ok: response.ok, status: response.status, data: json };
+        } catch (e: any) {
+          return { ok: false, error: e.message };
+        }
+      },
+      {
+        email: normalizedEmail,
+        requestId,
+        version: getQwenWebVersion() || "0.3.12",
+        timezone: new Date().toString().split(" (")[0],
+      },
+    ).catch((err: any) => ({ ok: false, error: err?.message || String(err) }));
+
+    if (!evalRes.ok || evalRes.data?.success !== true) {
+      const errorMsg =
+        evalRes.data?.data?.details ||
+        evalRes.data?.data?.message ||
+        evalRes.data?.message ||
+        evalRes.error ||
+        "Falha ao solicitar código de verificação";
+      await closePlaywrightContextBestEffort(accountId, acctContext).catch(() => {});
+      cleanupPlaywrightAccountState(accountId);
+      return { success: false, error: errorMsg };
+    }
+
+    const timer = setTimeout(async () => {
+      activeOtpSessions.delete(sessionId);
+      await closePlaywrightContextBestEffort(accountId, acctContext).catch(() => {});
+      cleanupPlaywrightAccountState(accountId);
+    }, 5 * 60 * 1000);
+    timer.unref?.();
+
+    activeOtpSessions.set(sessionId, {
+      sessionId,
+      accountId,
+      email: normalizedEmail,
+      context: acctContext,
+      page: acctPage,
+      fingerprint,
+      createdAt: Date.now(),
+      timer,
+    });
+
+    return { success: true, sessionId };
+  } catch (err: any) {
+    await closePlaywrightContextBestEffort(accountId, acctContext).catch(() => {});
+    cleanupPlaywrightAccountState(accountId);
+    return { success: false, error: err?.message || String(err) };
+  }
+}
+
+/**
+ * Verifies email OTP code, captures access/refresh tokens, stores the authenticated
+ * session in SQLite, and registers the account.
+ */
+export async function verifyEmailOtpLogin(
+  sessionId: string,
+  code: string,
+): Promise<OtpVerifyResult> {
+  const cleanCode = code.trim();
+  if (!cleanCode) {
+    return { success: false, error: "Código de verificação é obrigatório" };
+  }
+
+  if (process.env.TEST_MOCK_QWEN_AUTH === "true" && process.env.NODE_ENV !== "production") {
+    const mockEmail = mockOtpSessions.get(sessionId);
+    if (!mockEmail) {
+      return { success: false, error: "Sessão OTP inválida ou expirada" };
+    }
+    if (cleanCode === "000000") {
+      return { success: false, error: "Código de verificação incorreto ou expirado" };
+    }
+    const { addAccount } = await import("../core/accounts.ts");
+    const mockAccId = "mock-otp-acc-" + Date.now();
+    const newAccount = addAccount(mockEmail, "", mockAccId);
+    mockOtpSessions.delete(sessionId);
+    return { success: true, account: newAccount };
+  }
+
+  const session = activeOtpSessions.get(sessionId);
+  if (!session) {
+    return { success: false, error: "Sessão OTP expirada ou não encontrada. Solicite um novo código." };
+  }
+  if (session.page.isClosed()) {
+    activeOtpSessions.delete(sessionId);
+    return { success: false, error: "Navegador foi fechado. Solicite um novo código." };
+  }
+
+  const requestId = crypto.randomUUID();
+  const evalRes: any = await session.page.evaluate(
+    async ({ email, code, requestId, version, timezone }) => {
+      try {
+        const response = await fetch("https://auth.qwen.ai/api/v2/auths/otp/email/verify", {
+          method: "POST",
+          credentials: "include",
+          headers: {
+            accept: "application/json, text/plain, */*",
+            "content-type": "application/json",
+            source: "web",
+            version,
+            "x-request-origin": "https://chat.qwen.ai",
+            timezone,
+            "x-request-id": requestId,
+          },
+          body: JSON.stringify({
+            identifier: email,
+            code,
+            name: null,
+          }),
+        });
+        const json = await response.json().catch(() => null);
+        return { ok: response.ok, status: response.status, data: json };
+      } catch (e: any) {
+        return { ok: false, error: e.message };
+      }
+    },
+    {
+      email: session.email,
+      code: cleanCode,
+      requestId,
+      version: getQwenWebVersion() || "0.3.12",
+      timezone: new Date().toString().split(" (")[0],
+    },
+  ).catch((err: any) => ({ ok: false, error: err?.message || String(err) }));
+
+  if (!evalRes.ok || evalRes.data?.success !== true || !evalRes.data?.data) {
+    const errorMsg =
+      evalRes.data?.data?.details ||
+      evalRes.data?.data?.message ||
+      evalRes.data?.message ||
+      evalRes.error ||
+      "Código de verificação incorreto ou expirado";
+    return { success: false, error: errorMsg };
+  }
+
+  const resData = evalRes.data.data;
+  const accessToken = resData.access_token || resData.token;
+  const refreshToken = resData.refresh_token;
+  const userId = resData.id;
+
+  try {
+    await session.page.evaluate(({ token, rTok }) => {
+      try {
+        localStorage.setItem("token", token);
+        localStorage.setItem("access_token", token);
+        if (rTok) localStorage.setItem("refresh_token", rTok);
+        document.cookie = `token=${encodeURIComponent(token)}; path=/; domain=.qwen.ai; max-age=31536000`;
+      } catch {}
+    }, { token: accessToken, rTok: refreshToken });
+
+    await session.context.addCookies([
+      {
+        name: "token",
+        value: accessToken,
+        domain: ".qwen.ai",
+        path: "/",
+        expires: Math.floor(Date.now() / 1000) + 31536000,
+        httpOnly: false,
+        secure: true,
+        sameSite: "Lax",
+      },
+    ]);
+
+    await session.page.goto(qwenUrl("/"), {
+      waitUntil: "domcontentloaded",
+      timeout: Math.min(config.timeouts.navigation, 15_000),
+    }).catch(() => {});
+    await sleep(1000);
+
+    await saveStorageState(session.context, session.accountId);
+
+    const { saveAuthSession } = await import("../core/database.ts");
+    const { parseJwtExpiry } = await import("../utils/jwt.ts");
+    const exp = parseJwtExpiry(accessToken);
+    saveAuthSession(session.accountId, {
+      cookie: `token=${accessToken}`,
+      userAgent: session.fingerprint.userAgent,
+      bxV: "2.5.37",
+      version: getQwenWebVersion() || "0.3.12",
+      userId: userId || undefined,
+      tokenExpiresAt: exp || undefined,
+      refreshToken: refreshToken || undefined,
+      capturedAt: Date.now(),
+    });
+
+    const { addAccount } = await import("../core/accounts.ts");
+    const newAccount = addAccount(session.email, "", session.accountId);
+
+    clearTimeout(session.timer);
+    activeOtpSessions.delete(sessionId);
+    await closePlaywrightContextBestEffort(session.accountId, session.context).catch(() => {});
+    cleanupPlaywrightAccountState(session.accountId);
+
+    return { success: true, account: newAccount };
+  } catch (err: any) {
+    clearTimeout(session.timer);
+    activeOtpSessions.delete(sessionId);
+    await closePlaywrightContextBestEffort(session.accountId, session.context).catch(() => {});
+    cleanupPlaywrightAccountState(session.accountId);
+    return { success: false, error: err?.message || String(err) };
+  }
+}
+
+/**
+ * Cancels an in-progress email OTP session and cleans up resources.
+ */
+export async function cancelEmailOtpLogin(sessionId: string): Promise<void> {
+  if (process.env.TEST_MOCK_QWEN_AUTH === "true" && process.env.NODE_ENV !== "production") {
+    mockOtpSessions.delete(sessionId);
+    return;
+  }
+  const session = activeOtpSessions.get(sessionId);
+  if (!session) return;
+  clearTimeout(session.timer);
+  activeOtpSessions.delete(sessionId);
+  await closePlaywrightContextBestEffort(session.accountId, session.context).catch(() => {});
+  cleanupPlaywrightAccountState(session.accountId);
+  const { wipeAccountSessionFiles } = await import("../core/accounts.ts");
+  wipeAccountSessionFiles(session.accountId);
+}
 
 export interface LoginAttemptResult {
   success: boolean;
@@ -3763,7 +4132,8 @@ export async function withAccountPage<T>(
       const message = getErrorMessage(error);
       if (
         recoverOnTimeout &&
-        message.includes("Playwright page operation timed out")
+        message.includes("Playwright page operation timed out") &&
+        (!page || page.isClosed())
       ) {
         console.warn(
           `⏱️  [Playwright] Resetting account context after a stuck page operation: ${accountId}`,

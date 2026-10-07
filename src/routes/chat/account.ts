@@ -82,8 +82,8 @@ const MAX_ANTI_BOT_ROTATIONS = 1;
  * a stuck account page (closed context / WAF) can otherwise hold each browser
  * op for 60s and keep the personalization mutex blocked for minutes.
  */
-export const PERSONALIZATION_SYNC_DEADLINE_MS = 45_000;
-export const COLD_ACCOUNT_PERSONALIZATION_SYNC_DEADLINE_MS = 60_000;
+export const PERSONALIZATION_SYNC_DEADLINE_MS = 90_000;
+export const COLD_ACCOUNT_PERSONALIZATION_SYNC_DEADLINE_MS = 120_000;
 
 export function computePersonalizationDeadlineMs(
 	accountId: string | undefined,
@@ -1282,8 +1282,15 @@ async function tryCreateStreamWithRetry(
 							const { isCaptchaRecoveryActive } = await import(
 								"../../services/captcha-coordinator.ts"
 							);
-							if (currentAccountId && isCaptchaRecoveryActive(currentAccountId)) {
-								// Captcha solver is actively solving puzzle in background; extend deadline by 30s
+							const { isPlaywrightInitializing } = await import(
+								"../../services/playwright.ts"
+							);
+							if (
+								currentAccountId &&
+								(isCaptchaRecoveryActive(currentAccountId) ||
+									isPlaywrightInitializing(currentAccountId))
+							) {
+								// Captcha solver is actively solving puzzle or browser is launching/initializing; extend deadline by 30s
 								acquireDeadlineTimer = setTimeout(checkDeadline, 30_000);
 								acquireDeadlineTimer.unref?.();
 								return;

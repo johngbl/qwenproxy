@@ -322,7 +322,7 @@ export function addAccountsBatch(
 }
 export function addAccount(
   email: string,
-  password: string,
+  password = "",
   id?: string,
 ): QwenAccount {
   if (!email || typeof email !== "string" || email.trim().length === 0) {
