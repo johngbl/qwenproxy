@@ -36,7 +36,10 @@ test("overload-detector: rejects long content (> 500 chars)", () => {
 });
 
 test("retry-policy: isOverloadError detects overload errors and classifies action", () => {
-  const err = new Error("Estamos com alta demanda no momento. Tente novamente mais tarde.");
+  const err = Object.assign(
+    new Error("Estamos com alta demanda no momento. Tente novamente mais tarde."),
+    { upstreamCode: "server_overloaded" },
+  );
   assert.equal(isOverloadError(err), true);
 
   const action = classifyRetryAction(err);

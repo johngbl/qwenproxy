@@ -235,10 +235,11 @@ export function isAccountInitializationError(err: unknown): boolean {
 }
 
 export function isQuotaLikeError(err: unknown): boolean {
-  // Chat-not-exist / invalid attachment / overload message must never look like quota.
-  if (isChatNotExistError(err) || isInvalidInputError(err) || isOverloadError(err)) return false;
-
+  // Chat-not-exist / invalid attachment / explicit overload must never look like quota.
+  if (isChatNotExistError(err) || isInvalidInputError(err)) return false;
   const code = errCode(err).toLowerCase();
+  if (code === "server_overloaded" || code === "overload") return false;
+
   const message = errMessage(err).toLowerCase();
 
   // Note: RetryableQwenStreamError inherits OpenAI-style code "rate_limit_exceeded".
@@ -433,11 +434,19 @@ export function isInternalServerError(err: unknown): boolean {
  */
 export function isOverloadError(err: unknown): boolean {
   const code = errCode(err).toLowerCase();
-  if (code === "quota_limit" || code === "ratelimited" || code === "membership_limit") {
+  if (
+    code === "quota_limit" ||
+    code === "ratelimited" ||
+    code === "rate_limit" ||
+    code === "rate_limit_exceeded" ||
+    code === "membership_limit" ||
+    code === "internal_error" ||
+    code === "internal_server_error"
+  ) {
     return false;
   }
   if (code === "server_overloaded" || code === "overload") return true;
-  return isOverloadMessage(errMessage(err));
+  return !code && isOverloadMessage(errMessage(err));
 }
 
 /**
