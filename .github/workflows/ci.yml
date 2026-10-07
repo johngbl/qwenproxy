@@ -41,7 +41,7 @@ jobs:
   docker:
     name: Docker Build
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     needs: check
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
@@ -79,7 +79,7 @@ jobs:
   release:
     name: Auto Release & NPM Publish
     runs-on: ubuntu-latest
-    needs: [check, docker]
+    needs: [check]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: write

@@ -3,7 +3,8 @@ FROM mcr.microsoft.com/playwright:v1.62.1-jammy
 # Process helpers (dumb-init for zombie reaping, gosu for safe user switching)
 # plus build-essential/python3 for compiling native addons (better-sqlite3) on ARM64.
 # Note: Base image already includes Node 22 LTS, so no external NodeSource curl needed.
-RUN apt-get update \
+RUN (sed -i 's|http://azure.archive.ubuntu.com/ubuntu/|http://archive.ubuntu.com/ubuntu/|g' /etc/apt/sources.list || true) \
+  && apt-get update \
   && apt-get install -y --no-install-recommends build-essential python3 dumb-init gosu \
   && rm -rf /var/lib/apt/lists/*
 
