@@ -78,7 +78,7 @@ export class AccountsView implements TuiView {
   private lastBatchModalStartRow = 4;
   private hoveredActionRow: number | null = null;
   private hoveredAccountIndex: number | null = null;
-  private modalHoveredField: "email" | "password" | "code" | "save" | "cancel" | null = null;
+  private modalHoveredField: "email" | "password" | "code" | "save" | "cancel" | "mode" | null = null;
   private lastModalLeftPad = 0;
   private lastLeftW = 46;
   private accountsScrollOffset = 0;
@@ -622,19 +622,19 @@ export class AccountsView implements TuiView {
         const { row, col } = key.mouse;
         const leftPad = this.lastModalLeftPad || 0;
         const relCol = col - leftPad;
-        if (row === 5 || row === 6) {
+        if (row === 6) {
           if (this.modalHoveredField !== "email") {
             this.modalHoveredField = "email";
             return true;
           }
-        } else if (row === 7 || row === 8) {
+        } else if (row === 7) {
           const field = this.addLoginMode === "password" ? "password" : "code";
           if (this.modalHoveredField !== field) {
             this.modalHoveredField = field;
             return true;
           }
         } else if (row === 9) {
-          const btn = relCol <= 24 ? "save" : "cancel";
+          const btn = relCol <= 28 ? "save" : relCol <= 49 ? "cancel" : "mode";
           if (this.modalHoveredField !== btn) {
             this.modalHoveredField = btn;
             return true;
@@ -650,13 +650,13 @@ export class AccountsView implements TuiView {
         const { row, col } = key.mouse;
         const leftPad = this.lastModalLeftPad || 0;
         const relCol = col - leftPad;
-        // Click on email field row (rows 5 and 6)
-        if (row === 5 || row === 6) {
+        // Click on email field row (row 6)
+        if (row === 6) {
           this.addActiveField = "email";
           return true;
         }
-        // Click on second field row (rows 7 and 8)
-        if (row === 7 || row === 8) {
+        // Click on second field row (row 7)
+        if (row === 7) {
           if (this.addLoginMode === "password") {
             this.addActiveField = "password";
           } else if (this.isOtpCodeSent) {
@@ -666,12 +666,26 @@ export class AccountsView implements TuiView {
         }
         // Click on buttons row (row 9)
         if (row === 9) {
-          if (relCol <= 24) {
+          if (relCol <= 28) {
             await this.saveModalAccount();
             return true;
-          } else {
+          } else if (relCol <= 49) {
             this.resetAddModalState();
             return true;
+          } else {
+            // Clicked mode toggle button
+            if (!this.isOtpCodeSent) {
+              this.addLoginMode = this.addLoginMode === "password" ? "otp" : "password";
+              this.addActiveField = "email";
+              this.setStatusMessage(
+                theme.cyan(
+                  `Modo alterado para: ${
+                    this.addLoginMode === "password" ? "Senha" : "Código E-mail (Sem Senha)"
+                  }`,
+                ),
+              );
+              return true;
+            }
           }
         }
       }
@@ -965,15 +979,15 @@ export class AccountsView implements TuiView {
         return true;
       }
 
-      // Right panel action buttons hover (rows 15 to 20)
+      // Right panel action buttons hover (rows 16 to 21)
       if (col >= leftW) {
-        if (row === 15) {
-          const actionRow = col < leftW + 18 ? 15 : 21;
+        if (row === 16) {
+          const actionRow = col < leftW + 18 ? 16 : 22;
           if (this.hoveredActionRow !== actionRow) {
             this.hoveredActionRow = actionRow;
             return true;
           }
-        } else if (row >= 16 && row <= 20) {
+        } else if (row >= 17 && row <= 21) {
           if (this.hoveredActionRow !== row) {
             this.hoveredActionRow = row;
             return true;
@@ -1001,9 +1015,9 @@ export class AccountsView implements TuiView {
           return true;
         }
       }
-      // Right panel action buttons click (rows 15, 16, 17, 18, 19, 20)
+      // Right panel action buttons click (rows 16 to 21)
       if (col >= leftW) {
-        if (row === 15) {
+        if (row === 16) {
           if (col < leftW + 18) {
             await this.handleKey({ name: "a", ctrl: false, shift: false, meta: false });
           } else {
@@ -1011,23 +1025,23 @@ export class AccountsView implements TuiView {
           }
           return true;
         }
-        if (row === 16) {
+        if (row === 17) {
           await this.handleKey({ name: "d", ctrl: false, shift: false, meta: false });
           return true;
         }
-        if (row === 17) {
+        if (row === 18) {
           await this.handleKey({ name: "c", ctrl: false, shift: false, meta: false });
           return true;
         }
-        if (row === 18) {
+        if (row === 19) {
           await this.handleKey({ name: "z", ctrl: false, shift: false, meta: false });
           return true;
         }
-        if (row === 19) {
+        if (row === 20) {
           await this.handleKey({ name: "x", ctrl: false, shift: false, meta: false });
           return true;
         }
-        if (row === 20) {
+        if (row === 21) {
           await this.handleKey({ name: "l", ctrl: false, shift: false, meta: false });
           return true;
         }
@@ -1203,9 +1217,10 @@ export class AccountsView implements TuiView {
       rightContent.push("");
       rightContent.push("");
       rightContent.push("");
+      rightContent.push("");
       rightContent.push(`  ${theme.dim("─────────────────────────────────")}`);
-      const btnA = this.hoveredActionRow === 15 ? theme.bgHover(` ${theme.cyan("[ A ] Adicionar")} `) : `${theme.cyan("[ A ]")} Adicionar`;
-      const btnB = this.hoveredActionRow === 21 ? theme.bgHover(` ${theme.cyan("[ B ] Em Lote")} `) : `${theme.cyan("[ B ]")} Em Lote`;
+      const btnA = this.hoveredActionRow === 16 ? theme.bgHover(` ${theme.cyan("[ A ] Adicionar")} `) : ` ${theme.cyan("[ A ]")} Adicionar `;
+      const btnB = this.hoveredActionRow === 22 ? theme.bgHover(` ${theme.cyan("[ B ] Em Lote")} `) : ` ${theme.cyan("[ B ]")} Em Lote `;
       rightContent.push(`  ${btnA}   ${btnB}`);
     } else {
       const email = truncate(selected.emailOrName, 18);
@@ -1239,14 +1254,14 @@ export class AccountsView implements TuiView {
         rightContent.push("");
       }
       rightContent.push(`  ${theme.dim("─────────────────────────────────")}`);
-      const btnA = this.hoveredActionRow === 15 ? theme.bgHover(` ${theme.cyan("[ A ] Adicionar")} `) : `${theme.cyan("[ A ]")} Adicionar`;
-      const btnB = this.hoveredActionRow === 21 ? theme.bgHover(` ${theme.cyan("[ B ] Em Lote")} `) : `${theme.cyan("[ B ]")} Em Lote`;
+      const btnA = this.hoveredActionRow === 16 ? theme.bgHover(` ${theme.cyan("[ A ] Adicionar")} `) : ` ${theme.cyan("[ A ]")} Adicionar `;
+      const btnB = this.hoveredActionRow === 22 ? theme.bgHover(` ${theme.cyan("[ B ] Em Lote")} `) : ` ${theme.cyan("[ B ]")} Em Lote `;
       rightContent.push(`  ${btnA}   ${btnB}`);
-      rightContent.push(`  ${this.hoveredActionRow === 16 ? theme.bgHover(` ${theme.red("[ D ] Remover Conta")} `) : `${theme.red("[ D ]")} Remover Conta`}`);
-      rightContent.push(`  ${this.hoveredActionRow === 17 ? theme.bgHover(` ${theme.yellow("[ C ] Zerar Cooldown")} `) : `${theme.yellow("[ C ]")} Zerar Cooldown`}`);
-      rightContent.push(`  ${this.hoveredActionRow === 18 ? theme.bgHover(` ${theme.green("[ Z ] Zerar Todas")} `) : `${theme.green("[ Z ]")} Zerar Todas`}`);
-      rightContent.push(`  ${this.hoveredActionRow === 19 ? theme.bgHover(` ${theme.peach("[ X ] Limpar Chats (Conta)")} `) : `${theme.peach("[ X ]")} Limpar Chats (Conta)`}`);
-      rightContent.push(`  ${this.hoveredActionRow === 20 ? theme.bgHover(` ${theme.red("[ L ] Limpar Todos os Chats")} `) : `${theme.red("[ L ]")} Limpar Todos os Chats`}`);
+      rightContent.push(`  ${this.hoveredActionRow === 17 ? theme.bgHover(` ${theme.red("[ D ] Remover Conta")} `) : ` ${theme.red("[ D ]")} Remover Conta `}`);
+      rightContent.push(`  ${this.hoveredActionRow === 18 ? theme.bgHover(` ${theme.yellow("[ C ] Zerar Cooldown")} `) : ` ${theme.yellow("[ C ]")} Zerar Cooldown `}`);
+      rightContent.push(`  ${this.hoveredActionRow === 19 ? theme.bgHover(` ${theme.green("[ Z ] Zerar Todas")} `) : ` ${theme.green("[ Z ]")} Zerar Todas `}`);
+      rightContent.push(`  ${this.hoveredActionRow === 20 ? theme.bgHover(` ${theme.peach("[ X ] Limpar Chats (Conta)")} `) : ` ${theme.peach("[ X ]")} Limpar Chats (Conta) `}`);
+      rightContent.push(`  ${this.hoveredActionRow === 21 ? theme.bgHover(` ${theme.red("[ L ] Limpar Todos os Chats")} `) : ` ${theme.red("[ L ]")} Limpar Todos os Chats `}`);
     }
     const rightBox = drawBox({
       title: "Inspeção de Conta",
@@ -1339,18 +1354,14 @@ export class AccountsView implements TuiView {
       return modalBox.map((line) => padStr + line);
     }
     if (this.isAddModalOpen) {
-      const modalW = Math.min(width - 4, 66);
+      const modalW = Math.min(width - 4, 76);
       this.lastModalLeftPad = Math.max(0, Math.floor((width - modalW) / 2));
 
       const isEmail = this.addActiveField === "email";
       const isPass = this.addActiveField === "password";
       const isCode = this.addActiveField === "code";
 
-      const emailHover = !isEmail && this.modalHoveredField === "email";
-      const passHover = !isPass && this.modalHoveredField === "password";
-      const codeHover = !isCode && this.modalHoveredField === "code";
-
-      // Render Email field with clean cursor
+      // Render Email field with clean cursor (no white background hover)
       let emailDisplay: string;
       if (isEmail) {
         if (this.addEmailInput.length === 0) {
@@ -1363,8 +1374,8 @@ export class AccountsView implements TuiView {
         }
       } else {
         emailDisplay = this.addEmailInput
-          ? (emailHover ? theme.bgHover(` ${this.addEmailInput} `) : theme.cyan(` ${this.addEmailInput} `))
-          : (emailHover ? theme.bgHover(" (digite o e-mail) ") : theme.muted(" (digite o e-mail) "));
+          ? theme.cyan(this.addEmailInput)
+          : theme.muted("(digite o e-mail)");
       }
 
       // Render Password or Code field with clean cursor
@@ -1385,8 +1396,8 @@ export class AccountsView implements TuiView {
           }
         } else {
           secondFieldDisplay = this.addPasswordInput
-            ? (passHover ? theme.bgHover(` ${maskedPass} `) : theme.cyan(` ${maskedPass} `))
-            : (passHover ? theme.bgHover(" (digite a senha) ") : theme.muted(" (digite a senha) "));
+            ? theme.cyan(maskedPass)
+            : theme.muted("(digite a senha)");
         }
       } else {
         secondFieldLabel = "Código:";
@@ -1403,8 +1414,8 @@ export class AccountsView implements TuiView {
           }
         } else {
           secondFieldDisplay = this.addOtpCodeInput
-            ? (codeHover ? theme.bgHover(` ${this.addOtpCodeInput} `) : theme.cyan(` ${this.addOtpCodeInput} `))
-            : (codeHover ? theme.bgHover(" (digite o código de 6 dígitos) ") : theme.muted(" (digite o código de 6 dígitos) "));
+            ? theme.cyan(this.addOtpCodeInput)
+            : theme.muted("(digite o código de 6 dígitos)");
         }
       }
 
@@ -1420,24 +1431,29 @@ export class AccountsView implements TuiView {
       const saveBtn = (this.isValidatingAccount || this.isOtpRequesting)
         ? theme.yellow(" [ Aguarde... ] ")
         : this.modalHoveredField === "save"
-          ? theme.bgHover(theme.green(` ${saveBtnText} `))
-          : theme.green(saveBtnText);
+          ? theme.bgHover(` ${saveBtnText} `)
+          : ` ${theme.green(saveBtnText)} `;
 
       const cancelBtn =
         this.modalHoveredField === "cancel"
-          ? theme.bgHover(theme.red(" [ Esc ] Cancelar "))
-          : theme.muted("[ Esc ] Cancelar");
+          ? theme.bgHover(" [ Esc ] Cancelar ")
+          : ` ${theme.muted("[ Esc ] Cancelar")} `;
 
-      const modeHint = this.addLoginMode === "password"
-        ? theme.dim("(Tab: Sem Senha/OTP)")
-        : theme.dim("(Tab: Com Senha)");
+      const modeBtnText = this.addLoginMode === "password"
+        ? "[ Tab ] Sem Senha (OTP)"
+        : "[ Tab ] Modo Senha";
+
+      const modeBtn =
+        this.modalHoveredField === "mode"
+          ? theme.bgHover(` ${modeBtnText} `)
+          : ` ${theme.cyan(modeBtnText)} `;
 
       const modalContent = [
         "",
-        `  ${theme.bold("E-mail:")}  ${emailDisplay}${this.isOtpCodeSent ? ` ${theme.green("✓ Enviado")}` : ""}`,
+        `  ${theme.bold("E-mail:")}  ${emailDisplay}${this.isOtpCodeSent ? ` ${theme.green("✓ Código Enviado")}` : ""}`,
         `  ${theme.bold(secondFieldLabel)}   ${secondFieldDisplay}`,
         "",
-        `  ${saveBtn}   ${cancelBtn}   ${modeHint}`,
+        `  ${saveBtn}  ${cancelBtn}  ${modeBtn}`,
       ];
 
       const modalTitle = this.addLoginMode === "password"

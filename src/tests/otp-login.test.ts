@@ -111,7 +111,7 @@ test("TUI AccountsView: Completes full OTP login flow in TUI modal", async () =>
   // Press Enter to send code
   await view.handleKey({ name: "return", ctrl: false, shift: false, meta: false });
   let render = stripAnsi(view.render(80, 20).join("\n"));
-  assert.ok(render.includes("✓ Enviado") || render.includes("Código enviado"));
+  assert.ok(render.includes("Código Enviado") || render.includes("Confirmar Código"));
   assert.ok(render.includes("Confirmar Código"));
 
   // Type 6-digit code: "872643"

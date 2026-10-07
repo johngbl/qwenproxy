@@ -1208,13 +1208,13 @@ test("TUI AccountsView: precision mouse click on right panel action buttons", as
   };
   view.render(80, 24, mockSnapshot as any);
 
-  // Click row 18 ([ z ] Zerar Todas) on right panel (col 55)
+  // Click row 19 ([ z ] Zerar Todas) on right panel (col 55)
   await view.handleKey({
     name: "click",
     ctrl: false,
     shift: false,
     meta: false,
-    mouse: { type: "click", button: "left", col: 55, row: 18 },
+    mouse: { type: "click", button: "left", col: 55, row: 19 },
   });
   const render = view.render(80, 24, mockSnapshot as any).join("\n");
   assert.ok(render.includes("Cooldowns zerados"));
