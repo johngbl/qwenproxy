@@ -79,6 +79,7 @@ import {
   applyUpstreamUsage,
   buildUsage,
 } from "./helpers.ts";
+import { isOverloadMessage, OVERLOAD_COOLDOWN_MS } from "../../utils/overload-detector.ts";
 
 function firstString(...values: unknown[]): string | null {
   for (const value of values) {
@@ -477,6 +478,19 @@ export async function processNonStreamingResponse(
               isThinkingChunk = false;
               if (delta.content !== undefined) {
                 const newContent = delta.content || "";
+                if (isOverloadMessage(newContent)) {
+                  throw toRetryableStreamError(
+                    "server_overloaded",
+                    newContent,
+                    {
+                      switchAccount: true,
+                      forceNewChat: true,
+                      reason: "server_busy",
+                      accountCooldownMs: OVERLOAD_COOLDOWN_MS,
+                      accountCooldownReason: "ServerOverloaded",
+                    },
+                  );
+                }
                 const result = getIncrementalDelta(
                   lastRawContent,
                   newContent,
@@ -1875,6 +1889,19 @@ export async function processStreamingResponse(
                 isThinkingChunk = false;
                 if (delta.content !== undefined) {
                   const newContent = delta.content || "";
+                  if (!emittedModelOutput && isOverloadMessage(newContent)) {
+                    throw toRetryableStreamError(
+                      "server_overloaded",
+                      newContent,
+                      {
+                        switchAccount: true,
+                        forceNewChat: true,
+                        reason: "server_busy",
+                        accountCooldownMs: OVERLOAD_COOLDOWN_MS,
+                        accountCooldownReason: "ServerOverloaded",
+                      },
+                    );
+                  }
                   const result = getIncrementalDelta(
                     lastRawContent,
                     newContent,

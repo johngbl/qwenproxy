@@ -22,6 +22,7 @@ import {
   ValidationError,
 } from "../../core/errors.ts";
 import { isAbortError } from "./helpers.ts";
+import { isOverloadMessage, OVERLOAD_COOLDOWN_MS } from "../../utils/overload-detector.ts";
 
 export type RetryAction = {
   /** Outer/create-stream layer should retry this failure */
@@ -50,6 +51,9 @@ export type RetryableStreamError = RetryableQwenStreamError & {
   retryWithFullPrompt?: boolean;
   switchAccount?: boolean;
   dropFiles?: boolean;
+  accountCooldownMs?: number;
+  accountCooldownReason?: string;
+  reason?: string;
 };
 
 function errMessage(err: unknown): string {
@@ -231,8 +235,8 @@ export function isAccountInitializationError(err: unknown): boolean {
 }
 
 export function isQuotaLikeError(err: unknown): boolean {
-  // Chat-not-exist / invalid attachment must never look like quota.
-  if (isChatNotExistError(err) || isInvalidInputError(err)) return false;
+  // Chat-not-exist / invalid attachment / overload message must never look like quota.
+  if (isChatNotExistError(err) || isInvalidInputError(err) || isOverloadError(err)) return false;
 
   const code = errCode(err).toLowerCase();
   const message = errMessage(err).toLowerCase();
@@ -425,6 +429,18 @@ export function isInternalServerError(err: unknown): boolean {
 }
 
 /**
+ * Detects in-band plain text overload messages from Qwen.
+ */
+export function isOverloadError(err: unknown): boolean {
+  const code = errCode(err).toLowerCase();
+  if (code === "quota_limit" || code === "ratelimited" || code === "membership_limit") {
+    return false;
+  }
+  if (code === "server_overloaded" || code === "overload") return true;
+  return isOverloadMessage(errMessage(err));
+}
+
+/**
  * Build a RetryAction with sane defaults so each classification branch only
  * spells out the fields it actually changes. Defaults: retryable, no account
  * switch, same chat, delta replay, no delay. Branch ordering below is
@@ -610,6 +626,18 @@ export function classifyRetryAction(
       });
     }
 
+    if (isOverloadError(err)) {
+      const typed = err as RetryableStreamError;
+      return makeRetryAction("server_busy", {
+        switchAccount: true,
+        forceNewChat: true,
+        retryWithFullPrompt: true,
+        retryAfterMs: typed.retryAfterMs ?? 3_000,
+        accountCooldownMs: OVERLOAD_COOLDOWN_MS,
+        accountCooldownReason: "ServerOverloaded",
+      });
+    }
+
     if (isInternalServerError(err) && !(err instanceof QwenUpstreamError)) {
       const typed = err as RetryableStreamError;
       return makeRetryAction("upstream_internal_error", {
@@ -654,11 +682,13 @@ export function classifyRetryAction(
     if (err instanceof RetryableQwenStreamError) {
       const typed = err as RetryableStreamError;
       // Default switch unless caller explicitly set switchAccount=false
-      return makeRetryAction("explicit_retryable", {
+      return makeRetryAction(typed.reason || "explicit_retryable", {
         switchAccount: typed.switchAccount !== false,
         forceNewChat: typed.forceNewChat === true,
         retryWithFullPrompt: typed.retryWithFullPrompt === true,
         retryAfterMs: typed.retryAfterMs ?? baseDelayMs,
+        accountCooldownMs: typed.accountCooldownMs,
+        accountCooldownReason: typed.accountCooldownReason,
       });
     }
 
@@ -702,6 +732,9 @@ export function toRetryableStreamError(
   error.retryWithFullPrompt = merged.retryWithFullPrompt;
   error.switchAccount = merged.switchAccount;
   error.dropFiles = merged.dropFiles;
+  error.accountCooldownMs = merged.accountCooldownMs;
+  error.accountCooldownReason = merged.accountCooldownReason;
+  error.reason = merged.reason;
   return error;
 }
 
