@@ -499,6 +499,21 @@ export function classifyRetryAction(
     return makeRetryAction("terminal_local", { retryable: false });
   }
 
+  // Agent instructions ride ONLY the account-level personalization. An
+  // unconfirmed sync means this account cannot serve the request as-is —
+  // rotate to another account (each attempt re-syncs on its own account).
+  // Do NOT park the account with a 300s cooldown: rotation across accounts
+  // is already guarded by triedAccounts, preventing pool collapse.
+  if (err instanceof PersonalizationSyncError) {
+    return makeRetryAction("personalization_sync_failed", {
+      switchAccount: true,
+      forceNewChat: true,
+      retryAfterMs: baseDelayMs,
+      accountCooldownMs: 0,
+      accountCooldownReason: "PersonalizationFailed",
+    });
+  }
+
   const message = errMessage(err).toLowerCase();
   const code = errCode(err).toLowerCase();
   if (isAccountInitializationError(err)) {
@@ -518,21 +533,6 @@ export function classifyRetryAction(
     return makeRetryAction("account_busy", {
       switchAccount: true,
       retryAfterMs: Math.min(baseDelayMs, 1_000),
-    });
-  }
-
-  // Agent instructions ride ONLY the account-level personalization. An
-  // unconfirmed sync means this account cannot serve the request as-is —
-  // rotate to another account (each attempt re-syncs on its own account).
-  // Do NOT park the account with a 300s cooldown: rotation across accounts
-  // is already guarded by triedAccounts, preventing pool collapse.
-  if (err instanceof PersonalizationSyncError) {
-    return makeRetryAction("personalization_sync_failed", {
-      switchAccount: true,
-      forceNewChat: true,
-      retryAfterMs: baseDelayMs,
-      accountCooldownMs: 0,
-      accountCooldownReason: "PersonalizationFailed",
     });
   }
 
