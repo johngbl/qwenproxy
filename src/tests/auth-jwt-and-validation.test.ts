@@ -155,3 +155,17 @@ test("wipeAccountSessionFiles: cleans up profile directory and state file cleanl
   assert.equal(fs.existsSync(profilePath), false);
   assert.equal(fs.existsSync(siblingState), false);
 });
+
+test("playwright page.evaluate callbacks never reference Node-only functions in browser scope", () => {
+  const pwSource = fs.readFileSync(
+    path.resolve("src/services/playwright.ts"),
+    "utf-8",
+  );
+  // In loginViaApi and refreshAccountToken, version must be passed via the argument object,
+  // never invoked as getQwenWebVersion() inside the browser callback where it throws ReferenceError.
+  assert.equal(
+    /headers:\s*\{[^}]*getQwenWebVersion\(\)/s.test(pwSource),
+    false,
+    "getQwenWebVersion() must never be called inside a browser fetch headers block in page.evaluate",
+  );
+});

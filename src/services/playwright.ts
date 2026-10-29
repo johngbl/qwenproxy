@@ -365,7 +365,24 @@ export async function isPageLoggedIn(
             return false;
           }
 
-          const res = await fetch("/api/v1/auths/", { method: "GET" });
+          // In Qwen Web 0.3.26+, UI login stores the JWT in localStorage("token")
+          // without setting a "token=" cookie in document.cookie. Sync it so
+          // same-origin probes and context.cookies() always include it.
+          const lsToken = (localStorage.getItem("token") || "").trim();
+          if (lsToken && !/(?:^|;\s*)token=/.test(document.cookie || "")) {
+            try {
+              document.cookie = `token=${encodeURIComponent(lsToken)}; path=/; domain=.qwen.ai; max-age=31536000`;
+            } catch {}
+          }
+          const authHeaders: Record<string, string> = lsToken
+            ? { Authorization: `Bearer ${lsToken}` }
+            : {};
+
+          const res = await fetch("/api/v1/auths/", {
+            method: "GET",
+            headers: authHeaders,
+            credentials: "include",
+          });
           if (res.status !== 200) return false;
           const json: any = await res.json().catch(() => null);
           if (!json) return false;
@@ -398,6 +415,7 @@ export async function isPageLoggedIn(
           try {
             const settingsRes = await fetch("/api/v2/users/user/settings", {
               method: "GET",
+              headers: authHeaders,
               credentials: "include",
               signal: AbortSignal.timeout(3000),
             });
@@ -1819,8 +1837,15 @@ export async function initPlaywrightForAccount(
           c.name.toLowerCase().includes("session"),
       );
 
+      let initialLoginAttempted = false;
       if (!hasAuthCookie && account.email && account.password) {
-        await loginToQwen(account.id, account.email, account.password);
+        initialLoginAttempted = true;
+        const loggedIn = await loginToQwen(account.id, account.email, account.password);
+        if (!loggedIn) {
+          throw new Error(
+            `Authentication failed for account ${maskEmail(account.email)}`,
+          );
+        }
       }
 
       // Initial navigation to chat home
@@ -1832,13 +1857,21 @@ export async function initPlaywrightForAccount(
         await sleep(1500);
         const currentUrl = acctPage.url();
         const isAuthUrl = currentUrl.includes("/auth") || currentUrl.includes("/login");
-        if (isAuthUrl && account.email && account.password) {
+        if (isAuthUrl && !initialLoginAttempted && account.email && account.password) {
           console.log(
             `[Playwright] Initial login needed for ${maskEmail(account.email)}, authenticating...`,
           );
-          await loginToQwen(account.id, account.email, account.password);
+          const loggedIn = await loginToQwen(account.id, account.email, account.password);
+          if (!loggedIn) {
+            throw new Error(
+              `Authentication failed for account ${maskEmail(account.email)}`,
+            );
+          }
         }
       } catch (err: any) {
+        if (err?.message?.includes("Authentication failed for account")) {
+          throw err;
+        }
         console.warn(
           `⚠️  [Playwright] Initial navigation check for ${maskEmail(account.email)}: ${err.message}`,
         );
@@ -2551,10 +2584,31 @@ async function loginToQwen(
     const uiResult = await loginViaUi(page, email, password);
     if (uiResult.success) {
       cookieCaches.delete(accountId);
-      await saveStorageState(page.context(), accountId);
       try {
-        const liveCookies = await page.context().cookies();
-        const tokenCookie = liveCookies.find((c) => c.name === "token");
+        let liveCookies = await page.context().cookies();
+        let tokenCookie = liveCookies.find((c) => c.name === "token");
+        if (!tokenCookie) {
+          const lsTok =
+            uiResult.token ||
+            (await page.evaluate(() => (localStorage.getItem("token") || "").trim()).catch(() => ""));
+          if (lsTok) {
+            await page.context().addCookies([
+              {
+                name: "token",
+                value: lsTok,
+                domain: ".qwen.ai",
+                path: "/",
+                expires: Math.floor(Date.now() / 1000) + 31536000,
+                httpOnly: false,
+                secure: true,
+                sameSite: "Lax",
+              },
+            ]).catch(() => {});
+            liveCookies = await page.context().cookies();
+            tokenCookie = liveCookies.find((c) => c.name === "token");
+          }
+        }
+        await saveStorageState(page.context(), accountId);
         if (tokenCookie) {
           const cookieStr = liveCookies.map((c) => `${c.name}=${c.value}`).join("; ");
           const cache = getHeaderCache(accountId);
@@ -2563,7 +2617,9 @@ async function loginToQwen(
           markAccountHeadersReady(accountId);
           const { saveAuthSession } = await import("../core/database.ts");
           const exp = parseJwtExpiry(tokenCookie.value);
-          let rTok = uiResult.refreshToken;
+          let rTok =
+            uiResult.refreshToken ||
+            liveCookies.find((c) => c.name === "refresh_token")?.value;
           if (!rTok) {
             try {
               rTok = (await page.evaluate(() => localStorage.getItem("refresh_token") || "")) || undefined;
@@ -2657,10 +2713,11 @@ async function loginViaApi(
 
     const signinUrl = "https://auth.qwen.ai/api/v2/auths/signin";
     const requestId = crypto.randomUUID();
+    const webVersion = getQwenWebVersion() || "0.3.26";
 
     const evalRes = await page
       .evaluate(
-        async ({ email, password, signinUrl, requestId, tz }) => {
+        async ({ email, password, signinUrl, requestId, tz, version }) => {
           try {
             const response = await fetch(signinUrl, {
               method: "POST",
@@ -2670,7 +2727,7 @@ async function loginViaApi(
                 accept: "application/json, text/plain, */*",
                 "content-type": "application/json",
                 source: "web",
-                version: getQwenWebVersion() || "0.3.26",
+                version,
                 "x-request-origin": "https://chat.qwen.ai",
                 timezone: tz,
                 "x-request-id": requestId,
@@ -2683,7 +2740,14 @@ async function loginViaApi(
             return { ok: false, error: e.message };
           }
         },
-        { email, password: hashedPassword, signinUrl, requestId, tz: formatAsciiTimezone() },
+        {
+          email,
+          password: hashedPassword,
+          signinUrl,
+          requestId,
+          tz: formatAsciiTimezone(),
+          version: webVersion,
+        },
       )
       .catch(() => null);
 
@@ -2701,7 +2765,7 @@ async function loginViaApi(
       const fallbackUrl = qwenUrl("/api/v2/auths/signin");
       const fallbackRes = await page
         .evaluate(
-          async ({ email, password, fallbackUrl, requestId, tz }) => {
+          async ({ email, password, fallbackUrl, requestId, tz, version }) => {
             try {
               const response = await fetch(fallbackUrl, {
                 method: "POST",
@@ -2711,7 +2775,7 @@ async function loginViaApi(
                   accept: "application/json, text/plain, */*",
                   "content-type": "application/json",
                   source: "web",
-                  version: getQwenWebVersion() || "0.3.26",
+                  version,
                   timezone: tz,
                   "x-request-id": requestId,
                 },
@@ -2723,7 +2787,14 @@ async function loginViaApi(
               return { ok: false, error: e.message };
             }
           },
-          { email, password: hashedPassword, fallbackUrl, requestId, tz: formatAsciiTimezone() },
+          {
+            email,
+            password: hashedPassword,
+            fallbackUrl,
+            requestId,
+            tz: formatAsciiTimezone(),
+            version: webVersion,
+          },
         )
         .catch(() => null);
 
@@ -3009,30 +3080,37 @@ async function loginViaUi(
 
     await sleep(500);
 
-    // Multi-modal submit: DOM click, Playwright force click, and Enter press
+    // Submit the form: click the submit button if visible; only press Enter as fallback
+    // (pressing Enter inside <form> after clicking submit triggers a native HTML form reload on Qwen 0.3.26).
     const submitSelector =
       'button.qwenchat-auth-pc-submit-button, button[type="submit"], button:has-text("Log in"), button:has-text("Sign in"), button:has-text("Fazer login"), button:has-text("Entrar"), button:has-text("Iniciar sesión"), button:has-text("登录")';
     const submitButton = page.locator(submitSelector).first();
 
-    await page.evaluate((sel) => {
-      try {
-        const btn = document.querySelector(sel) as HTMLButtonElement | null;
-        if (btn) {
-          btn.removeAttribute("disabled");
-          btn.classList.remove("ant-btn-disabled");
-          btn.click();
-        }
-      } catch {}
-    }, submitSelector).catch(() => {});
-
+    let submitted = false;
     try {
       if (await submitButton.isVisible({ timeout: 2000 }).catch(() => false)) {
-        await submitButton.click({ force: true, timeout: 2000 }).catch(() => {});
+        await submitButton.click({ timeout: 2000 }).catch(() => {});
+        submitted = true;
       }
     } catch {}
 
-    const passInput = page.locator(passwordSelector).first();
-    await passInput.press("Enter", { timeout: 2000 }).catch(() => {});
+    if (!submitted) {
+      await page.evaluate(() => {
+        try {
+          const btn = document.querySelector(
+            'button.qwenchat-auth-pc-submit-button, button[type="submit"]',
+          ) as HTMLButtonElement | null;
+          if (btn) {
+            btn.removeAttribute("disabled");
+            btn.classList.remove("ant-btn-disabled");
+            btn.click();
+          }
+        } catch {}
+      }).catch(() => {});
+
+      const passInput = page.locator(passwordSelector).first();
+      await passInput.press("Enter", { timeout: 2000 }).catch(() => {});
+    }
     // Post-submit verification loop: wait up to 15s for captcha, redirect, cookies, or errors
     const postSubmitDeadline = Date.now() + 15_000;
     while (Date.now() < postSubmitDeadline) {
@@ -3092,21 +3170,50 @@ async function loginViaUi(
         };
       }
 
-      // Check if auth cookie 'token' appeared
+      // Check if auth cookie 'token' appeared or localStorage 'token' was populated (Qwen 0.3.26+)
       try {
         const liveCookies = await page.context().cookies();
-        if (liveCookies.some((c) => c.name === "token")) {
-          return { success: true };
+        const rTokCookie = liveCookies.find((c) => c.name === "refresh_token")?.value;
+        const tokCookie = liveCookies.find((c) => c.name === "token")?.value;
+        if (tokCookie) {
+          return { success: true, token: tokCookie, refreshToken: rTokCookie };
+        }
+        const currentUrl = page.url();
+        if (!currentUrl.includes("/auth") && !currentUrl.includes("/login")) {
+          const lsTok = await page
+            .evaluate(() => {
+              const t = (localStorage.getItem("token") || "").trim();
+              if (t) {
+                try {
+                  document.cookie = `token=${encodeURIComponent(t)}; path=/; domain=.qwen.ai; max-age=31536000`;
+                } catch {}
+              }
+              return t;
+            })
+            .catch(() => "");
+          if (lsTok) {
+            await page
+              .context()
+              .addCookies([
+                {
+                  name: "token",
+                  value: lsTok,
+                  domain: ".qwen.ai",
+                  path: "/",
+                  expires: Math.floor(Date.now() / 1000) + 31536000,
+                  httpOnly: false,
+                  secure: true,
+                  sameSite: "Lax",
+                },
+              ])
+              .catch(() => {});
+            return { success: true, token: lsTok, refreshToken: rTokCookie };
+          }
+          if (await isPageLoggedIn(page, 3000)) {
+            return { success: true, refreshToken: rTokCookie };
+          }
         }
       } catch {}
-
-      // Check if page redirected away from /auth and is logged in
-      const currentUrl = page.url();
-      if (!currentUrl.includes("/auth") && !currentUrl.includes("/login")) {
-        if (await isPageLoggedIn(page, 3000)) {
-          return { success: true };
-        }
-      }
 
       await sleep(1000);
     }
@@ -3138,7 +3245,7 @@ export async function refreshAccountToken(
     return { success: false, error: "Account page not active" };
   }
 
-  // 1. Get refresh token from SQLite session or localStorage
+  // 1. Get refresh token from SQLite session, localStorage, or browser cookies (Qwen 0.3.26+)
   const { getValidAuthSession, saveAuthSession } = await import("../core/database.ts");
   const session = getValidAuthSession(accountId);
   let refreshToken = session?.refreshToken;
@@ -3151,11 +3258,19 @@ export async function refreshAccountToken(
     } catch {}
   }
 
+  if (!refreshToken) {
+    try {
+      const liveCookies = await page.context().cookies();
+      refreshToken = liveCookies.find((c) => c.name === "refresh_token")?.value;
+    } catch {}
+  }
+
   // 2. If we have a refresh token, invoke the working refresh endpoint in-page
   if (refreshToken) {
     try {
+      const webVersion = getQwenWebVersion() || "0.3.26";
       const refreshResult = await page.evaluate(
-        async ({ rTok, tz }) => {
+        async ({ rTok, tz, version }) => {
           try {
             const response = await fetch("https://auth.qwen.ai/api/v2/auths/refresh", {
               method: "GET",
@@ -3163,7 +3278,7 @@ export async function refreshAccountToken(
               headers: {
                 accept: "application/json, text/plain, */*",
                 source: "web",
-                version: getQwenWebVersion() || "0.3.26",
+                version,
                 "x-request-origin": "https://chat.qwen.ai",
                 timezone: tz,
                 authorization: `Bearer ${rTok}`,
@@ -3175,7 +3290,7 @@ export async function refreshAccountToken(
             return { ok: false, error: e.message };
           }
         },
-        { rTok: refreshToken, tz: formatAsciiTimezone() },
+        { rTok: refreshToken, tz: formatAsciiTimezone(), version: webVersion },
       );
 
       const json = refreshResult?.data;
