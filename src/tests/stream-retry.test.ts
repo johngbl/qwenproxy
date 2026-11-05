@@ -347,7 +347,6 @@ test("stream: internal_error during thinking_summary (before answer content) sti
       return sseResponse(
         'data: {"response.created":{"chat_id":"chat-think-err","response_id":"resp-think-err"}}\n\n',
         'data: {"response_id":"resp-think-err","choices":[{"delta":{"phase":"thinking_summary","extra":{"summary_thought":{"content":["Analyzing request..."]}}}}]}\n\n',
-        'data: {"response_id":"resp-think-err","choices":[{"delta":{"extra":{"update_member":true}}}]}\n\n',
         'data: {"error":{"code":"internal_error","details":"Ocorreu um erro inesperado. Tente novamente mais tarde."}}\n\n',
       );
     }
@@ -359,6 +358,7 @@ test("stream: internal_error during thinking_summary (before answer content) sti
   });
 
   try {
+    clearAllAccountCooldowns();
     const res = await postChat(
       [{ role: "user", content: "recover after thinking chunk" }],
       true,

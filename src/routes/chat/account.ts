@@ -1616,7 +1616,7 @@ async function tryCreateStreamWithRetry(
 			invalidateLogicalThreadParent(params.sessionId);
 		}
 
-		// If captcha recovery on this account already failed and is in its 60s
+		// If captcha recovery on this account already failed and is in its 30s
 		// backoff window, same-account retries will only hit `recovery_skipped`
 		// and waste time/RAM re-sending large payloads. Exit immediately so the
 		// outer loop quarantines this account and switches to a fresh one.
