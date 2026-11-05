@@ -130,9 +130,9 @@ const browserStreamBindingPages = new WeakSet<object>();
 const browserStreamBindingContexts = new WeakSet<object>();
 
 /**
- * Abort all active browser streams for an account immediately.
- * Called when an account page is navigated by captcha recovery, closed, or reset,
- * so in-flight streams fail fast (retryable) instead of stalling for minutes.
+ * Whether the account currently has an in-flight browser stream. Captcha
+ * recovery uses this to avoid navigating the page that is feeding a live
+ * stream (it opens an ephemeral tab instead).
  */
 export function hasActiveBrowserStreamsForAccount(accountId: string): boolean {
   for (const state of browserStreamStates.values()) {
@@ -143,6 +143,11 @@ export function hasActiveBrowserStreamsForAccount(accountId: string): boolean {
   return false;
 }
 
+/**
+ * Abort all active browser streams for an account immediately.
+ * Called when an account page is navigated by captcha recovery, closed, or reset,
+ * so in-flight streams fail fast (retryable) instead of stalling for minutes.
+ */
 export function abortActiveBrowserStreamsForAccount(
   accountId: string,
   reason = "Account browser stream interrupted (page context unloaded)",
@@ -1372,6 +1377,35 @@ async function createQwenBrowserResponse(
       async (page) => {
         await ensureBrowserStreamBinding(page);
         if (typeof (page as any).on === "function") {
+          const onFrameNavigated = (frame: any) => {
+            if (
+              !settled &&
+              typeof (page as any).mainFrame === "function" &&
+              frame === (page as any).mainFrame()
+            ) {
+              const url =
+                typeof frame.url === "function"
+                  ? frame.url()
+                  : String(frame.url || "");
+              // Same-origin SPA routing within Qwen Web (e.g. /c/<id>, /#) keeps
+              // the live DOM and MUST NOT abort the stream. Only a genuine
+              // unload (auth, Baxia punish, or another origin) kills the fetch.
+              if (
+                url.startsWith(qwenOrigin()) &&
+                !url.includes("/auth") &&
+                !url.includes("/login") &&
+                !url.includes("_____tmd_____") &&
+                !url.includes("/punish")
+              ) {
+                return;
+              }
+              handleBrowserStreamEvent(requestId, {
+                type: "error",
+                message: "Qwen browser page navigated away during stream",
+                errorName: "AbortError",
+              });
+            }
+          };
           const onPageClosed = () => {
             if (!settled) {
               handleBrowserStreamEvent(requestId, {
@@ -1381,10 +1415,12 @@ async function createQwenBrowserResponse(
               });
             }
           };
+          (page as any).on("framenavigated", onFrameNavigated);
           (page as any).on("close", onPageClosed);
           (page as any).on("crash", onPageClosed);
           pageCleanup = () => {
             try {
+              (page as any).off?.("framenavigated", onFrameNavigated);
               (page as any).off?.("close", onPageClosed);
               (page as any).off?.("crash", onPageClosed);
             } catch {}

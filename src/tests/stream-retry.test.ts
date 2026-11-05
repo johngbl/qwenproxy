@@ -341,13 +341,14 @@ test("stream: unknown upstream SSE code still retries (generic policy)", async (
   }
 });
 
-test("stream: error during thinking_summary phase (before answer content) still recovers", async () => {
+test("stream: internal_error during thinking_summary (before answer content) still recovers", async () => {
   const mock = setupQwenFetchMock((callIndex) => {
     if (callIndex === 1) {
-      return delayedSseResponse(
+      return sseResponse(
         'data: {"response.created":{"chat_id":"chat-think-err","response_id":"resp-think-err"}}\n\n',
         'data: {"response_id":"resp-think-err","choices":[{"delta":{"phase":"thinking_summary","extra":{"summary_thought":{"content":["Analyzing request..."]}}}}]}\n\n',
         'data: {"response_id":"resp-think-err","choices":[{"delta":{"extra":{"update_member":true}}}]}\n\n',
+        'data: {"error":{"code":"internal_error","details":"Ocorreu um erro inesperado. Tente novamente mais tarde."}}\n\n',
       );
     }
     return sseResponse(
@@ -364,6 +365,9 @@ test("stream: error during thinking_summary phase (before answer content) still 
     );
     assert.equal(res.status, 200);
     const text = await res.text();
+    // Reasoning was already streamed before the failure; recovery must still be
+    // allowed because no answer content or tool call reached the client.
+    assert.match(text, /Analyzing request/);
     assert.match(text, /recovered-after-thinking-error/);
     assert.match(text, /data: \[DONE\]/);
     assert.ok(mock.getCompletionCalls() >= 2);

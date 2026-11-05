@@ -1409,7 +1409,12 @@ export async function getBasicHeaders(accountId: string): Promise<{
     } else if (
       hadUsableHeaders &&
       headersAge > HEADER_CACHE_TTL * HEADER_REFRESH_THRESHOLD &&
-      !cache.refreshInProgress
+      !cache.refreshInProgress &&
+      // Header capture types into the chat input and sends a probe message on
+      // the account's page. Doing that while the account is serving a stream
+      // would mutate the live conversation (and can navigate the SPA), so the
+      // proactive refresh waits until the account has no active lease.
+      !hasActiveAccountLease(accountId)
     ) {
       // Background refresh at 70% TTL: keep headers fresh without blocking
       refreshHeadersInternal(accountId)
@@ -4794,6 +4799,10 @@ export async function evictIdlePlaywrightContextsToLimit(
   const candidates = priorityOrderForEviction(
     Array.from(accountPages.keys()).filter((accountId) => {
       if (isAccountServingStream(accountId)) return false;
+      // A request may hold a stream lease while still acquiring the page mutex
+      // (pre-stream setup). Closing that context would fail the request even
+      // though the mutex still looks idle, so treat any lease as "in use".
+      if (hasActiveAccountLease(accountId)) return false;
       const mutex = accountMutexes.get(accountId);
       return mutex?.isIdle();
     }),
@@ -4807,6 +4816,7 @@ export async function evictIdlePlaywrightContextsToLimit(
   for (const candidate of candidates) {
     if (accountPages.size <= max) break;
     if (isAccountServingStream(candidate.accountId)) continue;
+    if (hasActiveAccountLease(candidate.accountId)) continue;
     const mutex = accountMutexes.get(candidate.accountId);
     if (!mutex?.isIdle()) continue;
 
