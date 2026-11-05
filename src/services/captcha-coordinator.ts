@@ -92,6 +92,12 @@ export async function solveChallengeOnPage(
  * a punish document that is never rendered; opening that document in the page
  * is what gives the solver a slider to drive.
  */
+export function isCaptchaRecoveryInBackoff(accountId: string | undefined): boolean {
+  if (!accountId) return false;
+  const lastFailure = lastFailedRecoveryAt.get(accountId) ?? 0;
+  return Date.now() - lastFailure < FAILED_RECOVERY_BACKOFF_MS;
+}
+
 export async function recoverBaxiaCaptcha(
   accountId: string | undefined,
   label: string,
@@ -126,19 +132,41 @@ export async function recoverBaxiaCaptcha(
 
   activeCaptchaRecoveries.add(accountId);
   try {
-    const { abortActiveBrowserStreamsForAccount } = await import("./qwen.ts");
-    abortActiveBrowserStreamsForAccount(
-      accountId,
-      "Account stream interrupted by captcha challenge recovery",
-    );
-  } catch {}
-  try {
+    const { hasActiveBrowserStreamsForAccount } = await import("./qwen.ts");
+    const hasConcurrentStream = hasActiveBrowserStreamsForAccount(accountId);
+
     // recoverOnTimeout: false ensures that if the captcha solve times out,
     // withAccountPage does NOT destructively kill the browser context, which
     // previously caused "Target page, context or browser has been closed" mid-slider.
     const solved = await withAccountPage(
       accountId,
-      (page) => solveChallengeOnPage(page, challengeUrl),
+      async (page) => {
+        // If another stream is actively running on this account's primary page,
+        // NEVER navigate `page` away (which would unload its DOM and kill the stream).
+        // Instead, try in-place modal solve first, or open an ephemeral tab in the
+        // same BrowserContext so cookies/x5sec are solved without touching `page`.
+        if (hasConcurrentStream) {
+          const solverOptions = {
+            maxAttempts: config.captcha.maxAttempts,
+            retryDelayMs: config.captcha.retryDelayMs,
+            settleMs: config.captcha.settleMs,
+          };
+          if (await solveBaxiaCaptcha(page, { ...solverOptions, waitForMs: 0 })) {
+            return true;
+          }
+          const ctx = typeof page.context === "function" ? page.context() : null;
+          if (ctx && typeof ctx.newPage === "function") {
+            const tempPage = await ctx.newPage();
+            try {
+              return await solveChallengeOnPage(tempPage, challengeUrl);
+            } finally {
+              await tempPage.close({ runBeforeUnload: false }).catch(() => {});
+            }
+          }
+          return false;
+        }
+        return await solveChallengeOnPage(page, challengeUrl);
+      },
       solverOperationTimeoutMs,
       solverOperationTimeoutMs,
       false,

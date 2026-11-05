@@ -68,6 +68,7 @@ import {
   unmarkAccountHeadersReady,
   isAccountHeadersReady,
   markAccountRateLimited,
+  getAccountCooldownInfo,
 } from "../core/account-manager.ts";
 import { getAccountsByPriority } from "../core/account-priority.ts";
 import {
@@ -1411,15 +1412,11 @@ export async function getBasicHeaders(accountId: string): Promise<{
       !cache.refreshInProgress
     ) {
       // Background refresh at 70% TTL: keep headers fresh without blocking
-      cache.refreshInProgress = true;
       refreshHeadersInternal(accountId)
         .catch((error) => {
           console.warn(
             `⚠️  [Playwright] Background header refresh failed for ${accountId}: ${getErrorMessage(error)}`,
           );
-        })
-        .finally(() => {
-          cache.refreshInProgress = false;
         });
     }
 
@@ -1569,8 +1566,13 @@ export async function initPlaywrightForAccount(
         return;
       }
 
-    // If a context limit is configured, make room by closing idle contexts.
-    await evictIdlePlaywrightContextsToLimit().catch(() => {});
+    // If a context limit is configured, make room BEFORE launching by evicting down to (max - 1)
+    // so the new context brings total active contexts to at most max.
+    if (config.playwright.maxActiveContexts > 0) {
+      await evictIdlePlaywrightContextsToLimit(
+        Math.max(1, config.playwright.maxActiveContexts - 1),
+      ).catch(() => {});
+    }
 
     const profilePath = getAccountProfilePath(account.id);
     const fingerprint = getFingerprintProfile(account.id);
@@ -1882,12 +1884,17 @@ export async function initPlaywrightForAccount(
         await captureQwenHeaders(account.id);
       }
 
-      // Header capture may leave the UI on a generated chat page. Return the
-      // primary tab to the canonical chat home.
+      // Header capture may leave the UI on a punish or auth page. Return the
+      // primary tab to the canonical chat home only when not already on a clean Qwen page.
       if (!acctPage.isClosed()) {
         try {
           const currentUrl = new URL(acctPage.url());
-          if (currentUrl.origin !== qwenOrigin() || currentUrl.pathname !== "/") {
+          if (
+            currentUrl.origin !== qwenOrigin() ||
+            currentUrl.pathname.includes("/auth") ||
+            currentUrl.pathname.includes("/login") ||
+            currentUrl.pathname.includes("_____tmd_____")
+          ) {
             await acctPage.goto(qwenUrl("/"), {
               waitUntil: "domcontentloaded",
               timeout: config.timeouts.navigation,
@@ -1907,6 +1914,7 @@ export async function initPlaywrightForAccount(
     } finally {
       release();
     }
+    await evictIdlePlaywrightContextsToLimit().catch(() => {});
   })();
 
   try {
@@ -4171,19 +4179,32 @@ async function refreshHeadersInternal(
         await executeReauth();
       } else {
         try {
-          await page.goto(qwenUrl("/"), {
-            waitUntil: "domcontentloaded",
-            timeout: Math.min(
-              config.timeouts.navigation,
-              boundedTimeoutMs,
-              SESSION_PROBE_NAVIGATION_TIMEOUT_MS,
-            ),
-          });
-          await sleep(2000);
-          const url = page.url();
+          const currentUrl = typeof page.url === "function" ? page.url() : "";
+          const needsNavigation =
+            !currentUrl.startsWith(qwenOrigin()) ||
+            currentUrl.includes("/auth") ||
+            currentUrl.includes("/login") ||
+            currentUrl.includes("_____tmd_____");
+
+          if (needsNavigation) {
+            await page.goto(qwenUrl("/"), {
+              waitUntil: "domcontentloaded",
+              timeout: Math.min(
+                config.timeouts.navigation,
+                boundedTimeoutMs,
+                SESSION_PROBE_NAVIGATION_TIMEOUT_MS,
+              ),
+            });
+            await sleep(2000);
+          }
+
+          const url = typeof page.url === "function" ? page.url() : "";
           const isAuthUrl = url.includes("auth") || url.includes("login");
           if (isAuthUrl) {
-            await executeReauth();
+            const refreshed = await refreshAccountToken(accountId);
+            if (!refreshed.success) {
+              await executeReauth();
+            }
           }
         } catch (navErr) {
           console.warn(
@@ -4243,12 +4264,18 @@ async function refreshHeadersInternal(
 
     await captureQwenHeaders(accountId, undefined, boundedTimeoutMs);
 
-    // Best-effort restore: header capture can leave the tab on a chat page.
+    // Best-effort restore: if header capture left the tab on a punish/auth URL,
+    // return to the canonical chat home without reloading an already-clean Qwen page.
     const capturedPage = accountPages.get(accountId);
     if (capturedPage && !capturedPage.isClosed()) {
       try {
         const currentUrl = new URL(capturedPage.url());
-        if (currentUrl.origin !== qwenOrigin() || currentUrl.pathname !== "/") {
+        if (
+          currentUrl.origin !== qwenOrigin() ||
+          currentUrl.pathname.includes("/auth") ||
+          currentUrl.pathname.includes("/login") ||
+          currentUrl.pathname.includes("_____tmd_____")
+        ) {
           await capturedPage.goto(qwenUrl("/"), {
             waitUntil: "domcontentloaded",
             timeout: Math.min(config.timeouts.navigation, boundedTimeoutMs),
@@ -4693,7 +4720,13 @@ function priorityOrderForEviction(accountIds: string[]): string[] {
   const ranked = getAccountsByPriority(accountIds.map((id) => ({ id })));
   const rank = new Map<string, number>();
   for (const [index, account] of ranked.entries()) {
-    rank.set(account.id, index);
+    // Accounts currently on cooldown (RateLimited / MembershipLimit / WafChallenge)
+    // cannot serve traffic and must be evicted before any healthy warm account.
+    if (getAccountCooldownInfo(account.id)) {
+      rank.set(account.id, Number.MAX_SAFE_INTEGER);
+    } else {
+      rank.set(account.id, index);
+    }
   }
   return orderContextsForEviction(
     accountIds,
@@ -4750,15 +4783,17 @@ export async function closeIdlePlaywrightAccounts(
  * PLAYWRIGHT_MAX_ACTIVE_CONTEXTS. Never closes a context whose account mutex
  * is busy, so active streams are preserved.
  */
-export async function evictIdlePlaywrightContextsToLimit(): Promise<number> {
-  const max = config.playwright.maxActiveContexts;
-  if (max <= 0) return 0;
+export async function evictIdlePlaywrightContextsToLimit(
+  targetLimit?: number,
+): Promise<number> {
+  const configuredMax = config.playwright.maxActiveContexts;
+  if (configuredMax <= 0) return 0;
+  const max = targetLimit !== undefined ? Math.max(0, targetLimit) : configuredMax;
   if (accountPages.size <= max) return 0;
 
   const candidates = priorityOrderForEviction(
     Array.from(accountPages.keys()).filter((accountId) => {
       if (isAccountServingStream(accountId)) return false;
-      if (isAccountRecentlyActive(accountId, 30_000)) return false;
       const mutex = accountMutexes.get(accountId);
       return mutex?.isIdle();
     }),

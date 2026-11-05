@@ -883,10 +883,14 @@ export async function startServer(options?: {
         void (async () => {
           const { ensureAccountInPriority } = await import("../core/account-priority.ts");
 
-          const targetWarmTotal = Math.min(
-            config.playwright.startupWarmAccounts,
-            totalAccounts,
-          );
+          const maxWarmCap =
+            config.playwright.maxActiveContexts > 0
+              ? Math.min(
+                  config.playwright.startupWarmAccounts,
+                  config.playwright.maxActiveContexts,
+                )
+              : config.playwright.startupWarmAccounts;
+          const targetWarmTotal = Math.min(maxWarmCap, totalAccounts);
           let currentReadyCount = readyAccountIds.size;
 
           if (currentReadyCount < targetWarmTotal && remainingAccounts.length > 0) {

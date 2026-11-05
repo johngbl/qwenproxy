@@ -6,6 +6,7 @@ delete process.env.API_KEY;
 
 import { app } from "../api/server.js";
 import { RetryableQwenStreamError } from "../services/qwen.ts";
+import { clearAllAccountCooldowns } from "../core/account-manager.ts";
 
 function sseResponse(...chunks: string[]): Response {
   const stream = new ReadableStream({
@@ -171,6 +172,7 @@ test("stream: network error while reading retries before emitting output", async
     );
   } finally {
     mock.restore();
+    clearAllAccountCooldowns();
   }
 });
 
@@ -199,6 +201,7 @@ test("stream: internal_error mid-stream retries and succeeds", async () => {
     );
   } finally {
     mock.restore();
+    clearAllAccountCooldowns();
   }
 });
 
@@ -228,6 +231,7 @@ test("non-stream: invalid_input forces retry with new chat/full context", async 
     assert.ok(mock.getCompletionCalls() >= 2);
   } finally {
     mock.restore();
+    clearAllAccountCooldowns();
   }
 });
 
@@ -253,6 +257,7 @@ test("stream: quota_limit mid-stream retries instead of hard fail", async () => 
     assert.ok(mock.getCompletionCalls() >= 2);
   } finally {
     mock.restore();
+    clearAllAccountCooldowns();
   }
 });
 
@@ -283,6 +288,7 @@ test("stream: quota_limit after response.created retries inside committed SSE", 
     assert.ok(mock.getCompletionCalls() >= 2);
   } finally {
     mock.restore();
+    clearAllAccountCooldowns();
   }
 });
 
@@ -331,5 +337,38 @@ test("stream: unknown upstream SSE code still retries (generic policy)", async (
     assert.ok(mock.getCompletionCalls() >= 2);
   } finally {
     mock.restore();
+    clearAllAccountCooldowns();
+  }
+});
+
+test("stream: error during thinking_summary phase (before answer content) still recovers", async () => {
+  const mock = setupQwenFetchMock((callIndex) => {
+    if (callIndex === 1) {
+      return delayedSseResponse(
+        'data: {"response.created":{"chat_id":"chat-think-err","response_id":"resp-think-err"}}\n\n',
+        'data: {"response_id":"resp-think-err","choices":[{"delta":{"phase":"thinking_summary","extra":{"summary_thought":{"content":["Analyzing request..."]}}}}]}\n\n',
+        'data: {"response_id":"resp-think-err","choices":[{"delta":{"extra":{"update_member":true}}}]}\n\n',
+      );
+    }
+    return sseResponse(
+      'data: {"response.created":{"chat_id":"chat-think-ok","response_id":"resp-think-ok"}}\n\n',
+      'data: {"response_id":"resp-think-ok","choices":[{"delta":{"phase":"answer","content":"recovered-after-thinking-error"}}]}\n\n',
+      "data: [DONE]\n\n",
+    );
+  });
+
+  try {
+    const res = await postChat(
+      [{ role: "user", content: "recover after thinking chunk" }],
+      true,
+    );
+    assert.equal(res.status, 200);
+    const text = await res.text();
+    assert.match(text, /recovered-after-thinking-error/);
+    assert.match(text, /data: \[DONE\]/);
+    assert.ok(mock.getCompletionCalls() >= 2);
+  } finally {
+    mock.restore();
+    clearAllAccountCooldowns();
   }
 });

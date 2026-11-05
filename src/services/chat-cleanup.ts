@@ -79,7 +79,15 @@ export async function deleteChatsForAccountId(accountId: string): Promise<boolea
   if (!credentials) {
     throw new Error(`Credenciais da conta ${account.email} não encontradas.`);
   }
-  return deleteChatsForAccount(credentials);
+  const wasInitialized = isPlaywrightInitialized(account.id);
+  try {
+    return await deleteChatsForAccount(credentials);
+  } finally {
+    if (!wasInitialized && !isAuthMockEnabled()) {
+      const { closePlaywrightForAccount } = await import("./playwright.ts");
+      await closePlaywrightForAccount(account.id).catch(() => {});
+    }
+  }
 }
 
 export async function deleteChatsForConfiguredAccounts(keepBrowserOpen = false): Promise<DeleteChatsResult> {
@@ -100,6 +108,7 @@ export async function deleteChatsForConfiguredAccounts(keepBrowserOpen = false):
       const account = accounts[i];
       const currentIdx = i + 1;
       const totalCount = accounts.length;
+      const wasInitialized = isPlaywrightInitialized(account.id);
       try {
         const ok = await deleteChatsForAccount(account, currentIdx, totalCount);
         if (ok) succeeded++;
@@ -109,7 +118,7 @@ export async function deleteChatsForConfiguredAccounts(keepBrowserOpen = false):
           error instanceof Error ? error.message : String(error),
         );
       } finally {
-        if (!keepBrowserOpen) {
+        if ((!keepBrowserOpen || !wasInitialized) && !isAuthMockEnabled()) {
           const { closePlaywrightForAccount } = await import("./playwright.ts");
           await closePlaywrightForAccount(account.id).catch(() => {});
         }

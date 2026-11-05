@@ -1,7 +1,15 @@
 import test from "node:test";
 import assert from "node:assert";
 
-import { orderContextsForEviction } from "../services/playwright.ts";
+import {
+  orderContextsForEviction,
+  evictIdlePlaywrightContextsToLimit,
+  registerPlaywrightAccountForTests,
+  unregisterPlaywrightAccountForTests,
+  isPlaywrightInitialized,
+} from "../services/playwright.ts";
+import { config } from "../core/config.ts";
+import { markAccountRateLimited, clearAccountCooldown } from "../core/account-manager.ts";
 
 test("context eviction order: unranked first, then lowest priority, then oldest activity", () => {
   const rank = new Map<string, number>([
@@ -53,4 +61,31 @@ test("context eviction order: same priority keeps the recently used context", ()
   );
   // b was used most recently -> survives, a is evicted first.
   assert.deepStrictEqual(order, ["a", "b"]);
+});
+
+test("evictIdlePlaywrightContextsToLimit evicts recently active contexts during rapid rotation and prioritizes cooldown accounts", async () => {
+  const prevMax = config.playwright.maxActiveContexts;
+  config.playwright.maxActiveContexts = 2;
+  const now = Date.now();
+  const stubPage = () => ({ isClosed: () => false, url: () => "https://chat.qwen.ai/" } as any);
+
+  registerPlaywrightAccountForTests("rapid-1", stubPage(), now - 2000);
+  registerPlaywrightAccountForTests("rapid-2", stubPage(), now - 1000);
+  registerPlaywrightAccountForTests("rapid-3", stubPage(), now - 500);
+  // Put rapid-3 on cooldown even though it was the most recently active
+  markAccountRateLimited("rapid-3", 60_000, "RateLimited", { silent: true });
+
+  try {
+    const evicted = await evictIdlePlaywrightContextsToLimit();
+    assert.strictEqual(evicted, 1, "must evict 1 context to stay within maxActiveContexts=2 even when all were active <30s ago");
+    assert.strictEqual(isPlaywrightInitialized("rapid-3"), false, "cooldown account must be evicted first");
+    assert.strictEqual(isPlaywrightInitialized("rapid-1"), true);
+    assert.strictEqual(isPlaywrightInitialized("rapid-2"), true);
+  } finally {
+    config.playwright.maxActiveContexts = prevMax;
+    clearAccountCooldown("rapid-3");
+    unregisterPlaywrightAccountForTests("rapid-1");
+    unregisterPlaywrightAccountForTests("rapid-2");
+    unregisterPlaywrightAccountForTests("rapid-3");
+  }
 });

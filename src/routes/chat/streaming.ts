@@ -1259,8 +1259,8 @@ export async function processStreamingResponse(
       };
 
       const emitAnswerText = async (textChunk: string) => {
-        if (textChunk) emittedModelOutput = true;
         if (!toolParser) {
+          if (textChunk) emittedModelOutput = true;
           finalContent += textChunk;
           writeDeltaEvent({ content: textChunk });
           return;
@@ -1777,6 +1777,23 @@ export async function processStreamingResponse(
               .replace(/\\\\/g, "\\");
 
             if (unescaped) {
+              if (!emittedModelOutput && isOverloadMessage(unescaped)) {
+                const overloadErr = toRetryableStreamError(
+                  "server_overloaded",
+                  unescaped,
+                  {
+                    switchAccount: true,
+                    forceNewChat: true,
+                    reason: "server_busy",
+                    accountCooldownMs: OVERLOAD_COOLDOWN_MS,
+                    accountCooldownReason: "ServerOverloaded",
+                  },
+                );
+                if (await recoverFromStreamError(overloadErr)) {
+                  break;
+                }
+                throw overloadErr;
+              }
               const result = getIncrementalDelta(
                 lastRawContent,
                 unescaped,
@@ -1942,7 +1959,6 @@ export async function processStreamingResponse(
               if (vStr === "FINISHED") continue;
 
               if (isThinkingChunk) {
-                emittedModelOutput = true;
                 reasoningBuffer += vStr;
                 writeDeltaEvent({ reasoning_content: vStr });
               } else {

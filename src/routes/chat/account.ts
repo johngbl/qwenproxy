@@ -8,6 +8,7 @@ import {
 } from "../../core/account-manager.ts";
 import { markAccountSuccessful, markAccountFailed, getAccountsByPriority } from "../../core/account-priority.ts";
 import { recordWafHardBlock, noteWafRecovery } from "../../core/waf-isolation.ts";
+import { isCaptchaRecoveryInBackoff } from "../../services/captcha-coordinator.ts";
 import { loadAccounts, type QwenAccount } from "../../core/accounts.ts";
 import { config, type ChatMode } from "../../core/config.ts";
 import { ClientAbortedError, UpstreamRateLimit, ValidationError } from "../../core/errors.ts";
@@ -1613,6 +1614,17 @@ async function tryCreateStreamWithRetry(
 		// bound for the next turn.
 		if (policy.reason === "corrupted_chat_history") {
 			invalidateLogicalThreadParent(params.sessionId);
+		}
+
+		// If captcha recovery on this account already failed and is in its 60s
+		// backoff window, same-account retries will only hit `recovery_skipped`
+		// and waste time/RAM re-sending large payloads. Exit immediately so the
+		// outer loop quarantines this account and switches to a fresh one.
+		if (
+			policy.reason === "anti_bot" &&
+			isCaptchaRecoveryInBackoff(currentAccountId)
+		) {
+			return { success: false, error: err };
 		}
 
 		// A generic invalid_input is often a stale/corrupted upstream chat rather

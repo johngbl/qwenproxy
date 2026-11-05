@@ -148,14 +148,15 @@ export class Watchdog extends EventEmitter {
     // (idle mutex, no active stream, preserves the max-active-context minimum)
     // so the next health check sees the freed RSS.
     try {
-      const { closeIdlePlaywrightAccounts } = await import(
+      const { closeIdlePlaywrightAccounts, evictIdlePlaywrightContextsToLimit } = await import(
         "../services/playwright.js"
       );
+      const evicted = await evictIdlePlaywrightContextsToLimit(1);
       const closed = await closeIdlePlaywrightAccounts(
         config.sessionKeeper.idleMs,
       );
-      if (closed > 0) {
-        this.emit("recovery:ram:contexts-closed", closed);
+      if (evicted + closed > 0) {
+        this.emit("recovery:ram:contexts-closed", evicted + closed);
       }
     } catch {
       // Playwright may not be initialized (mock mode / pre-start); RSS relief
