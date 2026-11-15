@@ -174,7 +174,7 @@ const envSchema = z
 
 
     QWEN_BASE_URL: z.string().default("https://chat.qwen.ai"),
-    QWEN_CHAT_POOL_SIZE: z.string().default("0"),
+    QWEN_CHAT_POOL_SIZE: z.string().default("3"),
     QWEN_CHAT_POOL_MODELS: z.string().default("qwen3.7-plus"),
     QWEN_PERSONALIZATION_FROM_REQUEST: z.string().default("true"),
     QWEN_PERSONALIZATION_VERIFY_GET: z.string().default("true"),

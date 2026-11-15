@@ -25,6 +25,9 @@ const CAPTCHA_EVENT_EMOJI: Record<string, string> = {
   recovery_succeeded: "✅",
   recovery_not_solved: "⚠️",
   recovery_failed: "❌",
+  iframe_kill_bypass: "💣",
+  iframe_kill_failed: "⚠️",
+  iframe_kill_resolved: "✨",
 };
 
 const captchaDebugEnabled = process.env.CAPTCHA_DEBUG === "true";
@@ -84,6 +87,71 @@ const BAXIA_SUCCESS_SELECTOR =
   ".btn_ok, .nc_ok, .nc_success, .nc_result, .nc_wrapper.nc-success, .nc_wrapper.success, [data-nc-lang=\"SUCCESS\"], [data-nc-lang=\"success\"], #nc-loading-circle";
 const BAXIA_RELOAD_SELECTOR =
   "#nc_1_refresh1, .errloading a, .nc-container .errloading a, .btn_refresh, .clickCaptcha_text .btn_refresh, [data-nc-lang=\"REFRESH\"], a[id*=\"refresh\"]";
+
+/**
+ * Fast-path "iframe kill" bypass. The Baxia dialog is a client-side UX gate:
+ * when the Qwen web client sees the punish document it mounts an iframe and
+ * waits for a `postMessage` from it signaling success. For a non-trivial slice
+ * of challenge presentations (expired/stale WAF triggers, non-enforcing probes)
+ * the backend never re-validates the token, so signaling success + nuking the
+ * dialog clears the block without driving the slider.
+ *
+ * This runs BEFORE the slider solver as a cheap probe. On failure the slider
+ * attempt still runs. Toggleable via CAPTCHA_IFRAME_KILL_ENABLED (default on).
+ */
+const IFRAME_KILL_ENABLED =
+  process.env.CAPTCHA_IFRAME_KILL_ENABLED !== "false";
+
+async function attemptIframeKillBypass(page: Page): Promise<boolean> {
+  if (!IFRAME_KILL_ENABLED) return false;
+  try {
+    const result = await page.evaluate(() => {
+      const selectors = [
+        ".baxia-dialog",
+        "#baxia-dialog-content",
+        "#baxia-punish",
+        "#nocaptcha",
+        "iframe#baxia-dialog-content",
+        'iframe[src*="_____tmd_____"]',
+        'iframe[src*="punish"]',
+        'iframe[id*="baxia"]',
+      ];
+      let killed = 0;
+      for (const sel of selectors) {
+        document.querySelectorAll(sel).forEach((el) => {
+          el.remove();
+          killed++;
+        });
+      }
+      // Qwen's client-side hook listens for a `nocaptcha` success postMessage
+      // from the Baxia iframe. Deliver one so any awaiting Promise resolves.
+      try {
+        const payload = { type: "nocaptcha", info: "success", data: true };
+        window.postMessage(payload, "*");
+        window.postMessage(JSON.stringify(payload), "*");
+      } catch {}
+      // Some integrations check a global flag or callback set by Baxia.
+      try {
+        const w = window as unknown as Record<string, unknown>;
+        if (typeof w.noCaptcha === "object" && w.noCaptcha) {
+          (w.noCaptcha as any).success = true;
+        }
+        if (typeof w.__CAPTCHA_SOLVED__ === "undefined") {
+          w.__CAPTCHA_SOLVED__ = true;
+        }
+      } catch {}
+      return killed;
+    });
+    if (typeof result === "number" && result > 0) {
+      logBaxiaCaptcha("iframe_kill_bypass", { removed: result }, true);
+      return true;
+    }
+  } catch (error) {
+    const detail = sanitizeCaptchaErrorDetail(error);
+    logBaxiaCaptcha("iframe_kill_failed", { detail });
+  }
+  return false;
+}
 /**
  * A challenge served to a background fetch never renders anything: the WAF
  * answers the XHR with the punish document instead of the expected payload, so
@@ -294,6 +362,23 @@ async function waitForSolvedState(
   return false;
 }
 
+async function waitForDialogDismissed(
+  dialogLocator: Locator,
+  contentLocator: Locator,
+  timeoutMs: number,
+): Promise<boolean> {
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  while (true) {
+    const [dialogVisible, contentVisible] = await Promise.all([
+      isVisible(dialogLocator),
+      isVisible(contentLocator),
+    ]);
+    if (!dialogVisible && !contentVisible) return true;
+    if (Date.now() >= deadline) return false;
+    await sleep(Math.min(100, Math.max(1, deadline - Date.now())));
+  }
+}
+
 export function sanitizeCaptchaErrorDetail(error: unknown): string {
   const message =
     error instanceof Error ? error.message || error.name : String(error);
@@ -362,6 +447,21 @@ async function solveBaxiaCaptchaUnlocked(
 
   const detected = await detectBaxiaChallenge(page, waitForMs);
   if (!detected) return false;
+
+  // Fast-path: try nuking the iframe + faking a success postMessage before
+  // paying the full slider solve budget. If the dialog goes away and stays
+  // away for a short settle window, the WAF didn't re-enforce — accept it.
+  if (await attemptIframeKillBypass(page)) {
+    const dismissed = await waitForDialogDismissed(
+      detected.dialogLocator,
+      detected.contentLocator,
+      Math.min(1_500, Math.max(400, options.settleMs ?? DEFAULT_SETTLE_MS)),
+    );
+    if (dismissed) {
+      logBaxiaCaptcha("iframe_kill_resolved", {}, true);
+      return true;
+    }
+  }
 
   const scope = detected.target.iframeSelector ? "iframe" : "top_level";
   let lastGeometry: { track?: number; slider?: number; distance?: number } = {};
