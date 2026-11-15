@@ -1643,10 +1643,35 @@ export async function initPlaywrightForAccount(
 
       // Block telemetry pixels, third-party trackers, ad scripts and heavy video/audio media to speed up page loads by 30-50%
       // Invariant 5: NEVER abort image or stylesheet requests needed by Baxia slider (Canvas tiles on img.alicdn.com)
+      const iframeKillRouteEnabled =
+        process.env.CAPTCHA_IFRAME_KILL_ROUTE === "true";
       await acctContext.route("**/*", (route) => {
         const req = route.request();
         const url = req.url();
         const type = req.resourceType();
+
+        // 0. Optional iframe-kill short-circuit: fulfill the Baxia/AWSC
+        //    validation fetch with a synthetic success. Off by default because
+        //    WAF-enforced endpoints will still reject the next real API call,
+        //    but useful for accounts where the dialog is a pure UX gate.
+        if (
+          iframeKillRouteEnabled &&
+          (url.includes("/_____tmd_____/") ||
+            url.includes("aliyuncaptcha") ||
+            url.includes("AWSC/awsc") ||
+            url.includes("nocaptcha-amdc")) &&
+          type !== "document" &&
+          type !== "image" &&
+          type !== "stylesheet"
+        ) {
+          return route
+            .fulfill({
+              status: 200,
+              contentType: "application/json",
+              body: JSON.stringify({ success: true, code: 0, result: true }),
+            })
+            .catch(() => {});
+        }
 
         // 1. Heavy video/audio media (never used for text completions)
         if (type === "media") {
