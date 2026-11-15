@@ -21,6 +21,7 @@ export function getDefaultQwenUserAgent(major = getChromeMajor()): string {
 }
 
 let dynamicWebVersion: string | null = null;
+let dynamicBxVersion: string | null = null;
 
 export function updateQwenWebVersion(version?: string | null): void {
   if (version && typeof version === "string" && /^\d+\.\d+\.\d+/.test(version)) {
@@ -30,6 +31,22 @@ export function updateQwenWebVersion(version?: string | null): void {
 
 export function getQwenWebVersion(): string {
   return dynamicWebVersion || config.qwen.webVersion;
+}
+
+/**
+ * Aliyun Baxia publishes its SDK version at `window.baxiaCommon.version` and
+ * also sends it as the `bx-v` header. Detecting it at runtime keeps the
+ * anti-bot fingerprint aligned when Alibaba ships a new SDK; the static
+ * QWEN_BX_V value remains as a last-resort fallback.
+ */
+export function updateQwenBxVersion(version?: string | null): void {
+  if (version && typeof version === "string" && /^\d+\.\d+\.\d+/.test(version)) {
+    dynamicBxVersion = version.trim();
+  }
+}
+
+export function getQwenBxVersion(): string {
+  return dynamicBxVersion || config.auth.bxV;
 }
 
 export const QWEN_WEB_VERSION = config.qwen.webVersion;
@@ -77,7 +94,7 @@ export function buildQwenRequestHeaders(
     Connection: "keep-alive",
     "User-Agent": opts.userAgent || getDefaultQwenUserAgent(),
     "X-Request-Id": uuidv4(),
-    "bx-v": opts.bxV || "2.5.37",
+    "bx-v": opts.bxV || getQwenBxVersion(),
     source: "web",
     version: opts.version || getQwenWebVersion(),
     timezone: opts.extra?.timezone || opts.extra?.Timezone || formatAsciiTimezone(),

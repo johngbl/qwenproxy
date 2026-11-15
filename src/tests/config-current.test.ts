@@ -62,21 +62,32 @@ test("config keeps Qwen anti-bot static config limited to bx-v fallback and web 
   assert.equal("bxUa" in config.auth, false);
   assert.equal("bxUmidtoken" in config.auth, false);
   // Version header default matches the audited real-client bundle snapshot
-  // (network HAR: qwen-chat-fe/0.3.26).
-  assert.equal(config.qwen.webVersion, "0.3.26");
+  // (live bundle: qwen-chat-fe/0.3.43).
+  assert.equal(config.qwen.webVersion, "0.3.43");
 });
 
 test("qwen web version updates dynamically from live DOM/header discoveries", async () => {
   const { getQwenWebVersion, updateQwenWebVersion } = await import("../services/qwen-headers.ts");
-  assert.equal(getQwenWebVersion(), "0.3.26");
+  assert.equal(getQwenWebVersion(), "0.3.43");
   updateQwenWebVersion("0.3.30");
   assert.equal(getQwenWebVersion(), "0.3.30");
   // Invalid formats should be ignored
   updateQwenWebVersion("invalid");
   assert.equal(getQwenWebVersion(), "0.3.30");
   // Reset back to baseline
-  updateQwenWebVersion("0.3.26");
-  assert.equal(getQwenWebVersion(), "0.3.26");
+  updateQwenWebVersion("0.3.43");
+  assert.equal(getQwenWebVersion(), "0.3.43");
+});
+
+test("baxia SDK version updates dynamically from the live page and captured headers", async () => {
+  const { getQwenBxVersion, updateQwenBxVersion } = await import("../services/qwen-headers.ts");
+  assert.equal(getQwenBxVersion(), "2.5.37");
+  updateQwenBxVersion("2.5.40");
+  assert.equal(getQwenBxVersion(), "2.5.40");
+  updateQwenBxVersion("invalid");
+  assert.equal(getQwenBxVersion(), "2.5.40");
+  updateQwenBxVersion("2.5.37");
+  assert.equal(getQwenBxVersion(), "2.5.37");
 });
 
 test("prompt limits reject byte and model-context overages locally", () => {

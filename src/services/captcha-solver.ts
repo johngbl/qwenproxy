@@ -25,6 +25,11 @@ const CAPTCHA_EVENT_EMOJI: Record<string, string> = {
   recovery_succeeded: "✅",
   recovery_not_solved: "⚠️",
   recovery_failed: "❌",
+  aliyun_detected: "🧩",
+  aliyun_offset_failed: "📐",
+  aliyun_geometry: "📐",
+  aliyun_solve_succeeded: "✅",
+  aliyun_solve_failed: "❌",
 };
 
 const captchaDebugEnabled = process.env.CAPTCHA_DEBUG === "true";
@@ -61,6 +66,7 @@ const BAXIA_IFRAME_SELECTORS = [
   `${BAXIA_CONTENT_SELECTOR} iframe`,
   "iframe#baxia-dialog-content",
   'iframe[src*="_____tmd_____/punish"]',
+  'iframe[src*="nocaptcha"]',
 ] as const;
 
 const BAXIA_DOCUMENT_SELECTORS = [
@@ -77,9 +83,9 @@ const BAXIA_DOCUMENT_SELECTORS = [
 export const BAXIA_IFRAME_SELECTOR = BAXIA_IFRAME_SELECTORS.join(", ");
 
 const BAXIA_SLIDER_SELECTOR =
-  "#nc_1_n1z, .nc_1_n1z, .btn_slide, .nc_wrapper .btn_slide, ._nc .btn_slide, .nc-container .btn_slide";
+  "#nc_1_n1z, .nc_1_n1z, .btn_slide, .nc_iconfont.btn_slide, span[id*=\"_n1z\"], .nc_wrapper .btn_slide, ._nc .btn_slide, .nc-container .btn_slide";
 const BAXIA_TRACK_SELECTOR =
-  "#nc_1_n1t, .nc_scale, .nc_wrapper .nc_scale, ._nc .nc_scale, .nc-container .nc_scale";
+  "#nc_1_n1t, .nc_scale, span[id*=\"_n1t\"], .nc_wrapper .nc_scale, ._nc .nc_scale, .nc-container .nc_scale";
 const BAXIA_SUCCESS_SELECTOR =
   ".btn_ok, .nc_ok, .nc_success, .nc_result, .nc_wrapper.nc-success, .nc_wrapper.success, [data-nc-lang=\"SUCCESS\"], [data-nc-lang=\"success\"], #nc-loading-circle";
 const BAXIA_RELOAD_SELECTOR =
@@ -152,6 +158,398 @@ const DEFAULT_MAX_ATTEMPTS = 3;
 const DEFAULT_RETRY_DELAY_MS = 1_000;
 const DEFAULT_SETTLE_MS = 2_000;
 const DEFAULT_SLIDER_TIMEOUT_MS = 8_000;
+
+/**
+ * Aliyun WAF jigsaw challenge used by the sign-in page. It is a separate
+ * widget from the Baxia/TMD NC dialog: an embedded block (not an iframe) with
+ * a background image, a transparent puzzle piece, and its own slider track.
+ */
+export const ALIYUN_WAF_CAPTCHA_SELECTOR = "#waf_nc_block";
+export const ALIYUN_WAF_CAPTCHA_WIDGET = "#aliyunCaptcha-window-embed";
+const ALIYUN_WAF_BLOCK_SELECTORS = [
+  ALIYUN_WAF_CAPTCHA_SELECTOR,
+  ALIYUN_WAF_CAPTCHA_WIDGET,
+] as const;
+const ALIYUN_PUZZLE_BACKGROUND_SELECTOR = "#aliyunCaptcha-img";
+const ALIYUN_PUZZLE_PIECE_SELECTOR = "#aliyunCaptcha-puzzle";
+const ALIYUN_PUZZLE_SLIDER_SELECTOR = "#aliyunCaptcha-sliding-slider";
+const ALIYUN_PUZZLE_TRACK_SELECTOR = "#aliyunCaptcha-sliding-body";
+
+interface AliyunPuzzleOffset {
+  ok: boolean;
+  offsetX?: number;
+  naturalWidth?: number;
+  reason?: string;
+}
+
+async function findVisibleLocatorWithin(
+  page: Page,
+  selectors: readonly string[],
+  timeoutMs: number,
+): Promise<{ selector: string; locator: Locator } | null> {
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  while (true) {
+    const found = await findVisibleLocator(page, selectors);
+    if (found) return found;
+    if (Date.now() >= deadline) return null;
+    await sleep(Math.min(150, Math.max(1, deadline - Date.now())));
+  }
+}
+
+async function waitForHidden(locator: Locator, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  while (true) {
+    if (!(await isVisible(locator))) return true;
+    if (Date.now() >= deadline) return false;
+    await sleep(Math.min(100, Math.max(1, deadline - Date.now())));
+  }
+}
+
+/**
+ * Locate the hole in the background image by scoring the vertical edges of
+ * the puzzle-piece silhouette against the background gradients. Returns the
+ * horizontal offset in the image's natural coordinate space.
+ */
+async function computeAliyunPuzzleOffset(
+  page: Page,
+): Promise<AliyunPuzzleOffset> {
+  return page.evaluate((): Promise<AliyunPuzzleOffset> => {
+    const background = document.querySelector(
+      "#aliyunCaptcha-img",
+    ) as HTMLImageElement | null;
+    const piece = document.querySelector(
+      "#aliyunCaptcha-puzzle",
+    ) as HTMLImageElement | null;
+    if (!background || !piece) {
+      return Promise.resolve({ ok: false, reason: "missing puzzle images" });
+    }
+
+    const compute = (): AliyunPuzzleOffset => {
+      try {
+        const width = background.naturalWidth;
+        const height = background.naturalHeight;
+        const pieceWidth = piece.naturalWidth;
+        const pieceHeight = piece.naturalHeight;
+        if (!width || !height || !pieceWidth || !pieceHeight) {
+          return { ok: false, reason: "image dimensions unavailable" };
+        }
+
+        const backgroundCanvas = document.createElement("canvas");
+        // The anti-fingerprinting getImageData noise must not touch the
+        // solver's own canvas: a ±1 pixel shift corrupts edge scoring.
+        backgroundCanvas.id = "captcha-solver-canvas";
+        backgroundCanvas.width = width;
+        backgroundCanvas.height = height;
+        const backgroundContext = backgroundCanvas.getContext("2d");
+        if (!backgroundContext) {
+          return { ok: false, reason: "no background context" };
+        }
+
+        const pieceCanvas = document.createElement("canvas");
+        pieceCanvas.id = "captcha-solver-canvas";
+        pieceCanvas.width = pieceWidth;
+        pieceCanvas.height = pieceHeight;
+        const pieceContext = pieceCanvas.getContext("2d");
+        if (!pieceContext) {
+          return { ok: false, reason: "no piece context" };
+        }
+
+        try {
+          backgroundContext.drawImage(background, 0, 0);
+        } catch {
+          return { ok: false, reason: "background canvas tainted" };
+        }
+        try {
+          pieceContext.drawImage(piece, 0, 0);
+        } catch {
+          return { ok: false, reason: "puzzle canvas tainted" };
+        }
+
+        const backgroundData = backgroundContext.getImageData(
+          0,
+          0,
+          width,
+          height,
+        ).data;
+        const pieceData = pieceContext.getImageData(
+          0,
+          0,
+          pieceWidth,
+          pieceHeight,
+        ).data;
+
+        let pieceMinX = pieceWidth;
+        let pieceMaxX = -1;
+        let pieceMinY = pieceHeight;
+        let pieceMaxY = -1;
+        for (let y = 0; y < pieceHeight; y++) {
+          for (let x = 0; x < pieceWidth; x++) {
+            if (pieceData[(y * pieceWidth + x) * 4 + 3] > 100) {
+              if (x < pieceMinX) pieceMinX = x;
+              if (x > pieceMaxX) pieceMaxX = x;
+              if (y < pieceMinY) pieceMinY = y;
+              if (y > pieceMaxY) pieceMaxY = y;
+            }
+          }
+        }
+        const puzzleWidth = pieceMaxX - pieceMinX + 1;
+        if (puzzleWidth <= 0) {
+          return { ok: false, reason: "empty puzzle piece" };
+        }
+
+        const yStart = Math.max(1, Math.min(height - 2, pieceMinY + 5));
+        const yEnd = Math.max(
+          yStart,
+          Math.min(height - 2, pieceMaxY - 5),
+        );
+        const columnGradients = new Float32Array(width);
+        for (let x = 1; x < width - 1; x++) {
+          let gradient = 0;
+          for (let y = yStart; y <= yEnd; y++) {
+            const left = (y * width + x - 1) * 4;
+            const right = (y * width + x + 1) * 4;
+            gradient +=
+              Math.abs(backgroundData[right] - backgroundData[left]) +
+              Math.abs(backgroundData[right + 1] - backgroundData[left + 1]) +
+              Math.abs(backgroundData[right + 2] - backgroundData[left + 2]);
+          }
+          columnGradients[x] = gradient;
+        }
+
+        let bestX = 0;
+        let bestScore = 0;
+        const minCandidateX = 30;
+        const maxCandidateX = width - puzzleWidth - 20;
+        for (
+          let candidateX = minCandidateX;
+          candidateX <= maxCandidateX;
+          candidateX++
+        ) {
+          let leftMax = 0;
+          for (let dx = -2; dx <= 2; dx++) {
+            const value = columnGradients[candidateX + pieceMinX + dx] || 0;
+            if (value > leftMax) leftMax = value;
+          }
+          let rightMax = 0;
+          for (let dx = -3; dx <= 1; dx++) {
+            const value = columnGradients[candidateX + pieceMaxX + dx] || 0;
+            if (value > rightMax) rightMax = value;
+          }
+          const score = Math.sqrt(leftMax * rightMax);
+          if (score > bestScore) {
+            bestScore = score;
+            bestX = candidateX;
+          }
+        }
+
+        if (bestScore <= 0) {
+          return { ok: false, reason: "no matching hole edge" };
+        }
+        return {
+          ok: true,
+          offsetX: bestX - pieceMinX,
+          naturalWidth: width,
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          reason: error instanceof Error ? error.message : String(error),
+        };
+      }
+    };
+
+    return new Promise<AliyunPuzzleOffset>((resolve) => {
+      if (background.complete && piece.complete) {
+        resolve(compute());
+        return;
+      }
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        resolve(compute());
+      };
+      const fail = () => {
+        if (settled) return;
+        settled = true;
+        resolve({ ok: false, reason: "puzzle image load error" });
+      };
+      background.addEventListener("load", finish, { once: true });
+      piece.addEventListener("load", finish, { once: true });
+      background.addEventListener("error", fail, { once: true });
+      piece.addEventListener("error", fail, { once: true });
+      setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        resolve({ ok: false, reason: "puzzle image load timeout" });
+      }, 2_000);
+    });
+  });
+}
+
+export interface AliyunWafSolverOptions {
+  maxAttempts?: number;
+  waitForMs?: number;
+  retryDelayMs?: number;
+  settleMs?: number;
+  sliderTimeoutMs?: number;
+}
+
+/**
+ * Solve the Aliyun WAF jigsaw challenge rendered on the sign-in page. The
+ * widget is not inside an iframe and its puzzle geometry comes from the two
+ * server-supplied images, so the solver locates the hole by image analysis
+ * before driving the slider with the same human-like drag as Baxia.
+ */
+export async function solveAliyunWafCaptcha(
+  page: Page,
+  options: AliyunWafSolverOptions = {},
+): Promise<boolean> {
+  const waitForMs = Math.max(0, options.waitForMs ?? 0);
+  const maxAttempts = Math.max(
+    1,
+    Math.min(5, options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS),
+  );
+  const retryDelayMs = Math.max(
+    0,
+    options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS,
+  );
+  const settleMs = Math.max(0, options.settleMs ?? DEFAULT_SETTLE_MS);
+  const sliderTimeoutMs = Math.max(
+    500,
+    options.sliderTimeoutMs ?? DEFAULT_SLIDER_TIMEOUT_MS,
+  );
+
+  const detected = await findVisibleLocatorWithin(
+    page,
+    ALIYUN_WAF_BLOCK_SELECTORS,
+    waitForMs,
+  );
+  if (!detected) return false;
+
+  // The same physical-pointer rule as Baxia: two solvers must never
+  // interleave drag events on one browser.
+  return withCaptchaMouseLock(async () => {
+    const block = detected.locator;
+    if (!(await isVisible(block))) return false;
+    logBaxiaCaptcha("aliyun_detected", { selector: detected.selector });
+
+    let lastReason = "unknown";
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const offset = await computeAliyunPuzzleOffset(page);
+        if (
+          !offset.ok ||
+          typeof offset.offsetX !== "number" ||
+          typeof offset.naturalWidth !== "number" ||
+          offset.naturalWidth <= 0
+        ) {
+          lastReason = offset.reason || "offset_unavailable";
+          logBaxiaCaptcha("aliyun_offset_failed", {
+            attempt,
+            reason: lastReason,
+          });
+        } else {
+          const slider = page.locator(ALIYUN_PUZZLE_SLIDER_SELECTOR).first();
+          const track = page.locator(ALIYUN_PUZZLE_TRACK_SELECTOR).first();
+          await slider.waitFor({ state: "visible", timeout: sliderTimeoutMs });
+          const [sliderBox, trackBox] = await Promise.all([
+            slider.boundingBox(),
+            track.boundingBox(),
+          ]);
+          if (!sliderBox || !trackBox || trackBox.width <= 0) {
+            lastReason = "bounds_unavailable";
+            logBaxiaCaptcha("aliyun_offset_failed", {
+              attempt,
+              reason: lastReason,
+            });
+          } else {
+            const scale = trackBox.width / offset.naturalWidth;
+            const dragDistance = Math.round(offset.offsetX * scale);
+            logBaxiaCaptcha("aliyun_geometry", {
+              attempt,
+              offset: offset.offsetX,
+              scale: Number(scale.toFixed(2)),
+              distance: dragDistance,
+            });
+            if (dragDistance <= 0) {
+              lastReason = "non_positive_distance";
+            } else {
+              const startX = sliderBox.x + sliderBox.width / 2;
+              const startY = sliderBox.y + sliderBox.height / 2;
+              await humanDrag(
+                page,
+                startX,
+                startY,
+                startX + dragDistance,
+                startY,
+              );
+              if (await waitForHidden(block, settleMs)) {
+                logBaxiaCaptcha(
+                  "aliyun_solve_succeeded",
+                  { attempt, distance: dragDistance },
+                  true,
+                );
+                return true;
+              }
+              lastReason = "not_solved";
+            }
+          }
+        }
+      } catch (error) {
+        lastReason =
+          error instanceof Error ? error.name : "UnknownError";
+        logBaxiaCaptcha("aliyun_offset_failed", {
+          attempt,
+          error: lastReason,
+          detail: sanitizeCaptchaErrorDetail(error),
+        });
+      }
+
+      if (attempt < maxAttempts && retryDelayMs > 0) {
+        await sleep(retryDelayMs);
+      }
+    }
+
+    logBaxiaCaptcha(
+      "aliyun_solve_failed",
+      { attempts: maxAttempts, reason: lastReason },
+      true,
+    );
+    return false;
+  });
+}
+
+/** Aliyun's widget lives only on the auth page and renders quickly; probing it
+ * for the whole Baxia budget would leave the NC dialog unsolved. */
+const ALIYUN_PROBE_MAX_WAIT_MS = 2_000;
+
+/**
+ * Solve whichever first-party challenge is currently rendered. Called by the
+ * login flow (Aliyun jigsaw) and the chat helpers (Baxia NC).
+ */
+export async function solveVisibleCaptcha(
+  page: Page,
+  options: BaxiaSolverOptions = {},
+): Promise<boolean> {
+  if (typeof page.isClosed === "function" && page.isClosed()) return false;
+
+  // Split the wait budget between the two solvers instead of letting the
+  // Aliyun probe (absent on chat pages) consume all of it.
+  const totalWaitMs = Math.max(0, options.waitForMs ?? 0);
+  const aliyunWaitMs = Math.min(totalWaitMs, ALIYUN_PROBE_MAX_WAIT_MS);
+  const startedAt = Date.now();
+  if (
+    await solveAliyunWafCaptcha(page, { ...options, waitForMs: aliyunWaitMs })
+  ) {
+    return true;
+  }
+  const remainingWaitMs = Math.max(
+    0,
+    totalWaitMs - (Date.now() - startedAt),
+  );
+  return solveBaxiaCaptcha(page, { ...options, waitForMs: remainingWaitMs });
+}
 
 async function isVisible(locator: Locator): Promise<boolean> {
   return locator.isVisible().catch(() => false);

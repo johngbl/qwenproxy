@@ -4,8 +4,10 @@ import { config, type ChatMode, isLocalChatMode, isStatelessChatMode } from "../
 import { logger, isToolcallDebugEnabled } from "../core/logger.ts";
 import {
   computeQuotaCooldownMs,
+  getAccountCooldownInfo,
   markAccountRateLimited,
 } from "../core/account-manager.ts";
+import { recordWafHardBlock } from "../core/waf-isolation.ts";
 import { mapClientModelToQwen } from "../core/model-alias.ts";
 import { qwenUrl } from "./qwen-url.ts";
 import { QwenUpstreamError } from "./qwen-errors.ts";
@@ -23,6 +25,7 @@ async function createQwenChatSession(
   model: string,
   accountId?: string,
   chatMode: ChatMode = "thread",
+  captchaRecoveryAttempts = 1,
 ): Promise<string> {
   if (isAuthMockEnabled()) {
     return process.env.TEST_SESSION_ID || "mock-session";
@@ -60,15 +63,32 @@ async function createQwenChatSession(
   if (!chatId || typeof chatId !== "string") {
     const rawLower = raw.toLowerCase();
     if (looksLikeAntiBotChallengeText(raw)) {
-      try {
-        const { recoverBaxiaCaptcha } = await import("./captcha-coordinator.ts");
-        const solved = await recoverBaxiaCaptcha(accountId, "createQwenChatSession", {
-          challengeBody: raw,
-        });
-        if (solved) {
-          return createQwenChatSession(headers, model, accountId, chatMode);
-        }
-      } catch {}
+      if (captchaRecoveryAttempts > 0) {
+        try {
+          const { recoverBaxiaCaptcha } = await import("./captcha-coordinator.ts");
+          const solved = await recoverBaxiaCaptcha(accountId, "createQwenChatSession", {
+            challengeBody: raw,
+          });
+          if (solved) {
+            return createQwenChatSession(
+              headers,
+              model,
+              accountId,
+              chatMode,
+              captchaRecoveryAttempts - 1,
+            );
+          }
+        } catch {}
+      }
+
+      // Surface the WAF category to the caller so the warm pool can quarantine
+      // the account instead of treating this as a generic invalid payload
+      // (which would retry the same flagged device identity forever).
+      throw new QwenUpstreamError(
+        `Qwen create chat blocked by WAF challenge: ${raw.substring(0, 300)}`,
+        "FAIL_SYS_USER_VALIDATE",
+        403,
+      );
     }
 
     const isUnauthorized =
@@ -346,6 +366,29 @@ async function refillQwenChatPool(
         console.warn(
           `[WarmPool] Account ${accountId || "global"} rate-limited during chat creation. Marked for cooldown.`,
         );
+      } else if (
+        accountId &&
+        (err.upstreamCode === "FAIL_SYS_USER_VALIDATE" ||
+          err.upstreamCode === "RGV587_ERROR" ||
+          /_____tmd_____|rgv587_error|fail_sys_user_validate/i.test(
+            err.message,
+          ))
+      ) {
+        // A background warm-up that hits an unsolvable challenge must park the
+        // account: otherwise the next refill repeats the same flagged request
+        // and spreads the WAF block. Guarded so an already-quarantined account
+        // is not escalated twice by concurrent refills.
+        const existing = getAccountCooldownInfo(accountId);
+        if (existing?.reason === "WafChallenge") {
+          console.warn(
+            `[WarmPool] Account ${accountId} still on WAF quarantine (${Math.ceil(existing.remainingMs / 1000)}s left); skipping re-escalation.`,
+          );
+        } else {
+          const block = recordWafHardBlock(accountId);
+          console.warn(
+            `[WarmPool] Unsolved WAF challenge on ${accountId} during chat creation; quarantined ${Math.ceil(block.cooldownMs / 1000)}s and rotated the fingerprint.`,
+          );
+        }
       }
     }
     if (isToolcallDebugEnabled()) {

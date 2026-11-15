@@ -1006,7 +1006,7 @@ export async function requestQwenTextInBrowser(
 
   const evaluateRequest = (page: Page) =>
     page.evaluate(
-      async ({ url, method, headers, body, referrer, timeoutMs, tz }: {
+      async ({ url, method, headers, body, referrer, timeoutMs, tz, version }: {
         url: string;
         method: "GET" | "POST" | "DELETE";
         headers: Record<string, string>;
@@ -1014,6 +1014,7 @@ export async function requestQwenTextInBrowser(
         referrer?: string;
         timeoutMs: number;
         tz: string;
+        version: string;
       }): Promise<BrowserTextResponse> => {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
@@ -1038,7 +1039,7 @@ export async function requestQwenTextInBrowser(
                   headers: {
                     accept: "application/json, text/plain, */*",
                     source: "web",
-                    version: "0.3.11",
+                    version,
                     "x-request-origin": "https://chat.qwen.ai",
                     timezone: tz,
                     authorization: `Bearer ${rTok}`,
@@ -1087,6 +1088,7 @@ export async function requestQwenTextInBrowser(
         referrer: options.referrer,
         timeoutMs: options.timeoutMs ?? Math.min(config.timeouts.page, 20_000),
         tz: formatAsciiTimezone(),
+        version: getQwenWebVersion(),
       },
     );
   const recoverOnTimeout = !options.noMutexRecovery;
@@ -2395,7 +2397,7 @@ export async function deleteSingleQwenChat(
 
   const requestHeaders: Record<string, string> = {
     source: "web",
-    version: getQwenWebVersion() || "0.3.26",
+    version: getQwenWebVersion(),
     timezone: formatAsciiTimezone(),
     "x-request-id": crypto.randomUUID(),
     Referer: qwenUrl(`/c/${encodeURIComponent(chatId)}`),
@@ -2448,7 +2450,7 @@ export async function fetchRemoteQwenChats(
   }
 
   const requestHeaders: Record<string, string> = {
-    version: getQwenWebVersion() || "0.3.26",
+    version: getQwenWebVersion(),
     timezone: formatAsciiTimezone(),
     "x-request-id": crypto.randomUUID(),
     Referer: qwenUrl("/settings/chats"),

@@ -78,10 +78,15 @@ import {
   type FingerprintProfile,
 } from "./fingerprint.ts";
 import { subtlePageActivity } from "./human-behavior.ts";
-import { solveBaxiaCaptcha } from "./captcha-solver.ts";
+import { solveVisibleCaptcha } from "./captcha-solver.ts";
 import { qwenOrigin, qwenUrl } from "./qwen-url.ts";
 import { setWafContextResetListener } from "../core/waf-isolation.ts";
-import { updateQwenWebVersion, getQwenWebVersion } from "./qwen-headers.ts";
+import {
+  getQwenBxVersion,
+  getQwenWebVersion,
+  updateQwenBxVersion,
+  updateQwenWebVersion,
+} from "./qwen-headers.ts";
 import { getAccountProfilePath, getProfilesDir } from "../core/paths.ts";
 import { parseJwtExpiry, isTokenExpiringSoon } from "../utils/jwt.ts";
 import { formatAsciiTimezone } from "../utils/timezone.ts";
@@ -598,13 +603,14 @@ const CHAT_INPUT_ACTION_TIMEOUT_MS = 10_000;
  */
 async function clearVisibleChallenge(page: Page): Promise<void> {
   if (page.isClosed()) return;
-  // 1. Solve slider puzzle captcha if present
+  // 1. Solve a slider/jigsaw challenge if present (Baxia NC or Aliyun WAF)
   if (config.captcha.enabled) {
-    await solveBaxiaCaptcha(page, {
+    await solveVisibleCaptcha(page, {
       waitForMs: 0,
       maxAttempts: config.captcha.maxAttempts,
       retryDelayMs: config.captcha.retryDelayMs,
       settleMs: config.captcha.settleMs,
+      sliderTimeoutMs: config.captcha.sliderTimeoutMs,
     }).catch(() => false);
   }
 
@@ -1307,13 +1313,22 @@ export async function getBasicHeaders(accountId: string): Promise<{
               mobile = data.mobile ? "?1" : "?0";
             }
             let bundleVersion: string | null = null;
+            let baxiaVersion: string | null = null;
             try {
               const el = document.querySelector('link[href*="qwen-chat-fe"], script[src*="qwen-chat-fe"], img[src*="qwen-chat-fe"]');
               const src = el ? (el.getAttribute("href") || el.getAttribute("src") || "") : "";
               const match = src.match(/qwen-chat-fe\/(\d+\.\d+\.\d+)/) || document.documentElement.innerHTML.match(/qwen-chat-fe\/(\d+\.\d+\.\d+)/);
               if (match) bundleVersion = match[1];
             } catch {}
-            return { ua, secChUa, platform, mobile, bundleVersion };
+            try {
+              const baxia = (window as unknown as {
+                baxiaCommon?: { version?: unknown };
+              }).baxiaCommon;
+              if (typeof baxia?.version === "string") {
+                baxiaVersion = baxia.version;
+              }
+            } catch {}
+            return { ua, secChUa, platform, mobile, bundleVersion, baxiaVersion };
           }),
           config.timeouts.page,
           `User-agent lookup timed out for ${accountId}`,
@@ -1321,6 +1336,9 @@ export async function getBasicHeaders(accountId: string): Promise<{
         userAgent = nav.ua;
         if (nav.bundleVersion) {
           updateQwenWebVersion(nav.bundleVersion);
+        }
+        if (nav.baxiaVersion) {
+          updateQwenBxVersion(nav.baxiaVersion);
         }
         cachedUserAgents.set(accountId, userAgent);
         const hints = getHeaderCache(accountId).headers;
@@ -1359,7 +1377,7 @@ export async function getBasicHeaders(accountId: string): Promise<{
       markAccountHeadersReady(accountId);
       const bxUa = cache.headers["bx-ua"];
       const bxUmidtoken = cache.headers["bx-umidtoken"];
-      const bxV = cache.headers["bx-v"] || "2.5.37";
+      const bxV = cache.headers["bx-v"] || getQwenBxVersion();
       const cookie = await getCookies(accountId);
       return { cookie, userAgent, bxV, bxUa, bxUmidtoken, ...clientHints };
     }
@@ -1383,7 +1401,7 @@ export async function getBasicHeaders(accountId: string): Promise<{
         cookieCaches.set(accountId, { cookie, timestamp: Date.now() });
         const bxUa = cache.headers["bx-ua"];
         const bxUmidtoken = cache.headers["bx-umidtoken"];
-        const bxV = cache.headers["bx-v"] || "2.5.37";
+        const bxV = cache.headers["bx-v"] || getQwenBxVersion();
         cache.lastRefresh = Date.now();
         markAccountHeadersReady(accountId);
         console.log(
@@ -1465,6 +1483,9 @@ export async function getBasicHeaders(accountId: string): Promise<{
             if (persisted.version) {
               updateQwenWebVersion(persisted.version);
             }
+            if (persisted.bxV) {
+              updateQwenBxVersion(persisted.bxV);
+            }
             cache.lastRefresh = persisted.capturedAt;
             markAccountHeadersReady(accountId);
           }
@@ -1494,7 +1515,7 @@ export async function getBasicHeaders(accountId: string): Promise<{
     markAccountHeadersReady(accountId);
     const bxUa = cache.headers["bx-ua"];
     const bxUmidtoken = cache.headers["bx-umidtoken"];
-    const bxV = cache.headers["bx-v"] || "2.5.37";
+    const bxV = cache.headers["bx-v"] || getQwenBxVersion();
 
     // Read cookie AFTER all refreshes (re-login may have updated it)
     cookieCaches.delete(accountId);
@@ -1785,6 +1806,9 @@ export async function initPlaywrightForAccount(
               cache.headers = restoredHeaders;
               if (persisted.version) {
                 updateQwenWebVersion(persisted.version);
+              }
+              if (persisted.bxV) {
+                updateQwenBxVersion(persisted.bxV);
               }
               cache.lastRefresh = persisted.capturedAt;
               markAccountHeadersReady(account.id);
@@ -2239,7 +2263,7 @@ export async function startEmailOtpLogin(
       {
         email: normalizedEmail,
         requestId,
-        version: getQwenWebVersion() || "0.3.26",
+        version: getQwenWebVersion(),
         timezone: formatAsciiTimezone(),
       },
     ).catch((err: any) => ({ ok: false, error: err?.message || String(err) }));
@@ -2351,7 +2375,7 @@ export async function verifyEmailOtpLogin(
       email: session.email,
       code: cleanCode,
       requestId,
-      version: getQwenWebVersion() || "0.3.26",
+      version: getQwenWebVersion(),
       timezone: formatAsciiTimezone(),
     },
   ).catch((err: any) => ({ ok: false, error: err?.message || String(err) }));
@@ -2408,8 +2432,8 @@ export async function verifyEmailOtpLogin(
     saveAuthSession(session.accountId, {
       cookie: `token=${accessToken}`,
       userAgent: session.fingerprint.userAgent,
-      bxV: "2.5.37",
-      version: getQwenWebVersion() || "0.3.26",
+      bxV: getQwenBxVersion(),
+      version: getQwenWebVersion(),
       userId: userId || undefined,
       tokenExpiresAt: exp || undefined,
       refreshToken: refreshToken || undefined,
@@ -2565,7 +2589,7 @@ async function loginToQwen(
           saveAuthSession(accountId, {
             cookie: cookieStr,
             userAgent: cache.headers["user-agent"] || "",
-            bxV: cache.headers["bx-v"] || "2.5.37",
+            bxV: cache.headers["bx-v"] || getQwenBxVersion(),
             bxUa: cache.headers["bx-ua"] || "",
             bxUmidtoken: cache.headers["bx-umidtoken"] || "",
             secChUa: cache.headers["sec-ch-ua"] || undefined,
@@ -2641,7 +2665,7 @@ async function loginToQwen(
           saveAuthSession(accountId, {
             cookie: cookieStr,
             userAgent: cache.headers["user-agent"] || "",
-            bxV: cache.headers["bx-v"] || "2.5.37",
+            bxV: cache.headers["bx-v"] || getQwenBxVersion(),
             bxUa: cache.headers["bx-ua"] || "",
             bxUmidtoken: cache.headers["bx-umidtoken"] || "",
             secChUa: cache.headers["sec-ch-ua"] || undefined,
@@ -2726,7 +2750,7 @@ async function loginViaApi(
 
     const signinUrl = "https://auth.qwen.ai/api/v2/auths/signin";
     const requestId = crypto.randomUUID();
-    const webVersion = getQwenWebVersion() || "0.3.26";
+    const webVersion = getQwenWebVersion();
 
     const evalRes = await page
       .evaluate(
@@ -2935,6 +2959,18 @@ async function loginViaUi(
       return { success: true };
     }
 
+    // A WAF jigsaw can render before the form is usable. Clear it first so the
+    // email/password fields are not covered and the submit is not rejected.
+    if (config.captcha.enabled) {
+      await solveVisibleCaptcha(page, {
+        waitForMs: 1_500,
+        maxAttempts: config.captcha.maxAttempts,
+        retryDelayMs: config.captcha.retryDelayMs,
+        settleMs: config.captcha.settleMs,
+        sliderTimeoutMs: config.captcha.sliderTimeoutMs,
+      }).catch(() => false);
+    }
+
     // Wait for email input
     const emailSelector = [
       'input[type="email"]',
@@ -3129,12 +3165,13 @@ async function loginViaUi(
     while (Date.now() < postSubmitDeadline) {
       if (page.isClosed()) break;
 
-      // If a slider puzzle captcha appeared after submit, solve it automatically
+      // If a slider/jigsaw challenge appeared after submit, solve it automatically
       if (config.captcha.enabled) {
-        await solveBaxiaCaptcha(page, {
+        await solveVisibleCaptcha(page, {
           waitForMs: 1500,
           maxAttempts: config.captcha.maxAttempts,
           retryDelayMs: config.captcha.retryDelayMs,
+          sliderTimeoutMs: config.captcha.sliderTimeoutMs,
         }).catch(() => {});
       }
 
@@ -3281,7 +3318,7 @@ export async function refreshAccountToken(
   // 2. If we have a refresh token, invoke the working refresh endpoint in-page
   if (refreshToken) {
     try {
-      const webVersion = getQwenWebVersion() || "0.3.26";
+      const webVersion = getQwenWebVersion();
       const refreshResult = await page.evaluate(
         async ({ rTok, tz, version }) => {
           try {
@@ -3354,7 +3391,7 @@ export async function refreshAccountToken(
           saveAuthSession(accountId, {
             cookie: cookieStr,
             userAgent: cache.headers["user-agent"] || session?.userAgent || "",
-            bxV: cache.headers["bx-v"] || session?.bxV || "2.5.37",
+            bxV: cache.headers["bx-v"] || session?.bxV || getQwenBxVersion(),
             bxUa: cache.headers["bx-ua"] || session?.bxUa || "",
             bxUmidtoken: cache.headers["bx-umidtoken"] || session?.bxUmidtoken || "",
             secChUa: cache.headers["sec-ch-ua"] || session?.secChUa,
@@ -3391,7 +3428,7 @@ export async function refreshAccountToken(
         saveAuthSession(accountId, {
           cookie: cookieStr,
           userAgent: cache.headers["user-agent"] || session?.userAgent || "",
-          bxV: cache.headers["bx-v"] || session?.bxV || "2.5.37",
+          bxV: cache.headers["bx-v"] || session?.bxV || getQwenBxVersion(),
           bxUa: cache.headers["bx-ua"] || session?.bxUa || "",
           bxUmidtoken: cache.headers["bx-umidtoken"] || session?.bxUmidtoken || "",
           secChUa: cache.headers["sec-ch-ua"] || session?.secChUa,
@@ -3594,7 +3631,7 @@ export async function captureQwenHeaders(
         cookie: reqHeaders["cookie"] || "",
         "bx-ua": reqHeaders["bx-ua"] || "",
         "bx-umidtoken": reqHeaders["bx-umidtoken"] || "",
-        "bx-v": reqHeaders["bx-v"] || "2.5.37",
+        "bx-v": reqHeaders["bx-v"] || getQwenBxVersion(),
         "user-agent": reqHeaders["user-agent"] || "",
         "x-request-id": reqHeaders["x-request-id"] || "",
         "version": reqHeaders["version"] || "",
@@ -3637,6 +3674,9 @@ export async function captureQwenHeaders(
       cache.headers = capturedHeaders;
       if (capturedHeaders["version"]) {
         updateQwenWebVersion(capturedHeaders["version"]);
+      }
+      if (capturedHeaders["bx-v"]) {
+        updateQwenBxVersion(capturedHeaders["bx-v"]);
       }
       markAccountHeadersReady(accountId);
       cache.lastRefresh = Date.now();
@@ -4250,7 +4290,7 @@ async function refreshHeadersInternal(
             saveAuthSession(accountId, {
               cookie: cookieStr,
               userAgent: cache.headers["user-agent"] || "",
-              bxV: cache.headers["bx-v"] || "2.5.37",
+              bxV: cache.headers["bx-v"] || getQwenBxVersion(),
               bxUa: cache.headers["bx-ua"] || "",
               bxUmidtoken: cache.headers["bx-umidtoken"] || "",
               secChUa: cache.headers["sec-ch-ua"] || undefined,

@@ -13,7 +13,10 @@ import {
   registerPlaywrightAccountForTests,
 } from "../services/playwright.ts";
 import {
+  computeSessionKeeperBackoffMs,
+  isSessionKeeperAccountBackedOff,
   isSessionKeeperRunning,
+  resetSessionKeeperRetryStateForTests,
   runSessionKeeperOnceForTesting,
   startSessionKeeper,
   stopSessionKeeper,
@@ -177,4 +180,47 @@ test("keep-alive still warns for real errors (no over-suppression)", async () =>
     captured.restore();
     await closePlaywrightForAccount(accountId).catch(() => {});
   }
+});
+
+test("keep-alive backs off per account after a real failure", async () => {
+  resetAccountConcurrencyForTests();
+  stopSessionKeeper();
+  resetSessionKeeperRetryStateForTests();
+  const accountId = "keeper-backoff";
+  registerPlaywrightAccountForTests(
+    accountId,
+    closedGotoPage("page.goto: net::ERR_CONNECTION_RESET"),
+    STALE_ACTIVITY_AT,
+  );
+  const captured = captureWarns();
+  try {
+    await runSessionKeeperOnceForTesting();
+    const firstFailures = captured.warns.filter((w) =>
+      w.includes("Keep-alive failed"),
+    );
+    assert.equal(firstFailures.length, 1);
+    assert.ok(
+      firstFailures[0].includes("retry in 2s"),
+      `first failure must schedule a 2s retry, got: ${firstFailures[0]}`,
+    );
+    assert.equal(isSessionKeeperAccountBackedOff(accountId), true);
+
+    // The next cycle must skip the backed-off account instead of hammering it.
+    await runSessionKeeperOnceForTesting();
+    assert.equal(
+      captured.warns.filter((w) => w.includes("Keep-alive failed")).length,
+      1,
+    );
+  } finally {
+    captured.restore();
+    resetSessionKeeperRetryStateForTests();
+    await closePlaywrightForAccount(accountId).catch(() => {});
+  }
+});
+
+test("keep-alive backoff doubles and caps at five minutes", () => {
+  assert.equal(computeSessionKeeperBackoffMs(1), 2_000);
+  assert.equal(computeSessionKeeperBackoffMs(2), 4_000);
+  assert.equal(computeSessionKeeperBackoffMs(3), 8_000);
+  assert.equal(computeSessionKeeperBackoffMs(20), 300_000);
 });

@@ -1,6 +1,7 @@
 import { AuthError } from "../core/errors.ts";
 import { getAccountCredentials, loadAccounts } from "../core/accounts.ts";
 import { config } from "../core/config.ts";
+import { getQwenBxVersion, getQwenWebVersion } from "./qwen-headers.ts";
 import {
   getBasicHeaders as getPlaywrightBasicHeaders,
   initPlaywrightForAccount,
@@ -78,13 +79,13 @@ export async function getBasicHeaders(accountId?: string): Promise<{
     return {
       cookie: "token=mock",
       userAgent: "mock",
-      bxV: "2.5.37",
+      bxV: getQwenBxVersion(),
       bxUa: "mock-bx-ua",
       bxUmidtoken: "mock-bx-umidtoken",
       secChUa: "",
       secChUaMobile: "?0",
       secChUaPlatform: "",
-      version: "0.3.26",
+      version: getQwenWebVersion(),
     };
   }
 

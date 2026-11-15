@@ -7,7 +7,7 @@ import {
   extractBaxiaChallengeUrl,
   logBaxiaCaptcha,
   sanitizeCaptchaErrorDetail,
-  solveBaxiaCaptcha,
+  solveVisibleCaptcha,
 } from "./captcha-solver.ts";
 
 const CHALLENGE_NAVIGATION_TIMEOUT_MS = 8_000;
@@ -55,12 +55,13 @@ export async function solveChallengeOnPage(
     maxAttempts: config.captcha.maxAttempts,
     retryDelayMs: config.captcha.retryDelayMs,
     settleMs: config.captcha.settleMs,
+    sliderTimeoutMs: config.captcha.sliderTimeoutMs,
   };
 
   // Qwen's own Baxia SDK sometimes renders the dialog for the background
   // fetch. When it did, solve it in place: navigating away would discard the
   // challenge the SDK is waiting on.
-  if (await solveBaxiaCaptcha(page, { ...solverOptions, waitForMs: 0 })) {
+  if (await solveVisibleCaptcha(page, { ...solverOptions, waitForMs: 0 })) {
     return true;
   }
 
@@ -72,7 +73,7 @@ export async function solveChallengeOnPage(
   await gotoBestEffort(page, challengeUrl ?? qwenUrl("/"));
 
   try {
-    return await solveBaxiaCaptcha(page, { ...solverOptions, waitForMs });
+    return await solveVisibleCaptcha(page, { ...solverOptions, waitForMs });
   } finally {
     // Never leave the account page parked on the punish document: a stale
     // challenge page makes the next detection pass find itself.
@@ -150,8 +151,9 @@ export async function recoverBaxiaCaptcha(
             maxAttempts: config.captcha.maxAttempts,
             retryDelayMs: config.captcha.retryDelayMs,
             settleMs: config.captcha.settleMs,
+            sliderTimeoutMs: config.captcha.sliderTimeoutMs,
           };
-          if (await solveBaxiaCaptcha(page, { ...solverOptions, waitForMs: 0 })) {
+          if (await solveVisibleCaptcha(page, { ...solverOptions, waitForMs: 0 })) {
             return true;
           }
           const ctx = typeof page.context === "function" ? page.context() : null;

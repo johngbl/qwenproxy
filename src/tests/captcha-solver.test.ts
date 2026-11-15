@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import type { FrameLocator, Locator, Page } from "patchright";
 import {
   extractBaxiaChallengeUrl,
+  solveAliyunWafCaptcha,
   solveBaxiaCaptcha,
+  solveVisibleCaptcha,
 } from "../services/captcha-solver.ts";
 
 type LocatorOptions = {
@@ -90,6 +92,72 @@ test("captcha solver returns false when no Baxia challenge is visible", async ()
   const page = pageWithLocators({}, baxiaFrame(locator(), locator()));
 
   assert.equal(await solveBaxiaCaptcha(page), false);
+});
+
+test("aliyun solver returns false when no jigsaw challenge is visible", async () => {
+  const page = pageWithLocators({}, baxiaFrame(locator(), locator()));
+
+  assert.equal(await solveAliyunWafCaptcha(page), false);
+  assert.equal(await solveVisibleCaptcha(page), false);
+});
+
+test("aliyun solver drags the jigsaw slider and clears the block", async () => {
+  let blockVisible = true;
+  let mouseUpCalls = 0;
+  const block = locator({
+    isVisible: () => Promise.resolve(blockVisible),
+  });
+  const slider = locator({
+    waitFor: async () => undefined,
+    boundingBox: async () => ({ x: 50, y: 100, width: 40, height: 40 }),
+  });
+  const track = locator({
+    boundingBox: async () => ({ x: 50, y: 100, width: 300, height: 40 }),
+  });
+  const page = pageWithLocators(
+    {
+      "#waf_nc_block": block,
+      "#aliyunCaptcha-sliding-slider": slider,
+      "#aliyunCaptcha-sliding-body": track,
+    },
+    baxiaFrame(locator(), locator()),
+    {
+      move: async () => undefined,
+      down: async () => undefined,
+      up: async () => {
+        mouseUpCalls++;
+        blockVisible = false;
+      },
+    } as unknown as Page["mouse"],
+  );
+  (page as unknown as { evaluate: () => Promise<unknown> }).evaluate =
+    async () => ({
+      ok: true,
+      offsetX: 150,
+      naturalWidth: 300,
+    });
+  const captured = captureWarnings();
+
+  try {
+    const solved = await solveAliyunWafCaptcha(page, {
+      maxAttempts: 1,
+      retryDelayMs: 0,
+      settleMs: 100,
+      waitForMs: 0,
+    });
+
+    assert.equal(solved, true);
+    assert.equal(mouseUpCalls, 1);
+    assert.ok(
+      captured.warnings.some(
+        (warning) =>
+          warning.startsWith("✅ [Captcha] aliyun_solve_succeeded") &&
+          warning.includes("distance=150"),
+      ),
+    );
+  } finally {
+    captured.restore();
+  }
 });
 
 test("captcha solver handles the current container with a nested iframe", async () => {

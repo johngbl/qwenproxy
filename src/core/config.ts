@@ -34,7 +34,7 @@ const envSchema = z
     // Version header on Qwen API requests = the deployed web bundle version
     // (fallback when dynamic DOM detection is not yet completed).
     // Override via env when Qwen ships a new bundle.
-    QWEN_WEB_VERSION: z.string().default("0.3.26"),
+    QWEN_WEB_VERSION: z.string().default("0.3.43"),
     // Controls bx-ua/bx-umidtoken injection on the GENERAL API paths
     // (chats/new, settings): those work without them (live-probed). The
     // completions path is the exception — the 0.2.86 HAR shows the real
@@ -81,6 +81,7 @@ const envSchema = z
     CAPTCHA_SOLVER_ENABLED: z.string().default("true"),
     CAPTCHA_SOLVER_MAX_ATTEMPTS: z.string().default("3"),
     CAPTCHA_SOLVER_TIMEOUT_MS: z.string().default("15000"),
+    CAPTCHA_SLIDER_TIMEOUT_MS: z.string().default("8000"),
     CAPTCHA_SOLVER_RETRY_DELAY_MS: z.string().default("1000"),
     CAPTCHA_SOLVER_SETTLE_MS: z.string().default("2000"),
     CAPTCHA_ACCOUNT_COOLDOWN_MS: z.string().default("120000"),
@@ -243,6 +244,8 @@ export const config = {
     enabled: env.CAPTCHA_SOLVER_ENABLED === "true",
     maxAttempts: Math.max(1, Math.min(5, parseInt(env.CAPTCHA_SOLVER_MAX_ATTEMPTS))),
     timeoutMs: Math.max(0, parseInt(env.CAPTCHA_SOLVER_TIMEOUT_MS)),
+    /** Max wait for a challenge slider to become visible (slow WAF renders). */
+    sliderTimeoutMs: Math.max(500, parseInt(env.CAPTCHA_SLIDER_TIMEOUT_MS)),
     retryDelayMs: Math.max(0, parseInt(env.CAPTCHA_SOLVER_RETRY_DELAY_MS)),
     settleMs: Math.max(0, parseInt(env.CAPTCHA_SOLVER_SETTLE_MS)),
     /** Rest an account whose challenge could not be cleared before reusing it. */
