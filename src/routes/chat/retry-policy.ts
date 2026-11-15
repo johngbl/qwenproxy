@@ -23,6 +23,7 @@ import {
 } from "../../core/errors.ts";
 import { isAbortError } from "./helpers.ts";
 import { isOverloadMessage, OVERLOAD_COOLDOWN_MS } from "../../utils/overload-detector.ts";
+import { isQuotaLimitMessage } from "../../utils/quota-detector.ts";
 
 export type RetryAction = {
   /** Outer/create-stream layer should retry this failure */
@@ -264,6 +265,7 @@ export function isQuotaLikeError(err: unknown): boolean {
     message.includes("membership limit") ||
     message.includes("update_member") ||
     message.includes("update member") ||
+    isQuotaLimitMessage(errMessage(err)) ||
     // Accept local rate_limit code only when message also looks like quota/rate
     (code === "rate_limit_exceeded" &&
       (message.includes("quota") ||
@@ -340,6 +342,21 @@ function classifyQuotaCooldown(message: string): {
 // Implemented in core/account-manager.ts (shared with the @[] fallback); kept
 // re-exporting here for callers that already import from retry-policy.
 export { computeQuotaCooldownMs } from "../../core/account-manager.ts";
+
+export function isModelScopedQuotaError(err: unknown): boolean {
+  const code = errCode(err).toLowerCase();
+  const message = errMessage(err);
+  const lower = message.toLowerCase();
+  return (
+    code === "membership_limit" ||
+    code === "membershiplimit" ||
+    lower.includes("update_member") ||
+    lower.includes("update member") ||
+    lower.includes("membership_limit") ||
+    lower.includes("membership limit") ||
+    isQuotaLimitMessage(message)
+  );
+}
 
 export function isChatNotExistError(err: unknown): boolean {
   const message = errMessage(err).toLowerCase();

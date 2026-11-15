@@ -29,8 +29,13 @@ import {
   invalidateLogicalThreadParent,
   RetryableQwenStreamError,
 } from "../../services/qwen.ts";
+import { markAccountModelLimited } from "../../core/account-model-limits.ts";
+import { loadAccounts } from "../../core/accounts.ts";
+import { mapClientModelToQwen } from "../../core/model-alias.ts";
 import {
   classifyRetryAction,
+  computeQuotaCooldownMs,
+  isModelScopedQuotaError,
   shouldRetryInvalidInputOnSameAccount,
 } from "./retry-policy.ts";
 import { classifyMediaModel } from "../../services/media-generation.ts";
@@ -350,6 +355,7 @@ export async function chatCompletions(c: Context) {
 
     // Retry loop for mid-stream/create-stream failures (generic policy)
         let streamProcessingRetries = Math.max(0, config.retry.maxAttempts - 1);
+        let quotaProcessingRetries = Math.max(1, loadAccounts().length - 1);
         let invalidInputSameAccountRetries = 0;
         let currentStreamResult = streamResult;
         let currentParams = params;
@@ -387,9 +393,18 @@ export async function chatCompletions(c: Context) {
               throw streamErr;
             }
 
+            const isQuotaError =
+              policy.reason === "quota_or_rate_limit" &&
+              (policy.accountCooldownReason === "RateLimited" ||
+                policy.accountCooldownReason === "QuotaExceeded" ||
+                isModelScopedQuotaError(streamErr));
+            const hasRetryBudget = isQuotaError
+              ? quotaProcessingRetries > 0
+              : streamProcessingRetries > 0;
+
             // Prefer explicit RetryableQwenStreamError OR generic retryable policy
             const canRetry =
-              streamProcessingRetries > 0 &&
+              hasRetryBudget &&
               policy.retryable &&
               (streamErr instanceof RetryableQwenStreamError ||
                 config.retry.onUnknownUpstream !== false);
@@ -401,15 +416,19 @@ export async function chatCompletions(c: Context) {
               // budget ran out".
               if (logger.isLevelEnabled("info")) {
                 console.log(
-                  `⛔ [Chat] Stream retry exhausted | req=${reqId} | reason=${policy.reason} | retriesLeft=${streamProcessingRetries} | retryable=${policy.retryable} | error=${streamErr?.message?.substring(0, 150)}`,
+                  `⛔ [Chat] Stream retry exhausted | req=${reqId} | reason=${policy.reason} | retriesLeft=${isQuotaError ? quotaProcessingRetries : streamProcessingRetries} | retryable=${policy.retryable} | error=${streamErr?.message?.substring(0, 150)}`,
                 );
               }
               throw streamErr;
             }
 
-            streamProcessingRetries--;
+            if (isQuotaError) {
+              quotaProcessingRetries--;
+            } else {
+              streamProcessingRetries--;
+            }
             console.warn(
-              `[Chat] Stream processing error, retrying with new stream | reason=${policy.reason} | ${streamErr.message?.substring(0, 150)} | retries left: ${streamProcessingRetries}`,
+              `[Chat] Stream processing error, retrying with new stream | reason=${policy.reason} | ${streamErr.message?.substring(0, 150)} | retries left: ${isQuotaError ? quotaProcessingRetries : streamProcessingRetries}`,
             );
 
             // Recover a generic invalid_input on the same account once by
@@ -435,13 +454,24 @@ export async function chatCompletions(c: Context) {
               policy.switchAccount &&
               (policy.accountCooldownMs || policy.accountCooldownReason)
             ) {
-              const { markAccountRateLimited } =
-                await import("../../core/account-manager.ts");
-              markAccountRateLimited(
-                currentStreamResult.activeAccountId,
-                policy.accountCooldownMs,
-                policy.accountCooldownReason || "StreamRetry",
-              );
+              if (isModelScopedQuotaError(streamErr)) {
+                const cooldownMs =
+                  policy.accountCooldownMs ?? computeQuotaCooldownMs(Date.now());
+                markAccountModelLimited(
+                  currentStreamResult.activeAccountId,
+                  mapClientModelToQwen(modelId),
+                  Date.now() + cooldownMs,
+                  "MembershipLimit",
+                );
+              } else {
+                const { markAccountRateLimited } =
+                  await import("../../core/account-manager.ts");
+                markAccountRateLimited(
+                  currentStreamResult.activeAccountId,
+                  policy.accountCooldownMs,
+                  policy.accountCooldownReason || "StreamRetry",
+                );
+              }
             }
 
             // Release current chat lock and account lease before retrying

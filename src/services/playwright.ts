@@ -1468,14 +1468,18 @@ export async function getBasicHeaders(accountId: string): Promise<{
                   await page.context().addCookies(cookiesToAdd).catch(() => {});
                 }
                 const tokenMatch = restoredHeaders.cookie.match(/(?:^|;\s*)token=([^;]+)/);
-                if (tokenMatch) {
-                  const tok = decodeURIComponent(tokenMatch[1].trim());
-                  await page.evaluate((t) => {
+                const rTokToSync = persisted.refreshToken || "";
+                if ((tokenMatch || rTokToSync) && typeof page.evaluate === "function") {
+                  const tok = tokenMatch ? decodeURIComponent(tokenMatch[1].trim()) : "";
+                  await page.evaluate(({ t, r }) => {
                     try {
-                      localStorage.setItem("token", t);
-                      document.cookie = `token=${encodeURIComponent(t)}; path=/; domain=.qwen.ai; max-age=31536000`;
+                      if (t) {
+                        localStorage.setItem("token", t);
+                        document.cookie = `token=${encodeURIComponent(t)}; path=/; domain=.qwen.ai; max-age=31536000`;
+                      }
+                      if (r) localStorage.setItem("refresh_token", r);
                     } catch {}
-                  }, tok).catch(() => {});
+                  }, { t: tok, r: rTokToSync }).catch(() => {});
                 }
               } catch {}
             }
@@ -1784,14 +1788,18 @@ export async function initPlaywrightForAccount(
                   await acctContext.addCookies(cookiesToAdd).catch(() => {});
                 }
                 const tokenMatch = restoredHeaders.cookie.match(/(?:^|;\s*)token=([^;]+)/);
-                if (tokenMatch && !acctPage.isClosed()) {
-                  const tok = decodeURIComponent(tokenMatch[1].trim());
-                  await acctPage.evaluate((t) => {
+                const rTokToSync = persisted.refreshToken || "";
+                if ((tokenMatch || rTokToSync) && !acctPage.isClosed()) {
+                  const tok = tokenMatch ? decodeURIComponent(tokenMatch[1].trim()) : "";
+                  await acctPage.evaluate(({ t, r }) => {
                     try {
-                      localStorage.setItem("token", t);
-                      document.cookie = `token=${encodeURIComponent(t)}; path=/; domain=.qwen.ai; max-age=31536000`;
+                      if (t) {
+                        localStorage.setItem("token", t);
+                        document.cookie = `token=${encodeURIComponent(t)}; path=/; domain=.qwen.ai; max-age=31536000`;
+                      }
+                      if (r) localStorage.setItem("refresh_token", r);
                     } catch {}
-                  }, tok).catch(() => {});
+                  }, { t: tok, r: rTokToSync }).catch(() => {});
                 }
 
                 // Read live cookies from browser context
@@ -1909,6 +1917,16 @@ export async function initPlaywrightForAccount(
       }
 
       if (!options.skipHeaderCapture && !isAccountHeadersReady(account.id)) {
+        // If the profile holds an expired/expiring 15m access token, renew it
+        // silently BEFORE header capture so attempt 1 does not stall typing
+        // into an expired session.
+        try {
+          const liveCookies = await acctContext.cookies();
+          const cookieStr = liveCookies.map((c) => `${c.name}=${c.value}`).join("; ");
+          if (hasValidAuthToken(cookieStr) && isTokenExpiringSoon(cookieStr, 2)) {
+            await refreshAccountToken(account.id).catch(() => {});
+          }
+        } catch {}
         (acctPage as any).__qwenChatHomeLoaded = true;
         await captureQwenHeaders(account.id);
       }
@@ -2583,12 +2601,17 @@ async function loginToQwen(
           const cache = getHeaderCache(accountId);
           cache.headers.cookie = cookieStr;
           cache.lastRefresh = Date.now();
-          markAccountHeadersReady(accountId);
+          if (hasRequiredQwenHeaders(cache.headers)) {
+            markAccountHeadersReady(accountId);
+          }
           const { saveAuthSession } = await import("../core/database.ts");
           const exp = parseJwtExpiry(tokenCookie.value);
           saveAuthSession(accountId, {
             cookie: cookieStr,
-            userAgent: cache.headers["user-agent"] || "",
+            userAgent:
+              cache.headers["user-agent"] ||
+              getFingerprintProfile(accountId).userAgent ||
+              "",
             bxV: cache.headers["bx-v"] || getQwenBxVersion(),
             bxUa: cache.headers["bx-ua"] || "",
             bxUmidtoken: cache.headers["bx-umidtoken"] || "",
@@ -2651,7 +2674,9 @@ async function loginToQwen(
           const cache = getHeaderCache(accountId);
           cache.headers.cookie = cookieStr;
           cache.lastRefresh = Date.now();
-          markAccountHeadersReady(accountId);
+          if (hasRequiredQwenHeaders(cache.headers)) {
+            markAccountHeadersReady(accountId);
+          }
           const { saveAuthSession } = await import("../core/database.ts");
           const exp = parseJwtExpiry(tokenCookie.value);
           let rTok =
@@ -2664,7 +2689,10 @@ async function loginToQwen(
           }
           saveAuthSession(accountId, {
             cookie: cookieStr,
-            userAgent: cache.headers["user-agent"] || "",
+            userAgent:
+              cache.headers["user-agent"] ||
+              getFingerprintProfile(accountId).userAgent ||
+              "",
             bxV: cache.headers["bx-v"] || getQwenBxVersion(),
             bxUa: cache.headers["bx-ua"] || "",
             bxUmidtoken: cache.headers["bx-umidtoken"] || "",
@@ -2988,6 +3016,26 @@ async function loginViaUi(
         return { success: true };
       }
       if (!page.url().includes("/auth")) return { success: true };
+      const pageBlocked = await page
+        .evaluate(() => {
+          const text = (document.body?.innerText || "").toLowerCase();
+          return (
+            text.includes("405") ||
+            text.includes("security threat") ||
+            text.includes("access denied") ||
+            text.includes("request blocked")
+          );
+        })
+        .catch(() => false);
+      if (pageBlocked) {
+        console.warn(
+          `🚫 [Playwright] Auth page blocked by anti-bot WAF on ${page.url()}`,
+        );
+        return {
+          success: false,
+          reason: "Página de autenticação bloqueada pelo WAF anti-bot (405/blocked)",
+        };
+      }
       console.warn(
         `⚠️  [Playwright] Email input not found on ${page.url()} (possible captcha or anti-bot challenge)`,
       );
@@ -3109,20 +3157,17 @@ async function loginViaUi(
         try {
           const emailEl = document.querySelector('input[name="email"], input[type="email"], input[type="text"]') as HTMLInputElement | null;
           const passEl = document.querySelector('input[type="password"], input[name="password"]') as HTMLInputElement | null;
-          const setReactValue = (el: HTMLInputElement, val: string) => {
+          for (const el of [emailEl, passEl]) {
+            if (!el) continue;
             const proto = Object.getPrototypeOf(el);
             const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
             if (setter) {
-              setter.call(el, val);
-            } else {
-              el.value = val;
+              setter.call(el, el.value);
             }
             el.dispatchEvent(new Event("input", { bubbles: true }));
             el.dispatchEvent(new Event("change", { bubbles: true }));
             el.dispatchEvent(new Event("blur", { bubbles: true }));
-          };
-          if (emailEl) setReactValue(emailEl, emailEl.value);
-          if (passEl) setReactValue(passEl, passEl.value);
+          }
         } catch {}
       })
       .catch(() => {});
@@ -3283,16 +3328,51 @@ async function loginViaUi(
   }
 }
 
+const REFRESH_BACKOFF_BASE_MS = 2_000;
+const REFRESH_BACKOFF_MAX_MS = 60_000;
+const refreshTokenFailureBackoff = new Map<
+  string,
+  { failures: number; nextAttemptAt: number }
+>();
+
+function recordRefreshTokenFailure(accountId: string): void {
+  const prev = refreshTokenFailureBackoff.get(accountId);
+  const failures = (prev?.failures ?? 0) + 1;
+  const backoffMs = Math.min(
+    REFRESH_BACKOFF_MAX_MS,
+    REFRESH_BACKOFF_BASE_MS * Math.pow(2, Math.min(failures - 1, 5)),
+  );
+  refreshTokenFailureBackoff.set(accountId, {
+    failures,
+    nextAttemptAt: Date.now() + backoffMs,
+  });
+}
+
+export function resetRefreshTokenBackoffForTests(): void {
+  refreshTokenFailureBackoff.clear();
+}
+
 /**
  * Silently refresh the short-lived access token (15m) using the 30-day refresh_token.
  * Uses official in-page fetch matching Qwen Web /api/v2/auths/refresh verified in HAR.
  */
 export async function refreshAccountToken(
   accountId: string,
+  options: { bypassBackoff?: boolean } = {},
 ): Promise<{ success: boolean; token?: string; error?: string }> {
   const page = accountPages.get(accountId);
   if (!page || page.isClosed()) {
     return { success: false, error: "Account page not active" };
+  }
+
+  if (!options.bypassBackoff) {
+    const backoffState = refreshTokenFailureBackoff.get(accountId);
+    if (backoffState && Date.now() < backoffState.nextAttemptAt) {
+      return {
+        success: false,
+        error: `Token refresh in backoff (${Math.ceil((backoffState.nextAttemptAt - Date.now()) / 1000)}s left)`,
+      };
+    }
   }
 
   // 1. Get refresh token from SQLite session, localStorage, or browser cookies (Qwen 0.3.26+)
@@ -3385,7 +3465,9 @@ export async function refreshAccountToken(
           cache.headers.cookie = cookieStr;
           cache.lastRefresh = Date.now();
           cookieCaches.set(accountId, { cookie: cookieStr, timestamp: Date.now() });
-          markAccountHeadersReady(accountId);
+          if (hasRequiredQwenHeaders(cache.headers)) {
+            markAccountHeadersReady(accountId);
+          }
 
           // Update SQLite session with new tokens
           saveAuthSession(accountId, {
@@ -3404,6 +3486,7 @@ export async function refreshAccountToken(
             capturedAt: Date.now(),
           });
 
+          refreshTokenFailureBackoff.delete(accountId);
           return { success: true, token: newAccessToken };
         }
       }
@@ -3424,7 +3507,9 @@ export async function refreshAccountToken(
         cache.headers.cookie = cookieStr;
         cache.lastRefresh = Date.now();
         cookieCaches.set(accountId, { cookie: cookieStr, timestamp: Date.now() });
-        markAccountHeadersReady(accountId);
+        if (hasRequiredQwenHeaders(cache.headers)) {
+          markAccountHeadersReady(accountId);
+        }
         saveAuthSession(accountId, {
           cookie: cookieStr,
           userAgent: cache.headers["user-agent"] || session?.userAgent || "",
@@ -3440,11 +3525,13 @@ export async function refreshAccountToken(
           refreshToken: apiResult.refreshToken,
           capturedAt: Date.now(),
         });
+        refreshTokenFailureBackoff.delete(accountId);
         return { success: true, token: tokenCookie.value };
       }
     }
   }
 
+  recordRefreshTokenFailure(accountId);
   return { success: false, error: "Could not refresh or re-authenticate token" };
 }
 
@@ -3669,6 +3756,25 @@ export async function captureQwenHeaders(
         return;
       }
 
+      const reqAuthHeader = reqHeaders["authorization"] || reqHeaders["Authorization"];
+      if (typeof reqAuthHeader === "string" && reqAuthHeader.startsWith("Bearer ")) {
+        const bearerJwt = reqAuthHeader.slice(7).trim();
+        const bearerExp = parseJwtExpiry(bearerJwt);
+        const cookieExp = parseJwtExpiry(capturedHeaders.cookie);
+        if (bearerJwt && (!cookieExp || (bearerExp && bearerExp > cookieExp))) {
+          if (/(?:^|;\s*)token=/.test(capturedHeaders.cookie)) {
+            capturedHeaders.cookie = capturedHeaders.cookie.replace(
+              /(^|;\s*)token=[^;]*/,
+              `$1token=${bearerJwt}`,
+            );
+          } else {
+            capturedHeaders.cookie = capturedHeaders.cookie
+              ? `${capturedHeaders.cookie}; token=${bearerJwt}`
+              : `token=${bearerJwt}`;
+          }
+        }
+      }
+
       headersCaptured = true;
       if (timeout) clearTimeout(timeout);
       cache.headers = capturedHeaders;
@@ -3740,6 +3846,16 @@ export async function captureQwenHeaders(
       if (settled || page.isClosed()) return;
       await clearVisibleChallenge(page);
       if (settled || page.isClosed()) return;
+
+      if (attempt === 1 && typeof page.context === "function") {
+        try {
+          const liveCookies = await page.context().cookies();
+          const cookieStr = liveCookies.map((c) => `${c.name}=${c.value}`).join("; ");
+          if (hasValidAuthToken(cookieStr) && isTokenExpiringSoon(cookieStr, 2)) {
+            await refreshAccountToken(accountId, { bypassBackoff: true }).catch(() => {});
+          }
+        } catch {}
+      }
 
       // Session-expiry check: if the page redirected to /auth or /login,
       // re-login immediately.
@@ -4968,6 +5084,7 @@ function cleanupPlaywrightAccountState(accountId: string): void {
   lastAccountActivity.delete(accountId);
   lastKeepAliveNavigation.delete(accountId);
   lastProactiveTokenRefresh.delete(accountId);
+  refreshTokenFailureBackoff.delete(accountId);
   clearFingerprintCache(accountId);
   // The account's context died/closed — its captured headers are stale or the
   // page is gone, so it must not be selected by the rotation gate until a

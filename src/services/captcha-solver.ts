@@ -213,7 +213,7 @@ async function waitForHidden(locator: Locator, timeoutMs: number): Promise<boole
 async function computeAliyunPuzzleOffset(
   page: Page,
 ): Promise<AliyunPuzzleOffset> {
-  return page.evaluate((): Promise<AliyunPuzzleOffset> => {
+  return page.evaluate(async (): Promise<AliyunPuzzleOffset> => {
     const background = document.querySelector(
       "#aliyunCaptcha-img",
     ) as HTMLImageElement | null;
@@ -221,169 +221,195 @@ async function computeAliyunPuzzleOffset(
       "#aliyunCaptcha-puzzle",
     ) as HTMLImageElement | null;
     if (!background || !piece) {
-      return Promise.resolve({ ok: false, reason: "missing puzzle images" });
+      return { ok: false, reason: "missing puzzle images" };
     }
 
-    const compute = (): AliyunPuzzleOffset => {
-      try {
-        const width = background.naturalWidth;
-        const height = background.naturalHeight;
-        const pieceWidth = piece.naturalWidth;
-        const pieceHeight = piece.naturalHeight;
-        if (!width || !height || !pieceWidth || !pieceHeight) {
-          return { ok: false, reason: "image dimensions unavailable" };
-        }
-
-        const backgroundCanvas = document.createElement("canvas");
-        // The anti-fingerprinting getImageData noise must not touch the
-        // solver's own canvas: a ±1 pixel shift corrupts edge scoring.
-        backgroundCanvas.id = "captcha-solver-canvas";
-        backgroundCanvas.width = width;
-        backgroundCanvas.height = height;
-        const backgroundContext = backgroundCanvas.getContext("2d");
-        if (!backgroundContext) {
-          return { ok: false, reason: "no background context" };
-        }
-
-        const pieceCanvas = document.createElement("canvas");
-        pieceCanvas.id = "captcha-solver-canvas";
-        pieceCanvas.width = pieceWidth;
-        pieceCanvas.height = pieceHeight;
-        const pieceContext = pieceCanvas.getContext("2d");
-        if (!pieceContext) {
-          return { ok: false, reason: "no piece context" };
-        }
-
-        try {
-          backgroundContext.drawImage(background, 0, 0);
-        } catch {
-          return { ok: false, reason: "background canvas tainted" };
-        }
-        try {
-          pieceContext.drawImage(piece, 0, 0);
-        } catch {
-          return { ok: false, reason: "puzzle canvas tainted" };
-        }
-
-        const backgroundData = backgroundContext.getImageData(
-          0,
-          0,
-          width,
-          height,
-        ).data;
-        const pieceData = pieceContext.getImageData(
-          0,
-          0,
-          pieceWidth,
-          pieceHeight,
-        ).data;
-
-        let pieceMinX = pieceWidth;
-        let pieceMaxX = -1;
-        let pieceMinY = pieceHeight;
-        let pieceMaxY = -1;
-        for (let y = 0; y < pieceHeight; y++) {
-          for (let x = 0; x < pieceWidth; x++) {
-            if (pieceData[(y * pieceWidth + x) * 4 + 3] > 100) {
-              if (x < pieceMinX) pieceMinX = x;
-              if (x > pieceMaxX) pieceMaxX = x;
-              if (y < pieceMinY) pieceMinY = y;
-              if (y > pieceMaxY) pieceMaxY = y;
+    if (!background.complete || !piece.complete) {
+      const loaded = await new Promise<boolean>((resolve) => {
+        let settled = false;
+        background.addEventListener(
+          "load",
+          () => {
+            if (!settled && background.complete && piece.complete) {
+              settled = true;
+              resolve(true);
             }
-          }
-        }
-        const puzzleWidth = pieceMaxX - pieceMinX + 1;
-        if (puzzleWidth <= 0) {
-          return { ok: false, reason: "empty puzzle piece" };
-        }
-
-        const yStart = Math.max(1, Math.min(height - 2, pieceMinY + 5));
-        const yEnd = Math.max(
-          yStart,
-          Math.min(height - 2, pieceMaxY - 5),
+          },
+          { once: true },
         );
-        const columnGradients = new Float32Array(width);
-        for (let x = 1; x < width - 1; x++) {
-          let gradient = 0;
-          for (let y = yStart; y <= yEnd; y++) {
-            const left = (y * width + x - 1) * 4;
-            const right = (y * width + x + 1) * 4;
-            gradient +=
-              Math.abs(backgroundData[right] - backgroundData[left]) +
-              Math.abs(backgroundData[right + 1] - backgroundData[left + 1]) +
-              Math.abs(backgroundData[right + 2] - backgroundData[left + 2]);
+        piece.addEventListener(
+          "load",
+          () => {
+            if (!settled && background.complete && piece.complete) {
+              settled = true;
+              resolve(true);
+            }
+          },
+          { once: true },
+        );
+        background.addEventListener(
+          "error",
+          () => {
+            if (!settled) {
+              settled = true;
+              resolve(false);
+            }
+          },
+          { once: true },
+        );
+        piece.addEventListener(
+          "error",
+          () => {
+            if (!settled) {
+              settled = true;
+              resolve(false);
+            }
+          },
+          { once: true },
+        );
+        setTimeout(() => {
+          if (!settled) {
+            settled = true;
+            resolve(false);
           }
-          columnGradients[x] = gradient;
-        }
-
-        let bestX = 0;
-        let bestScore = 0;
-        const minCandidateX = 30;
-        const maxCandidateX = width - puzzleWidth - 20;
-        for (
-          let candidateX = minCandidateX;
-          candidateX <= maxCandidateX;
-          candidateX++
-        ) {
-          let leftMax = 0;
-          for (let dx = -2; dx <= 2; dx++) {
-            const value = columnGradients[candidateX + pieceMinX + dx] || 0;
-            if (value > leftMax) leftMax = value;
-          }
-          let rightMax = 0;
-          for (let dx = -3; dx <= 1; dx++) {
-            const value = columnGradients[candidateX + pieceMaxX + dx] || 0;
-            if (value > rightMax) rightMax = value;
-          }
-          const score = Math.sqrt(leftMax * rightMax);
-          if (score > bestScore) {
-            bestScore = score;
-            bestX = candidateX;
-          }
-        }
-
-        if (bestScore <= 0) {
-          return { ok: false, reason: "no matching hole edge" };
-        }
-        return {
-          ok: true,
-          offsetX: bestX - pieceMinX,
-          naturalWidth: width,
-        };
-      } catch (error) {
-        return {
-          ok: false,
-          reason: error instanceof Error ? error.message : String(error),
-        };
+        }, 2_000);
+      });
+      if (!loaded && (!background.complete || !piece.complete)) {
+        return { ok: false, reason: "puzzle image load error" };
       }
-    };
+    }
 
-    return new Promise<AliyunPuzzleOffset>((resolve) => {
-      if (background.complete && piece.complete) {
-        resolve(compute());
-        return;
+    try {
+      const width = background.naturalWidth;
+      const height = background.naturalHeight;
+      const pieceWidth = piece.naturalWidth;
+      const pieceHeight = piece.naturalHeight;
+      if (!width || !height || !pieceWidth || !pieceHeight) {
+        return { ok: false, reason: "image dimensions unavailable" };
       }
-      let settled = false;
-      const finish = () => {
-        if (settled) return;
-        settled = true;
-        resolve(compute());
+
+      const backgroundCanvas = document.createElement("canvas");
+      // The anti-fingerprinting getImageData noise must not touch the
+      // solver's own canvas: a ±1 pixel shift corrupts edge scoring.
+      backgroundCanvas.id = "captcha-solver-canvas";
+      backgroundCanvas.width = width;
+      backgroundCanvas.height = height;
+      const backgroundContext = backgroundCanvas.getContext("2d");
+      if (!backgroundContext) {
+        return { ok: false, reason: "no background context" };
+      }
+
+      const pieceCanvas = document.createElement("canvas");
+      pieceCanvas.id = "captcha-solver-canvas";
+      pieceCanvas.width = pieceWidth;
+      pieceCanvas.height = pieceHeight;
+      const pieceContext = pieceCanvas.getContext("2d");
+      if (!pieceContext) {
+        return { ok: false, reason: "no piece context" };
+      }
+
+      try {
+        backgroundContext.drawImage(background, 0, 0);
+      } catch {
+        return { ok: false, reason: "background canvas tainted" };
+      }
+      try {
+        pieceContext.drawImage(piece, 0, 0);
+      } catch {
+        return { ok: false, reason: "puzzle canvas tainted" };
+      }
+
+      const backgroundData = backgroundContext.getImageData(
+        0,
+        0,
+        width,
+        height,
+      ).data;
+      const pieceData = pieceContext.getImageData(
+        0,
+        0,
+        pieceWidth,
+        pieceHeight,
+      ).data;
+
+      let pieceMinX = pieceWidth;
+      let pieceMaxX = -1;
+      let pieceMinY = pieceHeight;
+      let pieceMaxY = -1;
+      for (let y = 0; y < pieceHeight; y++) {
+        for (let x = 0; x < pieceWidth; x++) {
+          if (pieceData[(y * pieceWidth + x) * 4 + 3] > 100) {
+            if (x < pieceMinX) pieceMinX = x;
+            if (x > pieceMaxX) pieceMaxX = x;
+            if (y < pieceMinY) pieceMinY = y;
+            if (y > pieceMaxY) pieceMaxY = y;
+          }
+        }
+      }
+      const puzzleWidth = pieceMaxX - pieceMinX + 1;
+      if (puzzleWidth <= 0) {
+        return { ok: false, reason: "empty puzzle piece" };
+      }
+
+      const yStart = Math.max(1, Math.min(height - 2, pieceMinY + 5));
+      const yEnd = Math.max(
+        yStart,
+        Math.min(height - 2, pieceMaxY - 5),
+      );
+      const columnGradients = new Float32Array(width);
+      for (let x = 1; x < width - 1; x++) {
+        let gradient = 0;
+        for (let y = yStart; y <= yEnd; y++) {
+          const left = (y * width + x - 1) * 4;
+          const right = (y * width + x + 1) * 4;
+          gradient +=
+            Math.abs(backgroundData[right] - backgroundData[left]) +
+            Math.abs(backgroundData[right + 1] - backgroundData[left + 1]) +
+            Math.abs(backgroundData[right + 2] - backgroundData[left + 2]);
+        }
+        columnGradients[x] = gradient;
+      }
+
+      let bestX = 0;
+      let bestScore = 0;
+      const minCandidateX = 30;
+      const maxCandidateX = width - puzzleWidth - 20;
+      for (
+        let candidateX = minCandidateX;
+        candidateX <= maxCandidateX;
+        candidateX++
+      ) {
+        let leftMax = 0;
+        for (let dx = -2; dx <= 2; dx++) {
+          const value = columnGradients[candidateX + pieceMinX + dx] || 0;
+          if (value > leftMax) leftMax = value;
+        }
+        let rightMax = 0;
+        for (let dx = -3; dx <= 1; dx++) {
+          const value = columnGradients[candidateX + pieceMaxX + dx] || 0;
+          if (value > rightMax) rightMax = value;
+        }
+        const score = Math.sqrt(leftMax * rightMax);
+        if (score > bestScore) {
+          bestScore = score;
+          bestX = candidateX;
+        }
+      }
+
+      if (bestScore <= 0) {
+        return { ok: false, reason: "no matching hole edge" };
+      }
+      return {
+        ok: true,
+        offsetX: bestX - pieceMinX,
+        naturalWidth: width,
       };
-      const fail = () => {
-        if (settled) return;
-        settled = true;
-        resolve({ ok: false, reason: "puzzle image load error" });
+    } catch (error) {
+      return {
+        ok: false,
+        reason: error instanceof Error ? error.message : String(error),
       };
-      background.addEventListener("load", finish, { once: true });
-      piece.addEventListener("load", finish, { once: true });
-      background.addEventListener("error", fail, { once: true });
-      piece.addEventListener("error", fail, { once: true });
-      setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        resolve({ ok: false, reason: "puzzle image load timeout" });
-      }, 2_000);
-    });
+    }
   });
 }
 
@@ -433,6 +459,17 @@ export async function solveAliyunWafCaptcha(
     const block = detected.locator;
     if (!(await isVisible(block))) return false;
     logBaxiaCaptcha("aliyun_detected", { selector: detected.selector });
+
+    if (typeof page.evaluate === "function") {
+      await page
+        .evaluate(() => {
+          try {
+            if (document.exitPointerLock) document.exitPointerLock();
+            window.focus();
+          } catch {}
+        })
+        .catch(() => {});
+    }
 
     let lastReason = "unknown";
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -768,6 +805,17 @@ async function solveBaxiaCaptchaUnlocked(
   let lastDetail = "";
 
   logBaxiaCaptcha("solve_started", { scope });
+
+  if (typeof page.evaluate === "function") {
+    await page
+      .evaluate(() => {
+        try {
+          if (document.exitPointerLock) document.exitPointerLock();
+          window.focus();
+        } catch {}
+      })
+      .catch(() => {});
+  }
 
   // A frame selector is deliberately narrowed to the first matching iframe.
   // This matters when an old hidden Baxia iframe remains in the page after a

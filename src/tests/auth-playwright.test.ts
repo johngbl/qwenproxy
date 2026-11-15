@@ -490,3 +490,62 @@ test("initPlaywrightForAccount: deduplicates concurrent in-flight calls for the 
     unregisterPlaywrightAccountForTests(accountId);
   }
 });
+
+test("refreshAccountToken: backs off per account after repeated refresh failures", async () => {
+  const {
+    refreshAccountToken,
+    registerPlaywrightAccountForTests,
+    unregisterPlaywrightAccountForTests,
+    resetRefreshTokenBackoffForTests,
+  } = await import("../services/playwright.ts");
+
+  const accountId = "test-refresh-backoff";
+  resetRefreshTokenBackoffForTests();
+  let evalCount = 0;
+  const mockPage = {
+    isClosed: () => false,
+    evaluate: async () => {
+      evalCount++;
+      return "";
+    },
+    context: () => ({
+      cookies: async () => [],
+    }),
+  };
+  registerPlaywrightAccountForTests(accountId, mockPage as any, Date.now());
+  try {
+    const first = await refreshAccountToken(accountId);
+    assert.equal(first.success, false);
+    const firstEvalCount = evalCount;
+
+    // Immediate second attempt must hit backoff without calling page.evaluate again
+    const second = await refreshAccountToken(accountId);
+    assert.equal(second.success, false);
+    assert.match(second.error || "", /backoff/);
+    assert.equal(evalCount, firstEvalCount);
+  } finally {
+    resetRefreshTokenBackoffForTests();
+    unregisterPlaywrightAccountForTests(accountId);
+  }
+});
+
+test("isBrowserUnauthorizedPayload: catches both HTTP 401 and HTTP 200 unauthorized JSON", async () => {
+  const { isBrowserUnauthorizedPayload } = await import("../services/qwen.ts");
+  assert.equal(isBrowserUnauthorizedPayload(401, "text/plain", "Unauthorized"), true);
+  assert.equal(
+    isBrowserUnauthorizedPayload(
+      200,
+      "application/json",
+      '{"success":false,"data":{"code":"unauthorized","details":"Your session has expired"}}',
+    ),
+    true,
+  );
+  assert.equal(
+    isBrowserUnauthorizedPayload(200, "application/json", '{"success":true,"data":{}}'),
+    false,
+  );
+  assert.equal(
+    isBrowserUnauthorizedPayload(200, "text/html", "<html><body>hello</body></html>"),
+    false,
+  );
+});

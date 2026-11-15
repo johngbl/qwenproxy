@@ -20,6 +20,8 @@ import {
 import { acquireUpstreamStream } from "./account.ts";
 import { loadAccounts } from "../../core/accounts.ts";
 import { markAccountRateLimited, computeQuotaCooldownMs } from "../../core/account-manager.ts";
+import { markAccountModelLimited } from "../../core/account-model-limits.ts";
+import { mapClientModelToQwen } from "../../core/model-alias.ts";
 import {
   clearTemporaryBusy,
   markAccountTemporarilyBusy,
@@ -27,6 +29,7 @@ import {
 
 import {
   classifyRetryAction,
+  isModelScopedQuotaError,
   shouldRetryChatInProgressOnSameAccount,
   shouldRetryInvalidInputOnSameAccount,
 } from "./retry-policy.ts";
@@ -84,6 +87,36 @@ import {
   buildUsage,
 } from "./helpers.ts";
 import { isOverloadMessage, OVERLOAD_COOLDOWN_MS } from "../../utils/overload-detector.ts";
+import {
+  detectQuotaLimitMessage,
+  isQuotaLimitMessage,
+} from "../../utils/quota-detector.ts";
+
+/**
+ * Holds only the initial prefix of the answer phase when it could still turn
+ * out to be an incremental overload apology or daily-limit notice. Releases
+ * immediately (0ms added delay) for code, tool tags, markdown headers/lists,
+ * JSON, HTML, or multi-line prose.
+ */
+export function shouldHoldAnswerPrefix(accumulatedAnswer: string): boolean {
+  const trimmed = (accumulatedAnswer || "").trimStart();
+  if (!trimmed) return true;
+  if (
+    trimmed.includes("```") ||
+    trimmed.includes("<tool_call") ||
+    trimmed.includes("<qpx_call") ||
+    /^(?:#{1,6}\s|[-*+]\s|\d+\.\s|>|\{|\[|<[a-zA-Z!])/.test(trimmed)
+  ) {
+    return false;
+  }
+  if (trimmed.includes("\n") && trimmed.length >= 25) {
+    return false;
+  }
+  if (isOverloadMessage(trimmed) || isQuotaLimitMessage(trimmed)) {
+    return true;
+  }
+  return accumulatedAnswer.length < 240;
+}
 
 function firstString(...values: unknown[]): string | null {
   for (const value of values) {
@@ -482,19 +515,6 @@ export async function processNonStreamingResponse(
               isThinkingChunk = false;
               if (delta.content !== undefined) {
                 const newContent = delta.content || "";
-                if (isOverloadMessage(newContent)) {
-                  throw toRetryableStreamError(
-                    "server_overloaded",
-                    newContent,
-                    {
-                      switchAccount: true,
-                      forceNewChat: true,
-                      reason: "server_busy",
-                      accountCooldownMs: OVERLOAD_COOLDOWN_MS,
-                      accountCooldownReason: "ServerOverloaded",
-                    },
-                  );
-                }
                 const result = getIncrementalDelta(
                   lastRawContent,
                   newContent,
@@ -507,6 +527,19 @@ export async function processNonStreamingResponse(
                   lastRawContentLength = result.contentLength;
                   lastRawContentSuffix = result.contentSuffix;
                   foundStr = true;
+                  if (isOverloadMessage(lastRawContent)) {
+                    throw toRetryableStreamError(
+                      "server_overloaded",
+                      lastRawContent,
+                      {
+                        switchAccount: true,
+                        forceNewChat: true,
+                        reason: "server_busy",
+                        accountCooldownMs: OVERLOAD_COOLDOWN_MS,
+                        accountCooldownReason: "ServerOverloaded",
+                      },
+                    );
+                  }
                 }
               }
             }
@@ -582,6 +615,27 @@ export async function processNonStreamingResponse(
           arguments: JSON.stringify(tc.arguments),
         },
       });
+    }
+
+    if (toolCallsOut.length === 0) {
+      if (isOverloadMessage(finalContent)) {
+        throw toRetryableStreamError("server_overloaded", finalContent, {
+          switchAccount: true,
+          forceNewChat: true,
+          reason: "server_busy",
+          accountCooldownMs: OVERLOAD_COOLDOWN_MS,
+          accountCooldownReason: "ServerOverloaded",
+        });
+      }
+      if (isQuotaLimitMessage(finalContent)) {
+        throw toRetryableStreamError("membership_limit", finalContent, {
+          switchAccount: true,
+          forceNewChat: true,
+          reason: "membership_limit",
+          accountCooldownMs: computeQuotaCooldownMs(Date.now()),
+          accountCooldownReason: "MembershipLimit",
+        });
+      }
     }
 
     if (isToolcallDebugEnabled()) {
@@ -1229,6 +1283,8 @@ export async function processStreamingResponse(
       let finalContent = "";
       let reasoningBuffer = "";
       let emittedModelOutput = false;
+      let answerHoldActive = Boolean(midStreamRetry);
+      let heldAnswerBuffer = "";
       let targetResponseId: string | null = null;
       let toolParser = shouldParseToolCalls
         ? new StreamingToolParser(declaredTools, {
@@ -1387,6 +1443,74 @@ export async function processStreamingResponse(
         toolParser.feed(prefix);
       };
 
+      const handleAnswerDelta = async (textChunk: string): Promise<void> => {
+        if (!answerHoldActive) {
+          await emitAnswerText(textChunk);
+          return;
+        }
+        heldAnswerBuffer += textChunk;
+        if (isOverloadMessage(heldAnswerBuffer)) {
+          const matched = heldAnswerBuffer;
+          heldAnswerBuffer = "";
+          throw toRetryableStreamError("server_overloaded", matched, {
+            switchAccount: true,
+            forceNewChat: true,
+            reason: "server_busy",
+            accountCooldownMs: OVERLOAD_COOLDOWN_MS,
+            accountCooldownReason: "ServerOverloaded",
+          });
+        }
+        const quotaMatch = detectQuotaLimitMessage(heldAnswerBuffer);
+        if (quotaMatch.isQuotaLimit && quotaMatch.model) {
+          const matched = heldAnswerBuffer;
+          heldAnswerBuffer = "";
+          throw toRetryableStreamError("membership_limit", matched, {
+            switchAccount: true,
+            forceNewChat: true,
+            reason: "membership_limit",
+            accountCooldownMs: computeQuotaCooldownMs(Date.now()),
+            accountCooldownReason: "MembershipLimit",
+          });
+        }
+        if (!shouldHoldAnswerPrefix(heldAnswerBuffer)) {
+          const buffered = heldAnswerBuffer;
+          heldAnswerBuffer = "";
+          answerHoldActive = false;
+          await emitAnswerText(buffered);
+        }
+      };
+
+      const finalizeHeldAnswerOnStreamEnd = async (): Promise<void> => {
+        if (!answerHoldActive || !heldAnswerBuffer) {
+          answerHoldActive = false;
+          return;
+        }
+        const buffered = heldAnswerBuffer;
+        if (isOverloadMessage(buffered)) {
+          heldAnswerBuffer = "";
+          throw toRetryableStreamError("server_overloaded", buffered, {
+            switchAccount: true,
+            forceNewChat: true,
+            reason: "server_busy",
+            accountCooldownMs: OVERLOAD_COOLDOWN_MS,
+            accountCooldownReason: "ServerOverloaded",
+          });
+        }
+        if (isQuotaLimitMessage(buffered)) {
+          heldAnswerBuffer = "";
+          throw toRetryableStreamError("membership_limit", buffered, {
+            switchAccount: true,
+            forceNewChat: true,
+            reason: "membership_limit",
+            accountCooldownMs: computeQuotaCooldownMs(Date.now()),
+            accountCooldownReason: "MembershipLimit",
+          });
+        }
+        heldAnswerBuffer = "";
+        answerHoldActive = false;
+        await emitAnswerText(buffered);
+      };
+
 
 
       const recoverFromStreamError = async (rawError: unknown): Promise<boolean> => {
@@ -1503,11 +1627,23 @@ export async function processStreamingResponse(
           switchAccount &&
           (policy.accountCooldownMs ?? 0) > 0
         ) {
-          markAccountRateLimited(
-            currentAccountId,
-            policy.accountCooldownMs,
-            policy.accountCooldownReason || "StreamRetry",
-          );
+          if (isModelScopedQuotaError(normalizedError)) {
+            const quotaModel = mapClientModelToQwen(
+              midStreamRetry.contextModelId || body.model,
+            );
+            markAccountModelLimited(
+              currentAccountId,
+              quotaModel,
+              Date.now() + policy.accountCooldownMs!,
+              "MembershipLimit",
+            );
+          } else {
+            markAccountRateLimited(
+              currentAccountId,
+              policy.accountCooldownMs,
+              policy.accountCooldownReason || "StreamRetry",
+            );
+          }
         }
 
         if (policy.accountCooldownReason === "AuthExpired") {
@@ -1612,17 +1748,21 @@ export async function processStreamingResponse(
         currentTokenEstimationContext =
           newStreamResult.tokenEstimationContext;
         targetResponseId = null;
-        // Keep the text dedup state (lastRawContent/lastThinkingSummary):
-        // the recovery chat re-answers the same question from scratch, so
-        // getIncrementalDelta's common-prefix logic drops the already-emitted
-        // prefix instead of re-printing the first sentence to the client.
+        // Nothing from the answer phase has been emitted yet (`!emittedModelOutput`
+        // guard above), so discard any held prefix/dedup state from the failed
+        // attempt before reading the recovery stream.
+        lastRawContent = "";
+        lastRawContentLength = 0;
+        lastRawContentSuffix = "";
+        answerHoldActive = Boolean(midStreamRetry);
+        heldAnswerBuffer = "";
         toolParser = shouldParseToolCalls
           ? new StreamingToolParser(declaredTools, {
               incrementalToolCalls: true,
               maxToolCallsPerTurn: config.retry.maxToolCallsPerTurn,
             })
           : null;
-        recoverySeedPending = true;
+        recoverySeedPending = Boolean(reasoningBuffer);
         Object.assign(usageAccumulator, createUsageAccumulator(0));
         buffer = "";
         pendingParentId = null;
@@ -1729,13 +1869,27 @@ export async function processStreamingResponse(
             if (await recoverFromStreamError(readError)) continue;
             throw readError;
           }
-          if (readResult.done) break;
+          if (readResult.done) {
+            try {
+              await finalizeHeldAnswerOnStreamEnd();
+            } catch (endErr) {
+              if ((clientDisconnected && !gracePending) || c.req.raw.signal.aborted) {
+                return;
+              }
+              if (await recoverFromStreamError(endErr)) {
+                continue;
+              }
+              throw endErr;
+            }
+            break;
+          }
           touchChatLock(currentUiSessionId);
           buffer += decoder.decode(readResult.value, { stream: true });
           lineEnd = buffer.indexOf("\n");
           if (lineEnd === -1) continue;
         }
 
+        let recoveredInForLoop = false;
         for (; lineEnd !== -1; lineEnd = buffer.indexOf("\n", lineStart)) {
           // Extract the data payload with a single substring (no slice/trim
           // cascade). Qwen SSE lines are well-formed `data: <json>` + LF/CRLF.
@@ -1751,6 +1905,18 @@ export async function processStreamingResponse(
           if (!dataStr) continue;
 
           if (dataStr === "[DONE]") {
+            try {
+              await finalizeHeldAnswerOnStreamEnd();
+            } catch (endErr) {
+              if ((clientDisconnected && !gracePending) || c.req.raw.signal.aborted) {
+                return;
+              }
+              if (await recoverFromStreamError(endErr)) {
+                recoveredInForLoop = true;
+                break;
+              }
+              throw endErr;
+            }
             upstreamDone = true;
             if (!clientDisconnected) {
               // Drain buffered deltas first; the single final [DONE] is
@@ -1777,23 +1943,6 @@ export async function processStreamingResponse(
               .replace(/\\\\/g, "\\");
 
             if (unescaped) {
-              if (!emittedModelOutput && isOverloadMessage(unescaped)) {
-                const overloadErr = toRetryableStreamError(
-                  "server_overloaded",
-                  unescaped,
-                  {
-                    switchAccount: true,
-                    forceNewChat: true,
-                    reason: "server_busy",
-                    accountCooldownMs: OVERLOAD_COOLDOWN_MS,
-                    accountCooldownReason: "ServerOverloaded",
-                  },
-                );
-                if (await recoverFromStreamError(overloadErr)) {
-                  break;
-                }
-                throw overloadErr;
-              }
               const result = getIncrementalDelta(
                 lastRawContent,
                 unescaped,
@@ -1809,7 +1958,18 @@ export async function processStreamingResponse(
                 lastRawContent = result.matchedContent;
                 lastRawContentLength = result.contentLength;
                 lastRawContentSuffix = result.contentSuffix;
-                await emitAnswerText(vStr);
+                try {
+                  await handleAnswerDelta(vStr);
+                } catch (fastErr) {
+                  if ((clientDisconnected && !gracePending) || c.req.raw.signal.aborted) {
+                    return;
+                  }
+                  if (await recoverFromStreamError(fastErr)) {
+                    recoveredInForLoop = true;
+                    break;
+                  }
+                  throw fastErr;
+                }
                 if (toolParser?.isToolCapReached()) {
                   stoppedByToolCap = true;
                   if (!clientDisconnected) flushWrites();
@@ -1894,6 +2054,7 @@ export async function processStreamingResponse(
               // the terminal event so we don't wait on the keep-alive
               // connection to close (up to the 60s/10min idle timeout).
               if (isAnswerPhase(delta.phase) && delta.status === "finished") {
+                await finalizeHeldAnswerOnStreamEnd();
                 upstreamDone = true;
                 if (!clientDisconnected) flushWrites();
                 break; // Exit the for loop; the while check leaves the read loop
@@ -1921,19 +2082,6 @@ export async function processStreamingResponse(
                 isThinkingChunk = false;
                 if (delta.content !== undefined) {
                   const newContent = delta.content || "";
-                  if (!emittedModelOutput && isOverloadMessage(newContent)) {
-                    throw toRetryableStreamError(
-                      "server_overloaded",
-                      newContent,
-                      {
-                        switchAccount: true,
-                        forceNewChat: true,
-                        reason: "server_busy",
-                        accountCooldownMs: OVERLOAD_COOLDOWN_MS,
-                        accountCooldownReason: "ServerOverloaded",
-                      },
-                    );
-                  }
                   const result = getIncrementalDelta(
                     lastRawContent,
                     newContent,
@@ -1962,7 +2110,7 @@ export async function processStreamingResponse(
                 reasoningBuffer += vStr;
                 writeDeltaEvent({ reasoning_content: vStr });
               } else {
-                await emitAnswerText(vStr);
+                await handleAnswerDelta(vStr);
                 if (toolParser?.isToolCapReached()) {
                   stoppedByToolCap = true;
                   if (!clientDisconnected) flushWrites();
@@ -1980,7 +2128,8 @@ export async function processStreamingResponse(
             }
 
             if (await recoverFromStreamError(_e)) {
-              continue;
+              recoveredInForLoop = true;
+              break;
             }
 
             if (_e instanceof RetryableQwenStreamError) {
@@ -1990,6 +2139,10 @@ export async function processStreamingResponse(
           }
         }
 
+        if (recoveredInForLoop) {
+          buffer = "";
+          continue;
+        }
         // A terminal [DONE] / answer-finished delta exits via `break` from
         // the for loop above; leave the while loop instead of re-reading so a
         // lingering keep-alive upstream connection doesn't stall the tail
@@ -2663,7 +2816,7 @@ export async function processStreamingResponse(
 
         scheduleAssistantComplete(onAssistantComplete, {
           sessionId: logicalSessionId,
-          accountId: activeAccountId,
+          accountId: currentAccountId,
           chatSessionId: currentUiSessionId,
           parentId: null,
           responseId: targetResponseId,
@@ -2696,8 +2849,8 @@ export async function processStreamingResponse(
           context: currentTokenEstimationContext,
         });
 
-        if (activeAccountId && usage) {
-          recordTurnUsage(activeAccountId, usage, body.model);
+        if (currentAccountId && usage) {
+          recordTurnUsage(currentAccountId, usage, body.model);
         }
       } else {
         if (isToolcallDebugEnabled()) {

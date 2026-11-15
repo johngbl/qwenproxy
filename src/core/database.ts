@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import path from "path";
 import fs from "fs";
 import { encrypt, isEncrypted } from "./crypto-utils.ts";
+import { config } from "./config.ts";
 
 /**
  * Several suites exercise account rotation by deleting every row and restoring
@@ -184,6 +185,18 @@ function runMigrations(db: Database.Database): void {
     );
 
     CREATE INDEX IF NOT EXISTS idx_daily_usage_date ON account_daily_usage(date_utc);
+
+    CREATE TABLE IF NOT EXISTS account_model_limits (
+      account_id TEXT NOT NULL,
+      model TEXT NOT NULL,
+      until INTEGER NOT NULL,
+      reason TEXT NOT NULL DEFAULT 'MembershipLimit',
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (account_id, model)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_account_model_limits_until
+      ON account_model_limits(until);
   `);
 
   try {
@@ -372,7 +385,7 @@ export function saveAuthSession(
     accountId,
     session.cookie,
     session.userAgent,
-    session.bxV || "2.5.37",
+    session.bxV || config.auth.bxV,
     session.bxUa || "",
     session.bxUmidtoken || "",
     session.secChUa || null,
@@ -443,4 +456,61 @@ export function getValidAuthSession(
 export function deleteAuthSession(accountId: string): void {
   const database = getDatabase();
   database.prepare("DELETE FROM qwen_auth_sessions WHERE account_id = ?").run(accountId);
+}
+
+export interface PersistedModelLimit {
+  account_id: string;
+  model: string;
+  until: number;
+  reason: string;
+  updated_at: number;
+}
+
+export function upsertModelLimit(entry: {
+  accountId: string;
+  model: string;
+  until: number;
+  reason: string;
+  updatedAt: number;
+}): void {
+  const database = getDatabase();
+  database
+    .prepare(
+      `INSERT INTO account_model_limits (account_id, model, until, reason, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(account_id, model) DO UPDATE SET
+         until = excluded.until,
+         reason = excluded.reason,
+         updated_at = excluded.updated_at`,
+    )
+    .run(entry.accountId, entry.model, entry.until, entry.reason, entry.updatedAt);
+}
+
+export function deleteModelLimit(accountId: string, model: string): void {
+  const database = getDatabase();
+  database
+    .prepare("DELETE FROM account_model_limits WHERE account_id = ? AND model = ?")
+    .run(accountId, model);
+}
+
+export function deleteModelLimitsForAccount(accountId: string): void {
+  const database = getDatabase();
+  database
+    .prepare("DELETE FROM account_model_limits WHERE account_id = ?")
+    .run(accountId);
+}
+
+export function deleteAllModelLimitsFromDb(): number {
+  const database = getDatabase();
+  const info = database.prepare("DELETE FROM account_model_limits").run();
+  return info.changes;
+}
+
+export function listPersistedModelLimits(): PersistedModelLimit[] {
+  const database = getDatabase();
+  return database
+    .prepare(
+      "SELECT account_id, model, until, reason, updated_at FROM account_model_limits",
+    )
+    .all() as PersistedModelLimit[];
 }

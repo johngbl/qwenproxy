@@ -169,3 +169,75 @@ test("playwright page.evaluate callbacks never reference Node-only functions in 
     "getQwenWebVersion() must never be called inside a browser fetch headers block in page.evaluate",
   );
 });
+
+test("page.evaluate callbacks never emit esbuild __name helpers under tsx keepNames", async () => {
+  const esbuild = await import("esbuild");
+  const files = [
+    "src/services/qwen.ts",
+    "src/services/playwright.ts",
+    "src/services/captcha-solver.ts",
+    "src/services/human-behavior.ts",
+    "src/services/media-generation.ts",
+  ];
+
+  for (const rel of files) {
+    const src = fs.readFileSync(path.resolve(rel), "utf-8");
+    const out = esbuild.transformSync(src, { loader: "ts", keepNames: true }).code;
+    let idx = 0;
+    while ((idx = out.indexOf(".evaluate(", idx)) !== -1) {
+      let depth = 0;
+      let i = idx + ".evaluate".length;
+      let inStr: string | null = null;
+      let inLineComment = false;
+      let inBlockComment = false;
+      for (; i < out.length; i++) {
+        const ch = out[i];
+        const next = out[i + 1];
+        if (inLineComment) {
+          if (ch === "\n") inLineComment = false;
+          continue;
+        }
+        if (inBlockComment) {
+          if (ch === "*" && next === "/") {
+            inBlockComment = false;
+            i++;
+          }
+          continue;
+        }
+        if (inStr) {
+          if (ch === "\\") {
+            i++;
+            continue;
+          }
+          if (ch === inStr) inStr = null;
+          continue;
+        }
+        if (ch === "/" && next === "/") {
+          inLineComment = true;
+          i++;
+          continue;
+        }
+        if (ch === "/" && next === "*") {
+          inBlockComment = true;
+          i++;
+          continue;
+        }
+        if (ch === '"' || ch === "'" || ch === "`") {
+          inStr = ch;
+        } else if (ch === "(") {
+          depth++;
+        } else if (ch === ")") {
+          depth--;
+          if (depth === 0) break;
+        }
+      }
+      const block = out.slice(idx, i + 1);
+      assert.equal(
+        block.includes("__name("),
+        false,
+        `${rel} has an esbuild __name helper inside page.evaluate: ${block.slice(0, 200)}`,
+      );
+      idx = i + 1;
+    }
+  }
+});

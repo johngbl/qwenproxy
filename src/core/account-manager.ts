@@ -3,6 +3,12 @@ import {
   loadAccounts,
   updateAccountCooldown,
 } from "./accounts.ts";
+import {
+  clearAllAccountModelLimits,
+  clearAllModelLimits,
+  getModelLimitRemainingMs,
+  isAccountModelLimited,
+} from "./account-model-limits.ts";
 import { getAccountsByPriority } from "./account-priority.ts";
 import { formatCooldownUntil } from "./logger.ts";
 
@@ -89,6 +95,7 @@ export function markAccountRateLimited(
 
 export function clearAccountCooldown(accountId: string): void {
   cooldowns.delete(accountId);
+  clearAllAccountModelLimits(accountId);
   if (accountId !== "global") {
     try {
       updateAccountCooldown(accountId, 0, null);
@@ -111,7 +118,8 @@ export function clearAllAccountCooldowns(): number {
     }
   }
   cooldowns.clear();
-  return count;
+  const clearedModelLimits = clearAllModelLimits();
+  return count > 0 ? count : clearedModelLimits > 0 ? 1 : 0;
 }
 
 export function getAccountCooldownInfo(
@@ -139,6 +147,29 @@ export function getAccountCooldownInfo(
 
 function isAccountOnCooldown(accountId: string): boolean {
   return getAccountCooldownInfo(accountId) !== null;
+}
+
+export function isAccountUnavailableForModel(
+  accountId: string,
+  model?: string,
+): boolean {
+  if (isAccountOnCooldown(accountId)) return true;
+  if (model && isAccountModelLimited(accountId, model)) return true;
+  return false;
+}
+
+function getEffectiveCooldownRemainingMs(
+  accountId: string,
+  model?: string,
+): number | null {
+  const accountInfo = getAccountCooldownInfo(accountId);
+  const modelRemaining = model ? getModelLimitRemainingMs(accountId, model) : 0;
+  if (accountInfo && modelRemaining > 0) {
+    return Math.max(accountInfo.remainingMs, modelRemaining);
+  }
+  if (accountInfo) return accountInfo.remainingMs;
+  if (modelRemaining > 0) return modelRemaining;
+  return null;
 }
 
 // ─── Headers-ready gate (mirrors upstream `markAccountReady`) ───────────────
@@ -172,11 +203,12 @@ export function getHeadersReadyAccountIds(): string[] {
 function anyUsableAccountHeadersReady(
   accounts: QwenAccount[],
   triedSet?: Set<string>,
+  model?: string,
 ): boolean {
   return accounts.some(
     (a) =>
       (!triedSet || !triedSet.has(a.id)) &&
-      !isAccountOnCooldown(a.id) &&
+      !isAccountUnavailableForModel(a.id, model) &&
       isAccountHeadersReady(a.id),
   );
 }
@@ -206,7 +238,7 @@ export function syncCooldownsFromDb(accounts: QwenAccount[]): void {
   }
 }
 
-export function getNextAccount(): QwenAccount | null {
+export function getNextAccount(model?: string): QwenAccount | null {
   const accounts = loadAccounts();
   if (accounts.length === 0) {
     return null;
@@ -219,13 +251,13 @@ export function getNextAccount(): QwenAccount | null {
   // Gate: once ANY usable account has captured headers, only ready accounts rotate.
   // If all ready accounts are on cooldown, anyReady degrades to false so non-ready
   // accounts can be initialized on-demand instead of falsely reporting pool exhaustion.
-  const anyReady = anyUsableAccountHeadersReady(accounts);
+  const anyReady = anyUsableAccountHeadersReady(accounts, undefined, model);
 
   for (let i = 0; i < prioritized.length; i++) {
     const account = prioritized[currentIndex % prioritized.length];
     currentIndex = (currentIndex + 1) % prioritized.length;
     if (
-      !isAccountOnCooldown(account.id) &&
+      !isAccountUnavailableForModel(account.id, model) &&
       passesHeadersReadyGate(account.id, anyReady)
     ) {
       return account;
@@ -236,9 +268,9 @@ export function getNextAccount(): QwenAccount | null {
   let best: QwenAccount | null = null;
   let bestRemaining = Infinity;
   for (const account of prioritized) {
-    const info = getAccountCooldownInfo(account.id);
-    if (info && info.remainingMs < bestRemaining) {
-      bestRemaining = info.remainingMs;
+    const remaining = getEffectiveCooldownRemainingMs(account.id, model);
+    if (remaining !== null && remaining < bestRemaining) {
+      bestRemaining = remaining;
       best = account;
     }
   }
@@ -247,6 +279,7 @@ export function getNextAccount(): QwenAccount | null {
 
 export function getNextAvailableAccount(
   triedAccountIds?: Set<string> | string,
+  model?: string,
 ): QwenAccount | null {
   const accounts = loadAccounts();
   if (accounts.length === 0) return null;
@@ -265,7 +298,7 @@ export function getNextAvailableAccount(
   // Gate: once ANY untried, non-cooldown account has captured headers, only ready accounts rotate.
   // If all ready accounts are on cooldown or tried, anyReady degrades to false so non-ready
   // accounts can be initialized on-demand instead of falsely reporting pool exhaustion.
-  const anyReady = anyUsableAccountHeadersReady(accounts, triedSet);
+  const anyReady = anyUsableAccountHeadersReady(accounts, triedSet, model);
 
   // 1. Try to find an untried account that is NOT on cooldown
   for (let i = 0; i < prioritized.length; i++) {
@@ -273,7 +306,7 @@ export function getNextAvailableAccount(
     const account = prioritized[idx];
     if (triedSet.has(account.id)) continue;
     if (
-      !isAccountOnCooldown(account.id) &&
+      !isAccountUnavailableForModel(account.id, model) &&
       passesHeadersReadyGate(account.id, anyReady)
     ) {
       currentIndex = (idx + 1) % prioritized.length;
@@ -286,9 +319,9 @@ export function getNextAvailableAccount(
   let bestRemaining = Infinity;
   for (const account of prioritized) {
     if (triedSet.has(account.id)) continue;
-    const info = getAccountCooldownInfo(account.id);
-    if (info && info.remainingMs < bestRemaining) {
-      bestRemaining = info.remainingMs;
+    const remaining = getEffectiveCooldownRemainingMs(account.id, model);
+    if (remaining !== null && remaining < bestRemaining) {
+      bestRemaining = remaining;
       best = account;
     }
   }
