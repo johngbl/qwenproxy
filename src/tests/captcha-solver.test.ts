@@ -43,6 +43,12 @@ function pageWithLocators(
     locators[selector] ??
     (selector.includes("nc_1_n1z") ? locators["#nc_1_n1z"] : undefined) ??
     (selector.includes("nc_1_n1t") ? locators["#nc_1_n1t"] : undefined) ??
+    (selector.includes("sliding-slider") || selector.includes("puzzle-captcha-btn")
+      ? locators["#aliyunCaptcha-sliding-slider"] ?? locators["#puzzle-captcha-btn"]
+      : undefined) ??
+    (selector.includes("sliding-body") || selector.includes("puzzle-captcha-slider")
+      ? locators["#aliyunCaptcha-sliding-body"] ?? locators[".puzzle-captcha-slider"]
+      : undefined) ??
     fallback;
   return {
     locator: resolveLocator,
@@ -153,6 +159,65 @@ test("aliyun solver drags the jigsaw slider and clears the block", async () => {
         (warning) =>
           warning.startsWith("✅ [Captcha] aliyun_solve_succeeded") &&
           warning.includes("distance=150"),
+      ),
+    );
+  } finally {
+    captured.restore();
+  }
+});
+
+test("aliyun solver handles the Sufei punish puzzle captcha with #puzzle-captcha-btn", async () => {
+  let blockVisible = true;
+  let mouseUpCalls = 0;
+  const block = locator({
+    isVisible: () => Promise.resolve(blockVisible),
+  });
+  const slider = locator({
+    waitFor: async () => undefined,
+    boundingBox: async () => ({ x: 0, y: 180, width: 48, height: 34 }),
+  });
+  const track = locator({
+    boundingBox: async () => ({ x: 0, y: 180, width: 320, height: 24 }),
+  });
+  const page = pageWithLocators(
+    {
+      ".puzzle-captcha-container": block,
+      "#puzzle-captcha-btn": slider,
+      ".puzzle-captcha-slider": track,
+    },
+    baxiaFrame(locator(), locator()),
+    {
+      move: async () => undefined,
+      down: async () => undefined,
+      up: async () => {
+        mouseUpCalls++;
+        blockVisible = false;
+      },
+    } as unknown as Page["mouse"],
+  );
+  (page as unknown as { evaluate: () => Promise<unknown> }).evaluate =
+    async () => ({
+      ok: true,
+      offsetX: 181,
+      naturalWidth: 320,
+    });
+  const captured = captureWarnings();
+
+  try {
+    const solved = await solveAliyunWafCaptcha(page, {
+      maxAttempts: 1,
+      retryDelayMs: 0,
+      settleMs: 100,
+      waitForMs: 0,
+    });
+
+    assert.equal(solved, true);
+    assert.equal(mouseUpCalls, 1);
+    assert.ok(
+      captured.warnings.some(
+        (warning) =>
+          warning.startsWith("✅ [Captcha] aliyun_solve_succeeded") &&
+          warning.includes("distance=181"),
       ),
     );
   } finally {

@@ -401,9 +401,41 @@ export function saveAuthSession(
   );
 }
 
+export const MAX_ANTI_BOT_HEADERS_AGE_MS = 2 * 60 * 60 * 1000; // 2 hours
+
+export function getStoredAuthSession(accountId: string): PersistedAuthSession | null {
+  const database = getDatabase();
+  const row = database
+    .prepare(
+      `SELECT account_id, cookie, user_agent, bx_v, bx_ua, bx_umidtoken,
+              sec_ch_ua, sec_ch_ua_mobile, sec_ch_ua_platform, version,
+              user_id, token_expires_at, refresh_token, captured_at
+       FROM qwen_auth_sessions WHERE account_id = ?`,
+    )
+    .get(accountId) as any;
+
+  if (!row) return null;
+  return {
+    accountId: row.account_id,
+    cookie: row.cookie,
+    userAgent: row.user_agent,
+    bxV: row.bx_v,
+    bxUa: row.bx_ua,
+    bxUmidtoken: row.bx_umidtoken,
+    secChUa: row.sec_ch_ua || undefined,
+    secChUaMobile: row.sec_ch_ua_mobile || undefined,
+    secChUaPlatform: row.sec_ch_ua_platform || undefined,
+    version: row.version || undefined,
+    userId: row.user_id || undefined,
+    tokenExpiresAt: row.token_expires_at ? Number(row.token_expires_at) : undefined,
+    refreshToken: row.refresh_token || undefined,
+    capturedAt: Number(row.captured_at) || 0,
+  };
+}
+
 export function getValidAuthSession(
   accountId: string,
-  maxAgeMs = 30 * 24 * 60 * 60 * 1000,
+  maxAgeMs = MAX_ANTI_BOT_HEADERS_AGE_MS,
 ): PersistedAuthSession | null {
   const database = getDatabase();
   const row = database

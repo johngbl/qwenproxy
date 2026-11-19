@@ -60,6 +60,7 @@ export function restoreFromBackup(filePath: string, backupPath?: string): boolea
  * E.g. "qwen3.8-max" -> "Qwen 3.8 Max", "qwen3.8-omni-flash" -> "Qwen 3.8 Omni Flash"
  */
 export function formatModelDisplayName(model: string): string {
+  if (model === "qwen4-max") return "Qwen 4 Max";
   if (model === "qwen3.8-max") return "Qwen 3.8 Max";
   if (model === "qwen3.8-omni-flash") return "Qwen 3.8 Omni Flash";
   if (model === "qwen3.7-plus") return "Qwen 3.7 Plus";

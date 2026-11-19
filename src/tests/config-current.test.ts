@@ -62,21 +62,21 @@ test("config keeps Qwen anti-bot static config limited to bx-v fallback and web 
   assert.equal("bxUa" in config.auth, false);
   assert.equal("bxUmidtoken" in config.auth, false);
   // Version header default matches the audited real-client bundle snapshot
-  // (live bundle: qwen-chat-fe/0.3.43).
-  assert.equal(config.qwen.webVersion, "0.3.43");
+  // (live bundle: qwen-chat-fe/0.3.47).
+  assert.equal(config.qwen.webVersion, "0.3.47");
 });
 
 test("qwen web version updates dynamically from live DOM/header discoveries", async () => {
   const { getQwenWebVersion, updateQwenWebVersion } = await import("../services/qwen-headers.ts");
-  assert.equal(getQwenWebVersion(), "0.3.43");
+  assert.equal(getQwenWebVersion(), "0.3.47");
   updateQwenWebVersion("0.3.30");
   assert.equal(getQwenWebVersion(), "0.3.30");
   // Invalid formats should be ignored
   updateQwenWebVersion("invalid");
   assert.equal(getQwenWebVersion(), "0.3.30");
   // Reset back to baseline
-  updateQwenWebVersion("0.3.43");
-  assert.equal(getQwenWebVersion(), "0.3.43");
+  updateQwenWebVersion("0.3.47");
+  assert.equal(getQwenWebVersion(), "0.3.47");
 });
 
 test("baxia SDK version updates dynamically from the live page and captured headers", async () => {

@@ -9,6 +9,7 @@ export type ReasoningMode = "auto" | "thinking" | "fast";
 export const DEFAULT_FALLBACK_MODELS = [
   "qwen3.8-max",
   "qwen3.7-plus",
+  "qwen4-max",
   "qwen4.0-max-preview",
   "qwen3.8-omni-flash",
   "qwen3.7-max",

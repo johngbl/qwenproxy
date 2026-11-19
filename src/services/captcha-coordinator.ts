@@ -1,3 +1,5 @@
+import fs from "fs";
+import path from "path";
 import type { Page } from "patchright";
 import { metrics } from "../core/metrics.ts";
 import { config } from "../core/config.ts";
@@ -41,6 +43,16 @@ async function gotoBestEffort(page: Page, url: string): Promise<void> {
     .catch(() => undefined);
 }
 
+async function dumpChallengeArtifacts(page: Page, prefix: string): Promise<void> {
+  try {
+    const networkDir = path.resolve("network");
+    if (!fs.existsSync(networkDir)) fs.mkdirSync(networkDir, { recursive: true });
+    await page.screenshot({ path: path.join(networkDir, `${prefix}.png`), fullPage: true }).catch(() => {});
+    const html = await page.content().catch(() => "");
+    if (html) fs.writeFileSync(path.join(networkDir, `${prefix}.html`), html, "utf8");
+  } catch {}
+}
+
 /**
  * Make the challenge visible in the account page and solve it.
  *
@@ -71,9 +83,17 @@ export async function solveChallengeOnPage(
     true,
   );
   await gotoBestEffort(page, challengeUrl ?? qwenUrl("/"));
+  await dumpChallengeArtifacts(page, "captcha_opened");
+  if (!config.playwright.headless && typeof page.bringToFront === "function") {
+    await page.bringToFront().catch(() => {});
+  }
 
   try {
-    return await solveVisibleCaptcha(page, { ...solverOptions, waitForMs });
+    const solved = await solveVisibleCaptcha(page, { ...solverOptions, waitForMs });
+    if (!solved) {
+      await dumpChallengeArtifacts(page, "captcha_failed");
+    }
+    return solved;
   } finally {
     // Never leave the account page parked on the punish document: a stale
     // challenge page makes the next detection pass find itself.

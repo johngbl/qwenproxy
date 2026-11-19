@@ -34,7 +34,7 @@ const envSchema = z
     // Version header on Qwen API requests = the deployed web bundle version
     // (fallback when dynamic DOM detection is not yet completed).
     // Override via env when Qwen ships a new bundle.
-    QWEN_WEB_VERSION: z.string().default("0.3.43"),
+    QWEN_WEB_VERSION: z.string().default("0.3.47"),
     // Controls bx-ua/bx-umidtoken injection on the GENERAL API paths
     // (chats/new, settings): those work without them (live-probed). The
     // completions path is the exception — the 0.2.86 HAR shows the real

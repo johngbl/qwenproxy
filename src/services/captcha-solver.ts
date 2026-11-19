@@ -166,14 +166,20 @@ const DEFAULT_SLIDER_TIMEOUT_MS = 8_000;
  */
 export const ALIYUN_WAF_CAPTCHA_SELECTOR = "#waf_nc_block";
 export const ALIYUN_WAF_CAPTCHA_WIDGET = "#aliyunCaptcha-window-embed";
-const ALIYUN_WAF_BLOCK_SELECTORS = [
+export const ALIYUN_PUZZLE_BACKGROUND_SELECTOR = "#puzzle-captcha-question-img, #aliyunCaptcha-img, .puzzle-captcha-question-bg img.img";
+export const ALIYUN_PUZZLE_PIECE_SELECTOR = ".puzzle-captcha-puzzle img, #aliyunCaptcha-puzzle, #puzzle-captcha-puzzle img";
+export const ALIYUN_PUZZLE_SLIDER_SELECTOR = "#puzzle-captcha-btn, .puzzle-captcha-slider .button, #aliyunCaptcha-sliding-slider";
+export const ALIYUN_PUZZLE_TRACK_SELECTOR = ".puzzle-captcha-slider, #aliyunCaptcha-sliding-body";
+export const ALIYUN_WAF_BLOCK_SELECTORS = [
   ALIYUN_WAF_CAPTCHA_SELECTOR,
   ALIYUN_WAF_CAPTCHA_WIDGET,
+  ALIYUN_PUZZLE_SLIDER_SELECTOR,
+  ".puzzle-captcha-container",
+  ".puzzle-captcha-slider",
+  "#captcha-element",
+  ".aliyun-captcha",
+  "#aliyunCaptcha-sliding-body",
 ] as const;
-const ALIYUN_PUZZLE_BACKGROUND_SELECTOR = "#aliyunCaptcha-img";
-const ALIYUN_PUZZLE_PIECE_SELECTOR = "#aliyunCaptcha-puzzle";
-const ALIYUN_PUZZLE_SLIDER_SELECTOR = "#aliyunCaptcha-sliding-slider";
-const ALIYUN_PUZZLE_TRACK_SELECTOR = "#aliyunCaptcha-sliding-body";
 
 interface AliyunPuzzleOffset {
   ok: boolean;
@@ -205,6 +211,33 @@ async function waitForHidden(locator: Locator, timeoutMs: number): Promise<boole
   }
 }
 
+async function waitForAliyunSolved(
+  page: Page,
+  block: Locator,
+  timeoutMs: number,
+): Promise<boolean> {
+  const successLocator = page
+    .locator(
+      ".verified, #aliyunCaptcha-sliding-slider.ok, .aliyunCaptcha-sliding-text-box.verified, [data-nc-lang='SUCCESS'], .puzzle-captcha-result:not([style*='display: none']), .puzzle-captcha-result .result-icon, .puzzle-captcha-container.success",
+    )
+    .first();
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  while (true) {
+    if (!(await isVisible(block))) return true;
+    if (await isVisible(successLocator)) return true;
+    try {
+      if (typeof page.url === "function") {
+        const u = page.url();
+        if (u && !u.includes("_____tmd_____") && !u.includes("punish")) {
+          return true;
+        }
+      }
+    } catch {}
+    if (Date.now() >= deadline) return false;
+    await sleep(Math.min(100, Math.max(1, deadline - Date.now())));
+  }
+}
+
 /**
  * Locate the hole in the background image by scoring the vertical edges of
  * the puzzle-piece silhouette against the background gradients. Returns the
@@ -214,12 +247,9 @@ async function computeAliyunPuzzleOffset(
   page: Page,
 ): Promise<AliyunPuzzleOffset> {
   return page.evaluate(async (): Promise<AliyunPuzzleOffset> => {
-    const background = document.querySelector(
-      "#aliyunCaptcha-img",
-    ) as HTMLImageElement | null;
-    const piece = document.querySelector(
-      "#aliyunCaptcha-puzzle",
-    ) as HTMLImageElement | null;
+    const background = (document.getElementById("puzzle-captcha-question-img") as HTMLImageElement | null) ||
+      (document.querySelector("#aliyunCaptcha-img, .puzzle-captcha-question-bg img.img") as HTMLImageElement | null);
+    const piece = (document.querySelector(".puzzle-captcha-puzzle img, #aliyunCaptcha-puzzle, #puzzle-captcha-puzzle img") as HTMLImageElement | null);
     if (!background || !piece) {
       return { ok: false, reason: "missing puzzle images" };
     }
@@ -351,29 +381,49 @@ async function computeAliyunPuzzleOffset(
         return { ok: false, reason: "empty puzzle piece" };
       }
 
-      const yStart = Math.max(1, Math.min(height - 2, pieceMinY + 5));
+      const pieceContainer = piece.parentElement;
+      let yOffset = 0;
+      if (pieceContainer) {
+        const topStyle = pieceContainer.style.top || (typeof window !== "undefined" && window.getComputedStyle ? window.getComputedStyle(pieceContainer).top : "");
+        if (topStyle) {
+          const parsedTop = parseFloat(topStyle);
+          if (!isNaN(parsedTop) && parsedTop > 0) {
+            const renderedHeight = background.clientHeight || height;
+            const scaleY = renderedHeight > 0 ? height / renderedHeight : 1;
+            yOffset = parsedTop * scaleY;
+          }
+        }
+      }
+
+      const yStart = Math.max(1, Math.min(height - 2, Math.round(yOffset + pieceMinY + 5)));
       const yEnd = Math.max(
         yStart,
-        Math.min(height - 2, pieceMaxY - 5),
+        Math.min(height - 2, Math.round(yOffset + pieceMaxY - 5)),
       );
+      const sampleHeight = yEnd - yStart + 1;
       const columnGradients = new Float32Array(width);
+      const columnLuminance = new Float32Array(width);
       for (let x = 1; x < width - 1; x++) {
         let gradient = 0;
+        let lum = 0;
         for (let y = yStart; y <= yEnd; y++) {
           const left = (y * width + x - 1) * 4;
           const right = (y * width + x + 1) * 4;
+          const center = (y * width + x) * 4;
           gradient +=
             Math.abs(backgroundData[right] - backgroundData[left]) +
             Math.abs(backgroundData[right + 1] - backgroundData[left + 1]) +
             Math.abs(backgroundData[right + 2] - backgroundData[left + 2]);
+          lum += (backgroundData[center] + backgroundData[center + 1] + backgroundData[center + 2]) / 3;
         }
         columnGradients[x] = gradient;
+        columnLuminance[x] = lum / sampleHeight;
       }
 
       let bestX = 0;
       let bestScore = 0;
-      const minCandidateX = 30;
-      const maxCandidateX = width - puzzleWidth - 20;
+      const minCandidateX = 10;
+      const maxCandidateX = width - puzzleWidth - 2;
       for (
         let candidateX = minCandidateX;
         candidateX <= maxCandidateX;
@@ -389,7 +439,17 @@ async function computeAliyunPuzzleOffset(
           const value = columnGradients[candidateX + pieceMaxX + dx] || 0;
           if (value > rightMax) rightMax = value;
         }
-        const score = Math.sqrt(leftMax * rightMax);
+        const edgeScore = Math.sqrt(leftMax * rightMax);
+
+        // Aliyun slots are bright white / translucent highlight overlays (typically lum > 150)
+        let slotLum = 0;
+        for (let px = 0; px < puzzleWidth; px++) {
+          slotLum += columnLuminance[candidateX + px] || 0;
+        }
+        slotLum /= puzzleWidth;
+        const lumBonus = slotLum > 180 ? 2.5 : slotLum > 150 ? 1.5 : 1.0;
+        const score = edgeScore * lumBonus;
+
         if (score > bestScore) {
           bestScore = score;
           bestX = candidateX;
@@ -521,7 +581,7 @@ export async function solveAliyunWafCaptcha(
                 startX + dragDistance,
                 startY,
               );
-              if (await waitForHidden(block, settleMs)) {
+              if (await waitForAliyunSolved(page, block, settleMs)) {
                 logBaxiaCaptcha(
                   "aliyun_solve_succeeded",
                   { attempt, distance: dragDistance },
@@ -571,21 +631,25 @@ export async function solveVisibleCaptcha(
 ): Promise<boolean> {
   if (typeof page.isClosed === "function" && page.isClosed()) return false;
 
-  // Split the wait budget between the two solvers instead of letting the
-  // Aliyun probe (absent on chat pages) consume all of it.
   const totalWaitMs = Math.max(0, options.waitForMs ?? 0);
-  const aliyunWaitMs = Math.min(totalWaitMs, ALIYUN_PROBE_MAX_WAIT_MS);
-  const startedAt = Date.now();
-  if (
-    await solveAliyunWafCaptcha(page, { ...options, waitForMs: aliyunWaitMs })
-  ) {
-    return true;
+  const deadline = Date.now() + totalWaitMs;
+
+  while (true) {
+    // 1. Try Aliyun jigsaw first (probe without waiting or up to 500ms)
+    if (await solveAliyunWafCaptcha(page, { ...options, waitForMs: 500 })) {
+      return true;
+    }
+
+    // 2. Try Baxia NC slider
+    if (await solveBaxiaCaptcha(page, { ...options, waitForMs: 500 })) {
+      return true;
+    }
+
+    if (Date.now() >= deadline) break;
+    await sleep(Math.min(250, Math.max(50, deadline - Date.now())));
   }
-  const remainingWaitMs = Math.max(
-    0,
-    totalWaitMs - (Date.now() - startedAt),
-  );
-  return solveBaxiaCaptcha(page, { ...options, waitForMs: remainingWaitMs });
+
+  return false;
 }
 
 async function isVisible(locator: Locator): Promise<boolean> {
@@ -832,7 +896,6 @@ async function solveBaxiaCaptchaUnlocked(
       const frame: BaxiaLocatorContext = frameSelector
         ? page.frameLocator(frameSelector)
         : page;
-      const slider = frame.locator(BAXIA_SLIDER_SELECTOR);
 
       // Check if Alibaba NoCaptcha entered the error300 / errloading state
       // (e.g. from an earlier rejected drag, network hiccup, or expired token).
@@ -844,10 +907,36 @@ async function solveBaxiaCaptchaUnlocked(
         await sleep(500);
       }
 
-      await slider.waitFor({ state: "visible", timeout: sliderTimeoutMs });
-      if (!sliderFoundReported) {
-        logBaxiaCaptcha("slider_found");
-        sliderFoundReported = true;
+      let slider: Locator;
+      if (frameSelector) {
+        // Baxia inside an iframe
+        slider = frame.locator(BAXIA_SLIDER_SELECTOR);
+        if (!sliderFoundReported) {
+          await slider.waitFor({ state: "visible", timeout: sliderTimeoutMs });
+          logBaxiaCaptcha("slider_found");
+          sliderFoundReported = true;
+        }
+      } else {
+        // Top-level document: could be Baxia slider or Aliyun puzzle slider
+        const aliyunSlider = page.locator(ALIYUN_PUZZLE_SLIDER_SELECTOR).first();
+        const baxiaSlider = page.locator(BAXIA_SLIDER_SELECTOR).first();
+        const unified = page
+          .locator(`${BAXIA_SLIDER_SELECTOR}, ${ALIYUN_PUZZLE_SLIDER_SELECTOR}`)
+          .first();
+
+        if (!sliderFoundReported) {
+          await unified.waitFor({ state: "visible", timeout: sliderTimeoutMs });
+        }
+
+        if (await isVisible(aliyunSlider)) {
+          return await solveAliyunWafCaptcha(page, options);
+        }
+
+        slider = baxiaSlider;
+        if (!sliderFoundReported) {
+          logBaxiaCaptcha("slider_found");
+          sliderFoundReported = true;
+        }
       }
 
       stage = "geometry";

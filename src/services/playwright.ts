@@ -1761,13 +1761,40 @@ export async function initPlaywrightForAccount(
       installContextDeathHandlers(account.id, acctContext, acctPage);
       touchAccountActivity(account.id);
 
-      // 1. Fast boot: if a valid session exists in SQLite, restore headers and cookies instantly.
-      // Eliminates redundant navigations, DOM probes, and fake UI typing on healthy accounts.
+      // 1. Fast boot: if fresh anti-bot headers exist in SQLite (< 2 hours), restore them instantly.
+      // If older, inject stored auth cookies/refresh_token so the session is authenticated,
+      // but let Playwright capture fresh anti-bot headers to avoid upstream WAF challenges.
       let restoredFromDb = false;
       if (!options.skipHeaderCapture) {
         try {
-          const { getValidAuthSession } = await import("../core/database.ts");
+          const { getValidAuthSession, getStoredAuthSession } = await import("../core/database.ts");
           const persisted = getValidAuthSession(account.id);
+          const stored = persisted || getStoredAuthSession(account.id);
+
+          if (stored?.cookie) {
+            // Inject cookies into Chromium browser context so in-page requests are authenticated
+            try {
+              const cookiesToAdd = parseCookiesForBrowser(stored.cookie);
+              if (cookiesToAdd.length > 0) {
+                await acctContext.addCookies(cookiesToAdd).catch(() => {});
+              }
+              const tokenMatch = stored.cookie.match(/(?:^|;\s*)token=([^;]+)/);
+              const rTokToSync = stored.refreshToken || "";
+              if ((tokenMatch || rTokToSync) && !acctPage.isClosed()) {
+                const tok = tokenMatch ? decodeURIComponent(tokenMatch[1].trim()) : "";
+                await acctPage.evaluate(({ t, r }) => {
+                  try {
+                    if (t) {
+                      localStorage.setItem("token", t);
+                      document.cookie = `token=${encodeURIComponent(t)}; path=/; domain=.qwen.ai; max-age=31536000`;
+                    }
+                    if (r) localStorage.setItem("refresh_token", r);
+                  } catch {}
+                }, { t: tok, r: rTokToSync }).catch(() => {});
+              }
+            } catch {}
+          }
+
           if (persisted) {
             const restoredHeaders: Record<string, string> = {
               cookie: persisted.cookie,
@@ -1781,27 +1808,7 @@ export async function initPlaywrightForAccount(
               ...(persisted.version ? { version: persisted.version } : {}),
             };
             if (hasRequiredQwenHeaders(restoredHeaders) && hasValidAuthToken(restoredHeaders.cookie)) {
-              // Inject cookies into Chromium browser context so in-page requests are authenticated
               try {
-                const cookiesToAdd = parseCookiesForBrowser(restoredHeaders.cookie);
-                if (cookiesToAdd.length > 0) {
-                  await acctContext.addCookies(cookiesToAdd).catch(() => {});
-                }
-                const tokenMatch = restoredHeaders.cookie.match(/(?:^|;\s*)token=([^;]+)/);
-                const rTokToSync = persisted.refreshToken || "";
-                if ((tokenMatch || rTokToSync) && !acctPage.isClosed()) {
-                  const tok = tokenMatch ? decodeURIComponent(tokenMatch[1].trim()) : "";
-                  await acctPage.evaluate(({ t, r }) => {
-                    try {
-                      if (t) {
-                        localStorage.setItem("token", t);
-                        document.cookie = `token=${encodeURIComponent(t)}; path=/; domain=.qwen.ai; max-age=31536000`;
-                      }
-                      if (r) localStorage.setItem("refresh_token", r);
-                    } catch {}
-                  }, { t: tok, r: rTokToSync }).catch(() => {});
-                }
-
                 // Read live cookies from browser context
                 const liveCookies = await acctContext.cookies();
                 if (liveCookies.length > 0 && liveCookies.some((c) => c.name === "token")) {
@@ -2589,7 +2596,7 @@ async function loginToQwen(
     }
 
     // Try API login first
-    const apiResult = await loginViaApi(page, email, password);
+    const apiResult = await loginViaApi(page, email, password, accountId);
     if (apiResult.success) {
       cookieCaches.delete(accountId);
       await saveStorageState(page.context(), accountId);
@@ -2760,6 +2767,7 @@ async function loginViaApi(
   page: Page,
   email: string,
   password: string,
+  accountId?: string,
 ): Promise<LoginAttemptResult> {
   try {
     const hashedPassword = crypto
@@ -2776,14 +2784,42 @@ async function loginViaApi(
       await sleep(1000);
     }
 
+    const { getValidAuthSession, getDatabase } = await import("../core/database.ts");
+    const cache = accountId ? getHeaderCache(accountId) : undefined;
+    const session = accountId ? getValidAuthSession(accountId) : undefined;
+    let storedBxUa = cache?.headers?.["bx-ua"] || session?.bxUa || "";
+    let storedBxUmid = cache?.headers?.["bx-umidtoken"] || session?.bxUmidtoken || "";
+    const storedBxV = cache?.headers?.["bx-v"] || session?.bxV || getQwenBxVersion();
+
+    if (!storedBxUa || !storedBxUmid) {
+      try {
+        const db = getDatabase();
+        const row = db
+          .prepare(
+            "SELECT bx_ua, bx_umidtoken FROM qwen_auth_sessions WHERE bx_ua IS NOT NULL AND bx_ua != '' ORDER BY captured_at DESC LIMIT 1",
+          )
+          .get() as any;
+        if (row?.bx_ua) {
+          if (!storedBxUa) storedBxUa = row.bx_ua;
+          if (!storedBxUmid && row.bx_umidtoken) storedBxUmid = row.bx_umidtoken;
+        }
+      } catch {}
+    }
+
     const signinUrl = "https://auth.qwen.ai/api/v2/auths/signin";
     const requestId = crypto.randomUUID();
     const webVersion = getQwenWebVersion();
 
     const evalRes = await page
       .evaluate(
-        async ({ email, password, signinUrl, requestId, tz, version }) => {
+        async ({ email, password, signinUrl, requestId, tz, version, storedBxUa, storedBxUmid, storedBxV }) => {
           try {
+            const win = window as any;
+            const pageBxUa = win.baxiaCommon?.getUA?.() || win.AWSC?.uab?.getUA?.() || "";
+            const pageBxUmid = win.baxiaCommon?.getUmidToken?.() || win.AWSC?.umid?.getToken?.() || "";
+            const effectiveBxUa = pageBxUa || storedBxUa || undefined;
+            const effectiveBxUmid = pageBxUmid || storedBxUmid || undefined;
+
             const response = await fetch(signinUrl, {
               method: "POST",
               signal: AbortSignal.timeout(15_000),
@@ -2796,6 +2832,9 @@ async function loginViaApi(
                 "x-request-origin": "https://chat.qwen.ai",
                 timezone: tz,
                 "x-request-id": requestId,
+                ...(effectiveBxUa ? { "bx-ua": effectiveBxUa } : {}),
+                ...(effectiveBxUmid ? { "bx-umidtoken": effectiveBxUmid } : {}),
+                ...(storedBxV ? { "bx-v": storedBxV } : {}),
               },
               body: JSON.stringify({ email, password }),
             });
@@ -2812,6 +2851,9 @@ async function loginViaApi(
           requestId,
           tz: formatAsciiTimezone(),
           version: webVersion,
+          storedBxUa,
+          storedBxUmid,
+          storedBxV,
         },
       )
       .catch(() => null);
@@ -2830,8 +2872,14 @@ async function loginViaApi(
       const fallbackUrl = qwenUrl("/api/v2/auths/signin");
       const fallbackRes = await page
         .evaluate(
-          async ({ email, password, fallbackUrl, requestId, tz, version }) => {
+          async ({ email, password, fallbackUrl, requestId, tz, version, storedBxUa, storedBxUmid, storedBxV }) => {
             try {
+              const win = window as any;
+              const pageBxUa = win.baxiaCommon?.getUA?.() || win.AWSC?.uab?.getUA?.() || "";
+              const pageBxUmid = win.baxiaCommon?.getUmidToken?.() || win.AWSC?.umid?.getToken?.() || "";
+              const effectiveBxUa = pageBxUa || storedBxUa || undefined;
+              const effectiveBxUmid = pageBxUmid || storedBxUmid || undefined;
+
               const response = await fetch(fallbackUrl, {
                 method: "POST",
                 signal: AbortSignal.timeout(10_000),
@@ -2843,6 +2891,9 @@ async function loginViaApi(
                   version,
                   timezone: tz,
                   "x-request-id": requestId,
+                  ...(effectiveBxUa ? { "bx-ua": effectiveBxUa } : {}),
+                  ...(effectiveBxUmid ? { "bx-umidtoken": effectiveBxUmid } : {}),
+                  ...(storedBxV ? { "bx-v": storedBxV } : {}),
                 },
                 body: JSON.stringify({ email, password }),
               });
@@ -2859,6 +2910,9 @@ async function loginViaApi(
             requestId,
             tz: formatAsciiTimezone(),
             version: webVersion,
+            storedBxUa,
+            storedBxUmid,
+            storedBxV,
           },
         )
         .catch(() => null);
@@ -3060,36 +3114,42 @@ async function loginViaUi(
       // If password input is already in DOM, do NOT click any switch buttons!
       if (await isPasswordInputPresent()) return;
 
-      // 1. Playwright button locator with multilingual matching (strictly excluding "Esqueci a senha" / "Forgot password")
-      const btn = page
-        .locator("button")
+      const passwordSwitchRegex =
+        /(?:log\s*in\s*with\s*(?:a\s*)?password|fazer\s*login\s*com\s*senha|entrar\s*com\s*(?:uma\s*)?senha|iniciar\s*sesi[oó]n\s*con\s*contrase[nñ]a|密码登录)/i;
+      const excludedRegex = /(?:esqueci|forgot|olvid|reset|recover)/i;
+
+      // 1. Playwright locator with multilingual matching covering button, a, span, div, p
+      const switchLocator = page
+        .locator("button, a, span, div, p, [role='button']")
         .filter({
-          hasText: /(?:log\s*in\s*with\s*(?:a\s*)?password|fazer\s*login\s*com\s*senha|entrar\s*com\s*(?:uma\s*)?senha|iniciar\s*sesi[oó]n\s*con\s*contrase[nñ]a|密码登录)/i,
+          hasText: passwordSwitchRegex,
         })
         .filter({
-          hasNotText: /(?:esqueci|forgot|olvid|reset|recover)/i,
+          hasNotText: excludedRegex,
         })
         .first();
 
-      if (await btn.isVisible({ timeout: 1500 }).catch(() => false)) {
-        await btn.click({ timeout: 2000 }).catch(() => {});
+      if (await switchLocator.isVisible({ timeout: 1500 }).catch(() => false)) {
+        await switchLocator.click({ timeout: 2000 }).catch(() => {});
         await sleep(500);
       }
 
       if (await isPasswordInputPresent()) return;
 
-      // 2. In-page evaluate fail-safe to trigger direct DOM click on the password button
+      // 2. In-page evaluate fail-safe to trigger direct DOM click on the password button/link
       await page
         .evaluate(() => {
           try {
-            const buttons = Array.from(document.querySelectorAll("button, [role='button'], a"));
-            for (const b of buttons) {
-              const txt = ((b as HTMLElement).innerText || "").trim().toLowerCase();
+            const elements = Array.from(
+              document.querySelectorAll("button, [role='button'], a, span, div, p"),
+            );
+            for (const el of elements) {
+              const txt = ((el as HTMLElement).innerText || "").trim().toLowerCase();
               if (
                 /(?:log\s*in\s*with\s*(?:a\s*)?password|fazer\s*login\s*com\s*senha|entrar\s*com\s*(?:uma\s*)?senha|iniciar\s*sesi[oó]n\s*con\s*contrase[nñ]a|密码登录)/i.test(txt) &&
                 !txt.includes("esqueci") && !txt.includes("forgot") && !txt.includes("olvid") && !txt.includes("reset")
               ) {
-                (b as HTMLElement).click();
+                (el as HTMLElement).click();
                 return true;
               }
             }
@@ -3376,8 +3436,8 @@ export async function refreshAccountToken(
   }
 
   // 1. Get refresh token from SQLite session, localStorage, or browser cookies (Qwen 0.3.26+)
-  const { getValidAuthSession, saveAuthSession } = await import("../core/database.ts");
-  const session = getValidAuthSession(accountId);
+  const { getStoredAuthSession, saveAuthSession } = await import("../core/database.ts");
+  const session = getStoredAuthSession(accountId);
   let refreshToken = session?.refreshToken;
 
   if (!refreshToken) {
@@ -3399,29 +3459,34 @@ export async function refreshAccountToken(
   if (refreshToken) {
     try {
       const webVersion = getQwenWebVersion();
-      const refreshResult = await page.evaluate(
-        async ({ rTok, tz, version }) => {
-          try {
-            const response = await fetch("https://auth.qwen.ai/api/v2/auths/refresh", {
-              method: "GET",
-              credentials: "include",
-              headers: {
-                accept: "application/json, text/plain, */*",
-                source: "web",
-                version,
-                "x-request-origin": "https://chat.qwen.ai",
-                timezone: tz,
-                authorization: `Bearer ${rTok}`,
-              },
-            });
-            const json = await response.json().catch(() => null);
-            return { ok: response.ok, status: response.status, data: json };
-          } catch (e: any) {
-            return { ok: false, error: e.message };
-          }
-        },
-        { rTok: refreshToken, tz: formatAsciiTimezone(), version: webVersion },
-      );
+      const refreshResult = await withTimeout(
+        page.evaluate(
+          async ({ rTok, tz, version }) => {
+            try {
+              const response = await fetch("https://auth.qwen.ai/api/v2/auths/refresh", {
+                method: "GET",
+                credentials: "include",
+                signal: AbortSignal.timeout(10_000),
+                headers: {
+                  accept: "application/json, text/plain, */*",
+                  source: "web",
+                  version,
+                  "x-request-origin": "https://chat.qwen.ai",
+                  timezone: tz,
+                  authorization: `Bearer ${rTok}`,
+                },
+              });
+              const json = await response.json().catch(() => null);
+              return { ok: response.ok, status: response.status, data: json };
+            } catch (e: any) {
+              return { ok: false, error: e.message };
+            }
+          },
+          { rTok: refreshToken, tz: formatAsciiTimezone(), version: webVersion },
+        ),
+        15_000,
+        `Token refresh page.evaluate timed out for ${accountId}`,
+      ).catch((err: any) => ({ ok: false, error: err?.message || String(err), data: null }));
 
       const json = refreshResult?.data;
       if (json && json.success === true && json.data) {
@@ -3497,7 +3562,7 @@ export async function refreshAccountToken(
   const { getAccountCredentials } = await import("../core/accounts.ts");
   const creds = getAccountCredentials(accountId);
   if (creds && creds.email && creds.password) {
-    const apiResult = await loginViaApi(page, creds.email, creds.password);
+    const apiResult = await loginViaApi(page, creds.email, creds.password, accountId);
     if (apiResult.success) {
       const liveCookies = await page.context().cookies();
       const tokenCookie = liveCookies.find((c) => c.name === "token");
@@ -4539,8 +4604,7 @@ export async function withAccountPage<T>(
       const message = getErrorMessage(error);
       if (
         recoverOnTimeout &&
-        message.includes("Playwright page operation timed out") &&
-        (!page || page.isClosed())
+        message.includes("Playwright page operation timed out")
       ) {
         console.warn(
           `⏱️  [Playwright] Resetting account context after a stuck page operation: ${accountId}`,
@@ -5007,48 +5071,56 @@ export async function keepAlivePlaywrightAccount(
   if (!release) return false;
 
   try {
-    const page = accountPages.get(accountId);
-    if (!page || page.isClosed()) return false;
+    const keepAlivePromise = (async (): Promise<boolean> => {
+      const page = accountPages.get(accountId);
+      if (!page || page.isClosed()) return false;
 
-    const now = Date.now();
-    const currentUrl = page.url();
+      const now = Date.now();
+      const currentUrl = page.url();
 
-    // Proactive session check: if token expires within 5 minutes, refresh in-page silently using refreshAccountToken
-    const lastRefreshAttempt = lastProactiveTokenRefresh.get(accountId) ?? 0;
-    const cookie = await getCookies(accountId, true);
-    if (cookie && isTokenExpiringSoon(cookie, 5) && now - lastRefreshAttempt > 60_000) {
-      lastProactiveTokenRefresh.set(accountId, now);
-      logger.debug(
-        `[SessionKeeper] Account ${accountId} access token expiring soon (<5m); silently refreshing...`,
-      );
-      const res = await refreshAccountToken(accountId);
-      if (res.success) {
-        lastKeepAliveNavigation.set(accountId, now);
-        touchAccountActivity(accountId);
-        return true;
+      // Proactive session check: if token expires within 5 minutes, refresh in-page silently using refreshAccountToken
+      const lastRefreshAttempt = lastProactiveTokenRefresh.get(accountId) ?? 0;
+      const cookie = await getCookies(accountId, true);
+      if (cookie && isTokenExpiringSoon(cookie, 5) && now - lastRefreshAttempt > 60_000) {
+        lastProactiveTokenRefresh.set(accountId, now);
+        logger.debug(
+          `[SessionKeeper] Account ${accountId} access token expiring soon (<5m); silently refreshing...`,
+        );
+        const res = await refreshAccountToken(accountId);
+        if (res.success) {
+          lastKeepAliveNavigation.set(accountId, now);
+          touchAccountActivity(accountId);
+          return true;
+        }
+        logger.warn(
+          `[SessionKeeper] Failed to silently refresh expiring token for ${accountId}: ${res.error || "unknown error"}`,
+        );
       }
-      logger.warn(
-        `[SessionKeeper] Failed to silently refresh expiring token for ${accountId}: ${res.error || "unknown error"}`,
-      );
-    }
 
-    const lastNavigation = lastKeepAliveNavigation.get(accountId) ?? 0;
-    const shouldNavigate =
-      !currentUrl.startsWith(qwenOrigin()) ||
-      now - lastNavigation > config.sessionKeeper.navigationIntervalMs;
+      const lastNavigation = lastKeepAliveNavigation.get(accountId) ?? 0;
+      const shouldNavigate =
+        !currentUrl.startsWith(qwenOrigin()) ||
+        now - lastNavigation > config.sessionKeeper.navigationIntervalMs;
 
-    if (shouldNavigate) {
-      await page.goto(qwenUrl("/"), {
-        waitUntil: "domcontentloaded",
-        timeout: Math.min(config.timeouts.navigation, 30_000),
-      });
-      lastKeepAliveNavigation.set(accountId, now);
-    } else {
-      await subtlePageActivity(page);
-    }
+      if (shouldNavigate) {
+        await page.goto(qwenUrl("/"), {
+          waitUntil: "domcontentloaded",
+          timeout: Math.min(config.timeouts.navigation, 20_000),
+        });
+        lastKeepAliveNavigation.set(accountId, now);
+      } else {
+        await subtlePageActivity(page);
+      }
 
-    touchAccountActivity(accountId);
-    return true;
+      touchAccountActivity(accountId);
+      return true;
+    })();
+
+    return await withTimeout<boolean>(
+      keepAlivePromise,
+      25_000,
+      `Keepalive operation timed out for ${accountId}`,
+    );
   } finally {
     release();
   }

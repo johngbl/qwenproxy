@@ -84,7 +84,7 @@ import {
 } from "./retry-policy.ts";
 
 /** How many alternate accounts a single request may try after a WAF challenge. */
-const MAX_ANTI_BOT_ROTATIONS = 1;
+const MAX_ANTI_BOT_ROTATIONS = 3;
 
 /**
  * Hard deadline for the whole personalization sync. A normal sync takes ~2s;
@@ -1787,7 +1787,9 @@ async function tryCreateStreamWithRetry(
 						.catch(() => {});
 				}
 			}
-			return { success: false, error: err };
+			if (!shouldSwitchAccount || isSingleAccount || accountSwitches >= maxAccountSwitches) {
+				return { success: false, error: err };
+			}
 		}
 
 		// Prefer switching account for any retryable upstream error when possible.

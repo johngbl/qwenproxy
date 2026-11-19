@@ -39,3 +39,5 @@ Thumbs.db
 AGENTS.md
 .serena/
 message*.txt
+ 
+.playwright-mcp/

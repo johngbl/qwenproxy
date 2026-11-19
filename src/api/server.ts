@@ -792,6 +792,26 @@ export async function startServer(options?: {
     // then crashed with a raw Node stack trace minutes into startup.
     await assertPortAvailable();
 
+    // Start HTTP listener immediately so clients connecting during startup
+    // do not receive ECONNREFUSED ("fetch failed").
+    const serverInstance = serve({
+      fetch: app.fetch,
+      port: config.server.port,
+      hostname: config.server.host,
+    });
+    serverInstance.on("error", (err: Error) => {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "EADDRINUSE") {
+        console.error(
+          buildPortInUseMessage(config.server.port, config.server.host),
+        );
+      } else {
+        console.error(`❌ [Server] Listen failed: ${err.message}`);
+      }
+      process.exit(1);
+    });
+    server = serverInstance;
+
     // Restore persisted cooldowns (e.g. daily quota windows) from the database
     // instead of wiping them on restart — retrying a still-rate-limited account
     // wastes a request and immediately re-trips the same limit. Expired
@@ -818,12 +838,12 @@ export async function startServer(options?: {
       // skipping accounts still on cooldown. Warm the primary account first so
       // the server binds the port and goes online immediately (~5-10s).
       // Reserve account(s) and standby validations run seamlessly in background.
-      const { getValidAuthSession } = await import("../core/database.ts");
+      const { getStoredAuthSession } = await import("../core/database.ts");
       const warmOrder = getAccountsByPriority(accounts)
         .filter((account) => !getAccountCooldownInfo(account.id))
         .sort((a, b) => {
-          const aHasSession = getValidAuthSession(a.id) !== null ? 1 : 0;
-          const bHasSession = getValidAuthSession(b.id) !== null ? 1 : 0;
+          const aHasSession = getStoredAuthSession(a.id) !== null ? 1 : 0;
+          const bHasSession = getStoredAuthSession(b.id) !== null ? 1 : 0;
           return bHasSession - aHasSession;
         });
       const readyAccountIds = new Set<string>();
@@ -848,8 +868,8 @@ export async function startServer(options?: {
       const remainingAccounts = accounts
         .filter((account) => !readyAccountIds.has(account.id))
         .sort((a, b) => {
-          const aHasSession = getValidAuthSession(a.id) !== null ? 1 : 0;
-          const bHasSession = getValidAuthSession(b.id) !== null ? 1 : 0;
+          const aHasSession = getStoredAuthSession(a.id) !== null ? 1 : 0;
+          const bHasSession = getStoredAuthSession(b.id) !== null ? 1 : 0;
           return bHasSession - aHasSession;
         });
       if (readyAccountIds.size === 0) {
@@ -950,28 +970,6 @@ export async function startServer(options?: {
     const { scheduleStartupChatCleanup } =
       await import("../services/chat-cleanup.ts");
     scheduleStartupChatCleanup();
-    const serverInstance = serve({
-      fetch: app.fetch,
-      port: config.server.port,
-      hostname: config.server.host,
-    });
-    // Node's http.Server emits 'error' (EADDRINUSE and friends) asynchronously,
-    // AFTER serve() returns — with no listener the process crashes with a raw
-    // stack trace. The pre-flight check above catches the common case before
-    // warmup; this listener is the safety net for the rare race where the port
-    // is taken between the check and the bind.
-    serverInstance.on("error", (err: Error) => {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (code === "EADDRINUSE") {
-        console.error(
-          buildPortInUseMessage(config.server.port, config.server.host),
-        );
-      } else {
-        console.error(`❌ [Server] Listen failed: ${err.message}`);
-      }
-      process.exit(1);
-    });
-    server = serverInstance;
 
     if (options?.installSignalHandlers !== false) {
       installSignalHandlers();

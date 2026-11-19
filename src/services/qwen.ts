@@ -30,6 +30,7 @@ import { type Page, type BrowserContext } from "patchright";
 import { withAccountPage, assertAntiBotHeaders, onBrowserContextCreated, isPlaywrightInitializing, isPlaywrightInitialized } from "./playwright.ts";
 import { recoverBaxiaCaptcha } from "./captcha-coordinator.ts";
 import { startBaxiaCaptchaWatcher } from "./captcha-solver.ts";
+import { looksLikeAntiBotChallengeText } from "./media-generation.ts";
 import { isAccountBusy } from "../core/account-concurrency.ts";
 import { formatAsciiTimezone, sanitizeHeaderForFetch } from "../utils/timezone.ts";
 
@@ -893,8 +894,10 @@ async function withQwenBrowserPage<T>(
         // Navigate below when the current page has no usable URL.
       }
 
+      const isPunishPage = page.url().includes("_____tmd_____/punish");
       const needsNavigation =
         currentOrigin !== targetOrigin ||
+        isPunishPage ||
         (normalizedTargetPath !== null && currentPath !== normalizedTargetPath);
 
       if (needsNavigation) {
@@ -1322,6 +1325,7 @@ async function requestQwenPersonalizationInBrowser(
     {
       referrer: qwenUrl("/settings/personalization"),
       noMutexRecovery: true,
+      timeoutMs: 15_000,
     },
   );
   const { raw, json } = await readJsonTextResponse(response);
@@ -1860,20 +1864,22 @@ async function syncQwenRequestPersonalizationInternal(
 
   // Proactive token renewal: refresh BEFORE attempting personalization
   // to avoid 401 errors that waste time on retry
-  let forceRefresh = false;
   try {
     const basic = await getBasicHeaders(accountId);
     if (isTokenExpiringSoon(basic.cookie, 5)) {
-      logger.debug("[Qwen] Token expiring soon, refreshing proactively", {
+      logger.debug("[Qwen] Token expiring soon, refreshing proactively via fast refresh token", {
         accountId: cacheKey,
       });
-      forceRefresh = true;
+      if (accountId) {
+        const { refreshAccountToken } = await import("./playwright.ts");
+        await refreshAccountToken(accountId);
+      }
     }
   } catch {
     // If we can't check, let the normal flow handle it
   }
 
-  const { headers } = await getQwenHeaders(forceRefresh, accountId);
+  const { headers } = await getQwenHeaders(false, accountId);
   let requestHeaders = buildCapturedQwenHeaders(headers, {
     referer: qwenUrl("/settings/personalization"),
   });
@@ -2022,6 +2028,24 @@ async function syncQwenRequestPersonalizationInternal(
   // body POSTed without it with RequestValidationError ("Field '': Input
   // should be a valid dictionary..." — the body is not parsed as a JSON object).
   ({ raw, json } = await attemptPost(requestHeaders));
+
+  // WAF Challenge fast detection and recovery
+  if (looksLikeAntiBotChallengeText(raw)) {
+    if (accountId) {
+      try {
+        const solved = await recoverBaxiaCaptcha(accountId, "personalization", {
+          challengeBody: raw,
+        });
+        if (solved) {
+          ({ raw, json } = await attemptPost(requestHeaders));
+        }
+      } catch {}
+    }
+    if (looksLikeAntiBotChallengeText(raw)) {
+      logger.warn(`[Qwen] WAF challenge detected during personalization for ${cacheKey}; failing fast for account rotation`);
+      return false;
+    }
+  }
 
   // Layer 2: On 401/Unauthorized → refresh session and retry once
   const isUnauthorized =
@@ -2192,10 +2216,13 @@ export async function disableNativeTools(accountId?: string): Promise<void> {
                   clearTimeout(timeoutId);
                 }
               },
-              { payload, timeoutMs: config.timeouts.http, requestId, tz: formatAsciiTimezone() },
+              { payload, timeoutMs: Math.min(config.timeouts.http, 10_000), requestId, tz: formatAsciiTimezone() },
             );
             return response;
           },
+          10_000,
+          15_000,
+          false,
         );
         if (result.status < 400) {
           nativeToolsDisabled.add(cacheKey);
@@ -2569,15 +2596,15 @@ export async function fetchQwenModels(
     return cached.models;
   }
 
-  // For accounts that are not initialized yet, avoid cold-booting Playwright just for model metadata.
-  // Reuse existing models from any active cache entry (models catalog is identical across accounts).
-  if (accountId && !isAuthMockEnabled() && !isPlaywrightInitialized(accountId)) {
+  // In live mode, reuse existing models from any active cache entry if available (catalog is identical across accounts).
+  if (accountId && !isAuthMockEnabled()) {
     for (const [, entry] of modelsCache.entries()) {
-      if (entry && now - entry.fetchedAt < MODEL_CACHE_TTL_MS * 4) {
+      if (entry && now - entry.fetchedAt < MODEL_CACHE_TTL_MS * 4 && entry.models?.length > 0) {
         syncModelMetadata(
           entry.models as unknown as Array<Record<string, unknown> & { id: string }>,
           accountId,
         );
+        modelsCache.set(cacheKey, { models: entry.models, fetchedAt: entry.fetchedAt });
         return entry.models;
       }
     }
@@ -2592,11 +2619,12 @@ export async function fetchQwenModels(
         async (page) => {
           const requestId = crypto.randomUUID();
           const response = await page.evaluate(
-            async ({ timeoutMs, requestId, tz }: { timeoutMs: number; requestId: string; tz: string }) => {
+            async ({ timeoutMs, requestId, tz, isMock }: { timeoutMs: number; requestId: string; tz: string; isMock: boolean }) => {
               const controller = new AbortController();
               const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
               try {
-                const resp = await fetch("https://chat.qwen.ai/api/models", {
+                const endpoint = isMock ? "/api/models" : "/api/v2/models/";
+                const resp = await fetch(`https://chat.qwen.ai${endpoint}`, {
                   method: "GET",
                   headers: {
                     accept: "application/json, text/plain, */*",
@@ -2611,15 +2639,23 @@ export async function fetchQwenModels(
                 clearTimeout(timeoutId);
               }
             },
-            { timeoutMs: config.timeouts.http, requestId, tz: formatAsciiTimezone() },
+            { timeoutMs: Math.min(config.timeouts.http, 8_000), requestId, tz: formatAsciiTimezone(), isMock: isAuthMockEnabled() },
           );
           return response;
         },
+        8_000,
+        8_000,
+        false,
       );
       if (result.status < 400) {
         const json = JSON.parse(result.body);
-        if (json.data && Array.isArray(json.data)) {
-          const models = json.data
+        const rawList = Array.isArray(json.data)
+          ? json.data
+          : Array.isArray(json.data?.data)
+            ? json.data.data
+            : [];
+        if (rawList.length > 0) {
+          const models = rawList
             .filter((model: unknown) => {
               const record = asModelRecord(model);
               return typeof record.id === "string" && record.id.trim().length > 0;
@@ -2646,10 +2682,11 @@ export async function fetchQwenModels(
   const { cookie, userAgent, bxV, bxUa, bxUmidtoken } =
     await getBasicHeaders(accountId);
 
+  const modelsPath = isAuthMockEnabled() ? "/api/models" : "/api/v2/models/";
   const response = await requestQwenTextInBrowser(
     accountId,
     "GET",
-    "/api/models",
+    modelsPath,
     buildQwenRequestHeaders({
       cookie,
       userAgent,
@@ -2661,7 +2698,7 @@ export async function fetchQwenModels(
       },
     }),
     undefined,
-    { referrer: qwenUrl("/") },
+    { referrer: qwenUrl("/"), timeoutMs: 10_000 },
   );
 
   if (!response.ok) {
@@ -2671,11 +2708,16 @@ export async function fetchQwenModels(
   }
 
   const json = await response.json();
-  if (json.data && Array.isArray(json.data)) {
+  const rawModels = Array.isArray(json.data)
+    ? json.data
+    : Array.isArray(json.data?.data)
+      ? json.data.data
+      : [];
+  if (rawModels.length > 0) {
     // Keep only upstream/base entries here. The public `-fast` variant is
     // generated exactly once by the public models endpoint after metadata has
     // been synchronized.
-    const models = json.data
+    const models = rawModels
       .filter((model: unknown) => {
         const record = asModelRecord(model);
         return typeof record.id === "string" && record.id.trim().length > 0;
