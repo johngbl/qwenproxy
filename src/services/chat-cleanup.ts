@@ -275,7 +275,7 @@ export async function cleanOldChatsForAccount(
     }
 
     if (cleaned > 0) {
-      console.log(
+      logger.debug(
         `🧹 [ChatCleanup] Remotely cleaned ${cleaned} old chat(s) (> ${maxAgeHours}h) for account ${accountId}`,
       );
     }

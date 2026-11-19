@@ -56,13 +56,6 @@ export function installProcessTeardownGuards(label = "Process"): void {
 
   process.on("uncaughtException", (error: unknown) => {
     if (isBenignTeardownError(error)) {
-      const msg =
-        error instanceof Error
-          ? error.message
-          : typeof error === "object" && error !== null && "message" in error
-            ? String((error as any).message)
-            : String(error);
-      console.warn(`⚠️  [${label}] Handled benign driver teardown exception: ${msg}`);
       return;
     }
     console.error(`❌ [${label}] Uncaught Exception:`, error);
@@ -70,13 +63,6 @@ export function installProcessTeardownGuards(label = "Process"): void {
 
   process.on("unhandledRejection", (reason: unknown) => {
     if (isBenignTeardownError(reason)) {
-      const msg =
-        reason instanceof Error
-          ? reason.message
-          : typeof reason === "object" && reason !== null && "message" in reason
-            ? String((reason as any).message)
-            : String(reason);
-      console.warn(`⚠️  [${label}] Handled benign driver teardown rejection: ${msg}`);
       return;
     }
     console.error(`❌ [${label}] Unhandled Rejection:`, reason);

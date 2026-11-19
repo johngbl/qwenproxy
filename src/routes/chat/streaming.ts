@@ -1731,11 +1731,9 @@ export async function processStreamingResponse(
         });
 
         if ("error" in newStreamResult) {
-          logger.error("[Chat] Stream recovery could not acquire a new stream", {
-            account: currentAccountId,
-            error: newStreamResult.error?.message || "unknown error",
-            completionId,
-          });
+          console.error(
+            `❌ [Chat] Stream recovery exhausted | account=${currentAccountId} | ${newStreamResult.error?.message || "unknown error"}`,
+          );
           throw newStreamResult.error ?? normalizedError;
         }
 
@@ -2978,26 +2976,18 @@ export async function processStreamingResponse(
         ? "rate_limit_error"
         : "upstream_error";
 
-    const errorDetails = {
-      account: activeAccountLabel,
-      accountId: activeAccountId,
-      code: errorCode,
-      errorName: err.name,
-      message: err.message?.substring(0, 200),
-      stack: err.stack?.split("\n").slice(0, 3).join(" | "),
-      completionId,
-    };
-
+    const conciseErrMsg = err.message?.substring(0, 160) || err.name || "Unknown error";
     if (retryable || isNetworkLikeError(err) || isAbortError(err)) {
       if (activeAccountId && isNetworkLikeError(err)) {
         noteMidStreamNetworkFailure(activeAccountId);
       }
-      logger.warn(
-        "[Chat] Stream ended after retryable error (no more retries)",
-        errorDetails,
+      console.warn(
+        `⚠️  [Chat] Stream interrupted | ${activeAccountLabel} | ${errorCode}: ${conciseErrMsg}`,
       );
     } else {
-      logger.error("[Chat] Stream callback error", errorDetails);
+      console.error(
+        `❌ [Chat] Stream error | ${activeAccountLabel} | ${errorCode}: ${conciseErrMsg}`,
+      );
     }
     // The HTTP response is already committed at this point.
     // 1. Emit an explicit assistant message delta ONLY if this was an upstream content moderation /

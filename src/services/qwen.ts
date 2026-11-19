@@ -3635,7 +3635,7 @@ async function createQwenStreamInternal(
             continue;
           }
 
-          logger.warn(
+          logger.debug(
             "[Qwen] Completion returned an HTML or anti-bot challenge body instead of SSE.",
             {
               accountId: accountId ?? "global",

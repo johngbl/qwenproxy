@@ -317,7 +317,7 @@ export async function saveStorageState(
       `storageState timed out after ${timeoutMs}ms`,
     );
   } catch (error) {
-    if (!isPlaywrightAlreadyClosedError(error)) {
+    if (!isPlaywrightAlreadyClosedError(error) && process.env.DEBUG === "true") {
       console.warn(
         `[Playwright] Failed to save storage state for ${accountId}: ${getErrorMessage(error)}`,
       );
@@ -1563,9 +1563,6 @@ export async function initPlaywrightForAccount(
 ): Promise<void> {
   const account = await resolveAccountCredentials(rawAccount);
   if (accountPages.has(account.id)) {
-    console.log(
-      `[Playwright] Already initialized for ${maskEmail(account.email)}`,
-    );
     return;
   }
   const existingInit = inFlightAccountInits.get(account.id);
@@ -1840,10 +1837,10 @@ export async function initPlaywrightForAccount(
         if (!acctPage.isClosed() && (acctPage.url() === "about:blank" || !acctPage.url().startsWith(qwenOrigin()))) {
           try {
             await acctPage.goto(qwenUrl("/"), {
-              waitUntil: "domcontentloaded",
-              timeout: config.timeouts.navigation,
+              waitUntil: "commit",
+              timeout: Math.min(config.timeouts.navigation, 10_000),
             });
-            await sleep(300);
+            await sleep(200);
           } catch (err: any) {
             if (!err?.message?.includes("ERR_ABORTED")) {
               console.warn(
